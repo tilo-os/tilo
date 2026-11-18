@@ -7,14 +7,21 @@
 //! in use holds. No count of bytes cuts it: what is told follows the workspace, and an action
 //! that is not named is one a model guesses at or looks for. What an action takes is not told
 //! here: a listing of that one action names it (`tilo_ls notes#rename`), and a call that lacks
-//! an argument is answered with the call written out.
+//! an argument is answered with what the action takes.
+//!
+//! An action on a thing in an app is called by the thing's path, so a thing an app holds once
+//! of its kind is told by that path, as its row in the app's own listing names it
+//! (`accounts/Calendars`): a kind's name alone would leave whoever calls it to look the thing
+//! up first. Where an app holds several things of a kind they are told once for the kind, and
+//! the app's own listing names each.
 //!
 //! An app in use is read through the caller's own listing, as the caller: nothing is told of it
 //! that `tilo_ls` would not answer the same caller. An installed app that never started has no
 //! listing yet: it is told by what its signed package declares, and only where the workspace
 //! lets this caller open it. An app the caller may not open is not named at all, nor anything
-//! of it. What is told names kinds and actions and no title of anything an app keeps, so it
-//! stays word for word the same until an app is installed, opened or changed.
+//! of it. What is told names kinds, actions and the things an app holds once of their kind, so
+//! it stays word for word the same until an app is installed, opened or changed, or such a
+//! thing is named anew.
 //!
 //! The framework an app is built with gives the things every app keeps the same actions under
 //! the same names (`undo`, `field-edit`, `render`). They are said once, before the apps in use,
@@ -31,8 +38,11 @@ use std::fmt::Write as _;
 /// What stands before everything told.
 const HEAD: &str = "What you have here now, as tilo_ls would answer you (said once, so you need \
 not look it up). Every app is named with every action it offers you, by name: tilo_do takes one \
-as the path `app#action` with its arguments in `args`. What an action takes, tilo_ls of \
-`app#action` names; a call that lacks an argument is answered with the call written out.\n";
+as the path `app#action` with its arguments in `args`. An indented line is a thing in the app \
+above it, by the path a call takes: an action on it goes as `app/thing#action`. Where an app \
+holds several things of a kind the line says `<its name>`, and tilo_ls of the app names them. \
+What an action takes, tilo_ls of its path names; a call that lacks an argument is answered with \
+what the action takes.\n";
 /// What stands before the apps in use.
 const IN_USE: &str = "In use:\n";
 /// What stands before the installed apps that never started.
@@ -77,8 +87,19 @@ struct Offered {
     path: String,
     /// The actions on the app itself.
     own: Vec<String>,
-    /// The actions on each kind of thing it holds, a kind once.
-    kinds: Vec<(String, Vec<String>)>,
+    /// The actions on the things it holds, a kind of thing once.
+    kinds: Vec<Kept>,
+}
+
+/// The actions on the things of one kind an app holds.
+struct Kept {
+    /// The kind of thing.
+    kind: String,
+    /// The one thing of the kind the app holds, by the name a path takes, as its row in the
+    /// app's own listing names it; none where the app holds several of the kind.
+    only: Option<String>,
+    /// The actions on a thing of the kind.
+    actions: Vec<String>,
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
@@ -132,9 +153,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .await
             .ok()?;
         let own = names_of(&found.actions);
-        let mut kinds: Vec<(String, Vec<String>)> = Vec::new();
+        let mut kinds: Vec<Kept> = Vec::new();
         for child in &found.children {
-            if kinds.iter().any(|(kind, _)| *kind == child.kind) {
+            if kinds.iter().any(|kept| kept.kind == child.kind) {
                 continue;
             }
             let theirs = names_of(&child.actions);
@@ -142,7 +163,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if theirs.is_empty() || theirs == own {
                 continue;
             }
-            kinds.push((child.kind.clone(), theirs));
+            // A thing the app holds once of its kind is told by the name a path takes, the one
+            // its row in the app's own listing gives it: a call on it is written from that.
+            let alone = !found
+                .children
+                .iter()
+                .any(|other| other.kind == child.kind && other.id != child.id);
+            let only = alone
+                .then(|| child.name(&found.children))
+                .filter(|name| !name.contains('\n'));
+            kinds.push(Kept {
+                kind: child.kind.clone(),
+                only,
+                actions: theirs,
+            });
         }
         Some(Offered {
             named: named(name, label),
@@ -259,7 +293,7 @@ fn said_once(apps: &[Offered]) -> String {
         .flat_map(|app| {
             app.own
                 .iter()
-                .chain(app.kinds.iter().flat_map(|(_, names)| names.iter()))
+                .chain(app.kinds.iter().flat_map(|kept| kept.actions.iter()))
         })
         .map(String::as_str)
         .filter(|name| frameworks_own(name))
@@ -285,25 +319,31 @@ fn told(names: &[String]) -> String {
 }
 
 /// One app's lines: its name with every action on it, then each kind of thing in it with every
-/// action on that. A kind that offers only the framework's own has nothing of its own to tell
-/// and gets no line; an app that offers nothing of its own is still named.
+/// action on that: a thing the app holds once of its kind by the path a call takes, the things
+/// of a kind it holds several of once for the kind. A kind that offers only the framework's own
+/// has nothing of its own to tell and gets no line; an app that offers nothing of its own is
+/// still named.
 fn lines_of(app: &Offered) -> String {
     let mut lines = app.named.clone();
     let own = told(&app.own);
     if !own.is_empty() {
         let _ = write!(lines, ": {own}");
     }
-    for (kind, names) in &app.kinds {
-        let theirs = told(names);
+    for kept in &app.kinds {
+        let theirs = told(&kept.actions);
         if theirs.is_empty() {
             continue;
         }
-        let kind = kind.rsplit('.').next().unwrap_or(kind);
-        let _ = write!(
-            lines,
-            "\n  each {kind} in it ({}/<its name>): {theirs}",
-            app.path
-        );
+        if let Some(name) = &kept.only {
+            let _ = write!(lines, "\n  {}/{name}: {theirs}", app.path);
+        } else {
+            let kind = kept.kind.rsplit('.').next().unwrap_or(&kept.kind);
+            let _ = write!(
+                lines,
+                "\n  each {kind} in it ({}/<its name>): {theirs}",
+                app.path
+            );
+        }
     }
     lines.push('\n');
     lines
@@ -338,7 +378,7 @@ fn put_together(used: &[Offered], waiting: &[Offered]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{InstalledApp, Offered, declared_by, may_start, put_together};
+    use super::{InstalledApp, Kept, Offered, declared_by, may_start, put_together};
 
     /// What the framework gives the things an app keeps, by name.
     const THE_FRAMEWORKS: [&str; 6] = ["apply", "group", "field-edit", "outline", "undo", "redo"];
@@ -351,10 +391,11 @@ mod tests {
             named: name.to_owned(),
             path: name.to_owned(),
             own: own.iter().map(|action| (*action).to_owned()).collect(),
-            kinds: vec![(
-                format!("{name}.book"),
-                on_the_kind.map(|action| (*action).to_owned()).collect(),
-            )],
+            kinds: vec![Kept {
+                kind: format!("{name}.book"),
+                only: None,
+                actions: on_the_kind.map(|action| (*action).to_owned()).collect(),
+            }],
         }
     }
 
@@ -393,6 +434,29 @@ mod tests {
             told.contains("\n  each book in it (orchard/<its name>): #graft\n"),
             "{told}"
         );
+    }
+
+    /// A thing an app holds once of its kind is told by the path a call takes, so a call on it
+    /// is written from what is told; the things of a kind it holds several of are told once
+    /// for the kind.
+    #[test]
+    fn a_thing_an_app_holds_once_is_told_by_the_path_a_call_takes() {
+        let mut orchard = app("orchard", &["plant"], &["graft"]);
+        orchard.kinds.push(Kept {
+            kind: "orchard.shed".to_owned(),
+            only: Some("Tool shed".to_owned()),
+            actions: vec!["lend".to_owned(), "undo".to_owned()],
+        });
+        let told = put_together(&[orchard], &[]);
+        assert!(
+            told.ends_with(
+                "orchard: #plant\n  each book in it (orchard/<its name>): #graft\n  \
+                 orchard/Tool shed: #lend\n"
+            ),
+            "{told}"
+        );
+        // What is told says how such a line is read.
+        assert!(told.contains("`app/thing#action`"), "{told}");
     }
 
     /// The framework's own actions are the same on every thing every app keeps: they are said

@@ -61,8 +61,8 @@ fn told_so_far(request: &ModelRequest) -> String {
 
 /// Whether `told` shows `action` (`#rename`) as one `app` offers: on a line of a listing that
 /// begins with it (`#rename(title)  Rename note`), or on the app's own lines of what a turn is
-/// told at its start (`tasks: #create, #start`, or the line of a kind of thing in the app). A
-/// tool's own words that write the action in an example show it for no app.
+/// told at its start (`tasks: #create, #start`, or the line of a thing or of a kind of thing in
+/// the app). A tool's own words that write the action in an example show it for no app.
 fn shows(told: &str, app: &str, action: &str) -> bool {
     let whole = |line: &str| {
         line.match_indices(action).any(|(at, _)| {
@@ -72,10 +72,12 @@ fn shows(told: &str, app: &str, action: &str) -> bool {
         })
     };
     let of_a_kind = format!("({app}/");
+    let of_a_thing = format!("{app}/");
     told.lines().any(|line| {
         let begins = line.trim_start();
         let where_an_app_offers = begins.starts_with(action)
             || line.starts_with(app)
+            || begins.starts_with(&of_a_thing)
             || (begins.starts_with("each ") && line.contains(&of_a_kind));
         where_an_app_offers && whole(line)
     })
