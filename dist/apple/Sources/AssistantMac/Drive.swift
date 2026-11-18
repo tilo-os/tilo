@@ -3,6 +3,7 @@ import AppKit
 import AssistantCore
 import AssistantTilo
 import AssistantUI
+import CryptoKit
 import Foundation
 import Observation
 import ShellCore
@@ -37,6 +38,7 @@ import WebKit
 ///                                                    for the key's sake: the same step stands in the main chat
 ///   {"do": "event", "name": "…", "when": "…", "instruction": "…"}   something that comes at a time
 ///   {"do": "task", "title": "…"}                      as the plus of the Tasks panel gives the assistant a task
+///   {"do": "open", "file": "…"}                       as a press on a file's tag: the file is fetched and shown to nobody
 ///   {"do": "stop"}                                    stop the answer that is being written
 ///   {"do": "saw", "item": "…"}                        as opening a piece from its notification does
 ///   {"do": "press", "item": "…", "offer": "…"}        as a press on a button under a piece's notice
@@ -339,6 +341,16 @@ final class AssistantDrive {
             model.drafts[.main] = Draft(text: typed, files: files)
             model.send(in: .main)
             AssistantDrive.say(["asked": "send", "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
+        case "open":
+            // As a press on a file's tag. What lies on this device then is said by its name,
+            // its length and a sum over its bytes: never the link, and nothing is shown.
+            guard let file = step["file"]?.string else { AssistantDrive.say(["error": "open takes file"]); return }
+            if let fetched = await model.file(of: .init(file)), let bytes = try? Data(contentsOf: fetched) {
+                AssistantDrive.say(["opened": ["name": .string(fetched.lastPathComponent), "bytes": .number(Double(bytes.count)),
+                                               "sha256": .string(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())]])
+            } else {
+                AssistantDrive.say(["opened": false, "why": .string(model.problem ?? "")])
+            }
         case "answer":
             guard let question = step["question"]?.string, let choice = step["choice"]?.string else {
                 AssistantDrive.say(["error": "answer takes question and choice"])

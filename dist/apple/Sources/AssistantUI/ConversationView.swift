@@ -1,4 +1,5 @@
 import AssistantCore
+import QuickLook
 import SwiftUI
 
 /// A conversation: its pieces from the oldest at the top to the newest at the foot, where the
@@ -217,7 +218,8 @@ private struct SaidByPerson: ViewModifier {
 private struct MessageView: View {
     let message: Message
     @Environment(AssistantModel.self) private var model
-    @Environment(\.openURL) private var openURL
+    /// The file a press on its tag fetched, shown by the system's own viewer.
+    @State private var shown: URL?
 
     var body: some View {
         if !message.text.isEmpty {
@@ -241,7 +243,7 @@ private struct MessageView: View {
                 ForEach(message.attachments) { attachment in
                     Button {
                         Task {
-                            if let file = await model.file(of: attachment.id) { openURL(file) }
+                            if let file = await model.file(of: attachment.id) { shown = file }
                         }
                     } label: {
                         Tag(words: attachment.words())
@@ -251,6 +253,8 @@ private struct MessageView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: message.author == .person ? .trailing : .leading)
+            // Quick Look on the Mac, the system's viewer on the phone: a file is looked at there.
+            .quickLookPreview($shown)
         }
         ForEach(message.live) { LiveThingPlace(thing: $0) }
     }
