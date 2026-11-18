@@ -249,7 +249,7 @@ fn agent_of(holder: &Holder) -> String {
 }
 
 fn approve_as_root(on_server: &OnServer, root: &SigningKey, agent: &str) -> RootApproving {
-    use tilo_server_client::questions::QuestionHost as _;
+    use tilo_server_client::questions::QuestionServer as _;
     let stop = Arc::new(tokio::sync::Notify::new());
     let stopped = Arc::clone(&stop);
     let (server, root, agent) = (on_server.server_host(), root.clone(), agent.to_owned());

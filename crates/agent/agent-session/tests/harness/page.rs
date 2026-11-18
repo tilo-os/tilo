@@ -31,7 +31,7 @@ use tilo_actions::remote::{
 };
 
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_server_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
 };
@@ -97,7 +97,7 @@ impl Page {
         served_by: &Device,
     ) -> Link {
         start_peer(
-            Host::at(server.node_addr()),
+            ServerAddress::at(server.node_addr()),
             device.cert.clone(),
             served_by.cert.clone(),
             device.key.clone(),

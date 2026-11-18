@@ -1,32 +1,32 @@
 //! The co-edit payloads the toolkit's collaboration layer exchanges through
-//! the workspace host: [`CoeditPayload`] inside an `Envelope::Delta`,
+//! the workspace server: [`CoeditPayload`] inside an `Envelope::Delta`,
 //! [`AttributedPresence`] inside an `Envelope::Presence`, and the
 //! [`Inbound`] events a session surfaces. Browser and native peers share
 //! these; the relay session that speaks them over iroh
 //! (`tilo_server_session::coedit::ServerCoeditSession`) lives in
 //! `tilo-server-session`.
 //!
-//! Presence carries its author inside the payload because the host's
+//! Presence carries its author inside the payload because the server's
 //! presence envelope has no author slot; see [`AttributedPresence`].
 
 use serde::{Deserialize, Serialize};
 
 /// Body carried inside an `Envelope::Delta`. Self-describing so the
 /// receiver can distinguish retained checkpoints from their incremental tail.
-/// Retention metadata is deliberately visible to the host. The body is a
-/// collaboration message the host may still read: a workspace host
+/// Retention metadata is deliberately visible to the server. The body is a
+/// collaboration message the server may still read: a workspace server
 /// classifies it to decide retention, replay and compaction, and folds
 /// unsealed document frames. Only a sealed document's content is opaque to
 /// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CoeditPayload {
     /// A complete, idempotent state checkpoint for one logical document.
-    /// The host replaces the previous checkpoint and its older tail for the
+    /// The server replaces the previous checkpoint and its older tail for the
     /// same channel, allowing a device with no prior queue to bootstrap.
     Checkpoint {
         /// Stable digest of the logical document route.
         channel: [u8; 32],
-        /// The collaboration message; see the type for what a host reads.
+        /// The collaboration message; see the type for what a server reads.
         body: Vec<u8>,
     },
     /// An incremental update retained after the latest checkpoint for this
@@ -35,7 +35,7 @@ pub enum CoeditPayload {
     RetainedDelta {
         /// Stable digest of the logical document route.
         channel: [u8; 32],
-        /// The collaboration message; see the type for what a host reads.
+        /// The collaboration message; see the type for what a server reads.
         body: Vec<u8>,
     },
 }
@@ -83,7 +83,7 @@ enum RetentionMetadata<'a> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Decode only the host-visible retention route and kind. The opaque body is
+/// Decode only the server-visible retention route and kind. The opaque body is
 /// consumed without allocating or exposing it to diagnostics.
 #[doc(hidden)]
 pub fn retention_metadata(bytes: &[u8]) -> Option<([u8; 32], RetentionKind)> {
@@ -108,7 +108,7 @@ pub fn retention_view(bytes: &[u8]) -> Option<([u8; 32], RetentionKind, &[u8])> 
 
 /// Presence body wrapper that carries author attribution.
 ///
-/// `Envelope::Presence` has no author field — the host forwards the
+/// `Envelope::Presence` has no author field — the server forwards the
 /// opaque body. The publisher wraps its device public key around toolkit
 /// presence `body`; the governing server stamps device attribution from the
 /// authenticated publishing connection before forwarding. The receiver recovers it
@@ -142,7 +142,7 @@ impl AttributedPresence {
     }
 }
 
-/// An inbound co-edit event surfaced from the host, ready to hand to
+/// An inbound co-edit event surfaced from the server, ready to hand to
 /// the toolkit as the matching `CollabEvent`.
 #[derive(Debug, Clone)]
 pub enum Inbound {
@@ -155,12 +155,12 @@ pub enum Inbound {
         /// Raw Automerge incremental delta bytes.
         data: Vec<u8>,
     },
-    /// An ephemeral presence payload fanned out by the host. Not
+    /// An ephemeral presence payload fanned out by the server. Not
     /// persisted; dropped if no peer is subscribed.
     Presence {
         /// Publishing device's public key, recovered from the
         /// [`AttributedPresence`] wrapper, stamped by the governing server for
-        /// a publishing device. The host's presence envelope
+        /// a publishing device. The server's presence envelope
         /// carries no author slot, so this is the only place the
         /// attribution survives — the toolkit maps it onto the
         /// `RemotePresenceUpdate` / `RemoteCursorMoved` `user_id`.
@@ -188,8 +188,8 @@ pub enum Inbound {
         /// The piece, as the sender encoded it.
         frame: Vec<u8>,
     },
-    /// A device of the workspace joined (`active`) or left the host's live
-    /// peer network: a member this device reaches through the host, which may
+    /// A device of the workspace joined (`active`) or left the server's live
+    /// peer network: a member this device reaches through the server, which may
     /// hand over the content the workspace's records reference.
     Member {
         /// The device's public key.
@@ -197,7 +197,7 @@ pub enum Inbound {
         /// Whether it is now connected.
         active: bool,
     },
-    /// The host's reply to the initial subscribe: how many queued
+    /// The server's reply to the initial subscribe: how many queued
     /// deltas it is about to flush from this device's offline queue.
     Ready {
         /// Number of store-and-forwarded deltas being flushed.
@@ -207,7 +207,7 @@ pub enum Inbound {
     },
     /// The workspace's governor answered about one of its calls.
     Voice(VoiceEvent),
-    /// The host answered an on-demand record this device opened: it sent
+    /// The server answered an on-demand record this device opened: it sent
     /// everything it retains of it, as [`Inbound::Delta`]s before this event,
     /// and its changes keep arriving from now on; or the record is not this
     /// device's to open.
@@ -216,13 +216,13 @@ pub enum Inbound {
         channel: [u8; 32],
         answer: tilo_server_protocol::DocumentAnswer,
     },
-    /// The host keeps the write this session sent as commit `op`: it is
+    /// The server keeps the write this session sent as commit `op`: it is
     /// durable there. A resent commit it already kept is answered so too.
     Committed {
         /// The commit's id, as the session sent it.
         op: [u8; 16],
     },
-    /// The host did not keep commit `op`; nothing of it was persisted or
+    /// The server did not keep commit `op`; nothing of it was persisted or
     /// passed on.
     CommitRefused {
         /// The commit's id, as the session sent it.

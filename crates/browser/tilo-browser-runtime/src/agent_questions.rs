@@ -81,9 +81,9 @@ pub(crate) fn answer_as(peer: u32, device_key: &JsValue, cert: &DeviceCert) -> R
         while let Some(session) = crate::peer_sync::handle_of(peer) {
             let began = web_time::Instant::now();
             let (answered, mut answers) = mpsc::unbounded_channel();
-            let member_host = tilo_session_client::member_host(&session);
+            let member_server = tilo_session_client::member_server(&session);
             let mut host = MemberQuestions {
-                host: &member_host,
+                server: &member_server,
                 root: &signer,
                 device: device.as_ref(),
             };
@@ -92,7 +92,7 @@ pub(crate) fn answer_as(peer: u32, device_key: &JsValue, cert: &DeviceCert) -> R
                     sleep_ms(POLL_MS)
                 })
                 .await;
-            drop(member_host);
+            drop(member_server);
             drop(session);
             tracing::debug!(%error, retry_in_ms = retry, "agent questions: the host was not reached");
             // A session that ran a while starts its backoff afresh.

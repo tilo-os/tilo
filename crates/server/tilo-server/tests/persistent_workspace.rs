@@ -505,8 +505,8 @@ async fn wait_for<T: Send>(
 }
 
 /// The workspace's iroh endpoint, where its pages run their sessions.
-fn host_of(info: tilo_server_protocol::web::HostInfo) -> tilo_server_client::Host {
-    tilo_server_client::Host::at(
+fn host_of(info: tilo_server_protocol::web::HostInfo) -> tilo_server_client::ServerAddress {
+    tilo_server_client::ServerAddress::at(
         info.address
             .expect("the workspace publishes its iroh endpoint")
             .endpoint_addr,
@@ -515,7 +515,7 @@ fn host_of(info: tilo_server_protocol::web::HostInfo) -> tilo_server_client::Hos
 
 /// A page of `cert`'s device, on the workspace's session.
 fn page(
-    host: tilo_server_client::Host,
+    host: tilo_server_client::ServerAddress,
     key: ed25519_dalek::SigningKey,
     cert: tilo_user_identity::DeviceCert,
     host_cert: &tilo_user_identity::DeviceCert,
@@ -798,7 +798,7 @@ async fn chat_route(
     plain: std::net::SocketAddr,
     cluster: &str,
 ) -> (
-    tilo_server_client::Host,
+    tilo_server_client::ServerAddress,
     tilo_user_identity::DeviceCert,
     tilo_peer_state::document_frame::DocumentRoute,
 ) {
@@ -1100,7 +1100,7 @@ async fn persons_read_the_workspace_and_are_refused(
 /// owner's root without the root's signature, and one of the owner's root's
 /// that expired, are not admitted.
 async fn owner_devices_join_and_forgeries_are_refused(
-    host: tilo_server_client::Host,
+    host: tilo_server_client::ServerAddress,
     host_cert: &tilo_user_identity::DeviceCert,
     workspace_id: WorkspaceId,
 ) {

@@ -44,7 +44,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
@@ -84,7 +84,7 @@ impl Draw {
 
 /// A page of `name` entering `workspace` through its entry.
 async fn arrive(
-    host: Host,
+    host: ServerAddress,
     host_cert: &tilo_user_identity::DeviceCert,
     workspace: &str,
     name: &str,
@@ -394,7 +394,7 @@ async fn round(seed: u64) {
     let page_host = |host: &TestHost| {
         let address = host.server.node_addr();
         let relay_url = address.relay_urls().next().cloned();
-        Host::through(iroh::EndpointAddr::new(address.id), relay_url)
+        ServerAddress::through(iroh::EndpointAddr::new(address.id), relay_url)
     };
 
     let mut members = Vec::new();

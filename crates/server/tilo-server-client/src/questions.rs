@@ -1,15 +1,15 @@
-//! Answering what a person's agents on a host ask them.
+//! Answering what a person's agents on a server ask them.
 //!
-//! An agent a host runs for a person never confirms an action its grants
-//! leave to them by its own word: the host asks the person's approving
+//! An agent a server runs for a person never confirms an action its grants
+//! leave to them by its own word: the server asks the person's approving
 //! devices about that one invocation ([`PendingConfirmation`]). A device or
 //! page holding the person's root ownership keeps an approver session with the
-//! host ([`answer_questions`]): it puts every question the host lists on its
+//! server ([`answer_questions`]): it puts every question the server lists on its
 //! question sheet once, hands each answer back, and takes the sheet away
-//! when the host stops listing the question (answered elsewhere, withdrawn
+//! when the server stops listing the question (answered elsewhere, withdrawn
 //! or expired).
 //!
-//! The session is the same everywhere; what reaches the host and what shows
+//! The session is the same everywhere; what reaches the server and what shows
 //! the question differ. A device with its own certificate opens one approver
 //! connection ([`Approver`]); a page holding the root signs each command
 //! with it and asks over the session it already holds ([`MemberQuestions`]). A native session shows the question on its
@@ -25,16 +25,16 @@ use tokio::sync::mpsc;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::certify::Approver;
-use crate::certify::MemberHost;
+use crate::certify::MemberServer;
 use crate::error::CertifyError;
 use crate::signer::DeviceSigner;
 
 /// One answer the person gave on the sheet: the question's id and the answer.
 pub type Answered = ([u8; 32], ConfirmationAnswer);
 
-/// Where a host's questions are read and answered.
-pub trait QuestionHost {
-    /// Every question the host waits on for this person.
+/// Where a server's questions are read and answered.
+pub trait QuestionServer {
+    /// Every question the server waits on for this person.
     fn confirmations(
         &mut self,
     ) -> impl Future<Output = Result<Vec<PendingConfirmation>, CertifyError>>;
@@ -53,13 +53,13 @@ pub trait QuestionSheet {
     /// answers ([`Answered`]).
     fn ask(&mut self, question: &PendingConfirmation);
 
-    /// Take question `id` off the sheet: it was answered, or the host no
+    /// Take question `id` off the sheet: it was answered, or the server no
     /// longer asks it.
     fn withdraw(&mut self, id: [u8; 32]);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl QuestionHost for Approver {
+impl QuestionServer for Approver {
     async fn confirmations(&mut self) -> Result<Vec<PendingConfirmation>, CertifyError> {
         self.list_confirmations().await
     }
@@ -73,12 +73,12 @@ impl QuestionHost for Approver {
     }
 }
 
-/// A host's questions to a member, from a page of theirs: each command
+/// A server's questions to a member, from a page of theirs: each command
 /// signed by their root where the page holds it, else by the page's own
-/// device (`device`, its certificate), asked where `host` reaches the host
+/// device (`device`, its certificate), asked where `server` reaches the server
 /// (the page's own session).
 pub struct MemberQuestions<'a, H> {
-    pub host: &'a H,
+    pub server: &'a H,
     /// What signs: the person's root, or the device `device` certifies.
     pub root: &'a dyn DeviceSigner,
     /// The page's device certificate when `root` is that device's key.
@@ -91,14 +91,14 @@ impl<'a, H> MemberQuestions<'a, H> {
     /// answers its own agent's questions with.
     pub fn of_root(server: &'a H, root: &'a dyn DeviceSigner) -> Self {
         Self {
-            host: server,
+            server,
             root,
             device: None,
         }
     }
 }
 
-impl<H: MemberHost> QuestionHost for MemberQuestions<'_, H> {
+impl<H: MemberServer> QuestionServer for MemberQuestions<'_, H> {
     async fn confirmations(&mut self) -> Result<Vec<PendingConfirmation>, CertifyError> {
         let approval = crate::pairing::member_approval_as(
             self.root,
@@ -106,11 +106,11 @@ impl<H: MemberHost> QuestionHost for MemberQuestions<'_, H> {
             ApproverRequest::Confirmations,
         )
         .await?;
-        match self.host.ask(&approval).await? {
+        match self.server.ask(&approval).await? {
             ApproverReply::Confirmations(asked) => Ok(asked),
             ApproverReply::Refused { reason } => Err(CertifyError::Denied(reason)),
             _ => Err(CertifyError::Denied(
-                "the host answered something else".into(),
+                "the server answered something else".into(),
             )),
         }
     }
@@ -127,34 +127,34 @@ impl<H: MemberHost> QuestionHost for MemberQuestions<'_, H> {
         )
         .await?;
         // A refusal says the question is gone: answered, withdrawn or expired.
-        self.host.ask(&approval).await.map(drop)
+        self.server.ask(&approval).await.map(drop)
     }
 }
 
-impl<H: MemberHost> MemberQuestions<'_, H> {
-    /// The key the host signs its pushes with, which a browser subscribes
-    /// with; empty where the host pushes nothing.
+impl<H: MemberServer> MemberQuestions<'_, H> {
+    /// The key the server signs its pushes with, which a browser subscribes
+    /// with; empty where the server pushes nothing.
     ///
     /// # Errors
-    /// The host was not reached, or refused.
+    /// The server was not reached, or refused.
     pub async fn push_key(&self) -> Result<Vec<u8>, CertifyError> {
         let approval =
             crate::pairing::member_approval_as(self.root, self.device, ApproverRequest::PushKey)
                 .await?;
-        match self.host.ask(&approval).await? {
+        match self.server.ask(&approval).await? {
             ApproverReply::PushKey(key) => Ok(key),
             ApproverReply::Refused { reason } => Err(CertifyError::Denied(reason)),
             _ => Err(CertifyError::Denied(
-                "the host answered something else".into(),
+                "the server answered something else".into(),
             )),
         }
     }
 
-    /// Have the host push this browser (`subscription`) a word when an
+    /// Have the server push this browser (`subscription`) a word when an
     /// agent waits for the person and no Tilo of theirs is open.
     ///
     /// # Errors
-    /// The host was not reached, or did not keep it.
+    /// The server was not reached, or did not keep it.
     pub async fn notify_at(
         &self,
         subscription: tilo_server_protocol::certify::PushSubscription,
@@ -165,38 +165,38 @@ impl<H: MemberHost> MemberQuestions<'_, H> {
             ApproverRequest::Notify(subscription),
         )
         .await?;
-        match self.host.ask(&approval).await? {
+        match self.server.ask(&approval).await? {
             ApproverReply::Decided => Ok(()),
             ApproverReply::Refused { reason } => Err(CertifyError::Denied(reason)),
             _ => Err(CertifyError::Denied(
-                "the host answered something else".into(),
+                "the server answered something else".into(),
             )),
         }
     }
 }
 
-/// Show every question `host` lists on `sheet`, once, and hand each answer
-/// arriving on `answers` back, until the host fails; `wait` is the pause
-/// before the host is asked again. Questions the host stops listing leave
+/// Show every question `server` lists on `sheet`, once, and hand each answer
+/// arriving on `answers` back, until the server fails; `wait` is the pause
+/// before the server is asked again. Questions the server stops listing leave
 /// the sheet, and every question shown leaves it when the session ends.
 pub async fn answer_questions<H, S, W>(
-    host: &mut H,
+    server: &mut H,
     sheet: &mut S,
     answers: &mut mpsc::UnboundedReceiver<Answered>,
     mut wait: impl FnMut() -> W,
 ) -> CertifyError
 where
-    H: QuestionHost,
+    H: QuestionServer,
     S: QuestionSheet,
     W: Future<Output = ()>,
 {
     let mut shown: HashSet<[u8; 32]> = HashSet::new();
-    // The questions the person has answered, kept until the host stops
+    // The questions the person has answered, kept until the server stops
     // listing them: a list read while the answer is on its way does not put
     // the question back on their sheet.
     let mut done: HashSet<[u8; 32]> = HashSet::new();
     let failed = loop {
-        let listed = match host.confirmations().await {
+        let listed = match server.confirmations().await {
             Ok(listed) => listed,
             Err(error) => break error,
         };
@@ -218,7 +218,7 @@ where
                 shown.remove(&id);
                 sheet.withdraw(id);
                 done.insert(id);
-                if let Err(error) = host.answer(id, answer).await {
+                if let Err(error) = server.answer(id, answer).await {
                     break error;
                 }
             }
@@ -250,13 +250,13 @@ mod tests {
         }
     }
 
-    /// A host listing, on each ask, the next of `lists`; failing once they run out.
+    /// A server listing, on each ask, the next of `lists`; failing once they run out.
     struct Scripted {
         lists: std::collections::VecDeque<Vec<PendingConfirmation>>,
         answered: Vec<Answered>,
     }
 
-    impl QuestionHost for Scripted {
+    impl QuestionServer for Scripted {
         async fn confirmations(&mut self) -> Result<Vec<PendingConfirmation>, CertifyError> {
             self.lists
                 .pop_front()
@@ -291,11 +291,11 @@ mod tests {
     }
 
     /// A question shows once however often it is listed, leaves the sheet
-    /// when the host stops listing it (it expired, or another device
+    /// when the server stops listing it (it expired, or another device
     /// answered), and every question still up leaves when the session ends.
     #[tokio::test]
     async fn a_question_shows_once_and_leaves_when_the_host_stops_asking() {
-        let mut host = Scripted {
+        let mut server = Scripted {
             lists: [
                 vec![question(1)],
                 vec![question(1), question(2)],
@@ -308,7 +308,7 @@ mod tests {
         let mut sheet = Sheet::default();
         let (_answered, mut answers) = mpsc::unbounded_channel();
         let mut seen = Vec::new();
-        let error = answer_questions(&mut host, &mut sheet, &mut answers, || {
+        let error = answer_questions(&mut server, &mut sheet, &mut answers, || {
             seen.push(());
             std::future::ready(())
         })
@@ -319,22 +319,22 @@ mod tests {
         assert_eq!(seen.len(), 4);
     }
 
-    /// An answer goes back to the host, leaves the sheet, and a list read
-    /// before the host took it does not put the question back up.
+    /// An answer goes back to the server, leaves the sheet, and a list read
+    /// before the server took it does not put the question back up.
     #[tokio::test]
     async fn an_answer_goes_back_and_the_question_stays_answered() {
-        let mut host = Scripted {
+        let mut server = Scripted {
             lists: [vec![question(1)], vec![question(1)], vec![]].into(),
             answered: Vec::new(),
         };
         let mut sheet = Sheet::default();
         let (answered, mut answers) = mpsc::unbounded_channel();
         answered.send(([1; 32], ConfirmationAnswer::Deny)).unwrap();
-        answer_questions(&mut host, &mut sheet, &mut answers, || {
+        answer_questions(&mut server, &mut sheet, &mut answers, || {
             std::future::ready(())
         })
         .await;
-        assert_eq!(host.answered, vec![([1; 32], ConfirmationAnswer::Deny)]);
+        assert_eq!(server.answered, vec![([1; 32], ConfirmationAnswer::Deny)]);
         assert_eq!(sheet.asked, 1, "the answered question is not asked again");
         assert!(sheet.up.is_empty());
     }

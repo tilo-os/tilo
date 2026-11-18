@@ -328,7 +328,7 @@ fn ask(server: &str, operation: &ServerOperation) -> Result<ServerOperationResul
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
-        let dialer = tilo_server_client::host::Host::at(addr.clone());
+        let dialer = tilo_server_client::host::ServerAddress::at(addr.clone());
         let endpoint = dialer
             .bind(None)
             .await

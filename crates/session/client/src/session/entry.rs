@@ -35,9 +35,9 @@ pub(super) enum Refusal {
 
 pub(super) fn refusal(error: &LinkError) -> Refusal {
     match error {
-        LinkError::HostChanged => Refusal::Final(
+        LinkError::ServerChanged => Refusal::Final(
             "host-changed",
-            "This workspace’s host was set up again.".to_owned(),
+            "This workspace’s server was set up again.".to_owned(),
         ),
         LinkError::Unavailable(_) | LinkError::Malformed(_) | LinkError::Sign(_) => {
             Refusal::Reachability

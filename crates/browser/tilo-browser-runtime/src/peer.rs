@@ -32,7 +32,7 @@ use tilo_live::live::Track;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::https::{HttpClient, HttpFuture};
 use tilo_server_client::{Answer, AnswerFuture};
-use tilo_server_client::{DeviceSigner, Host, SignError, SignFuture};
+use tilo_server_client::{DeviceSigner, ServerAddress, SignError, SignFuture};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::live::{LiveAnchor, LiveFrame, LiveResource, OpsFrame, PreviewOp};
 use tilo_server_protocol::web::{PageHost, PageHostAddress};
@@ -502,13 +502,13 @@ async fn post_decoded<T: serde::de::DeserializeOwned>(
 }
 
 /// The host `address` names (`hostInfo().address`, JSON).
-pub(crate) fn host_at(address: &str) -> Result<Host, JsError> {
+pub(crate) fn server_at(address: &str) -> Result<ServerAddress, JsError> {
     Ok(dialled(serde_json::from_str(address).map_err(js_error)?))
 }
 
 /// The host at `address`, as the peer dials it.
-fn dialled(address: PageHostAddress) -> Host {
-    Host::published(&address.into())
+fn dialled(address: PageHostAddress) -> ServerAddress {
+    ServerAddress::published(&address.into())
 }
 
 /// What the host publishes before certification: its certificate. Resolves
@@ -559,7 +559,7 @@ pub async fn certify_device(
             .map_err(|_| js_error("a pairing invite is 16 bytes"))?,
         None => [0; 16],
     };
-    let host = host_at(&address)?;
+    let host = server_at(&address)?;
     let (cert, host_cert, label) =
         tilo_server_client::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
@@ -1094,14 +1094,14 @@ pub struct PairingHost(PairingReach);
 /// Where a page's pairing commands reach the host.
 enum PairingReach {
     /// Over the session the page already holds with the host.
-    Session(tilo_session_client::SessionMemberHost),
+    Session(tilo_session_client::SessionMemberServer),
     /// From an endpoint bound for pairing alone: the page holds no session
     /// with this host yet. Boxed: it carries its endpoint's state, where the
     /// session is a handle.
     Own(Box<tilo_server_client::MemberApprover>),
 }
 
-impl tilo_server_client::MemberHost for PairingReach {
+impl tilo_server_client::MemberServer for PairingReach {
     async fn ask(
         &self,
         approval: &tilo_server_protocol::certify::MemberApproval,
@@ -1124,7 +1124,7 @@ impl PairingHost {
     #[wasm_bindgen(constructor)]
     pub fn new(address: &str) -> Result<Self, JsError> {
         Ok(Self(PairingReach::Own(Box::new(
-            tilo_server_client::MemberApprover::new(host_at(address)?),
+            tilo_server_client::MemberApprover::new(server_at(address)?),
         ))))
     }
 
@@ -2090,7 +2090,7 @@ impl WasmPeer {
     /// person's root device key the page holds: over this session, with no
     /// connection of its own.
     pub fn pairing(&self) -> PairingHost {
-        PairingHost(PairingReach::Session(tilo_session_client::member_host(
+        PairingHost(PairingReach::Session(tilo_session_client::member_server(
             &self.handle,
         )))
     }
@@ -2117,9 +2117,9 @@ impl WasmPeer {
     #[wasm_bindgen(js_name = pushKey)]
     pub async fn push_key(&self, device_key: JsValue) -> Result<Vec<u8>, JsError> {
         let (signer, device) = self.question_signer(&device_key)?;
-        let host = tilo_session_client::member_host(&self.handle);
+        let host = tilo_session_client::member_server(&self.handle);
         tilo_server_client::questions::MemberQuestions {
-            host: &host,
+            server: &host,
             root: &signer,
             device: device.as_ref(),
         }
@@ -2151,9 +2151,9 @@ impl WasmPeer {
         };
         subscription.check().map_err(js_error)?;
         let (signer, device) = self.question_signer(&device_key)?;
-        let host = tilo_session_client::member_host(&self.handle);
+        let host = tilo_session_client::member_server(&self.handle);
         tilo_server_client::questions::MemberQuestions {
-            host: &host,
+            server: &host,
             root: &signer,
             device: device.as_ref(),
         }

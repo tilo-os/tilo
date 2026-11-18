@@ -28,7 +28,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::{
-    Carrier, Host, MemberApprover, answer_pairing, certify, pending_pairings,
+    Carrier, MemberApprover, ServerAddress, answer_pairing, certify, pending_pairings,
 };
 use tilo_server_protocol::Envelope;
 use tilo_server_protocol::voice::VoiceGrant;
@@ -122,7 +122,7 @@ impl Ada {
     /// A new device of Ada's, reaching the host as `host` says, certified by
     /// her root through the host: it shows its pairing code, and the laptop
     /// compares it and approves, dialling the host the same way.
-    async fn certified(&self, host: &Host) -> (SigningKey, DeviceCert, DeviceCert) {
+    async fn certified(&self, host: &ServerAddress) -> (SigningKey, DeviceCert, DeviceCert) {
         let user = self.root.verifying_key().to_bytes();
         let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
@@ -223,7 +223,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
     // Until the session first reaches the host it has no endpoint to ask
     // from, and says so.
     let waiting = wait_for("the phone to wait for the root", || async {
-        pending_pairings(&tilo_session_client::member_host(&session), &ada.root)
+        pending_pairings(&tilo_session_client::member_server(&session), &ada.root)
             .await
             .ok()?
             .pop()
@@ -231,7 +231,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
     .await;
     assert_eq!(waiting.pairing_code, shown, "the person compares codes");
     let issued = answer_pairing(
-        &tilo_session_client::member_host(&session),
+        &tilo_session_client::member_server(&session),
         &ada.root,
         waiting.request_digest,
         true,
@@ -247,7 +247,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
         ada.host_device.cert.device_public_key
     );
     assert!(
-        pending_pairings(&tilo_session_client::member_host(&session), &ada.root)
+        pending_pairings(&tilo_session_client::member_server(&session), &ada.root)
             .await
             .unwrap()
             .is_empty()
@@ -556,7 +556,7 @@ impl Ada {
     /// it. Every WebTransport session a device opens is a QUIC connection
     /// from a socket of its own, so the count is the sessions the device
     /// made: what a browser's network process holds a socket for.
-    async fn counted(&self) -> (Host, Arc<AtomicUsize>) {
+    async fn counted(&self) -> (ServerAddress, Arc<AtomicUsize>) {
         use tokio::net::UdpSocket;
         let served = &self.host;
         let listens = served.web.addr;
@@ -659,7 +659,7 @@ async fn a_page_in_a_session_asks_its_server_over_the_one_link_it_keeps() {
         page_key,
         Arc::new(MemoryPeerStore::default()),
     );
-    let asks = tilo_session_client::member_host(&session);
+    let asks = tilo_session_client::member_server(&session);
     // Until the session first reaches its server it has no way to ask; the
     // first ask answered is the one that dials the link.
     wait_for("the page's first ask to be answered", || async {

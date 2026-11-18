@@ -79,8 +79,8 @@ pub struct OnServer {
 
 impl OnServer {
     /// The relay as a person's devices and pages reach it over iroh.
-    pub fn server_host(&self) -> tilo_server_client::Host {
-        tilo_server_client::Host::at(self.hosted.server.node_addr())
+    pub fn server_host(&self) -> tilo_server_client::ServerAddress {
+        tilo_server_client::ServerAddress::at(self.hosted.server.node_addr())
     }
 }
 
@@ -487,7 +487,7 @@ pub async fn enter_page(
     let address = info.address.expect("the server takes device sessions");
     let session = tilo_session_client::start_session(
         tilo_session_client::PeerConfig {
-            host: tilo_server_client::Host::published(&address),
+            host: tilo_server_client::ServerAddress::published(&address),
             cert: page.cert.clone(),
             host_cert: info.host_cert,
             revocations: tilo_user_identity::RevocationList::new(),

@@ -1,9 +1,9 @@
 //! What a person's root gives their devices, and the pairing ceremony their
-//! host carries between them: a new device asks to be certified
+//! server carries between them: a new device asks to be certified
 //! ([`certify`](crate::certify)), a root-holding device lists the waiting
 //! requests ([`pending_pairings`]) and answers one ([`answer_pairing`]).
 //!
-//! Only the root signs: the host carries and checks, and hands nothing on
+//! Only the root signs: the server carries and checks, and hands nothing on
 //! that a root did not sign for exactly that request.
 
 #[cfg(feature = "dial")]
@@ -21,7 +21,7 @@ use tilo_user_identity::{
 use tilo_user_identity::{RevocationList, issue_device_cert_async};
 
 #[cfg(feature = "dial")]
-use crate::certify::MemberHost;
+use crate::certify::MemberServer;
 use crate::error::CertifyError;
 use crate::https::{self, HttpClient};
 use crate::signer::DeviceSigner;
@@ -215,7 +215,7 @@ pub async fn issue_agent_grant(
     Ok(cert)
 }
 
-/// Have `root` make `stand_in_public_key`, a key the person's host holds, the
+/// Have `root` make `stand_in_public_key`, a key the person's server holds, the
 /// person's stand-in approver for `lifetime_ns`: while the root lives in one
 /// tab, it certifies a new member browser of the person a device of theirs
 /// asked for, and nothing else. The root revokes it once they keep their root
@@ -267,7 +267,7 @@ pub async fn issue_stand_in(
 }
 
 /// Have `root` revoke `device_public_key` as of `at_ns`, for `reason`: the
-/// entry every host and device refuses that key from then on with, while what
+/// entry every server and device refuses that key from then on with, while what
 /// it signed before stays valid. A stand-in approver is revoked this way once
 /// the person keeps their root with a passkey.
 ///
@@ -340,39 +340,39 @@ pub(crate) async fn member_approval_as(
 
 #[cfg(feature = "dial")]
 async fn approve(
-    host: &impl MemberHost,
+    server: &impl MemberServer,
     root: &dyn DeviceSigner,
     request: ApproverRequest,
 ) -> Result<ApproverReply, CertifyError> {
     let approval = member_approval(root, request).await?;
-    match host.ask(&approval).await? {
+    match server.ask(&approval).await? {
         ApproverReply::Refused { reason } => Err(CertifyError::Denied(reason)),
         reply => Ok(reply),
     }
 }
 
-/// The requests of new devices waiting at `host` for `root` (a
+/// The requests of new devices waiting at `server` for `root` (a
 /// member's root) to answer, each showing its pairing code.
 ///
 /// # Errors
 ///
-/// [`CertifyError::Transport`] when the host is not reached, or
+/// [`CertifyError::Transport`] when the server is not reached, or
 /// [`CertifyError::Denied`] when it refuses.
 #[cfg(feature = "dial")]
 pub async fn pending_pairings(
-    host: &impl MemberHost,
+    server: &impl MemberServer,
     root: &dyn DeviceSigner,
 ) -> Result<Vec<tilo_server_protocol::certify::PendingCertification>, CertifyError> {
-    match approve(host, root, ApproverRequest::ListPending).await? {
+    match approve(server, root, ApproverRequest::ListPending).await? {
         ApproverReply::Pending(pending) => Ok(pending),
         _ => Err(CertifyError::Denied(
-            "the host answered something else".into(),
+            "the server answered something else".into(),
         )),
     }
 }
 
 /// [`pending_pairings`] once they are other than `known`, the request digests
-/// the caller holds: the host answers as a new device asks for `root` or one
+/// the caller holds: the server answers as a new device asks for `root` or one
 /// is answered, or with what waits after
 /// [`AWAIT_PENDING_NS`](tilo_server_protocol::certify::AWAIT_PENDING_NS).
 ///
@@ -381,35 +381,35 @@ pub async fn pending_pairings(
 /// As [`pending_pairings`].
 #[cfg(feature = "dial")]
 pub async fn next_pairings(
-    host: &impl MemberHost,
+    server: &impl MemberServer,
     root: &dyn DeviceSigner,
     known: Vec<[u8; 32]>,
 ) -> Result<Vec<tilo_server_protocol::certify::PendingCertification>, CertifyError> {
-    match approve(host, root, ApproverRequest::AwaitPending { known }).await? {
+    match approve(server, root, ApproverRequest::AwaitPending { known }).await? {
         ApproverReply::Pending(pending) => Ok(pending),
         _ => Err(CertifyError::Denied(
-            "the host answered something else".into(),
+            "the server answered something else".into(),
         )),
     }
 }
 
-/// Answer the pending request `request_digest` at `host`:
+/// Answer the pending request `request_digest` at `server`:
 /// approved, `root` certifies the device it names as a browser of that root,
 /// and the certificate it issued is answered for the root's own record.
 ///
 /// # Errors
 ///
-/// [`CertifyError::Denied`] when the request is gone or the host refuses, and
+/// [`CertifyError::Denied`] when the request is gone or the server refuses, and
 /// [`CertifyError::Transport`] when it is not reached.
 #[cfg(feature = "dial")]
 pub async fn answer_pairing(
-    host: &impl MemberHost,
+    server: &impl MemberServer,
     root: &dyn DeviceSigner,
     request_digest: [u8; 32],
     approved: bool,
 ) -> Result<Option<DeviceCert>, CertifyError> {
     let decision = if approved {
-        let pending = pending_pairings(host, root).await?;
+        let pending = pending_pairings(server, root).await?;
         let Some(found) = pending
             .iter()
             .find(|entry| entry.request_digest == request_digest)
@@ -436,12 +436,12 @@ pub async fn answer_pairing(
         ApproverDecision::Issue(cert) => Some(cert.clone()),
         _ => None,
     };
-    decide_pairing(host, root, request_digest, issued.clone())
+    decide_pairing(server, root, request_digest, issued.clone())
         .await
         .map(|()| issued)
 }
 
-/// Answer the pending request `request_digest` at `host`, as
+/// Answer the pending request `request_digest` at `server`, as
 /// `approver`: with `cert`, one the person's root already issued for exactly
 /// that request, or turned away without one.
 ///
@@ -450,7 +450,7 @@ pub async fn answer_pairing(
 /// As [`answer_pairing`].
 #[cfg(feature = "dial")]
 pub async fn decide_pairing(
-    host: &impl MemberHost,
+    server: &impl MemberServer,
     approver: &dyn DeviceSigner,
     request_digest: [u8; 32],
     cert: Option<DeviceCert>,
@@ -460,7 +460,7 @@ pub async fn decide_pairing(
         None => ApproverDecision::Deny,
     };
     approve(
-        host,
+        server,
         approver,
         ApproverRequest::Decide {
             request_digest,
@@ -472,11 +472,11 @@ pub async fn decide_pairing(
 }
 
 /// Certify the device behind `signer` with the root the page holds, for the
-/// host at `client`: its certificate must be a host of the same root.
+/// server at `client`: its certificate must be a server of the same root.
 ///
 /// # Errors
 ///
-/// [`CertifyError::Transport`] when the host is not reached,
+/// [`CertifyError::Transport`] when the server is not reached,
 /// [`CertifyError::Denied`] when it is not a device of this root, or the errors
 /// of [`issue_device_cert`].
 pub async fn certify_with_root(
@@ -494,7 +494,7 @@ pub async fn certify_with_root(
 
 fn check_host(host_cert: &DeviceCert, user_public_key: [u8; 32]) -> Result<(), CertifyError> {
     verify_device_cert_at(host_cert, tilo_clock::unix_now_ns())
-        .map_err(|error| CertifyError::Denied(format!("host certificate refused: {error}")))?;
+        .map_err(|error| CertifyError::Denied(format!("server certificate refused: {error}")))?;
     if host_cert.user_public_key != user_public_key || !host_cert.capabilities.can_own_workspaces {
         return Err(CertifyError::Denied(
             "the certificate is not a device of this person".into(),
@@ -886,7 +886,7 @@ mod tests {
         ));
     }
 
-    /// Revoking the host's stand-in once the person keeps their root with a
+    /// Revoking the server's stand-in once the person keeps their root with a
     /// passkey refuses what it would approve from then on, and keeps every
     /// device it approved before a device of theirs.
     #[tokio::test]

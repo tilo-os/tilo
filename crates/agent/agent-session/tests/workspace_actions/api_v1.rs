@@ -735,7 +735,7 @@ impl Holder {
             link: tilo_server_client::login::PairingLink::parse(&code).unwrap(),
             agent: agent.to_owned(),
             label: "Ada's laptop".to_owned(),
-            host: on_server.server_host(),
+            server: on_server.server_host(),
             cert: laptop.cert.clone(),
             host_cert: on_server.host.cert.clone(),
         };

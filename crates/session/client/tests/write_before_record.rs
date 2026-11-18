@@ -24,7 +24,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
@@ -40,7 +40,7 @@ fn new_key() -> SigningKey {
 
 /// A page of `name` entering `workspace` through its entry.
 async fn arrive(
-    host: Host,
+    host: ServerAddress,
     host_cert: &tilo_user_identity::DeviceCert,
     workspace: &str,
     name: &str,
@@ -108,7 +108,8 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
         .unwrap();
     let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
-    let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
+    let page_host =
+        || ServerAddress::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let chat = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: lounge.workspace.clone(),

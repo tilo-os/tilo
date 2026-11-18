@@ -288,7 +288,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     host.server.shutdown().await;
 
     let store = std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default());
-    let start = |host: tilo_server_client::Host| {
+    let start = |host: tilo_server_client::ServerAddress| {
         start_peer_with_store(
             host,
             browser.cert.clone(),

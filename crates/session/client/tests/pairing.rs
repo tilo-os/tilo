@@ -28,8 +28,8 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_server_client::CertificationOutcome;
 use tilo_server_client::invite::guest_certificate;
-use tilo_server_client::{CertifyError, Host, answer_pairing, certify, pending_pairings};
-use tilo_server_client::{MemberApprover, MemberHost as _};
+use tilo_server_client::{CertifyError, ServerAddress, answer_pairing, certify, pending_pairings};
+use tilo_server_client::{MemberApprover, MemberServer as _};
 use tilo_server_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, MemberApproval, PendingCertification,
 };
@@ -57,7 +57,7 @@ struct Asking {
     answer: JoinHandle<Result<(DeviceCert, DeviceCert, String), CertifyError>>,
 }
 
-fn ask_to_pair(host: &Host, person: [u8; 32], label: &str) -> Asking {
+fn ask_to_pair(host: &ServerAddress, person: [u8; 32], label: &str) -> Asking {
     let key = new_key();
     let (shown, code) = tokio::sync::oneshot::channel();
     let answer = tokio::spawn({

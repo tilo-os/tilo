@@ -30,7 +30,7 @@ use fs_protocol::{TreeChunk, TreeChunks};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_fs::namespace::{Namespace, ROOT_INO};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
@@ -80,7 +80,7 @@ fn disk_bytes(path: &std::path::Path) -> u64 {
 }
 
 async fn arrive(
-    host: Host,
+    host: ServerAddress,
     host_cert: &tilo_user_identity::DeviceCert,
     workspace: &str,
     name: &str,
@@ -284,7 +284,7 @@ struct Folder<S> {
     owner_device: super::support::Device,
     company: tilo_server_session::workspaces::WorkspaceSummary,
     /// How a page reaches the host.
-    page: Host,
+    page: ServerAddress,
 }
 
 async fn folder() -> Folder<impl Sized> {
@@ -312,7 +312,7 @@ async fn folder() -> Folder<impl Sized> {
         .unwrap();
     let address = server.server.node_addr();
     let via = address.relay_urls().next().cloned();
-    let reach = || Host::through(iroh::EndpointAddr::new(address.id), via.clone());
+    let reach = || ServerAddress::through(iroh::EndpointAddr::new(address.id), via.clone());
     Folder {
         page: reach(),
         server,

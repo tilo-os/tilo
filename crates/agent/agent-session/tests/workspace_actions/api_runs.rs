@@ -298,7 +298,7 @@ async fn every_run_listed() {
         asked: Arc::clone(&ada_at_page.asked),
     };
     let mut questions = MemberQuestions {
-        host: &host,
+        server: &host,
         root: &ada,
         device: None,
     };

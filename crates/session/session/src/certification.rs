@@ -104,9 +104,9 @@ enum Route {
     /// Another of the person's devices found it and proposed its certificate here.
     Device { from: DeviceId, ask: Box<Ask> },
     /// It opened this device's pairing link, and waits at the host the link names.
-    Host {
+    ServerAddress {
         origin: String,
-        host: tilo_server_client::Host,
+        host: tilo_server_client::ServerAddress,
         person: [u8; 32],
         device: [u8; 32],
     },
@@ -117,7 +117,7 @@ impl Asking {
     pub(crate) const fn device(&self) -> [u8; 32] {
         match &self.route {
             Route::Device { ask, .. } => ask.cert.device_public_key,
-            Route::Host { device, .. } => *device,
+            Route::ServerAddress { device, .. } => *device,
         }
     }
 }
@@ -432,7 +432,7 @@ fn answer(
     };
     let (from, ask) = match asking.route {
         Route::Device { from, ask } => (from, ask),
-        Route::Host { host, person, .. } => {
+        Route::ServerAddress { host, person, .. } => {
             answer_at_host(&local, host, person, digest, approve)?;
             return Ok(Some(asking.label));
         }
@@ -467,7 +467,7 @@ fn answer(
 /// Blocks on the host.
 fn answer_at_host(
     local: &DeviceId,
-    host: tilo_server_client::Host,
+    host: tilo_server_client::ServerAddress,
     person: [u8; 32],
     digest: [u8; 32],
     approve: bool,
@@ -550,7 +550,7 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
         .await
         .map_err(|error| error.to_string())?;
         let address = info.address.ok_or("the host takes no device connections")?;
-        let host = tilo_server_client::Host::published(&address);
+        let host = tilo_server_client::ServerAddress::published(&address);
         let approver = tilo_server_client::MemberApprover::new(host.clone());
         let mut known = Vec::new();
         let waited = loop {
@@ -579,7 +579,7 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
 fn follow_host(
     local: &DeviceId,
     origin: &str,
-    host: &tilo_server_client::Host,
+    host: &tilo_server_client::ServerAddress,
     person: [u8; 32],
     pending: Vec<tilo_server_protocol::certify::PendingCertification>,
 ) {
@@ -587,7 +587,9 @@ fn follow_host(
     with_state(local, |state| {
         let digests: Vec<[u8; 32]> = pending.iter().map(|entry| entry.request_digest).collect();
         state.asking.retain(|asking| match &asking.route {
-            Route::Host { origin: at, .. } => at != origin || digests.contains(&asking.digest),
+            Route::ServerAddress { origin: at, .. } => {
+                at != origin || digests.contains(&asking.digest)
+            }
             Route::Device { .. } => true,
         });
         for entry in pending {
@@ -608,7 +610,7 @@ fn follow_host(
                 code: entry.pairing_code,
                 via: String::new(),
                 asked_at_ms,
-                route: Route::Host {
+                route: Route::ServerAddress {
                     origin: origin.to_owned(),
                     host: host.clone(),
                     person,

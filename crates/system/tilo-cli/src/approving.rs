@@ -19,7 +19,7 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use tilo_server_client::questions::{MemberQuestions, QuestionHost as _};
+use tilo_server_client::questions::{MemberQuestions, QuestionServer as _};
 use tilo_server_protocol::certify::ConfirmationAnswer;
 
 /// How often the server's question list is read while a command is under way.

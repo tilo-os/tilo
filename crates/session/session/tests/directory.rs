@@ -44,7 +44,7 @@ use tilo_desktop_model::{
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::workspaces::RemoveMemberRequest;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_server_protocol::directory::{DirectoryEntry, DirectoryPage, Face, entry_path};
 use tilo_server_protocol::workspaces::Role;
 use tilo_session::{Options, Session};
@@ -1042,7 +1042,7 @@ impl LoungeHost {
             let _entered = runtime.enter();
             let page = tilo_session_client::start_session(
                 PeerConfig {
-                    host: Host::at(self.server.node_addr()),
+                    host: ServerAddress::at(self.server.node_addr()),
                     cert: self.page_device.clone(),
                     host_cert: self.host_cert.clone(),
                     revocations: tilo_user_identity::RevocationList::new(),

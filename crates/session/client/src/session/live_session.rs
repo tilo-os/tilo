@@ -320,7 +320,7 @@ pub(crate) struct LiveSessionJoin {
     /// The dialer the session reaches its host through.
     pub dialer: Arc<Dialer>,
     /// Where the live session is served, over the session's carrier.
-    pub host: tilo_server_client::Host,
+    pub host: tilo_server_client::ServerAddress,
     /// Where the outcome goes.
     pub commands: tokio::sync::mpsc::WeakUnboundedSender<Command>,
     /// This device's certificate, presented as the grant.

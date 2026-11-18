@@ -24,8 +24,8 @@ use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::{write_public_key, write_signing_key};
-use tilo_server_client::questions::{MemberQuestions, QuestionHost};
-use tilo_server_client::{Host, MemberApprover};
+use tilo_server_client::questions::{MemberQuestions, QuestionServer};
+use tilo_server_client::{MemberApprover, ServerAddress};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::root_envelope::{RecoveryKey, RootEnvelope};
 
@@ -253,10 +253,10 @@ async fn next(
         let cert: tilo_user_identity::DeviceCert =
             serde_json::from_slice(&std::fs::read(device.join(DEVICE_CERT))?)
                 .context("read the device's certificate")?;
-        let member = MemberApprover::new(Host::at(host));
+        let member = MemberApprover::new(ServerAddress::at(host));
         let seen = {
             let mut questions = MemberQuestions {
-                host: &member,
+                server: &member,
                 root: &key,
                 device: Some(&cert),
             };
@@ -273,10 +273,10 @@ async fn next(
                 paths.user_privkey.display()
             )
         })?;
-    let member = MemberApprover::new(Host::at(host));
+    let member = MemberApprover::new(ServerAddress::at(host));
     let seen = {
         let mut questions = MemberQuestions {
-            host: &member,
+            server: &member,
             root: &root_key,
             device: None,
         };
@@ -288,7 +288,7 @@ async fn next(
 
 /// Watch the host until a question arrives, or `within` passes.
 async fn wait(
-    questions: &mut impl QuestionHost,
+    questions: &mut impl QuestionServer,
     answer: Answer,
     within: Duration,
 ) -> anyhow::Result<u8> {

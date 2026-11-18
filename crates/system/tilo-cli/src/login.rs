@@ -296,7 +296,7 @@ fn invitation_said(error: &CertifyError) -> String {
 fn link_said(error: &LinkError) -> String {
     match error {
         LinkError::Unavailable(_) | LinkError::Refused(_) => UNREACHED.to_owned(),
-        LinkError::HostChanged => {
+        LinkError::ServerChanged => {
             "This workspace has a new home. Ask the person for a new code from their Tilo tab \
              (Set up with your agent)."
                 .to_owned()
@@ -396,7 +396,7 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
         link,
         agent: device.agent.clone(),
         label: device.label.clone(),
-        host,
+        server: host,
         cert,
         host_cert,
     };
@@ -406,9 +406,9 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
 
 /// Where the server `device` reaches is dialed: at the address its invitation signed, or at
 /// the one its web origin publishes.
-pub(crate) async fn server_of(device: &Device) -> Result<tilo_server_client::Host> {
+pub(crate) async fn server_of(device: &Device) -> Result<tilo_server_client::ServerAddress> {
     if let Some(address) = &device.server_address {
-        return Ok(tilo_server_client::Host::published(address));
+        return Ok(tilo_server_client::ServerAddress::published(address));
     }
     let server_web = Origin::new(&http(), &device.host_origin);
     let info = https::host_info(&server_web).await.map_err(|error| {
@@ -417,7 +417,7 @@ pub(crate) async fn server_of(device: &Device) -> Result<tilo_server_client::Hos
     })?;
     info.address
         .as_ref()
-        .map(tilo_server_client::Host::published)
+        .map(tilo_server_client::ServerAddress::published)
         .ok_or_else(|| anyhow!(UNREACHED))
 }
 
@@ -446,7 +446,7 @@ fn signed_over_iroh(device: &Device, address: &ServerAddress) -> Result<SignIn> 
         },
         agent: device.agent.clone(),
         label: device.label.clone(),
-        host: tilo_server_client::Host::published(address),
+        server: tilo_server_client::ServerAddress::published(address),
         cert,
         host_cert: server_cert,
     })
@@ -1272,7 +1272,7 @@ pub fn login_held(
         let dialed = info
             .address
             .as_ref()
-            .map(tilo_server_client::Host::published)
+            .map(tilo_server_client::ServerAddress::published)
             .ok_or_else(|| anyhow!("{origin} takes no device connections"))?;
         let key = SigningKey::from_bytes(&rand::random());
         let label = label(&agent.name, &hostname());
@@ -1288,7 +1288,7 @@ pub fn login_held(
             link: unentered,
             agent: agent.name.clone(),
             label: label.clone(),
-            host: dialed,
+            server: dialed,
             cert: cert.clone(),
             host_cert: info.host_cert.clone(),
         };
@@ -1680,7 +1680,7 @@ mod tests {
             CertifyError::Transport(LinkError::Unavailable("connect error".into())),
             CertifyError::Transport(LinkError::Refused("403".into())),
             CertifyError::Transport(LinkError::PeerVersion { theirs: 99 }),
-            CertifyError::Transport(LinkError::HostChanged),
+            CertifyError::Transport(LinkError::ServerChanged),
             CertifyError::Transport(LinkError::Sign("connect error".into())),
             CertifyError::Transport(LinkError::DeviceRevoked),
             CertifyError::Codec("bad frame".into()),

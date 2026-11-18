@@ -43,7 +43,7 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_server_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
@@ -80,7 +80,7 @@ struct WorkspaceService {
     owner: ed25519_dalek::SigningKey,
     host_cert: DeviceCert,
     /// The service's iroh endpoint: how its pages reach its session.
-    host: Host,
+    host: ServerAddress,
     /// The runtime the page and the service's routes run on: the host's own session and its HTTP
     /// clients belong to a runtime, and the test drives them from here.
     runtime: tokio::runtime::Runtime,
@@ -215,7 +215,7 @@ impl WorkspaceService {
             workspace,
             owner,
             host_cert: info.host_cert,
-            host: Host::at(
+            host: ServerAddress::at(
                 info.address
                     .expect("the service publishes its iroh endpoint")
                     .endpoint_addr,

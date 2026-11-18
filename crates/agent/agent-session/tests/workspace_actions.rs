@@ -235,7 +235,7 @@ use tilo_actions::{
 };
 use tilo_agent_session::{Replica, ReplicaActor, Seed, record_provider};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::harness::hosted::{Hosted, Options};

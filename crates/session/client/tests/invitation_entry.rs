@@ -576,7 +576,7 @@ async fn an_invitation_opens_from_a_device_that_reaches_its_server_only_through_
         .parse::<iroh_base::RelayUrl>()
         .expect("the invitation names the server's packet relay");
     let through_relay =
-        tilo_server_client::Host::published(&tilo_server_protocol::web::HostAddress {
+        tilo_server_client::ServerAddress::published(&tilo_server_protocol::web::HostAddress {
             endpoint_addr: server.endpoint_addr.clone(),
             relay_url: Some(relay.to_string()),
             web: None,

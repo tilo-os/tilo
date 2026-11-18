@@ -343,7 +343,7 @@ async fn through_entry(person: &Person, site: &str) -> Result<()> {
         .map_err(|refused| anyhow!(refused.message))?;
         let session = tilo_session_client::start_session(
             tilo_session_client::PeerConfig {
-                host: tilo_server_client::Host::published(address),
+                host: tilo_server_client::ServerAddress::published(address),
                 cert,
                 host_cert: info.host_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),

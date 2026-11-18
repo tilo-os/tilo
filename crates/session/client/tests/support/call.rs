@@ -381,8 +381,9 @@ impl GovernedCall {
     }
 
     /// The host as a browser session reaches it.
-    pub fn iroh(&self) -> tilo_server_client::Host {
-        tilo_server_client::Host::at(self.server.node_addr()).with_web(Some(self.web.link.clone()))
+    pub fn iroh(&self) -> tilo_server_client::ServerAddress {
+        tilo_server_client::ServerAddress::at(self.server.node_addr())
+            .with_web(Some(self.web.link.clone()))
     }
 
     /// A raw session the device behind `cert` and `key` dials from its own

@@ -33,7 +33,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use tilo_content::ContentStore;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 
 use tilo_content::WorkspaceStores;
 use tilo_server_protocol::agents::AgentStatus;
@@ -62,7 +62,7 @@ pub type CatalogueFactory = Arc<dyn Fn() -> AppCatalogue + Send + Sync>;
 /// How agents reach the host they run on.
 #[derive(Clone)]
 pub struct HostEndpoint {
-    pub host: Host,
+    pub host: ServerAddress,
     /// Its certificate.
     pub host_cert: DeviceCert,
 }
@@ -73,7 +73,7 @@ impl HostEndpoint {
     #[must_use]
     pub fn iroh(addr: iroh_base::EndpointAddr, host_cert: DeviceCert) -> Self {
         Self {
-            host: Host::at(addr),
+            host: ServerAddress::at(addr),
             host_cert,
         }
     }

@@ -1,9 +1,9 @@
-//! How a device reaches its host for one thing it asks: the one boundary every
+//! How a device reaches its server for one thing it asks: the one boundary every
 //! dialler goes through, whatever the device runs on.
 //!
-//! A device asks its host for a few things, each a conversation of its own
+//! A device asks its server for a few things, each a conversation of its own
 //! ([`Purpose`]): the session, certification, and a workspace's live session.
-//! [`Dialer::link`] opens one [`Link`] for one of them, over the host's
+//! [`Dialer::link`] opens one [`Link`] for one of them, over the server's
 //! [`Carrier`]:
 //!
 //! - **iroh** ([`Carrier::Direct`], [`Carrier::Relay`]) — a native device's:
@@ -11,7 +11,7 @@
 //!   native build has it;
 //! - **WebTransport** ([`Carrier::WebTransport`]) — a page's, with the
 //!   browser's own transport (`tilo_net::webtransport`): a session at the
-//!   purpose's path on the host's listener ([`WebLink`]). A native device
+//!   purpose's path on the server's listener ([`WebLink`]). A native device
 //!   can dial it too, which is how the page's way is tested.
 //!
 //! Over iroh the endpoint's TLS says who the device is; over WebTransport the
@@ -28,19 +28,19 @@ use tilo_server_protocol::web::{
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::LinkError;
-use crate::host::{Carrier, Host};
+use crate::host::{Carrier, ServerAddress};
 
 /// How long a dial waits for a connection before it is retried.
 ///
-/// A host that is down answers nothing: its stopped addresses drop the
+/// A server that is down answers nothing: its stopped addresses drop the
 /// packets silently (the UDP socket is not connected, so the port's refusal
 /// never reaches it), and a relay carries nothing to an endpoint it does not
 /// have. A dial would otherwise wait out QUIC's 30-second idle timeout, which
 /// a session spends on every attempt. A working handshake completes within a
-/// few round trips, so ten seconds is a stopped host, not a slow one.
+/// few round trips, so ten seconds is a stopped server, not a slow one.
 const DIAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// One thing a device asks its host, on a link of its own.
+/// One thing a device asks its server, on a link of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Purpose {
     /// The session: its first stream is the handshake, then the session.
@@ -52,7 +52,7 @@ pub enum Purpose {
 }
 
 impl Purpose {
-    /// Where a WebTransport session for it opens on the host's listener.
+    /// Where a WebTransport session for it opens on the server's listener.
     #[must_use]
     pub const fn path(self) -> &'static str {
         match self {
@@ -73,17 +73,17 @@ impl Purpose {
     }
 }
 
-/// Opens links to one host, over its carrier.
+/// Opens links to one server, over its carrier.
 ///
 /// Over iroh it keeps the device's endpoint, bound on the first link and
 /// reused for every link after (and by the live session, [`Self::endpoint`]):
-/// a device speaks to its host as one endpoint. A device that already runs
+/// a device speaks to its server as one endpoint. A device that already runs
 /// an endpoint under its key lends it ([`Self::from_endpoint`]), so it never
 /// binds a second one: a server holds one connection per endpoint id and
 /// drops the older of two, which cut the other endpoint off. Over
 /// WebTransport each link is a session of its own.
 pub struct Dialer {
-    host: Host,
+    server: ServerAddress,
     /// The key the iroh endpoint speaks as; a fresh one when `None`.
     key: Option<[u8; 32]>,
     endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
@@ -93,41 +93,41 @@ pub struct Dialer {
 }
 
 impl Dialer {
-    /// Links to `host`, speaking over iroh as `key` (a fresh key when `None`).
+    /// Links to `server`, speaking over iroh as `key` (a fresh key when `None`).
     #[must_use]
-    pub fn new(host: Host, key: Option<[u8; 32]>) -> Self {
+    pub fn new(server: ServerAddress, key: Option<[u8; 32]>) -> Self {
         Self {
-            host,
+            server,
             key,
             endpoint: tokio::sync::OnceCell::new(),
             lent: false,
         }
     }
 
-    /// Links to `host` from `endpoint`, the one this device already runs:
+    /// Links to `server` from `endpoint`, the one this device already runs:
     /// its links are connections of that endpoint, and closing the dialer
     /// leaves it running.
     #[must_use]
-    pub fn from_endpoint(host: Host, endpoint: iroh::Endpoint) -> Self {
+    pub fn from_endpoint(server: ServerAddress, endpoint: iroh::Endpoint) -> Self {
         Self {
-            host,
+            server,
             key: None,
             endpoint: tokio::sync::OnceCell::new_with(Some(endpoint)),
             lent: true,
         }
     }
 
-    /// The host this dialer reaches.
+    /// The server this dialer reaches.
     #[must_use]
-    pub const fn host(&self) -> &Host {
-        &self.host
+    pub const fn server(&self) -> &ServerAddress {
+        &self.server
     }
 
     /// Open a link for `purpose`.
     ///
     /// # Errors
     ///
-    /// [`LinkError::Unavailable`] when the host is not reached, or names no
+    /// [`LinkError::Unavailable`] when the server is not reached, or names no
     /// way to reach it over its carrier.
     pub async fn link(&self, purpose: Purpose) -> Result<Link, LinkError> {
         self.link_offering(purpose, &[]).await
@@ -144,10 +144,10 @@ impl Dialer {
         purpose: Purpose,
         protocols: &[&str],
     ) -> Result<Link, LinkError> {
-        match self.host.carrier() {
+        match self.server.carrier() {
             Carrier::WebTransport => {
-                let web = self.host.web().ok_or_else(|| {
-                    LinkError::Unavailable("the host takes no WebTransport sessions".into())
+                let web = self.server.web().ok_or_else(|| {
+                    LinkError::Unavailable("the server takes no WebTransport sessions".into())
                 })?;
                 web_session(web, purpose, protocols)
                     .await
@@ -162,14 +162,14 @@ impl Dialer {
                 let endpoint = self.endpoint().await?;
                 let connection = match n0_future::time::timeout(
                     DIAL_DEADLINE,
-                    endpoint.connect(self.host.addr(), alpn),
+                    endpoint.connect(self.server.addr(), alpn),
                 )
                 .await
                 {
                     Ok(connection) => connection.map_err(|error| connect_error(&error, alpn))?,
                     Err(_) => {
                         return Err(LinkError::Unavailable(
-                            "the host did not answer the dial in time".into(),
+                            "the server did not answer the dial in time".into(),
                         ));
                     }
                 };
@@ -182,15 +182,15 @@ impl Dialer {
     ///
     /// # Errors
     ///
-    /// As [`Host::bind`].
+    /// As [`ServerAddress::bind`].
     pub async fn endpoint(&self) -> Result<iroh::Endpoint, LinkError> {
         self.endpoint
-            .get_or_try_init(|| self.host.bind(self.key))
+            .get_or_try_init(|| self.server.bind(self.key))
             .await
             .cloned()
     }
 
-    /// Let go of the host: close the endpoint, waiting for the host to hear
+    /// Let go of the server: close the endpoint, waiting for the server to hear
     /// it; a lent endpoint stays open for the device that runs it. Links
     /// over WebTransport close on their own.
     pub async fn close(&self) {
@@ -237,7 +237,7 @@ fn exported(connection: &iroh::endpoint::Connection) -> Option<[u8; 32]> {
 }
 
 /// Why an iroh dial failed. TLS `no_application_protocol` (alert 120) means
-/// the host is reached but serves nothing at `alpn`, which says more than
+/// the server is reached but serves nothing at `alpn`, which says more than
 /// the transport's words.
 fn connect_error(error: &iroh::endpoint::ConnectError, alpn: &[u8]) -> LinkError {
     use iroh::endpoint::{ConnectError, ConnectingError, ConnectionError, TransportErrorCode};
@@ -261,7 +261,7 @@ fn connect_error(error: &iroh::endpoint::ConnectError, alpn: &[u8]) -> LinkError
     };
     if no_application_protocol {
         LinkError::Unavailable(format!(
-            "host does not speak {}",
+            "server does not speak {}",
             String::from_utf8_lossy(alpn)
         ))
     } else {
@@ -269,13 +269,13 @@ fn connect_error(error: &iroh::endpoint::ConnectError, alpn: &[u8]) -> LinkError
     }
 }
 
-/// One conversation's connection to the host: an iroh connection or a
+/// One conversation's connection to the server: an iroh connection or a
 /// WebTransport session. Cheap to clone; every clone is the same link.
 #[derive(Clone)]
 pub struct Link {
     inner: Inner,
     /// What an entry on it is bound to, once read ([`Link::binding`]): a
-    /// host offers it once per link.
+    /// server offers it once per link.
     binding: std::sync::Arc<tokio::sync::OnceCell<[u8; 32]>>,
 }
 
@@ -327,7 +327,7 @@ impl Link {
         }
     }
 
-    /// Accept the next bidirectional stream the host opens.
+    /// Accept the next bidirectional stream the server opens.
     ///
     /// # Errors
     ///
@@ -348,11 +348,11 @@ impl Link {
         }
     }
 
-    /// What an entry's proof on this link is bound to, as the host that
+    /// What an entry's proof on this link is bound to, as the server that
     /// accepted it offers it: unique to the link and known to no one outside
     /// it, so a proof captured from one link proves nothing on another. Over
     /// iroh both ends export it from the connection's TLS session; a browser
-    /// exports nothing from a WebTransport session, so there the host writes
+    /// exports nothing from a WebTransport session, so there the server writes
     /// fresh random bytes on a stream of its own as the session opens, which
     /// reach the device with the session itself. Call it before accepting a
     /// stream: a device that enters waits for it before it says hello.
@@ -376,7 +376,7 @@ impl Link {
     ///
     /// # Errors
     ///
-    /// [`LinkError::Unavailable`] when the host offered none.
+    /// [`LinkError::Unavailable`] when the server offered none.
     pub async fn binding(&self) -> Result<[u8; 32], LinkError> {
         self.binding
             .get_or_try_init(|| self.read_binding())
@@ -402,12 +402,12 @@ impl Link {
                     .map_err(|error| missing(error.to_string()))?;
                 bytes
                     .try_into()
-                    .map_err(|_| missing("the host's binding is not 32 bytes".into()))
+                    .map_err(|_| missing("the server's binding is not 32 bytes".into()))
             }
         }
     }
 
-    /// Close the link at once, telling the host `reason`.
+    /// Close the link at once, telling the server `reason`.
     pub fn close(&self, reason: &str) {
         match &self.inner {
             Inner::Iroh(connection) => connection.close(0u32.into(), reason.as_bytes()),
@@ -517,7 +517,7 @@ impl AsyncRead for LinkRecv {
 }
 
 impl LinkSend {
-    /// Resolves once the host has read everything sent, or stopped reading.
+    /// Resolves once the server has read everything sent, or stopped reading.
     pub async fn stopped(&mut self) {
         match self {
             Self::Iroh(send) => {
@@ -532,7 +532,7 @@ impl LinkSend {
         }
     }
 
-    /// Say the stream is finished: the host reads its end.
+    /// Say the stream is finished: the server reads its end.
     pub fn finish(&mut self) {
         match self {
             Self::Iroh(send) => {

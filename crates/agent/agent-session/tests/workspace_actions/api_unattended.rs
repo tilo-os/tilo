@@ -231,7 +231,7 @@ async fn own_key_runs_unasked_only_while_let() {
         asked: Arc::clone(&person.asked),
     };
     let mut questions = MemberQuestions {
-        host: &host,
+        server: &host,
         root: &ada,
         device: None,
     };
@@ -439,7 +439,7 @@ async fn branch_runs_unasked_and_goes_on_apart() {
         asked: Arc::clone(&person.asked),
     };
     let mut questions = MemberQuestions {
-        host: &host,
+        server: &host,
         root: &ada,
         device: None,
     };

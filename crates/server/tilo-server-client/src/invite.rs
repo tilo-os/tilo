@@ -1,10 +1,10 @@
-//! Joining a workspace another host governs, from a page with no session
+//! Joining a workspace another server governs, from a page with no session
 //! there: the device the page enters with.
 //!
-//! The joining person is not a user of that host: their page holds its own
-//! user root and certifies the device itself ([`guest_certificate`]). The host
+//! The joining person is not a user of that server: their page holds its own
+//! user root and certifies the device itself ([`guest_certificate`]). The server
 //! admits it through the workspace's governed roster as the invitation's own
-//! grant admits it, never as one of the host user's devices; the redemption
+//! grant admits it, never as one of the server user's devices; the redemption
 //! is an entry on the device's session ([`tilo_server_protocol::entering`]).
 
 use crate::signer::DeviceSigner;

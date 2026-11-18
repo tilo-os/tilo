@@ -51,7 +51,7 @@ mod voice;
 
 use agent_session::AgentSessionCompletion;
 use connect::Dial;
-pub use connect::{SessionMemberHost, member_host};
+pub use connect::{SessionMemberServer, member_server};
 #[cfg(test)]
 use connect::{connect, connect_backoff, link_error, transient};
 use entry::{Refusal, refusal};
@@ -99,14 +99,14 @@ const BEHIND_ASKED_AFTER_MS: u64 = 15_000;
 const BEHIND_ASKED_AT_MOST_EVERY_MS: u64 = 300_000;
 
 /// Where to reach the user's host: the iroh endpoint it serves its peers'
-/// sessions on ([`tilo_server_client::Host`]).
-pub use tilo_server_client::Host;
+/// sessions on ([`tilo_server_client::ServerAddress`]).
+pub use tilo_server_client::ServerAddress;
 
 /// Where to connect and as whom.
 #[derive(Clone)]
 pub struct PeerConfig {
     /// The user's host (`tilo-server`).
-    pub host: Host,
+    pub host: ServerAddress,
     /// This device's certificate.
     pub cert: DeviceCert,
     /// The host certificate pinned at certification.
@@ -123,7 +123,7 @@ impl PeerConfig {
     /// A member device's session with `host`, whose certificate is
     /// `host_cert`: no revocations of its own to announce, no entry to ask for.
     #[must_use]
-    pub fn member(host: Host, cert: DeviceCert, host_cert: DeviceCert) -> Self {
+    pub fn member(host: ServerAddress, cert: DeviceCert, host_cert: DeviceCert) -> Self {
         Self {
             host,
             cert,
@@ -2482,13 +2482,13 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_host_stops_the_page_and_a_proxys_page_never_counts() {
+    fn a_changed_server_stops_the_page_and_a_proxys_page_never_counts() {
         let code = |error| match refusal(&error) {
             Refusal::Final(code, _) => code,
             Refusal::Unexplained => "unexplained",
             Refusal::Reachability => "reachability",
         };
-        assert_eq!(code(LinkError::HostChanged), "host-changed");
+        assert_eq!(code(LinkError::ServerChanged), "host-changed");
         // An HTML error page from a proxy does not decode: reachability.
         assert_eq!(
             code(LinkError::Malformed("unexpected end of input".into())),

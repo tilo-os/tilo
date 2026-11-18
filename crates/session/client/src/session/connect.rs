@@ -332,18 +332,18 @@ pub(super) fn link_error(error: tilo_server_session::ClientError) -> LinkError {
     }
 }
 
-/// Where member commands reach the host over a session ([`member_host`]): only the session's
+/// Where member commands reach the host over a session ([`member_server`]): only the session's
 /// sender, so it is shared across tasks wherever the session is.
 #[derive(Clone)]
-pub struct SessionMemberHost(std::sync::Arc<dyn crate::Outbox + Send + Sync>);
+pub struct SessionMemberServer(std::sync::Arc<dyn crate::Outbox + Send + Sync>);
 
 /// Ask the host member commands (pairing, agents' questions) over `link`'s session.
 #[must_use]
-pub fn member_host(link: &crate::Link) -> SessionMemberHost {
-    SessionMemberHost(std::sync::Arc::clone(link.outbox()))
+pub fn member_server(link: &crate::Link) -> SessionMemberServer {
+    SessionMemberServer(std::sync::Arc::clone(link.outbox()))
 }
 
-impl tilo_server_client::MemberHost for SessionMemberHost {
+impl tilo_server_client::MemberServer for SessionMemberServer {
     fn ask(
         &self,
         approval: &tilo_server_protocol::certify::MemberApproval,

@@ -47,7 +47,7 @@ struct Inner {
     endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
     runtime: tokio::runtime::Handle,
     /// Each host's session, by the host's device key.
-    hosts: Mutex<HashMap<[u8; 32], Arc<Host>>>,
+    hosts: Mutex<HashMap<[u8; 32], Arc<ServerAddress>>>,
     /// What serves what another device addresses to this device through a
     /// host of its, once the session's broker can answer it
     /// ([`crate::device_inbox`]).
@@ -55,7 +55,7 @@ struct Inner {
 }
 
 /// This device's session with one host, and the workspaces it entered there.
-struct Host {
+struct ServerAddress {
     device: Device,
     /// Each entered workspace's actions on the host, by its id there.
     entered: Mutex<HashMap<WorkspaceId, SessionActions>>,
@@ -63,7 +63,7 @@ struct Host {
     entering: tokio::sync::Mutex<()>,
 }
 
-impl Host {
+impl ServerAddress {
     /// Serve what another device addresses to this device through this host, on
     /// this device's own session with it, and answer on that same session.
     fn serve_inbound(&self, actions: &Arc<dyn ActionProvider + Send + Sync>) {
@@ -141,7 +141,7 @@ impl HostedWorkspaces {
     }
 
     /// This device's session with `placed`'s host: the one kept, or a new one once it ended.
-    fn host(&self, placed: &Placed) -> Arc<Host> {
+    fn host(&self, placed: &Placed) -> Arc<ServerAddress> {
         // The session a host is reached on is a task of this session's runtime, and a caller may
         // be a thread of the broker's: it opens here, inside the runtime that reaches hosts.
         let _inside = self.0.runtime.enter();
@@ -156,7 +156,7 @@ impl HostedWorkspaces {
         // per server, which a second key service or endpoint of its own would take.
         let device = Device::over_lent(
             PeerConfig {
-                host: tilo_server_client::Host::at(placed.host.endpoint_addr.clone()),
+                host: tilo_server_client::ServerAddress::at(placed.host.endpoint_addr.clone()),
                 cert: identity.device_cert.clone(),
                 host_cert: placed.host.device_certificate.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
@@ -169,7 +169,7 @@ impl HostedWorkspaces {
                 endpoint: self.0.endpoint.clone(),
             },
         );
-        let host = Arc::new(Host {
+        let host = Arc::new(ServerAddress {
             device,
             entered: Mutex::default(),
             entering: tokio::sync::Mutex::new(()),
@@ -403,7 +403,7 @@ impl tilo_workspace_service::apps::services::HostedWorkspaces for HostedWorkspac
 
 /// One workspace's actions on its host, entering it there on first use.
 struct OnHost {
-    host: Arc<Host>,
+    host: Arc<ServerAddress>,
     workspace: String,
     workspace_id: WorkspaceId,
     runtime: tokio::runtime::Handle,
@@ -448,7 +448,7 @@ impl OnHost {
 
 /// `host`'s actions of `workspace`, entering it there first when this device is not in it yet.
 async fn enter(
-    host: &Host,
+    host: &ServerAddress,
     workspace: &str,
     workspace_id: WorkspaceId,
 ) -> Result<SessionActions, ActionCallError> {

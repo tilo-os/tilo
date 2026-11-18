@@ -74,7 +74,7 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
     let workspace = bootstrap.workspace_id.to_string();
     let host = bootstrap.host.clone();
     let config = PeerConfig {
-        host: tilo_server_client::Host::through(
+        host: tilo_server_client::ServerAddress::through(
             iroh_base::EndpointAddr::new(
                 iroh_base::EndpointId::from_bytes(&host.device_public_key).unwrap(),
             ),

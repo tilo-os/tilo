@@ -47,7 +47,8 @@ use tilo_server::web::{TlsSource, WebConfig};
 use tilo_server_client::https::invitation as invitation_offer;
 use tilo_server_client::invite::guest_certificate;
 use tilo_server_client::{
-    DeviceSigner, Host, IssuedRole, SignError, SignFuture, certify_with_root, issue_device_cert,
+    DeviceSigner, IssuedRole, ServerAddress, SignError, SignFuture, certify_with_root,
+    issue_device_cert,
 };
 use tilo_server_protocol::workspaces::{
     JoinReply, PreAdmission, Role, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
@@ -285,7 +286,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         .await
         .unwrap();
     let https = DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
-    let host = Host::at(server.node_addr());
+    let host = ServerAddress::at(server.node_addr());
 
     // The page's own device, certified by the root against the node.
     let page_key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -552,7 +553,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
 /// A session of `cert`'s device whose first message carries `invitation` (with the pre-admission
 /// `token` where there is one), and what the workspace answered it.
 async fn enters(
-    host: tilo_server_client::Host,
+    host: tilo_server_client::ServerAddress,
     host_cert: &tilo_user_identity::DeviceCert,
     (cert, key): (&tilo_user_identity::DeviceCert, &SigningKey),
     invitation: &[u8],

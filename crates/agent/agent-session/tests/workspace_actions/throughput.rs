@@ -373,7 +373,7 @@ async fn second_device(
     use crate::support::{admitted_to, ready, start_peer};
     let workspace = tilo_server_protocol::WorkspaceId::parse(id).unwrap();
     let peer = start_peer(
-        tilo_server_client::Host::at(on_server.hosted.server.node_addr()),
+        tilo_server_client::ServerAddress::at(on_server.hosted.server.node_addr()),
         device.cert.clone(),
         on_server.host.cert.clone(),
         device.key.clone(),

@@ -47,7 +47,7 @@ use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_server_client::invite::guest_certificate;
 use tilo_server_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_server_protocol::workspaces::{Role, WorkspacesReply, WorkspacesRequest};
@@ -388,7 +388,8 @@ impl Lounge {
     ) -> Link {
         // A page reaches its host over WebTransport, at the listener `/host`
         // names: exactly what a browser in the Lounge has.
-        let host = Host::published(&self.address).over(tilo_server_client::Carrier::WebTransport);
+        let host =
+            ServerAddress::published(&self.address).over(tilo_server_client::Carrier::WebTransport);
         tilo_session_client::start_session(
             tilo_session_client::PeerConfig {
                 host,

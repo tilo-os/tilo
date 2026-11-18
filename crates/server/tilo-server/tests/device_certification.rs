@@ -541,7 +541,7 @@ async fn a_device_dates_its_request_a_minute_back_and_waits_as_long_as_before() 
 
     let before = tilo_clock::unix_now_ns();
     let asking = tokio::spawn({
-        let host = tilo_server_client::Host::at(host.clone());
+        let host = tilo_server_client::ServerAddress::at(host.clone());
         let device = device.clone();
         let person = user.user_pk;
         async move {

@@ -18,7 +18,7 @@ async fn a_request_sent_as_the_page_joins_is_answered_once_it_is_admitted() {
     let hosted = start(&root, &host, state.path()).await;
 
     let peer = start_peer(
-        Host::at(hosted.server.node_addr()),
+        ServerAddress::at(hosted.server.node_addr()),
         device.cert.clone(),
         host.cert.clone(),
         device.key.clone(),

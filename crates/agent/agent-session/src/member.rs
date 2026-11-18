@@ -34,7 +34,7 @@ use tilo_agent_turn::{Answer, Asked, Doing, Outcome, SessionActions};
 use tilo_live::presence::KEEPALIVE_MS;
 use tilo_mcp::McpServer;
 use tilo_model_gateway::host_backend::protocol::{ModelRequest, ModelResponse, ToolCall};
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::agents::{AgentStatus, AgentStep, TaskState};
 use tilo_session_client::{
@@ -82,7 +82,7 @@ pub struct Pumped {
 /// Where the agent's session goes.
 pub struct MemberConfig {
     /// The workspace's host.
-    pub host: Host,
+    pub host: ServerAddress,
     /// The host's certificate: whose actions the agent's tools ask.
     pub host_cert: DeviceCert,
     /// The workspace uuid.

@@ -1633,7 +1633,7 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
 /// the page asks the host, in process, once it may.
 struct TabRoot(crate::certification::CertificationProtocol);
 
-impl tilo_server_client::MemberHost for TabRoot {
+impl tilo_server_client::MemberServer for TabRoot {
     async fn ask(
         &self,
         approval: &tilo_server_protocol::certify::MemberApproval,

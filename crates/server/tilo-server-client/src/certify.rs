@@ -2,10 +2,10 @@
 //! ([`tilo_server_protocol::certify`]).
 //!
 //! [`certify`] is what a device without a certificate runs: it signs one
-//! request, presents it to its host and waits for a root holder to hand over
+//! request, presents it to its server and waits for a root holder to hand over
 //! a certificate. [`request_certification`] is the same conversation over an
 //! endpoint the caller already has, [`Approver`] what a root-holding device
-//! runs to list and answer pending requests, and [`MemberHost`] where a
+//! runs to list and answer pending requests, and [`MemberServer`] where a
 //! page holding a member's root does the same for that member's own devices:
 //! over the session it holds, or [`MemberApprover`] before it holds one.
 
@@ -33,7 +33,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::error::CertifyError;
 use crate::frame::{read_frame, write_frame};
-use crate::host::Host;
+use crate::host::ServerAddress;
 use crate::link::{Dialer, Link, Purpose};
 use crate::signer::DeviceSigner;
 #[cfg(not(target_arch = "wasm32"))]
@@ -43,7 +43,7 @@ use crate::signer::signed_ack2;
 pub const CERTIFICATION_WAIT_NS: u64 = 5 * 60 * 1_000_000_000;
 
 /// How far a certificate's issue time may run ahead of this device's clock:
-/// the host stamps its own nanosecond clock, and a page's clock is coarser
+/// the server stamps its own nanosecond clock, and a page's clock is coarser
 /// (a browser's is whole milliseconds), so a certificate checked the moment
 /// it arrives can look issued in the future.
 const ISSUE_SKEW_NS: u64 = 5 * 1_000_000_000;
@@ -58,13 +58,13 @@ pub enum CertificationOutcome {
     /// A checked, root-signed certificate for the requesting device.
     Issued {
         cert: DeviceCert,
-        /// The host's certificate, to pin for later sessions.
+        /// The server's certificate, to pin for later sessions.
         host_cert: DeviceCert,
-        /// The name the host gave the device: its own, or the next numbered
+        /// The name the server gave the device: its own, or the next numbered
         /// one when another device of the person reads by that name already.
         label: String,
     },
-    /// An approver declined, or the host refused.
+    /// An approver declined, or the server refused.
     Denied(String),
     /// No approver answered in time.
     Expired,
@@ -98,20 +98,20 @@ async fn write<T: serde::Serialize + Sync>(
     Ok(())
 }
 
-/// Ask the host at `host` to certify the device behind `signer` as one of
+/// Ask the server at `server` to certify the device behind `signer` as one of
 /// `user_public_key`'s devices, labeled `label`, answering the pairing invite
 /// `invite` ([0; 16] when none). `on_pending` receives the pairing code to
 /// show while the person's other device answers. Resolves to this device's
-/// certificate, the host's to pin, and the name the host gave the device (the
+/// certificate, the server's to pin, and the name the server gave the device (the
 /// one asked for, or the next free numbered one).
 ///
 /// # Errors
 ///
-/// The host was not reached or refused, nobody answered in time
+/// The server was not reached or refused, nobody answered in time
 /// ([`CertifyError::Expired`]), or what it issued is not a certificate for
 /// this device ([`request_certification`] checks it).
 pub async fn certify(
-    host: &Host,
+    server: &ServerAddress,
     user_public_key: [u8; 32],
     label: &str,
     invite: [u8; 16],
@@ -119,7 +119,7 @@ pub async fn certify(
     on_pending: impl FnOnce(&str),
 ) -> Result<(DeviceCert, DeviceCert, String), CertifyError> {
     let request = signed_request(user_public_key, label, invite, signer).await?;
-    let dialer = Dialer::new(host.clone(), None);
+    let dialer = Dialer::new(server.clone(), None);
     let outcome = async {
         let link = dialer.link(Purpose::Certify).await?;
         let (mut send, mut recv) = link.open_bi().await?;
@@ -143,12 +143,12 @@ pub async fn certify(
 /// The request a device without a certificate signs.
 ///
 /// It is dated [`CERTIFICATION_CLOCK_ALLOWANCE_NS`] before this device's
-/// clock. A host from before hosts allowed the clocks of a pairing to differ
+/// clock. A server from before servers allowed the clocks of a pairing to differ
 /// checks the date exactly, and refused a request dated now whenever its own
-/// clock ran a little behind this device's; such a host stays in use while
+/// clock ran a little behind this device's; such a server stays in use while
 /// its pages move on. The wait for an approver is counted from now, as
 /// before, so the request lasts that much longer than the wait, well inside
-/// the longest a request may. With a host that has the allowance, a device
+/// the longest a request may. With a server that has the allowance, a device
 /// up to twice that far ahead still pairs; the expiry is exact everywhere.
 async fn signed_request(
     user_public_key: [u8; 32],
@@ -190,23 +190,23 @@ fn checked_at(now_ns: u64, issued_at_ns: u64) -> u64 {
     }
 }
 
-/// Ask the host at `host` to certify the device that signed `request`, and
-/// wait for the answer. `on_pending` receives the pairing code once the host
+/// Ask the server at `server` to certify the device that signed `request`, and
+/// wait for the answer. `on_pending` receives the pairing code once the server
 /// has queued the request; show it so the person approving can compare.
 ///
 /// The certificate is checked here against the exact request and the
-/// browser [`CertificationPolicy`], and the host certificate must be a valid
-/// host certificate of the same user: a host cannot hand back a certificate
+/// browser [`CertificationPolicy`], and the server certificate must be a valid
+/// server certificate of the same user: a server cannot hand back a certificate
 /// for another key, another user or wider capabilities.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn request_certification(
     endpoint: &Endpoint,
-    host: EndpointAddr,
+    server: EndpointAddr,
     request: CertificationRequest,
     on_pending: impl FnOnce(&str),
 ) -> Result<CertificationOutcome, CertifyError> {
     let connection = endpoint
-        .connect(host, CERTIFY_ALPN)
+        .connect(server, CERTIFY_ALPN)
         .await
         .map_err(|error| iroh(&error))?;
     let (mut send, mut recv) = connection.open_bi().await.map_err(|error| iroh(&error))?;
@@ -216,7 +216,7 @@ pub async fn request_certification(
 }
 
 /// [`request_certification`]'s conversation, on a stream already open to the
-/// host's certification.
+/// server's certification.
 async fn request_over(
     send: &mut (impl AsyncWrite + Unpin),
     recv: &mut (impl AsyncRead + Unpin),
@@ -248,7 +248,7 @@ async fn request_over(
             // it may be another person's: it must be a person's device, not
             // necessarily this root's.
             verify_device_cert_at(&host_cert, now)
-                .map_err(|error| codec(&format!("host certificate refused: {error}")))?;
+                .map_err(|error| codec(&format!("server certificate refused: {error}")))?;
             if !host_cert.capabilities.can_own_workspaces {
                 return Err(codec(&"the certificate is not a person's device"));
             }
@@ -260,11 +260,11 @@ async fn request_over(
         }
         CertifyReply::Denied { reason } => Ok(CertificationOutcome::Denied(reason)),
         CertifyReply::Expired => Ok(CertificationOutcome::Expired),
-        CertifyReply::Pending { .. } => Err(codec(&"host sent a second pending reply")),
+        CertifyReply::Pending { .. } => Err(codec(&"server sent a second pending reply")),
     }
 }
 
-/// An authenticated approver session with a host.
+/// An authenticated approver session with a server.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct Approver {
     connection: Connection,
@@ -274,19 +274,19 @@ pub struct Approver {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Approver {
-    /// Open an approver session. `host` pins the host's endpoint, so it may
+    /// Open an approver session. `server` pins the server's endpoint, so it may
     /// be any person's device: the owner's admitting devices approve
     /// everything there, any other device of a person it serves answers only
-    /// that person's questions, and the host refuses the rest.
+    /// that person's questions, and the server refuses the rest.
     pub async fn connect(
         endpoint: &Endpoint,
-        host: EndpointAddr,
+        server: EndpointAddr,
         own_cert: DeviceCert,
         signer: &dyn DeviceSigner,
         revocations: &RevocationList,
     ) -> Result<Self, CertifyError> {
         let connection = endpoint
-            .connect(host, CERTIFY_ALPN)
+            .connect(server, CERTIFY_ALPN)
             .await
             .map_err(|error| iroh(&error))?;
         let (mut send, mut recv) = connection.open_bi().await.map_err(|error| iroh(&error))?;
@@ -345,8 +345,8 @@ impl Approver {
         }
     }
 
-    /// Every question an agent of the host is waiting on: shown as the
-    /// host's confirmation sheet and answered with [`Self::answer`].
+    /// Every question an agent of the server is waiting on: shown as the
+    /// server's confirmation sheet and answered with [`Self::answer`].
     pub async fn list_confirmations(&mut self) -> Result<Vec<PendingConfirmation>, CertifyError> {
         match self.call(&ApproverRequest::Confirmations).await? {
             ApproverReply::Confirmations(asked) => Ok(asked),
@@ -368,7 +368,7 @@ impl Approver {
         self.call(&ApproverRequest::Answer { id, answer }).await
     }
 
-    /// Answer one request. `Ok(Refused)` means the host did not accept the
+    /// Answer one request. `Ok(Refused)` means the server did not accept the
     /// decision (an out-of-policy certificate, or the requester left).
     pub async fn decide(
         &mut self,
@@ -390,15 +390,15 @@ impl Approver {
 }
 
 /// Where a member's root-signed approver commands ([`MemberApproval`]s)
-/// reach a host. A device already holding a session to the host asks over
+/// reach a server. A device already holding a session to the server asks over
 /// that session's endpoint (`tilo_session_client::Link`); a device with
 /// none yet binds one of its own ([`MemberApprover`]).
-pub trait MemberHost: Sync {
-    /// The host's answer to `approval`.
+pub trait MemberServer: Sync {
+    /// The server's answer to `approval`.
     ///
     /// # Errors
     ///
-    /// The host was not reached, or its answer did not decode. A host that
+    /// The server was not reached, or its answer did not decode. A server that
     /// turns the command away answers [`ApproverReply::Refused`].
     fn ask(
         &self,
@@ -406,12 +406,12 @@ pub trait MemberHost: Sync {
     ) -> impl std::future::Future<Output = Result<ApproverReply, CertifyError>> + Send;
 }
 
-/// Ask the host `approval` on `link`, a link to its certification
+/// Ask the server `approval` on `link`, a link to its certification
 /// ([`Purpose::Certify`]), on a stream of its own.
 ///
 /// # Errors
 ///
-/// As [`MemberHost::ask`].
+/// As [`MemberServer::ask`].
 pub async fn ask_member(
     link: &Link,
     approval: &MemberApproval,
@@ -537,9 +537,9 @@ impl Drop for KeptAsks {
     }
 }
 
-/// A member's root asking one host its approver commands before the device
+/// A member's root asking one server its approver commands before the device
 /// holds any session there: what a page runs to pair an agent's device
-/// through a host it is not yet let into. It reaches the host as [`Host`]
+/// through a server it is not yet let into. It reaches the server as [`ServerAddress`]
 /// says, from one endpoint bound on the first command; over WebTransport on
 /// one link it keeps ([`KeptAsks`]), over iroh each command on a connection
 /// of its own.
@@ -549,23 +549,23 @@ pub struct MemberApprover {
 }
 
 impl MemberApprover {
-    /// Commands for the host at `host`.
+    /// Commands for the server at `server`.
     #[must_use]
-    pub fn new(host: Host) -> Self {
+    pub fn new(server: ServerAddress) -> Self {
         Self {
-            dialer: Dialer::new(host, None),
+            dialer: Dialer::new(server, None),
             asks: KeptAsks::default(),
         }
     }
 
-    /// Let go of the host, waiting for it to hear.
+    /// Let go of the server, waiting for it to hear.
     pub async fn close(&self) {
         self.asks.close().await;
         self.dialer.close().await;
     }
 }
 
-impl MemberHost for MemberApprover {
+impl MemberServer for MemberApprover {
     async fn ask(&self, approval: &MemberApproval) -> Result<ApproverReply, CertifyError> {
         self.asks.ask(&self.dialer, approval).await
     }

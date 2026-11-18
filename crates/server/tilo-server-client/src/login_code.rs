@@ -1,4 +1,4 @@
-//! A host's login codes and the person's stand-in approver, asked over its HTTPS routes
+//! A server's login codes and the person's stand-in approver, asked over its HTTPS routes
 //! ([`tilo_server_protocol::login_code`]): the one client of them, for the tab that makes a code
 //! and follows it, the computer that resolves it, reports its steps and claims it, and the root
 //! that keeps its stand-in. The page reaches it through the runtime, the CLI natively.
@@ -13,19 +13,19 @@ use tilo_server_protocol::web::API_PREFIX;
 use crate::https::HttpClient;
 use crate::signer::DeviceSigner;
 
-/// What a host answered instead of what a login code's route answers, or that it was not reached.
+/// What a server answered instead of what a login code's route answers, or that it was not reached.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, thiserror::Error)]
 #[error("{message}")]
 pub struct CodeRefusal {
-    /// The host's HTTP status; `0` when it was not reached, or answered something else.
+    /// The server's HTTP status; `0` when it was not reached, or answered something else.
     pub status: u16,
-    /// What happened, the host's own sentence where it gave one.
+    /// What happened, the server's own sentence where it gave one.
     pub message: String,
 }
 
 impl CodeRefusal {
     /// What kind of refusal it is, as the screens that show it tell them apart: `unreachable`,
-    /// `not-a-device` (the host serves nobody for that person, or the device is not theirs),
+    /// `not-a-device` (the server serves nobody for that person, or the device is not theirs),
     /// `unknown` (a code that is not there: never made, used or expired), `too-many` (asked too
     /// often from here), or `refused`.
     #[must_use]
@@ -42,7 +42,7 @@ impl CodeRefusal {
     fn unreached(why: impl std::fmt::Display) -> Self {
         Self {
             status: 0,
-            message: format!("The host could not be reached: {why}"),
+            message: format!("The server could not be reached: {why}"),
         }
     }
 }
@@ -63,7 +63,7 @@ async fn post<T: serde::de::DeserializeOwned>(
         .await
         .map_err(CodeRefusal::unreached)?;
     if !(200..300).contains(&status) {
-        // The host says why in `{"error": "…"}`: that sentence is the reason.
+        // The server says why in `{"error": "…"}`: that sentence is the reason.
         #[derive(serde::Deserialize)]
         struct Said {
             error: String,
@@ -72,8 +72,8 @@ async fn post<T: serde::de::DeserializeOwned>(
         return Err(CodeRefusal {
             status,
             message: match said {
-                Ok(said) if !said.is_empty() => format!("The host answered {status}: {said}"),
-                _ => format!("The host answered {status}"),
+                Ok(said) if !said.is_empty() => format!("The server answered {status}: {said}"),
+                _ => format!("The server answered {status}"),
             },
         });
     }
@@ -84,7 +84,7 @@ async fn post<T: serde::de::DeserializeOwned>(
         .map(Some)
         .map_err(|error| CodeRefusal {
             status: 0,
-            message: format!("The host answered something else: {error}"),
+            message: format!("The server answered something else: {error}"),
         })
 }
 
@@ -96,7 +96,7 @@ async fn answered<T: serde::de::DeserializeOwned>(
 ) -> Result<T, CodeRefusal> {
     post(client, route, body).await?.ok_or_else(|| CodeRefusal {
         status: 0,
-        message: "The host answered nothing".to_owned(),
+        message: "The server answered nothing".to_owned(),
     })
 }
 
@@ -104,17 +104,17 @@ async fn answered<T: serde::de::DeserializeOwned>(
 /// (asking to be signed in by a device of the person).
 ///
 /// # Errors
-/// The host was not reached or refused.
+/// The server was not reached or refused.
 pub async fn create(client: &dyn HttpClient, link: Option<String>) -> Result<Created, CodeRefusal> {
     answered(client, CREATE_ROUTE, json(&CreateCode { link })?).await
 }
 
 /// Where the code `follow` (the secret only its tab holds) is. With the `offer` the code was made
-/// as ([`Created`] and the link it names), the host keeps the code if it does not yet: a code is
+/// as ([`Created`] and the link it names), the server keeps the code if it does not yet: a code is
 /// only offered until its tab first follows it.
 ///
 /// # Errors
-/// The host was not reached or refused.
+/// The server was not reached or refused.
 pub async fn follow(
     client: &dyn HttpClient,
     follow: &str,
@@ -134,7 +134,7 @@ pub async fn follow(
 /// What the code `code` names, spending it.
 ///
 /// # Errors
-/// The host was not reached, or the code is not there ([`CodeRefusal::code`] `unknown`).
+/// The server was not reached, or the code is not there ([`CodeRefusal::code`] `unknown`).
 pub async fn resolve(client: &dyn HttpClient, code: &str) -> Result<Resolved, CodeRefusal> {
     answered(
         client,
@@ -149,7 +149,7 @@ pub async fn resolve(client: &dyn HttpClient, code: &str) -> Result<Resolved, Co
 /// Tell the code's tab a step the computer took.
 ///
 /// # Errors
-/// The host was not reached or refused.
+/// The server was not reached or refused.
 pub async fn report(client: &dyn HttpClient, report: &Report) -> Result<(), CodeRefusal> {
     post::<serde_json::Value>(client, STEP_ROUTE, json(report)?)
         .await
@@ -160,7 +160,7 @@ pub async fn report(client: &dyn HttpClient, report: &Report) -> Result<(), Code
 /// this device of, `signer` holding its key.
 ///
 /// # Errors
-/// The host was not reached, serves nobody for that person ([`CodeRefusal::code`]
+/// The server was not reached, serves nobody for that person ([`CodeRefusal::code`]
 /// `not-a-device`), or refused.
 pub async fn claim(
     client: &dyn HttpClient,
@@ -196,10 +196,10 @@ pub async fn claim(
     .await
 }
 
-/// Ask the person's stand-in on the host for `request`.
+/// Ask the person's stand-in on the server for `request`.
 ///
 /// # Errors
-/// The host was not reached or refused.
+/// The server was not reached or refused.
 pub async fn stand_in(
     client: &dyn HttpClient,
     request: &StandInRequest,
@@ -207,7 +207,7 @@ pub async fn stand_in(
     answered(client, STAND_IN_ROUTE, json(request)?).await
 }
 
-/// What a stand-in operation the root signs asks of the host.
+/// What a stand-in operation the root signs asks of the server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StandInOp {
     /// Make, or name again, the stand-in's key ([`StandInRequest::Key`]).
@@ -251,13 +251,13 @@ pub async fn signed_stand_in(
 /// What a stand-in approver's certificate says it is.
 const STAND_IN_LABEL: &str = "Stand-in approver";
 
-/// Give the person whose root is `root` a stand-in on the host `client` reaches, so that losing
-/// the one place their root is (a tab) does not lose them: the host makes a key, the root
+/// Give the person whose root is `root` a stand-in on the server `client` reaches, so that losing
+/// the one place their root is (a tab) does not lose them: the server makes a key, the root
 /// certifies it as an approver of the person's new devices, for as long as a stand-in lasts, and
-/// the host keeps the certificate. Resolves to the stand-in's key, hex.
+/// the server keeps the certificate. Resolves to the stand-in's key, hex.
 ///
 /// # Errors
-/// The host was not reached or refused, or the root did not certify the key.
+/// The server was not reached or refused, or the root did not certify the key.
 pub async fn keep_stand_in(
     client: &dyn HttpClient,
     root: &dyn DeviceSigner,
@@ -272,13 +272,13 @@ pub async fn keep_stand_in(
     let StandInReply::Key { key } = stand_in(client, &asked).await? else {
         return Err(CodeRefusal {
             status: 0,
-            message: "The host named no stand-in key".to_owned(),
+            message: "The server named no stand-in key".to_owned(),
         });
     };
     let stand_in_key: [u8; 32] = hex::decode(&key)
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| unsigned("the host named no key".to_owned()))?;
+        .ok_or_else(|| unsigned("the server named no key".to_owned()))?;
     let cert = crate::issue_stand_in(
         root,
         stand_in_key,
@@ -299,11 +299,11 @@ pub async fn keep_stand_in(
     Ok(key)
 }
 
-/// The person keeps their root another way now: the host forgets their stand-in's key. The root
+/// The person keeps their root another way now: the server forgets their stand-in's key. The root
 /// revokes the key itself, as it revokes any of the person's devices.
 ///
 /// # Errors
-/// The host was not reached or refused, or the root did not sign.
+/// The server was not reached or refused, or the root did not sign.
 pub async fn retire_stand_in(
     client: &dyn HttpClient,
     root: &dyn DeviceSigner,

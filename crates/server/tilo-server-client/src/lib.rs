@@ -1,30 +1,30 @@
-//! `tilo-server-client` — the device side of the Tilo host + server that every
+//! `tilo-server-client` — the device side of the Tilo server + server that every
 //! peer shares, native or in a browser.
 //!
 //! - the session with a relay over iroh is `tilo_server_session::ServerClient`;
 //! - [`frame`] — the length-prefixed frame codec every server stream uses.
 //!   The daemon and the server session client in `tilo-server-session` read and write
 //!   through the same functions;
-//! - [`coedit`] — the co-edit payloads carried through the host; the iroh
+//! - [`coedit`] — the co-edit payloads carried through the server; the iroh
 //!   session speaking them is `tilo_server_session::coedit::ServerCoeditSession`;
-//! - [`certify`] — ask a host for a `DeviceCert`, or approve such requests
+//! - [`certify`] — ask a server for a `DeviceCert`, or approve such requests
 //!   as a root-holding device or as a member's root;
 //! - [`pairing`] — the pairing ceremony a member's root answers, and the
 //!   certificates a person's root issues;
 //! - [`login`] — a computer signing in as one of the person's devices, the
 //!   login code it reads, and the two ways into the workspace it names;
 //! - [`sign_in`] — a device proving its person to a service that asks;
-//! - [`invite`] — joining a workspace another host governs, with no session
+//! - [`invite`] — joining a workspace another server governs, with no session
 //!   there;
 //! - [`signer`] — the device key as a signer, so a browser's
 //!   non-extractable key can authenticate;
-//! - [`error`] — why a call to a host failed, and why a host turned a device
+//! - [`error`] — why a call to a server failed, and why a server turned a device
 //!   away;
-//! - [`host`] — where a workspace's host is reached;
+//! - [`server`] — where a workspace's server is reached;
 //! - [`link`] — how a device reaches it for each thing it asks: iroh
 //!   natively, the browser's WebTransport in a page;
-//! - [`https`] — what a page asks a host before it holds a session, over
-//!   HTTPS through its `fetch`: the host's certificate and address, and
+//! - [`https`] — what a page asks a server before it holds a session, over
+//!   HTTPS through its `fetch`: the server's certificate and address, and
 //!   joining a workspace.
 //!
 //! The messages themselves are defined in [`tilo_server_protocol`]. Without
@@ -48,7 +48,7 @@ pub mod frame;
 pub mod host;
 pub mod https;
 pub mod invite;
-/// How a device reaches its host for each thing it asks: iroh natively, the
+/// How a device reaches its server for each thing it asks: iroh natively, the
 /// browser's WebTransport in a page.
 #[cfg(feature = "dial")]
 pub mod link;
@@ -59,7 +59,7 @@ pub mod link;
 /// are a page's too ([`login::Entry`]).
 #[cfg(feature = "dial")]
 pub mod login;
-/// A host's login codes and the person's stand-in approver, for the tab and the computer alike.
+/// A server's login codes and the person's stand-in approver, for the tab and the computer alike.
 pub mod login_code;
 pub mod pairing;
 #[cfg(feature = "dial")]
@@ -71,12 +71,12 @@ pub mod signer;
 pub use certify::{Approver, request_certification};
 #[cfg(feature = "dial")]
 pub use certify::{
-    CERTIFICATION_WAIT_NS, CertificationOutcome, KeptAsks, MemberApprover, MemberHost, ask_member,
-    certify,
+    CERTIFICATION_WAIT_NS, CertificationOutcome, KeptAsks, MemberApprover, MemberServer,
+    ask_member, certify,
 };
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
 pub use error::{CertifyError, LinkError};
-pub use host::{Carrier, Host};
+pub use host::{Carrier, ServerAddress};
 pub use https::{Answer, AnswerFuture, HttpClient, HttpFuture};
 pub use pairing::{
     IssuedRole, NODE_CERT_LIFETIME_NS, certify_with_root, issue_agent_grant, issue_device_cert,

@@ -121,7 +121,7 @@ impl Device {
     ) -> Self {
         Self::over(
             PeerConfig {
-                host: sign_in.host.clone(),
+                host: sign_in.server.clone(),
                 cert: sign_in.cert.clone(),
                 host_cert: sign_in.host_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),

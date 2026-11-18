@@ -247,7 +247,7 @@ impl Server {
         let host = info
             .address
             .as_ref()
-            .map(tilo_server_client::Host::published)
+            .map(tilo_server_client::ServerAddress::published)
             .ok_or_else(|| {
                 tracing::warn!(
                     relay = self.name(),
