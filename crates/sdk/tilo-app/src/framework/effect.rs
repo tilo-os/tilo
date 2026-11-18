@@ -785,6 +785,25 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         .and_then(|member| member.person_id().map(str::to_owned))
     }
 
+    /// Who the invocation this work continues was admitted for, acting for the person at this
+    /// window when it is not that person: what a change it makes elsewhere names as its author.
+    /// `None` for work no invocation started.
+    pub fn invoker(&self) -> Option<tilo_actions::ActionInvoker> {
+        let invoker = self.inv.ownership.as_ref()?.invoker();
+        if invoker.acting.is_person() || !invoker.acting.acted_for.is_empty() {
+            return Some(invoker);
+        }
+        let person = self
+            .env
+            .dispatch
+            .me()
+            .and_then(|me| me.person_id().map(str::to_owned));
+        Some(match person {
+            Some(person) => invoker.acting_for(person),
+            None => invoker,
+        })
+    }
+
     /// Submit one typed action, as [`Dispatcher::apply`].
     pub fn apply(&self, action: &R::Action) {
         self.env.dispatch.apply(action);

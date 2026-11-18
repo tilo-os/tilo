@@ -100,6 +100,9 @@ pub mod views;
 
 /// The workspace's files, as a page shows them.
 pub mod tree;
+/// Someone else's call on the workspace's folder, done to its tree as them.
+#[cfg(feature = "desktop")]
+mod tree_ops;
 
 #[cfg(feature = "desktop")]
 pub use command::{CommandSink, FileCommand};

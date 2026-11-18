@@ -37,8 +37,8 @@ struct WorkspaceFolder {
 }
 
 impl WorkspaceFolder {
-    /// The record of chunk `chunk`: the tree's own for 0.
-    fn record(&self, chunk: TreeChunk) -> Option<WorkspaceResource<FilesTree>> {
+    /// The document of chunk `chunk`: the tree's own for 0.
+    fn document(&self, chunk: TreeChunk) -> Option<WorkspaceResource<FilesTree>> {
         if chunk == 0 {
             return Some(self.tree.clone());
         }
@@ -61,18 +61,55 @@ impl FolderVersions for WorkspaceFolder {
     /// Decided as a call that may take back anything the tree takes: undo and restore write
     /// whatever the change they act on wrote.
     fn apply(&self, chunk: TreeChunk, edit: HistoryEdit, node: Option<&str>) -> Result<(), String> {
-        let record = self
-            .record(chunk)
-            .ok_or("the folder's record is not open here")?;
+        let document = self
+            .document(chunk)
+            .ok_or("the folder's document is not open here")?;
         if !fs_protocol::file_action::verbs::ALL
             .iter()
-            .all(|verb| record.may(verb))
+            .all(|verb| document.may(verb))
         {
             return Err("you may not change the workspace's files".to_owned());
         }
-        record
+        document
             .apply_history(edit, node)
             .map_err(|error| error.to_string())
+    }
+
+    fn tree(&self) -> Option<Tree> {
+        FolderChunks::tree(self)
+    }
+
+    fn act(
+        &self,
+        actions: &[fs_protocol::FileAction],
+        invoker: &tilo_actions::ActionInvoker,
+    ) -> Result<(), String> {
+        let tree = FolderChunks::tree(self).ok_or("the folder's tree is not open here")?;
+        let listed = self.listed();
+        for action in actions {
+            let chunk = match action {
+                fs_protocol::FileAction::Create { document_id, .. } => document_id.chunk(),
+                other => tree
+                    .node(other.node())
+                    .and_then(|node| node.document_id)
+                    .map_or(fs_protocol::FIRST_TREE_CHUNK, |id| id.chunk()),
+            };
+            if !listed.contains(&chunk) {
+                // A node made in a chunk nobody made yet: the tree's own document lists it first,
+                // as every writer of the tree does.
+                self.tree
+                    .record()
+                    .try_edit(true, |doc| {
+                        fs_protocol::tree::list_chunk(doc, chunk).map_err(|error| error.to_string())
+                    })
+                    .map_err(|error| error.to_string())??;
+            }
+            self.document(chunk)
+                .ok_or("the folder's chunk is not open here")?
+                .act_as(invoker, action)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     /// The revision of every record the folder is, combined: History reads the changes again
@@ -80,10 +117,10 @@ impl FolderVersions for WorkspaceFolder {
     fn folder_revision(&self) -> u64 {
         let mut revision = self.tree.revision();
         for chunk in self.listed() {
-            if let Some(record) = self.record(chunk) {
+            if let Some(document) = self.document(chunk) {
                 revision = revision
                     .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                    .wrapping_add(record.revision());
+                    .wrapping_add(document.revision());
             }
         }
         revision
@@ -95,15 +132,15 @@ impl FolderChunks for WorkspaceFolder {
         let mut chunks = TreeChunks::default();
         self.tree.read(|doc| chunks.read_index(doc))?;
         for chunk in chunks.listed() {
-            if let Some(record) = self.record(chunk) {
-                record.read(|doc| chunks.read_chunk(chunk, doc));
+            if let Some(document) = self.document(chunk) {
+                document.read(|doc| chunks.read_chunk(chunk, doc));
             }
         }
         Some(chunks.tree())
     }
 
     fn read_chunk<T>(&self, chunk: TreeChunk, read: impl FnOnce(&AutoCommit) -> T) -> Option<T> {
-        self.record(chunk)?.read(read)
+        self.document(chunk)?.read(read)
     }
 }
 

@@ -486,6 +486,24 @@ impl<P: Resource> WorkspaceResource<P> {
         }
     }
 
+    /// Apply the typed `action` as `invoker`, as [`Self::invoke_as`] applies the one its
+    /// arguments build: the grants it was opened with decide it.
+    ///
+    /// # Errors
+    /// The grants refuse it, the document does, or it cannot be changed right now.
+    pub fn act_as(&self, invoker: &ActionInvoker, action: &P::Action) -> Result<(), ActionError> {
+        self.admitted(action)?;
+        match self.shared.apply_as(action, invoker) {
+            Applied::Done(result) => {
+                self.shared.refresh();
+                result
+            }
+            Applied::Waits => Err(ActionError::Refused(
+                ui_core::resource::HistoryUnavailable::StoreInUse.to_string(),
+            )),
+        }
+    }
+
     /// [`Self::invoke`], and `then` with what became of it: at once, or,
     /// where the record cannot be changed right now (its store in use by
     /// whatever runs as this is asked), once it can, on a refresh of the

@@ -1187,6 +1187,8 @@ fn carry_out_queued(
     cx: &ViewCx<FileExplorer>,
     native: Rc<std::cell::RefCell<Vec<crate::files_app::UndoRequest>>>,
 ) -> Option<ui::framework::Projection> {
+    // An agent's call on the workspace's own folder is done to its tree as that agent.
+    let folder = cx.folder_history();
     cx.device().map(|device| {
         let me = device.to_owned();
         cx.outbox_awaited(
@@ -1216,6 +1218,18 @@ fn carry_out_queued(
                             move |progress| carry_out_source(&task, consent, progress),
                             |(), answer, _| Ok(answer),
                         ));
+                    }
+                    if let (Some(folder), Some(invoker)) = (&folder, cx.invoker())
+                        && !invoker.acting.is_person()
+                        && reverting.is_none()
+                        && let Some(outcome) = crate::tree_ops::carry_out(
+                            &task.op,
+                            &crate::model::workspace_roots(),
+                            folder,
+                            &invoker,
+                        )
+                    {
+                        return Ok(Effected::settled(&outcome));
                     }
                     if runs_tracked(&task.op) {
                         return Ok(cx.thread(
