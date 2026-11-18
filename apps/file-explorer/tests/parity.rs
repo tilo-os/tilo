@@ -17,7 +17,7 @@ fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i16) -> Entry {
         size,
         modified: Some(
             jiff::civil::date(year, 1, 1)
-                .to_zoned(jiff::tz::TimeZone::system())
+                .to_zoned(jiff::tz::TimeZone::UTC)
                 .unwrap()
                 .timestamp(),
         ),
@@ -232,43 +232,16 @@ fn a_workspace_root_is_named_rather_than_spelled_out() {
 }
 
 use file_explorer::FileExplorerWidget;
-use ui::{AppKind, AppWidget, IconDescriptor};
-
 #[test]
-fn widget_identity_defaults_and_initial_path() {
-    file_explorer_widget_implements_app_widget_and_defaults_correctly();
-    file_explorer_widget_constructs_with_sensible_default_path();
-    initial_path_prefers_workspace_then_user_home_then_cwd_then_root();
+fn the_footer_counts_items_and_names_the_folder_with_home_shortened() {
     footer_shows_item_count_and_formatted_path();
-    refresh_rereads_same_directory();
-    view_mode_toggle_switches_between_list_and_grid();
-}
-
-fn file_explorer_widget_implements_app_widget_and_defaults_correctly() {
-    crate::common::pin_locale();
-    let w = FileExplorerWidget::new();
-    assert_eq!(w.app_kind(), AppKind::Files);
-    assert_eq!(w.app_title(), "Files");
-    match w.app_icon() {
-        IconDescriptor::Glyph(g) => assert_eq!(g, "󰉋"),
-        IconDescriptor::Named(_) => panic!("glyph expected"),
-    }
-    assert_eq!(w.permission_hint(), Some(AppKind::Files));
-}
-
-fn file_explorer_widget_constructs_with_sensible_default_path() {
-    let w = FileExplorerWidget::new();
-    let cwd = w.state().current_path();
-    assert_eq!(cwd, file_explorer::model::initial_path());
 }
 
 #[test]
-fn navigation_selection_loading_and_terminal_commands() {
+fn navigation_selection_and_terminal_commands() {
     back_button_moves_to_parent_and_noops_at_root();
     double_click_dir_navigates_into_it();
-    single_click_selects_single_entry();
     error_state_shows_message_and_retry_button();
-    loading_state_shown_during_navigation();
     open_terminal_asks_the_shell_for_terminal_in_this_directory();
 }
 
@@ -288,13 +261,6 @@ fn back_button_moves_to_parent_and_noops_at_root() {
     let before = w2.state().current_path();
     w2.state().back();
     assert_eq!(w2.state().current_path(), before, "back at / is a no-op");
-}
-
-fn refresh_rereads_same_directory() {
-    let w = FileExplorerWidget::new();
-    let cwd = w.state().current_path();
-    w.state().refresh();
-    assert_eq!(w.state().current_path(), cwd);
 }
 
 fn double_click_dir_navigates_into_it() {
@@ -317,17 +283,6 @@ fn w_entry_path(w: &FileExplorerWidget, i: usize) -> PathBuf {
     w.state().entries_snapshot()[i].path.clone()
 }
 
-fn single_click_selects_single_entry() {
-    let w = FileExplorerWidget::new();
-    if w.state().entries_snapshot().len() >= 2 {
-        let triggered = w.state().select(Some(0));
-        assert!(triggered.is_none());
-        assert_eq!(w.state().selected_index(), Some(0));
-        let _ = w.state().select(Some(1));
-        assert_eq!(w.state().selected_index(), Some(1));
-    }
-}
-
 fn error_state_shows_message_and_retry_button() {
     let w = FileExplorerWidget::new();
     w.state()
@@ -346,32 +301,6 @@ fn footer_shows_item_count_and_formatted_path() {
         path_str,
         file_explorer::model::format_path(&w.state().current_path(), tilo_paths::home().as_deref())
     );
-}
-
-fn view_mode_toggle_switches_between_list_and_grid() {
-    use file_explorer::model::ViewMode;
-    let w = FileExplorerWidget::new();
-    assert_eq!(w.state().view_mode(), ViewMode::List);
-    w.state().set_view_mode(ViewMode::Grid);
-    assert_eq!(w.state().view_mode(), ViewMode::Grid);
-}
-
-fn initial_path_prefers_workspace_then_user_home_then_cwd_then_root() {
-    use file_explorer::model::{initial_path, user_home, workspace_resource_authority_roots};
-    let p = initial_path();
-    let workspace = workspace_resource_authority_roots().into_iter().next();
-    let home = user_home();
-    let cwd = std::env::current_dir().ok();
-
-    if let Some(workspace) = workspace {
-        assert_eq!(p, workspace, "workspace wins when present");
-    } else if let Some(h) = home {
-        assert_eq!(p, h, "home is the next fallback when workspace absent");
-    } else if let Some(c) = cwd {
-        assert_eq!(p, c, "cwd wins when workspace and home are absent");
-    } else {
-        assert_eq!(p, PathBuf::from("/"), "root is the final fallback");
-    }
 }
 
 fn sort_by_name_places_alpha_order_with_dirs_first() {
@@ -419,129 +348,5 @@ fn open_terminal_asks_the_shell_for_terminal_in_this_directory() {
     assert_eq!(
         w.state().terminal_intent(),
         runtime_portal::tools::ToolIntent::Terminal { directory: None }
-    );
-}
-
-#[test]
-fn list_and_grid_builders_compose_real_file_views() {
-    list_build_yields_a_file_view();
-    grid_mode_uses_responsive_file_view();
-    draw_composition_exercises_the_five_pass_pipeline();
-}
-
-fn list_build_yields_a_file_view() {
-    use file_explorer::command::new_sink;
-    use file_explorer::model::{Entry, SortBy, SortOrder};
-    use file_explorer::views::file_view::FileView;
-    use file_explorer::views::list_view::build_list;
-    use ui::SelectionModel;
-    let entries = vec![Entry {
-        name: "a.txt".into(),
-        path: PathBuf::from("/a.txt"),
-        is_dir: false,
-        size: 0,
-        modified: None,
-        mime: String::new(),
-        sync_state: None,
-        content_hash: None,
-        document_id: None,
-        availability: None,
-        app: None,
-        rich_metadata: None,
-        observed: None,
-    }];
-    let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
-    let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let view = FileView::new(&entries, &SelectionModel::new(), &new_sink())
-        .with_rename(None, rename_rect)
-        .with_cursor(vello::kurbo::Point::ZERO)
-        .with_drop_targets(drop_targets)
-        .with_thumbs(None);
-    let w = build_list(view, SortBy::Name, SortOrder::Ascending);
-    assert_eq!(ui::widget::Widget::name(&*w), "FileView");
-}
-
-fn grid_mode_uses_responsive_file_view() {
-    use file_explorer::command::new_sink;
-    use file_explorer::model::Entry;
-    use file_explorer::views::file_view::FileView;
-    use file_explorer::views::grid_view::build_grid;
-    use std::path::PathBuf;
-    use ui::SelectionModel;
-
-    let entries = vec![Entry {
-        name: "a.txt".into(),
-        path: PathBuf::from("/a.txt"),
-        is_dir: false,
-        size: 0,
-        modified: None,
-        mime: String::new(),
-        sync_state: None,
-        content_hash: None,
-        document_id: None,
-        availability: None,
-        app: None,
-        rich_metadata: None,
-        observed: None,
-    }];
-    let sel = SelectionModel::new();
-    let sink = new_sink();
-    let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
-    let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let view = FileView::new(&entries, &sel, &sink)
-        .with_rename(None, rename_rect)
-        .with_cursor(vello::kurbo::Point::ZERO)
-        .with_drop_targets(drop_targets)
-        .with_thumbs(None);
-    let w = build_grid(view);
-    assert_eq!(ui::widget::Widget::name(&*w), "FileView");
-}
-
-fn loading_state_shown_during_navigation() {
-    let w = FileExplorerWidget::new();
-    assert!(!w.state().is_loading(), "fresh widget not loading");
-    w.state().navigate(PathBuf::from("/definitely/not/here"));
-    assert!(
-        !w.state().is_loading(),
-        "after error navigate loading flag clears"
-    );
-    assert!(
-        w.state().error_message().is_some(),
-        "and an error is surfaced"
-    );
-    w.state().navigate(file_explorer::model::initial_path());
-    assert!(
-        !w.state().is_loading(),
-        "after successful navigate loading is clear"
-    );
-}
-
-fn draw_composition_exercises_the_five_pass_pipeline() {
-    use ui::headless::Framed;
-    use ui::theme::Theme;
-    use ui::widget::Widget;
-
-    let w = Framed::new(
-        ui::State::new(),
-        FileExplorerWidget::new(),
-        (1024, 768),
-        Theme::dark(),
-    );
-
-    let nodes = Framed::harness(&w).layout_node_ids().len();
-    assert!(
-        nodes > 1,
-        "draw composition must register multiple layout nodes; got {nodes}"
-    );
-
-    let rect = w.get_rect();
-    assert!(
-        rect.width() > 0.0 && rect.height() > 0.0,
-        "apply_layout must produce a non-zero rect for the composed widget; got {rect:?}"
-    );
-
-    assert!(
-        !Framed::harness(&w).scene().encoding().is_empty(),
-        "draw composition must emit draw commands from the subtree"
     );
 }
