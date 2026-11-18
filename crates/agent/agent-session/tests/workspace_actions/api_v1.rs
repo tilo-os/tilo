@@ -6,7 +6,7 @@
 //! deletes the workspace. Every route is one of the calls an agent makes
 //! over MCP, so this is that same path through HTTP and JSON.
 
-use super::api::ISSUER;
+use super::api::{ISSUER, Mcp};
 use super::api_on_server::{api_on_server, approved_key, headers, json_of};
 use super::hosted_documents::application_pdf;
 use super::*;
@@ -521,6 +521,70 @@ async fn a_key_its_program_holds_reaches_the_host_directly() {
         apps["rows"].as_array().is_some_and(|rows| !rows.is_empty()),
         "{apps}"
     );
+}
+
+/// One listing, one text: `GET …/resources` answers exactly what the
+/// `tilo_ls` tool answers an agent in the same workspace. `tilo ls` prints
+/// that text as it comes, so a person and an agent read the same listing and
+/// neither re-renders the other's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_workspaces_listing_reads_the_same_through_mcp_and_the_api() {
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let key = approved_key(&on_server, &ada, &page, "Notes backend").await;
+    let mut account = Mcp {
+        api: &api,
+        path: "/mcp".into(),
+        token: key.clone(),
+        session: None,
+    };
+    assert_eq!(account.initialize().await.0, 200);
+    let made = account
+        .tilo_do(json!({"path": "account/workspaces#create",
+                        "args": {"name": "Letters"}}))
+        .await;
+    let workspace = made["result"]["structuredContent"]["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a workspace is made: {made}"))
+        .to_owned();
+    let backend = V1 {
+        api: &api,
+        token: key,
+    };
+
+    // The apps, and what one of them holds: the two paths a `tilo ls` takes.
+    for path in [None, Some("notes")] {
+        let arguments = match path {
+            Some(path) => json!({"workspace": workspace, "path": path}),
+            None => json!({"workspace": workspace}),
+        };
+        let (status, reply) = account
+            .post(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                         "params": {"name": "tilo_ls", "arguments": arguments}}))
+            .await;
+        assert_eq!(status, 200, "{reply}");
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        let agent_read = reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(!agent_read.is_empty(), "the tool answered lines: {reply}");
+        let route = match path {
+            Some(path) => format!(
+                "/v1/workspaces/{workspace}/resources?path={}",
+                tilo_api::client::encode_query(path)
+            ),
+            None => format!("/v1/workspaces/{workspace}/resources"),
+        };
+        let (status, listed) = backend.get(&route).await;
+        assert_eq!(status, 200, "{listed}");
+        assert_eq!(
+            listed["text"].as_str(),
+            Some(agent_read),
+            "the API answers the tool's own lines for {path:?}: {listed}"
+        );
+    }
 }
 
 /// What a hosted workspace answers a key besides actions: what changed in it,

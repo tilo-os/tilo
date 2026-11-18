@@ -495,7 +495,8 @@ fn action_text(answer: &Value) -> String {
 }
 
 /// `tilo ls [path] -w <workspace>`: what the workspace holds, or what `path`
-/// holds, as `tilo_ls` lists it: `cursor` reads on from where a page ended.
+/// holds, as `tilo_ls` lists it: the host's own lines, so a person and an
+/// agent read the same text, and `cursor` reads on from where a page ended.
 pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>, cursor: Option<&str>) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
@@ -512,8 +513,7 @@ pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>, cursor: Option<
             let _ = write!(route, "?{}", query.join("&"));
         }
         let listed = client.get(&route).await?;
-        let text = listing_text(&listed, &workspace, path);
-        Ok(show(reach.json, &listed, &text))
+        Ok(show(reach.json, &listed, text(&listed, "text")))
     })
 }
 
@@ -530,7 +530,17 @@ pub fn read(reach: Reach<'_>, workspace: &str, path: &str, cursor: Option<&str>)
             let _ = write!(route, "?cursor={}", api::encode_query(cursor));
         }
         let read = client.get(&route).await?;
-        Ok(show(reach.json, &read, &resource_text(&read)))
+        // A read the tool has no lines for (an app's surface) prints the
+        // typed answer as it came, rather than nothing.
+        let said = match read
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            Some(text) => text.to_owned(),
+            None => serde_json::to_string_pretty(&read).unwrap_or_default(),
+        };
+        Ok(show(reach.json, &read, &said))
     })
 }
 
@@ -608,109 +618,6 @@ pub fn view(
         }
         Ok(show(reach.json, &view, &said))
     })
-}
-
-/// A listing as a person reads it: the lines `tilo_ls` prints, or the same
-/// built from its rows when the host sent no text.
-fn listing_text(listed: &Value, workspace: &str, path: Option<&str>) -> String {
-    let mut said = match listed.get("text").and_then(Value::as_str) {
-        Some(text) if !text.is_empty() => text.to_owned(),
-        _ => listing_rows(listed),
-    };
-    // A listing that goes on says which command reads the rest, whether its
-    // lines came with the answer or were built here.
-    if let Some(cursor) = listed.get("next_cursor").and_then(Value::as_str) {
-        let what = path
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-            .map(|path| format!("{path} "))
-            .unwrap_or_default();
-        let _ = write!(
-            said,
-            "\nmore: tilo ls {what}--cursor {cursor} -w {workspace}"
-        );
-    }
-    said
-}
-
-/// A listing's rows as lines, for an answer that carries no text to print.
-fn listing_rows(listed: &Value) -> String {
-    let mut said = text(listed, "path").to_owned();
-    if let Some(kind) = listed.get("kind").and_then(Value::as_str) {
-        let _ = write!(said, "  ({kind})");
-    }
-    for row in listed
-        .get("rows")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let _ = write!(
-            said,
-            "\n{}  {}  {}",
-            text(row, "path"),
-            text(row, "label"),
-            text(row, "kind")
-        );
-    }
-    // What can be done to it, a line each as `tilo_ls` writes them: `#rename(title)  Rename
-    // note`, a `?` marking what may be left out.
-    for action in listed
-        .get("actions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let params: Vec<String> = action
-            .get("params")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .map(|param| {
-                let optional = param.get("required").and_then(Value::as_bool) != Some(true);
-                format!("{}{}", text(param, "name"), if optional { "?" } else { "" })
-            })
-            .collect();
-        let _ = write!(said, "\n#{}({})", text(action, "id"), params.join(", "));
-        let label = text(action, "label");
-        if !label.is_empty() {
-            let _ = write!(said, "  {label}");
-        }
-    }
-    said
-}
-
-/// A read as a person reads it: the text `tilo_read` prints, or its fields
-/// and children when the host sent no text.
-fn resource_text(read: &Value) -> String {
-    if let Some(text) = read
-        .get("text")
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-    {
-        return text.to_owned();
-    }
-    let mut said = text(read, "path").to_owned();
-    if let Some(kind) = read.get("kind").and_then(Value::as_str) {
-        let _ = write!(said, "  ({kind})");
-    }
-    for (name, value) in read
-        .get("fields")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-    {
-        let _ = write!(said, "\n  {name}: {value}");
-    }
-    for child in read
-        .get("children")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let _ = write!(said, "\n  {}", text(child, "path"));
-    }
-    said
 }
 
 /// `tilo run <file.tl> -w <workspace>`: the program as one task, one step
@@ -2839,63 +2746,19 @@ mod tests {
 
         phase a_listing_and_a_read_print_what_the_host_said;
         {
-            // The host's own text, when it sent one: the lines `tilo_ls` and
-            // `tilo_read` print to an agent.
+            // The host's own text, unrendered: `tilo ls` and `tilo read` print
+            // exactly the lines `tilo_ls` and `tilo_read` answer an agent, so
+            // a person and an agent read one listing. `--json` keeps the typed
+            // answer beside it.
             let listed = serde_json::json!({"path": "notes", "kind": "notes.notebook",
                 "rows": [{"path": "notes/Notebook", "label": "Notebook", "kind": "notes.notebook"}],
                 "text": "notes  (notes.notebook)\nNotebook  notes.notebook"});
             assert_eq!(
-                listing_text(&listed, "jane-doe", None),
+                text(&listed, "text"),
                 "notes  (notes.notebook)\nNotebook  notes.notebook"
             );
-            // A host that sent none: the same, built from its rows.
-            let rows_only = serde_json::json!({"path": "notes", "kind": "notes.notebook",
-                "rows": [{"path": "notes/Notebook", "label": "Notebook",
-                    "kind": "notes.notebook"}]});
-            assert_eq!(
-                listing_text(&rows_only, "jane-doe", None),
-                "notes  (notes.notebook)\nnotes/Notebook  Notebook  notes.notebook"
-            );
-            // Its actions follow, so the listing says what can be done there.
-            let with_actions = serde_json::json!({"path": "notes/Plan", "kind": "notes.page",
-                "rows": [],
-                "actions": [
-                    {"id": "rename", "label": "Rename note",
-                        "params": [{"name": "title", "required": true}]},
-                    {"id": "move-note", "label": "Move note",
-                        "params": [{"name": "parent", "required": false}]},
-                    {"id": "delete", "label": "Delete note", "params": []}]});
-            assert_eq!(
-                listing_text(&with_actions, "jane-doe", None),
-                "notes/Plan  (notes.page)\n#rename(title)  Rename note\n\
-                 #move-note(parent?)  Move note\n#delete()  Delete note"
-            );
-            // A listing that goes on says which command reads it on, whether
-            // its lines came with the answer or the command built them.
-            let paged = serde_json::json!({"path": "notes", "text": "notes  (notes.notebook)",
-                "next_cursor": "1.0.61.30"});
-            assert_eq!(
-                listing_text(&paged, "jane-doe", Some("notes")),
-                "notes  (notes.notebook)\nmore: tilo ls notes --cursor 1.0.61.30 -w jane-doe"
-            );
-            let built = serde_json::json!({"path": "notes",
-                "rows": [{"path": "notes/Notebook", "label": "Notebook",
-                    "kind": "notes.notebook"}],
-                "next_cursor": "40.7"});
-            assert_eq!(
-                listing_text(&built, "jane-doe", Some("notes/Notebook")),
-                "notes\nnotes/Notebook  Notebook  notes.notebook\nmore: tilo ls \
-                 notes/Notebook --cursor 40.7 -w jane-doe"
-            );
-            let read = serde_json::json!({"path": "notes/Notebook/Todo",
-                "kind": "notes.page", "fields": {"title": "Todo"},
-                "children": [{"path": "notes/Notebook/Todo/body"}]});
-            assert_eq!(
-                resource_text(&read),
-                "notes/Notebook/Todo  (notes.page)\n  title: \"Todo\"\n  notes/Notebook/Todo/body"
-            );
-            let said = serde_json::json!({"path": "notes/Notebook/Todo", "text": "# Todo\n"});
-            assert_eq!(resource_text(&said), "# Todo\n");
+            let read = serde_json::json!({"path": "notes/Notebook/Todo", "text": "# Todo\n"});
+            assert_eq!(text(&read, "text"), "# Todo\n");
         }
 
         phase the_people_of_a_workspace_are_a_line_each;
