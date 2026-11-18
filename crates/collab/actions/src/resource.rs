@@ -116,6 +116,38 @@ impl Exports for ResourceSpec {
     }
 }
 
+/// A resource kept behind a pointer exports what the resource does, as a reference to it did when
+/// the binding took a `&ResourceSpec`.
+impl<T: Exports + ?Sized> Exports for &T {
+    fn exported(&self) -> &ResourceSpec {
+        (**self).exported()
+    }
+}
+
+impl<T: Exports + ?Sized> Exports for Box<T> {
+    fn exported(&self) -> &ResourceSpec {
+        (**self).exported()
+    }
+}
+
+impl<T: Exports + ?Sized> Exports for std::rc::Rc<T> {
+    fn exported(&self) -> &ResourceSpec {
+        (**self).exported()
+    }
+}
+
+impl<T: Exports + ?Sized> Exports for Arc<T> {
+    fn exported(&self) -> &ResourceSpec {
+        (**self).exported()
+    }
+}
+
+impl<T: Exports> Exports for std::sync::LazyLock<T> {
+    fn exported(&self) -> &ResourceSpec {
+        std::sync::LazyLock::force(self).exported()
+    }
+}
+
 /// Type-safe adapter from a control's input value to an exported action.
 ///
 /// Construction requires the row that really exports the action ([`Exports`])
