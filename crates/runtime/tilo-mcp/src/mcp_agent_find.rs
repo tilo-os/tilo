@@ -799,6 +799,15 @@ fn searched_apps(
     if meant.is_empty() {
         meant.extend(listed_as(installed, name).map(|app| app.app_id.clone()));
     }
+    if meant.is_empty() {
+        // No app is called exactly that: the name as a model writes one, among the same apps.
+        let named: Vec<(&str, &str)> = installed
+            .iter()
+            .map(|app| (app.app_id.as_str(), app.label.as_str()))
+            .chain(running.iter().map(|app_id| (app_id.as_str(), "")))
+            .collect();
+        meant.extend(super::names::app_meant(name, &named)?);
+    }
     if !meant.is_empty() {
         return Ok(meant);
     }
