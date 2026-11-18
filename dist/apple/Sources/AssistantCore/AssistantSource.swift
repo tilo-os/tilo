@@ -41,6 +41,13 @@ public protocol AssistantSource: Sendable {
     /// Forget this device's place in the person's Tilo.
     func signOut() async
 
+    /// Whether the person's Tilo answers and does not let this device in: in the try that ended
+    /// last its site served its page, and the page's join stopped. False while the device is in,
+    /// while it stands at a way in, and where its site did not answer. The window then offers
+    /// the way in where it would say that Tilo cannot be reached. Nothing is given up by that:
+    /// only the person's own press signs the device out.
+    func joinStops() -> AsyncStream<Bool>
+
     // MARK: The first run
 
     /// What stands between the person and their assistant's first answer. A source finds the
@@ -210,6 +217,8 @@ extension AssistantSource {
         throw SourceProblem.refused("No provider can be linked here")
     }
     public func providers() async throws -> [ProviderChoice] { [] }
+    /// A source that never tries to get in is never stopped at it.
+    public func joinStops() -> AsyncStream<Bool> { AsyncStream { $0.yield(false) } }
 }
 
 /// How a conversation changed.

@@ -193,6 +193,20 @@ enum Screens {
                 .background(Token.content)
             }))
         }
+        // Tilo answers and does not let this device in: one sentence and the way in offered,
+        // where the window would say that Tilo cannot be reached. At the Mac's size and at an
+        // iPhone's width.
+        var turnedBack = Drawing.content()
+        turnedBack.joinStops = true
+        screens.append(Screen(name: "way-in-offered", size: window, view: rooted(await model(turnedBack), scheme) { MacWindow() }))
+        screens.append(Screen(name: "way-in-offered-phone", size: phone, view: rooted(await model(turnedBack), scheme) {
+            VStack(spacing: 0) {
+                ConversationView(chat: .main, picturedSecret: "")
+                ReachLine()
+                Composer(chat: .main)
+            }
+            .background(Token.content)
+        }))
         screens.append(Screen(name: "lock-screen", size: CGSize(width: 300, height: 470), view: rooted(await model(empty), scheme) { LockScreenBoard() }))
         screens.append(Screen(name: "live-activities", size: CGSize(width: 393, height: 560), view: rooted(await model(empty), scheme) { LiveBoard() }))
         // What the person's Tilo told them, as the app says it. What came while they were away

@@ -32,6 +32,8 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         public var providers: [ProviderChoice] = []
         /// What the person was told while they were away.
         public var sinceLeft: SinceLeft?
+        /// Whether the person's Tilo answers and does not let this device in.
+        public var joinStops = false
 
         public init() {}
     }
@@ -52,6 +54,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private let pairingAsk: PairingAsk?
     private let setupNow: Broadcast<Setup>
     private let sinceNow: Broadcast<SinceLeft?>
+    private let joinStopsNow: Broadcast<Bool>
     private var presses: [Press] = []
     private let offered: [ModelChoice]
     private let providerChoices: [ProviderChoice]
@@ -77,6 +80,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         pairingAsk = content.pairingAsk
         setupNow = Broadcast(content.setup)
         sinceNow = Broadcast(content.sinceLeft)
+        joinStopsNow = Broadcast(content.joinStops)
         offered = content.offered
         providerChoices = content.providers
         var feeds: [Chat: Feed] = [.main: Feed(content.main)]
@@ -137,6 +141,11 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         setupNow.set(setup)
     }
 
+    /// As if the person's Tilo answered and did not let this device in, or let it in again.
+    public func set(joinStops: Bool) {
+        joinStopsNow.set(joinStops)
+    }
+
     /// Everything a conversation holds now.
     public func items(in chat: Chat = .main) -> [Item] {
         feed(chat)?.all ?? []
@@ -176,6 +185,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     // MARK: The first run
 
     public func setup() -> AsyncStream<Setup> { setupNow.stream() }
+    public func joinStops() -> AsyncStream<Bool> { joinStopsNow.stream() }
 
     // MARK: Being told
 
@@ -245,6 +255,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     }
 
     public func signOut() async {
+        joinStopsNow.set(false)
         sessionNow.set(.signedOut)
     }
 
