@@ -85,7 +85,10 @@ const OWN_PAGE: &str = "signs its accounts in on a page of its own and takes no 
 const NAME_THEM: &str = "Ask your person for the names of the two servers, the one its mail is \
                          read from (IMAP) and the one it is handed to (SMTP), and pass them as \
                          incomingServer and outgoingServer. Nobody was asked for a password";
-const NOT_A_SERVER: &str = "That is not the name of a mail server";
+const NOT_A_SERVER: &str = "That is not the name of a mail server. Write a server as its name, \
+                            such as imap.example.org, and where it answers at another port \
+                            than the usual one with that port after a colon, such as \
+                            imap.example.org:1993";
 const NOT_PUBLIC: &str = "is not on the public internet. A mail account is signed in to only at \
                           servers there";
 const NOT_LOOKED: &str = "the look for its mail servers did not finish";
@@ -304,6 +307,24 @@ fn is_server_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.')
+}
+
+/// The server a turn named: its name alone, which is asked at the `usual`
+/// port, or its name and, after a colon, the port it answers at. A person's
+/// own server need not sit where its domain publishes nothing. None where
+/// that is not how a server is written.
+fn named_server(said: &str, usual: u16) -> Option<Server> {
+    let Some((name, port)) = said.rsplit_once(':') else {
+        return is_server_name(said).then(|| Server::new(said, usual));
+    };
+    // A port is written in digits alone, and none is 0.
+    if port.is_empty() || !port.bytes().all(|digit| digit.is_ascii_digit()) {
+        return None;
+    }
+    let Ok(port) = port.parse::<u16>() else {
+        return None;
+    };
+    (port != 0 && is_server_name(name)).then(|| Server::new(name, port))
 }
 
 /// Whether every address `name` answers with is on the public internet. A
@@ -544,12 +565,13 @@ impl Workspaces {
                     let Some((reads, sends)) = named else {
                         return Err(format!("{why}. {NAME_THEM}"));
                     };
-                    let (reads, sends) =
-                        (Server::new(&reads, IMAPS), Server::new(&sends, SUBMISSIONS));
+                    let (Some(reads), Some(sends)) = (
+                        named_server(&reads, IMAPS),
+                        named_server(&sends, SUBMISSIONS),
+                    ) else {
+                        return Err(NOT_A_SERVER.to_owned());
+                    };
                     for server in [&reads, &sends] {
-                        if !is_server_name(&server.name) {
-                            return Err(NOT_A_SERVER.to_owned());
-                        }
                         if !allowed(&server.name) {
                             return Err(format!("{} {NOT_PUBLIC}", server.name));
                         }
@@ -1019,5 +1041,40 @@ mod tests {
         assert!(!is_server_name("imap.provider.test/inbox"));
         assert!(!is_server_name("ada@provider.test"));
         assert!(!is_server_name(""));
+    }
+
+    /// A server is named by its name, and asked at the usual port, or by its
+    /// name and the port it answers at; what is written any other way is no
+    /// server, and nothing is asked.
+    #[test]
+    fn a_server_named_with_its_port_is_taken_at_that_port() {
+        assert_eq!(
+            named_server("imap.provider.test", IMAPS),
+            Some(Server::new("imap.provider.test", 993))
+        );
+        assert_eq!(
+            named_server("Mail.Provider.test:1993", IMAPS),
+            Some(Server::new("mail.provider.test", 1993))
+        );
+        assert_eq!(
+            named_server("smtp.provider.test:587", SUBMISSIONS),
+            Some(Server::new("smtp.provider.test", 587))
+        );
+        for no_server in [
+            "",
+            ":993",
+            "imap.provider.test:",
+            "imap.provider.test:0",
+            "imap.provider.test:65536",
+            "imap.provider.test:+993",
+            "imap.provider.test:99 3",
+            "imap.provider.test:imap",
+            "imap.provider.test:993:993",
+            "[::1]:993",
+            "imap.provider.test/inbox:993",
+            "ada@provider.test:993",
+        ] {
+            assert_eq!(named_server(no_server, IMAPS), None, "{no_server}");
+        }
     }
 }
