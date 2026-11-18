@@ -891,7 +891,7 @@ fn a_read_of_the_record_discloses_it_to_agents_and_a_private_view_does_not() {
 
 /// A control the window draws is its person's pointer and keyboard: an agent is never listed it,
 /// whatever its contract. An effect that only changes what the publisher's screen shows is not
-/// the agent's either, and is listed to it by name as the publisher's.
+/// listed to it either; an agent naming it is told it is the publisher's.
 #[test]
 fn an_agent_is_never_offered_a_drawn_control_and_hears_whose_a_shown_effect_is() {
     let row = |kind: &str, contract: ActionContract, governing: OperationKind| {
@@ -920,7 +920,7 @@ fn an_agent_is_never_offered_a_drawn_control_and_hears_whose_a_shown_effect_is()
     let control = row("tilo.control", write.clone(), OperationKind::Effect);
     let question = directory_row_question(&control).unwrap();
     assert!(!question.disclosed_to(&agent, Some("publisher")));
-    assert!(!question.refused_by_name_to(&agent), "never listed");
+    assert!(!question.refused_by_name_to(&agent), "never named either");
     assert!(question.disclosed_to(&publisher, Some("publisher")));
     let shown = row(
         "tasks.tracker",
@@ -931,7 +931,7 @@ fn an_agent_is_never_offered_a_drawn_control_and_hears_whose_a_shown_effect_is()
     assert!(!question.disclosed_to(&agent, Some("publisher")));
     assert!(
         question.refused_by_name_to(&agent),
-        "listed by name as the publisher's"
+        "named, it is the publisher's"
     );
     let real = row("tasks.tracker", write, OperationKind::Effect);
     assert!(

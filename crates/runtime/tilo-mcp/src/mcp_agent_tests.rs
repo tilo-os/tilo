@@ -8,7 +8,9 @@ use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueResource,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
 };
-use tilo_actions::{ActionParam, InvocationUpdate, ParamType, ResourceSemanticIdentity};
+use tilo_actions::{
+    ActionParam, Availability, InvocationUpdate, ParamType, ResourceSemanticIdentity,
+};
 
 const APP: &str = "so.tilo.notes";
 const WORKSPACE: &str = "workspace:workspace";
@@ -103,9 +105,8 @@ pub(super) struct Notes {
     /// as a record's host lists its items: a note is then several rows of the notebook's
     /// level, and a page may end between them.
     placed: Arc<Mutex<bool>>,
-    /// The action the agent's permissions deny it, listed to it as not allowed, as the
-    /// workspace lists one its person's settings for it deny.
-    refuses: Arc<Mutex<Option<(&'static str, tilo_actions::Availability)>>>,
+    /// The action refused to the agent, and how the workspace tells it so.
+    refuses: Arc<Mutex<Option<(&'static str, Availability)>>>,
 }
 
 /// What a workspace answers about its installed apps.
@@ -172,18 +173,9 @@ impl Notes {
         }
     }
 
-    /// The same Notes, its action `action` denied to the agent: listed as not allowed.
-    fn refusing(self, action: &'static str) -> Self {
-        *self.refuses.lock().unwrap() = Some((
-            action,
-            tilo_actions::Availability::not_allowed(Some(tilo_action_policy::Refuser::Settings)),
-        ));
-        self
-    }
-
-    /// The same Notes, its action `action` one only the person at its device invokes.
-    fn showing_only_here(self, action: &'static str) -> Self {
-        *self.refuses.lock().unwrap() = Some((action, tilo_actions::Availability::shown_here()));
+    /// The same Notes, its action `action` refused to the agent as `availability` says.
+    fn refusing(self, action: &'static str, availability: Availability) -> Self {
+        *self.refuses.lock().unwrap() = Some((action, availability));
         self
     }
 
@@ -827,6 +819,13 @@ impl Notes {
         for row in &mut rows {
             row.provider.clone_from(&provider);
         }
+        // One only the person at the device takes is told of when named, never listed.
+        let shown = |row: &CatalogueRow| {
+            row.action.as_ref().is_some_and(|a| {
+                matches!(a.contract.availability.refusal(), Some(("private_view", _)))
+            })
+        };
+        rows.retain(|row| query.target.is_some() || !shown(row));
         if let Some(target) = &query.target {
             rows.retain(|row| row.action.as_ref().is_some_and(|a| a.address == *target));
         } else if let Some(name) = &query.resource_name {
@@ -2467,7 +2466,7 @@ tilo_test_env::scenario! {
             assert!(failed && text.contains("name the action"), "{text}");
             // An action its permissions deny the agent is refused as not allowed, with where
             // that is changed: never as one the app does not have, and nothing is invoked.
-            let notes = Notes::new(true).refusing("rename");
+            let notes = Notes::new(true).refusing("rename", Availability::not_allowed(Some(tilo_action_policy::Refuser::Settings)));
             let (text, failed) = tool(
                 &agent(&notes),
                 "tilo_do",
@@ -2488,22 +2487,18 @@ tilo_test_env::scenario! {
                 text.contains("rename") && text.contains("set this to Deny"),
                 "the listing shows it, refused: {text}"
             );
-            // One that only changes what the person at the device sees is refused as that
-            // action, saying whose it is: never as one the app does not have.
-            let notes = Notes::new(true).showing_only_here("rename");
-            let (text, failed) = tool(
-                &agent(&notes),
-                "tilo_do",
-                json!({"path": "notes/Todo#rename", "args": {"title": "Done"}}),
-            )
-            .await;
-            assert!(failed, "{text}");
-            assert!(
-                text.contains("private_view: #rename only changes what the person at this device sees"),
-                "{text}"
-            );
-            assert!(!text.contains("has no action"), "{text}");
-            assert!(notes.invoked.lock().unwrap().is_empty(), "nothing was invoked");
+            // One only the person at the device takes is never listed, yet refused by name.
+            for (action, at) in [("rename", "notes/Todo"), ("new-page", "notes")] {
+                let notes = Notes::new(true).refusing(action, Availability::shown_here());
+                let path = format!("{at}#{action}");
+                let args = json!({"path": path, "args": {"title": "Done"}});
+                let (text, failed) = tool(&agent(&notes), "tilo_do", args).await;
+                let whose = format!("private_view: #{action} only changes what the person at");
+                assert!(failed && text.contains(&whose), "{text}");
+                assert!(notes.invoked.lock().unwrap().is_empty(), "nothing was invoked");
+                let (text, _) = tool(&agent(&notes), "tilo_ls", json!({"path": at})).await;
+                assert!(!text.contains(action), "never listed: {text}");
+            }
         });
     }
 

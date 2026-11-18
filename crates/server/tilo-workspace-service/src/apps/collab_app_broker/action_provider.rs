@@ -1009,9 +1009,8 @@ impl AppBrokerState {
 
     /// `action` of `app` as `actor` is offered it; one it is denied is left out, or for an agent
     /// marked not allowed ([`tilo_actions::Availability::not_allowed`]): it hears it is refused.
-    /// An agent is never offered a control the window draws, and hears that an effect which only
-    /// changes what the publisher's screen shows is theirs
-    /// ([`tilo_actions::Availability::shown_here`]).
+    /// An agent is never offered a control the window draws, nor an effect which only changes
+    /// what the publisher's screen shows: neither is anything it can do.
     pub(super) fn offered_to(
         workspace: &Workspace,
         actor: &BrokerActor,
@@ -1019,14 +1018,12 @@ impl AppBrokerState {
         app: &str,
         mut action: ActionDescriptor,
     ) -> Option<ActionDescriptor> {
-        if actor.is_agent() {
-            if tilo_actions::kind_is_a_drawn_control(&action.resource_kind) {
-                return None;
-            }
-            if action.kind == tilo_actions::OperationKind::Effect && action.contract.only_shows() {
-                action.contract.availability = tilo_actions::Availability::shown_here();
-                return Some(action);
-            }
+        if actor.is_agent()
+            && (tilo_actions::kind_is_a_drawn_control(&action.resource_kind)
+                || (action.kind == tilo_actions::OperationKind::Effect
+                    && action.contract.only_shows()))
+        {
+            return None;
         }
         let (address, need) = (&action.address, action.contract.need());
         let target = (&*action.resource_kind, &*address.resource, &*address.action);

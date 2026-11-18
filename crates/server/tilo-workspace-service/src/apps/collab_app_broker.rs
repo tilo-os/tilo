@@ -4018,9 +4018,8 @@ impl AppBrokerState {
                                 &actor,
                                 &cluster_id,
                                 peer_id,
-                                &revision,
-                                &resource,
-                                &action,
+                                (&revision, &resource, &action),
+                                true,
                             ))
                             .await
                             .and_then(|result| {
@@ -4149,10 +4148,10 @@ impl AppBrokerState {
         actor: &BrokerActor,
         cluster_id: &str,
         peer_id: u64,
-        revision: &str,
-        resource: &str,
-        action: &str,
+        target: (&str, &str, &str),
+        naming: bool,
     ) -> Result<runtime_collab::ActionDirectoryResolution, String> {
+        let (revision, resource, action) = target;
         validate_directory_target_input(cluster_id, revision, resource, action, None, None)
             .map_err(|error| error.to_string())?;
         let registered = directories
@@ -4201,6 +4200,23 @@ impl AppBrokerState {
                 Ok(runtime_collab::ActionDirectoryResolution::Found {
                     row,
                     revision: resolved,
+                })
+            }
+            // An agent naming an effect only the publisher's screen shows is
+            // told whose it is; it is never listed to it, nor started.
+            runtime_collab::ActionDirectoryResolution::Found { mut row, .. }
+                if naming
+                    && row.resource == resource
+                    && row.action.as_deref() == Some(action)
+                    && directory_row_question(&row)
+                        .is_ok_and(|question| question.refused_by_name_to(actor)) =>
+            {
+                if let Some(descriptor) = row.descriptor.as_mut() {
+                    descriptor.contract.availability = tilo_actions::Availability::shown_here();
+                }
+                Ok(runtime_collab::ActionDirectoryResolution::Found {
+                    row,
+                    revision: (!revision.is_empty()).then(|| revision.to_owned()),
                 })
             }
             runtime_collab::ActionDirectoryResolution::Found { .. } => {
@@ -4301,9 +4317,8 @@ impl AppBrokerState {
                 actor,
                 cluster_id,
                 peer_id,
-                revision,
-                resource,
-                action,
+                (revision, resource, action),
+                false,
             )
             .await
             .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
@@ -8048,10 +8063,10 @@ impl<'a> DirectoryQuestion<'a> {
                 .is_some_and(|me| publishing_person == Some(me))
     }
 
-    /// Whether the row is listed to `actor` though `actor` may not invoke
-    /// it: an agent hears that an effect is its publisher's alone
-    /// ([`tilo_actions::Availability::shown_here`]), rather than reading
-    /// its absence as the app having no such action.
+    /// Whether an agent that names this row's action is told it is its
+    /// publisher's alone ([`tilo_actions::Availability::shown_here`]),
+    /// though it is never listed to it: an effect that only changes what the
+    /// publisher's screen shows, not a control or a private view.
     fn refused_by_name_to(&self, actor: &BrokerActor) -> bool {
         self.shown_here && !self.private_view && actor.is_agent()
     }
@@ -8222,18 +8237,15 @@ fn filter_directory_page(
         .map(directory_row_question)
         .collect::<Result<Vec<_>, _>>()?;
     let answers = state.permits_directory_actions(cluster_id, actor, app_id, &questions)?;
-    // What is not disclosed to the actor is not listed at all, but for an effect only its
-    // publisher's screen shows, listed to an agent as theirs; what is disclosed, and its
-    // permissions deny, is listed to an agent as not allowed (`AppBrokerState::offered_to`).
+    // What is not disclosed to the actor is not listed at all; what is, and its permissions deny,
+    // is listed to an agent as not allowed (`AppBrokerState::offered_to`).
     let answers = answers
         .into_iter()
         .zip(&questions)
         .map(|(answer, question)| {
-            if question.disclosed_to(actor, publishing_person) {
-                Some(Ok(answer))
-            } else {
-                question.refused_by_name_to(actor).then_some(Err(()))
-            }
+            question
+                .disclosed_to(actor, publishing_person)
+                .then_some(answer)
         })
         .collect::<Vec<_>>();
     drop(questions);
@@ -8245,22 +8257,16 @@ fn filter_directory_page(
         .into_iter()
         .zip(answers)
         .filter_map(|(mut row, answer)| match answer? {
-            Err(()) => {
-                if let Some(descriptor) = row.descriptor.as_mut() {
-                    descriptor.contract.availability = tilo_actions::Availability::shown_here();
-                }
-                Some(row)
-            }
-            Ok(Answer::Deny) if actor.is_agent() => {
+            Answer::Deny if actor.is_agent() => {
                 if let Some(descriptor) = row.descriptor.as_mut() {
                     descriptor.contract.availability =
                         tilo_actions::Availability::not_allowed(None);
                 }
                 Some(row)
             }
-            Ok(Answer::Deny) => None,
-            Ok(Answer::Allow) => Some(row),
-            Ok(Answer::Ask) => {
+            Answer::Deny => None,
+            Answer::Allow => Some(row),
+            Answer::Ask => {
                 if let Some(descriptor) = row.descriptor.as_mut()
                     && descriptor.contract.confirmation == tilo_actions::ConfirmationPolicy::None
                 {

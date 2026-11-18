@@ -2650,7 +2650,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .iter()
             .filter_map(|(path, action)| Some((action_rank(name, action)?, path.clone(), action)))
             .collect();
-        let (path, action) = pick_action_anywhere(name, resolved, &ranked)?;
+        let (path, action) = match pick_action_anywhere(name, resolved, &ranked) {
+            Ok(found) => found,
+            Err(error) => {
+                return Err(self
+                    .kept_here(name, resolved, &levels)
+                    .await
+                    .unwrap_or(error));
+            }
+        };
         // The path to the resource it is published on; the action follows
         // its `#`, as every path's does.
         let named_at = match path {
@@ -2658,6 +2666,47 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             None => resolved.path.clone(),
         };
         Ok((named_at, action.clone()))
+    }
+
+    /// Why `name` is refused when it names, by its id, an action one of the app's top resources
+    /// keeps for the person at its device: such an action is never listed to an agent, and
+    /// a call of it is told whose it is rather than that the app has no such action. `None`
+    /// when the path names a resource (its own actions were asked by id already) or no top
+    /// resource keeps one by that id.
+    async fn kept_here(&self, name: &str, resolved: &Resolved, levels: &Levels) -> Option<String> {
+        if resolved.node.is_some() {
+            return None;
+        }
+        let top = levels.get("")?;
+        for node in top
+            .children
+            .iter()
+            .filter(|node| node.parent.is_empty())
+            .take(ROOT_PEEK)
+        {
+            let Ok(page) = self
+                .ask(CatalogueQuery {
+                    provider: Some(resolved.provider.clone()),
+                    target: Some(tilo_actions::ActionAddress::new(node.id.clone(), name)),
+                    revision: Some(top.revision.clone()),
+                    max_results: 1,
+                    ..CatalogueQuery::default()
+                })
+                .await
+            else {
+                continue;
+            };
+            if let Some(Err(refused)) = page
+                .rows
+                .into_iter()
+                .filter_map(|row| row.action)
+                .find(|found| found.address.action == name)
+                .map(super::refusal::not_allowed)
+            {
+                return Some(refused);
+            }
+        }
+        None
     }
 
     /// The action `action` on the resolved target, by its id, asked of the

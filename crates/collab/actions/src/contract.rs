@@ -66,9 +66,9 @@ impl Availability {
     pub const PRIVATE_VIEW: &'static str = "private_view";
 
     /// An action that only changes what the person at its device sees (a
-    /// form it opens, a place it shows), as it is listed to an agent: told
-    /// it is that person's alone, rather than left to read its absence as
-    /// the app having no such action.
+    /// form it opens, a place it shows), as an agent that names it is told
+    /// of it: never listed to it, and refused as that person's alone rather
+    /// than as an action the app does not have.
     #[must_use]
     pub fn shown_here() -> Self {
         Self::Unavailable {
