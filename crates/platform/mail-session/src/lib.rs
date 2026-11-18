@@ -252,6 +252,9 @@ pub struct LiveMailSession {
     kept: Mutex<HashMap<String, Kept>>,
     /// How the watches this starts pace themselves.
     pace: WatchPace,
+    /// Where its connections may go ([`Self::reaching`]); any address where
+    /// nothing was said, as on the device that keeps its person's accounts.
+    reach: Option<tilo_account_probe::imap::Reach>,
 }
 
 /// A signed-in session between two requests, and when its server last
@@ -292,7 +295,16 @@ impl LiveMailSession {
             runtime: OnceLock::new(),
             kept: Mutex::default(),
             pace: WatchPace::default(),
+            reach: None,
         }
+    }
+
+    /// The same sessions, every connection of theirs made only within
+    /// `reach`: what a server asks for, whose people name its mail servers.
+    #[must_use]
+    pub fn reaching(mut self, reach: tilo_account_probe::imap::Reach) -> Self {
+        self.reach = Some(reach);
+        self
     }
 
     /// The same sessions, their watches paced by `pace`.
@@ -1605,6 +1617,58 @@ mod tests {
     /// The envelope `sending` leaves in, as its send reads it.
     fn envelope(sending: &SendMail) -> Result<lettre::address::Envelope, String> {
         Leaving::read(sending.clone())?.envelope()
+    }
+
+    /// Sessions that reach the public internet alone connect to nothing of
+    /// this machine, to read or to send: an account whose servers are named
+    /// `localhost` is refused in the words of the judge of addresses, and a
+    /// listener here counts nobody.
+    #[test]
+    fn a_session_on_the_public_internet_connects_to_nothing_of_this_machine() {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connections = || std::iter::from_fn(|| listener.accept().ok()).count();
+        let mut account = accounts::Account::new("ada@example.test", accounts::email::TYPE_ID);
+        account.config = serde_json::json!({
+            "email": "ada@example.test",
+            "imap_host": "localhost",
+            "imap_port": port,
+            "smtp_host": "localhost",
+            "smtp_port": port,
+        });
+        let secret = accounts::Secret::password("a made-up password");
+        let inside = "localhost answers with an address of this machine or its network";
+        let session =
+            LiveMailSession::default().reaching(tilo_account_probe::imap::Reach::public());
+
+        let asking = FetchMail {
+            account: "ada@example.test".into(),
+            folder: "inbox".into(),
+            ..FetchMail::default()
+        };
+        let read = session
+            .fetch(&account, &secret, &asking)
+            .map(drop)
+            .unwrap_err();
+        assert!(read.contains(inside), "{read}");
+        assert_eq!(connections(), 0, "nothing is connected to, to read");
+
+        let leaving = Leaving::read(SendMail {
+            account: "ada@example.test".into(),
+            from_address: "ada@example.test".into(),
+            to: "Bob <bob@example.test>".into(),
+            subject: "Hello".into(),
+            body: "Hi".into(),
+            ..SendMail::default()
+        })
+        .unwrap();
+        let sent = session
+            .send(&account, &secret, &leaving, &[], None)
+            .map(drop)
+            .unwrap_err();
+        assert!(sent.contains(inside), "{sent}");
+        assert_eq!(connections(), 0, "nothing is connected to, to send");
     }
 
     /// A folder is found by its special-use mark before its name, and a

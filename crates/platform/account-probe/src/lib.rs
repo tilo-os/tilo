@@ -299,6 +299,38 @@ impl AccountTester for LiveAccountTester {
     }
 }
 
+/// What proves accounts on a server: [`LiveAccountTester`], with the
+/// connections it makes for a mail account going only where its reach lets
+/// them ([`imap::Reach::public_unless`]). A device that keeps its person's
+/// own accounts reaches any address and uses [`LiveAccountTester`] itself.
+pub struct LiveWithin(pub imap::Reach);
+
+impl AccountTester for LiveWithin {
+    fn discover_calendars(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+    ) -> Result<Vec<tilo_dav::discovery::CalendarCollection>, String> {
+        LiveAccountTester.discover_calendars(account, secret)
+    }
+
+    fn find_mail_servers(
+        &self,
+        address: &str,
+        allowed: &dyn Fn(&str) -> bool,
+    ) -> Result<mail_servers::MailServers, String> {
+        LiveAccountTester.find_mail_servers(address, allowed)
+    }
+
+    fn test(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+    ) -> Result<String, String> {
+        LiveAccountTester.test(account, secret)
+    }
+}
+
 /// Whether plain HTTP to `url` is allowed: only in a development build, and
 /// only to this machine, named `localhost` or by a loopback address. A
 /// loopback address reaches exactly the listener bound there, where the

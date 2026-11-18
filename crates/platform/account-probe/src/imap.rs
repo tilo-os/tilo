@@ -26,7 +26,9 @@ pub type SecureStream = tokio_rustls::client::TlsStream<TcpStream>;
 #[derive(Clone)]
 pub struct Reach {
     lookup: Lookup,
-    public_only: bool,
+    /// Asked anew at every connection: whether only the public internet is
+    /// reached now.
+    public_only: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl Reach {
@@ -37,7 +39,7 @@ impl Reach {
     pub fn any() -> Self {
         Self {
             lookup: tilo_net::address::system_lookup(),
-            public_only: false,
+            public_only: Arc::new(|| false),
         }
     }
 
@@ -47,7 +49,18 @@ impl Reach {
     pub fn public() -> Self {
         Self {
             lookup: tilo_net::address::system_lookup(),
-            public_only: true,
+            public_only: Arc::new(|| true),
+        }
+    }
+
+    /// The public internet only, unless `open` says, asked anew at every
+    /// connection, that any address is reached: a server whose operator may
+    /// let it call its own network at any time.
+    #[must_use]
+    pub fn public_unless(open: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            lookup: tilo_net::address::system_lookup(),
+            public_only: Arc::new(move || !open()),
         }
     }
 
@@ -62,13 +75,32 @@ impl Reach {
     /// Whether only the public internet is reached.
     #[must_use]
     pub fn is_public(&self) -> bool {
-        self.public_only
+        (self.public_only)()
+    }
+
+    /// Whether `named` would be connected to within this reach, as the judge
+    /// of its addresses answers now: what refuses a server before anybody is
+    /// asked for its password. A connection asks the judge again and goes
+    /// only where it is answered then. Looks the name up and waits for the
+    /// answer, so it is called off the threads that carry out turns.
+    #[must_use]
+    pub fn takes(&self, named: &str) -> bool {
+        if !self.is_public() {
+            return true;
+        }
+        let Ok(asking) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return false;
+        };
+        asking.block_on(self.addresses(named)).is_ok()
     }
 
     /// The addresses to connect to for `named`, from one look-up: under
     /// [`Self::public`] every one of them judged, and all of them or none.
     async fn addresses(&self, named: &str) -> std::io::Result<Vec<IpAddr>> {
-        if self.public_only {
+        if self.is_public() {
             return tilo_net::address::public_addresses(&self.lookup, named).await;
         }
         (self.lookup)(named.to_owned()).await
@@ -78,7 +110,7 @@ impl Reach {
 impl std::fmt::Debug for Reach {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Reach")
-            .field("public_only", &self.public_only)
+            .field("public_only", &self.is_public())
             .finish_non_exhaustive()
     }
 }
@@ -301,5 +333,60 @@ mod tests {
             assert_eq!(connections(&listener), 1, "one connection, to this machine");
             assert_eq!(asked.load(Ordering::SeqCst), 2, "one look-up for it");
         });
+    }
+
+    #[test]
+    fn a_reach_asks_at_every_connection_whether_its_operator_opened_the_own_network() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port here");
+        listener
+            .set_nonblocking(true)
+            .expect("a listener that waits for nobody");
+        let port = listener.local_addr().expect("its address").port();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let opened = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let open = Arc::clone(&opened);
+        let to = Reach::public_unless(move || open.load(Ordering::SeqCst))
+            .looked_up_by(this_machine(&asked));
+        let asking = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("sockets and a clock");
+        asking.block_on(async {
+            assert!(to.is_public());
+            let shut = reach(&to, NAMED, port, STEP).await.map(drop);
+            assert_eq!(
+                shut,
+                Err(format!(
+                    "{NAMED} answers with an address of this machine or its network"
+                ))
+            );
+            assert_eq!(connections(&listener), 0, "nothing is connected to");
+
+            // The same reach, kept: its operator opens the own network.
+            opened.store(true, Ordering::SeqCst);
+            assert!(!to.is_public());
+            let reached = reach(&to, NAMED, port, STEP).await;
+            assert!(reached.is_ok(), "{reached:?}");
+            assert_eq!(connections(&listener), 1, "one connection, to this machine");
+
+            // And shuts it again: the next connection is judged again.
+            opened.store(false, Ordering::SeqCst);
+            assert!(reach(&to, NAMED, port, STEP).await.is_err());
+            assert_eq!(connections(&listener), 0, "nothing is connected to");
+        });
+    }
+
+    #[test]
+    fn a_name_is_taken_before_a_connection_only_as_the_judge_answers_for_it() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let public = Reach::public().looked_up_by(this_machine(&asked));
+        assert!(!public.takes(NAMED), "a name that answers inside");
+        assert!(!public.takes("127.0.0.1"), "an address inside, written out");
+        assert!(
+            public.takes("93.184.216.34"),
+            "a public address, written out"
+        );
+        let any = Reach::any().looked_up_by(this_machine(&asked));
+        assert!(any.takes(NAMED), "any address is reached");
     }
 }

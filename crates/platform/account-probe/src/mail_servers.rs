@@ -456,6 +456,9 @@ pub fn find(address: &str, sources: &dyn Sources) -> Result<MailServers, String>
 pub struct Live<'a> {
     allowed: &'a dyn Fn(&str) -> bool,
     roots: rustls::RootCertStore,
+    /// Where a mail server that is greeted may be: any address, unless
+    /// [`Self::within`] says otherwise.
+    reach: crate::imap::Reach,
 }
 
 /// What one settings document at `url` says, where it answers with one.
@@ -508,7 +511,16 @@ impl<'a> Live<'a> {
         Self {
             allowed,
             roots: tilo_net::system_roots(),
+            reach: crate::imap::Reach::any(),
         }
+    }
+
+    /// The same, greeting mail servers only within `reach`: what a server
+    /// asks for, whose people name the addresses it looks at.
+    #[must_use]
+    pub fn within(mut self, reach: crate::imap::Reach) -> Self {
+        self.reach = reach;
+        self
     }
 
     /// The same, trusting `roots` alone for mail servers: what a test's own
@@ -649,6 +661,29 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    /// What a look for mail servers found is greeted only within its reach:
+    /// a found server whose name answers with this machine is connected to by
+    /// nobody where the public internet alone is reached, to read or to send.
+    #[test]
+    fn a_found_server_whose_name_answers_with_this_machine_is_greeted_by_nobody() {
+        let listener =
+            std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("a port here");
+        listener
+            .set_nonblocking(true)
+            .expect("a listener that waits for nobody");
+        let port = listener.local_addr().expect("its address").port();
+        let everyone = |_: &str| true;
+        let found = [Server::new("localhost", port)];
+        let public = Live::new(&everyone).within(crate::imap::Reach::public());
+        assert!(public.reads(&found).is_none());
+        assert!(public.sends(&found).is_none());
+        assert_eq!(
+            std::iter::from_fn(|| listener.accept().ok()).count(),
+            0,
+            "nothing is connected to"
+        );
+    }
 
     /// A network that answers what a test says, and keeps what it was asked.
     #[derive(Default)]
