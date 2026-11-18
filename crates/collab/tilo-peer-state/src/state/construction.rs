@@ -98,6 +98,7 @@ impl StatePeer {
             gathering: super::compaction_set::Gathering::default(),
             workspace_host: false,
             own_device: None,
+            refused_base: None,
         })
     }
     /// Add a root-certified viewer to existing governed history, as a member

@@ -284,16 +284,28 @@ fn step_7_what_the_repl_types_runs_the_same_as_the_agents_program() {
 
     // The same program, printed by both: the workspace's notes saying "launch", found and described
     // the same way. The agent is told first what it may not search on this device, which the person
-    // may.
+    // may. The person reads each resource by its title; the agent names each by a reference and
+    // the same title beside it.
     let program = "find(\"launch\").take(2)";
     let (typed, typed_failed) = repl.run(&mut session, program);
     let (ran, ran_failed) = agent.run(&mut session, program);
     assert!(!typed_failed, "the REPL's program ran: {typed}");
     assert!(!ran_failed, "the agent's program ran: {ran}");
+    let told: Vec<&str> = typed
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
     assert!(
-        !typed.is_empty() && ran.ends_with(&typed),
-        "the same program finds the same, typed and run: {typed:?} and {ran:?}"
+        !told.is_empty(),
+        "the person's program found something: {typed}"
     );
+    for found in told {
+        assert!(
+            ran.contains(&format!("{found:?}")) || ran.contains(found),
+            "the same program finds {found:?}, typed by the person and answered by the agent: \
+                {typed:?} and {ran:?}"
+        );
+    }
 }
 
 /// Step 8: traditional desktop — a press on a dock item opens it, and the top bar shows the focused

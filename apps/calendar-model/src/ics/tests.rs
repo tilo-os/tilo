@@ -337,15 +337,15 @@ tilo_test_env::scenario! {
             assert_eq!(event.start.to_string(), "2026-11-03T10:00:00");
             assert_eq!(event.end.to_string(), "2026-11-03T11:00:00");
             let (import, unknown) =
-                crate::resource::import_reporting(&payload).expect("the event is imported");
+                crate::actions::import_reporting(&payload).expect("the event is imported");
             assert_eq!(unknown, vec![tzid.to_string()]);
             assert_eq!(
-                crate::resource::imported_status("invite.ics", &unknown),
+                crate::actions::imported_status("invite.ics", &unknown),
                 format!(
                     "Imported calendar items from invite.ics. Times in {tzid} stay as written, as that time zone is unknown"
                 )
             );
-            let mut calendar = ui::tilo_resource::Replica::<Calendar>::new();
+            let mut calendar = tilo_resource::Replica::<Calendar>::new();
             calendar.apply(import).unwrap();
             assert_eq!(calendar.state().unwrap().events.len(), 1);
         }

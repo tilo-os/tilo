@@ -2572,10 +2572,23 @@ impl Worker {
         // that source, which reads the record and opens a worker for it: an
         // action the record publishes never pays for that.
         let holder = self.holder_of(&route);
-        // What the record publishes now, with what was written since it was
-        // last used taken up: an item made since is one of its resources.
-        self.brought_up_to_date(&holder, &state);
-        let published_here = self.publishes(&holder, &target.address);
+        // A caller served within bounds acts through a replica of their own:
+        // what the document publishes is asked of it, and this device's own
+        // mount is neither brought up to date nor opened for them. Catching that up
+        // on every write since it was last used cost a member's first call
+        // after another app's writes most of a second.
+        let bounded_caller = (!owner).then(|| self.bounded(caller)).flatten();
+        let published_here = if let Some(who) = &bounded_caller {
+            self.bounded_descriptor(workspace_id, who, (&route, &state), &target.address)
+                .map_err(Outcome::Rejected)?
+                .is_some()
+        } else {
+            // What the document publishes now, with what was written since it
+            // was last used taken up: an item made since is one of its
+            // resources.
+            self.brought_up_to_date(&holder, &state);
+            self.publishes(&holder, &target.address)
+        };
         if let Some(output) = self.source_read(workspace_id, caller, request, published_here)? {
             self.note_reads(request);
             return Ok((withheld.shown(output), None));
@@ -2583,11 +2596,27 @@ impl Worker {
         if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
             return Err(Outcome::Rejected(ActionCallError::StaleRevision));
         }
+        withheld.refuses(&target.address.resource)?;
+        let share_link = target.address.action == ui::tilo_resource::share::SHARE_LINK;
+        if !owner && !share_link {
+            let who = bounded_caller.ok_or_else(unknown_action)?;
+            if appearance.is_some() {
+                return Err(unknown_action());
+            }
+            return self
+                .perform_bounded(
+                    workspace_id,
+                    caller,
+                    &who,
+                    (request, &route, &state),
+                    (target, arguments, &withheld),
+                )
+                .map(|(output, left_at)| (withheld.shown(output), left_at));
+        }
         let mounting = timing_start();
         let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
-        withheld.refuses(&target.address.resource)?;
         timing_done("action.mount", mounting);
-        if target.address.action == ui::tilo_resource::share::SHARE_LINK {
+        if share_link {
             // Sharing asks the record for everything it lists, which is what
             // the link is chosen from.
             // The kind of the resource the link names, from the action
@@ -2603,21 +2632,6 @@ impl Worker {
             return self
                 .share_link(workspace_id, caller, at, target, arguments)
                 .map(|output| (output, None));
-        }
-        if !owner {
-            let who = self.bounded(caller).ok_or_else(unknown_action)?;
-            if appearance.is_some() {
-                return Err(unknown_action());
-            }
-            return self
-                .perform_bounded(
-                    workspace_id,
-                    caller,
-                    &who,
-                    (request, &route, &state),
-                    (target, arguments, &withheld),
-                )
-                .map(|(output, left_at)| (withheld.shown(output), left_at));
         }
         // The one action asked for, not the whole listing: a record of ten
         // thousand items costs this what a record of ten does.

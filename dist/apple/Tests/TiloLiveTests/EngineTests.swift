@@ -15,6 +15,8 @@ final class EngineTests: XCTestCase {
     /// How often a listener that takes its time over each word read.
     private var readings = 0
     private var listening: [Task<Void, Never>] = []
+    /// Every look the engine said of its page, in the order it said them.
+    private var looks: [TiloEngine.Look?] = []
 
     override func setUp() async throws {
         engine = TiloEngine(settings: try ShellSettings(site: Self.site), store: .keepsNothing)
@@ -171,6 +173,27 @@ final class EngineTests: XCTestCase {
         try await until("the engine is in") { self.engine.state == .open(route: "/@host.example/w/ws-1/so.tilo.chat") }
         // The code stays on the page after the approval: it is no longer what the page waits for.
         XCTAssertEqual(stood.last, .open(route: "/@host.example/w/ws-1/so.tilo.chat"))
+    }
+
+    /// The page says on its root element which look it draws in, the theme its person has in
+    /// Tilo, and says it again whenever that changes. The engine hands each on, so that a frame
+    /// around the page draws in the same. A word that names neither look is not taken, and
+    /// nothing is known of a page that was left.
+    func testThePageSaysWhichLookItDrawsInAndTheEngineSaysEachChange() async throws {
+        looks = []
+        let engine = engine!
+        let hears = Task { for await look in engine.looks() { self.looks.append(look) } }
+        defer { hears.cancel() }
+        try await until("nothing is known of the page's look before it says one") { self.looks == [nil] }
+        try await inPage("document.documentElement.dataset.look = 'dark'")
+        try await until("the page's dark look is told") { self.looks == [nil, .dark] }
+        XCTAssertEqual(engine.look, .dark)
+        try await inPage("document.documentElement.dataset.look = 'sepia'")
+        try await inPage("document.documentElement.dataset.look = 'light'")
+        try await until("the page's light look is told, and no other word before it") { self.looks == [nil, .dark, .light] }
+        XCTAssertEqual(engine.look, .light)
+        engine.leave()
+        try await until("nothing is known of a page that was left") { self.looks == [nil, .dark, .light, nil] }
     }
 
     func testARefusalIsSaidInTheSitesOwnWords() async throws {

@@ -753,7 +753,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
         {
             differences.push(format!(
                 "{name}'s changes on the host: runs {named:?} of {}",
-                runs.len()
+                groups.len()
             ));
         }
     }

@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
         }
         // Every op the protocol answers is in the list, each once.
         let mut names: Vec<&str> = Op::ALL.iter().map(|op| op.name()).collect();
-        assert_eq!(names.len(), 31, "the protocol's ops");
+        assert_eq!(names.len(), 32, "the protocol's ops");
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), Op::ALL.len(), "{names:?}");

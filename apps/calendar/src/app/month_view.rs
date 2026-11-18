@@ -13,6 +13,7 @@ use ui::tokens::TextRole;
 use ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 
 use super::{Action, CalendarApp};
+use crate::colours::Themed;
 use crate::date;
 use crate::draw_util::{hairline, line_height, text_centered};
 use crate::model::{Id, Palette};

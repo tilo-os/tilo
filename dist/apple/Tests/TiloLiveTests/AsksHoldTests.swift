@@ -26,9 +26,18 @@ final class AsksHoldTests: XCTestCase {
     private var pageWords = 0
     private var listening: [Task<Void, Never>] = []
 
+    /// `again` is a later start of the same device: the app was closed and is opened, with
+    /// what it kept the time before and nothing of what it said then.
     private func start(_ mainChat: TiloSource.MainChat = .assistant, livesInOwn: Bool = false,
-                       closedKeys: (any ClosedKeyStore)? = nil) async throws {
-        suite = "so.tilo.assistant.tests.\(UUID().uuidString)"
+                       closedKeys: (any ClosedKeyStore)? = nil, again: Bool = false) async throws {
+        if again {
+            for task in listening { task.cancel() }
+            sessions = []
+            changes = []
+            setups = []
+        } else {
+            suite = "so.tilo.assistant.tests.\(UUID().uuidString)"
+        }
         let defaults = UserDefaults(suiteName: suite)!
         let engine = TiloEngine(settings: try ShellSettings(site: Self.site), store: .keepsNothing)
         engine.loads = { _ in }
@@ -936,6 +945,40 @@ final class AsksHoldTests: XCTestCase {
     }
 
     // MARK: While her server makes her own workspace
+
+    /// A later start of a device that has been in before, on a busy server: it takes its time
+    /// to say which workspace is hers, as it may at any start. Nothing is made for the first
+    /// time, so nothing is said of a making: what every start says stands until she is in.
+    func testAtALaterStartAServerThatTakesItsTimeIsNotSaidToBeMakingHerWorkspace() async throws {
+        // The first start: her server says which workspace is hers, and the device keeps its person.
+        try await start(livesInOwn: true)
+        try await enter("window.agents = [kept('reed', {name: 'Reed'})]", own: true)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        // The app is closed and opened again, and her server is four times as long at the same
+        // ask as the app waits before it speaks of a making.
+        try await start(livesInOwn: true, again: true)
+        source.makingAfter = .milliseconds(300)
+        try await enter("window.agents = [kept('reed', {name: 'Reed'})]; window.plan = {own: [{late: 1200}]}", own: true)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(setups.contains(.makingWorkspace), "a start that makes nothing said that her workspace is being made: \(setups)")
+        let out = try await asked("own")
+        XCTAssertEqual(out, 1)
+    }
+
+    /// The first time is not over while her server is still at it: where the app is closed in
+    /// that time and opened again, the device keeps no person yet, and the main chat says what
+    /// is waited for as it did before.
+    func testAStartWhileHerServerIsStillAtTheFirstMakingSaysWhatItWaitsFor() async throws {
+        try await start(livesInOwn: true)
+        source.makingAfter = .milliseconds(300)
+        try await enter("window.agents = []; window.plan = {own: ['never']}", own: true)
+        try await until("the main chat says that her server is making her workspace") { self.setups.last == .makingWorkspace }
+        try await start(livesInOwn: true, again: true)
+        source.makingAfter = .milliseconds(300)
+        try await enter("window.agents = []; window.plan = {own: ['never']}", own: true)
+        try await until("the main chat says it at the next start too") { self.setups.last == .makingWorkspace }
+        XCTAssertEqual(setups.filter { $0 != .unknown }, [.findingAssistant, .makingWorkspace])
+    }
 
     /// As a first start on a busy server: it makes her own workspace the first time it is asked
     /// which one that is, and takes its time. She is in for all of that time, and reads what is

@@ -368,6 +368,12 @@ pub struct StatePeer {
     /// own change, a work delegation's form that a base it adopts lacks.
     /// Never persisted.
     own_device: Option<[u8; 32]>,
+    /// The newest base of its governor this copy refused, by its generation.
+    /// While the workspace document the copy holds is of an earlier one, its
+    /// governor governs by roles and grants the copy does not hold, and the
+    /// copy takes in no write on those it holds
+    /// ([`Self::behind_its_governor`]). Never persisted.
+    refused_base: Option<u64>,
 }
 
 /// The Automerge actor a workspace host's own changes to a workspace are made under,
