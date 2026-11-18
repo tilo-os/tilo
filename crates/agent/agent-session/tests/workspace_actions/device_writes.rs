@@ -237,26 +237,38 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
         session: None,
     };
     mcp.initialize().await;
-    // The group is a write of theirs: the workspace refuses it, and the call is
-    // answered so.
-    let many = ended(
-        &mut mcp,
-        "tasks/Issues#group",
-        json!({"actions": [
-            {"action": "create", "args": {"title": "Second"}},
-            {"action": "create", "args": {"title": "Third"}},
-        ]}),
-    )
-    .await;
+    // Both writes of the grouped call are theirs, and the workspace offers a
+    // person who only reads it none of them: the first step is refused and the
+    // whole call is answered so.
+    let many = mcp
+        .tilo_do(json!({"calls": [
+            {"path": "tasks#create", "args": {"title": "Second"}},
+            {"path": "tasks#create", "args": {"title": "Third"}},
+        ]}))
+        .await;
     let typed = &many["result"]["structuredContent"];
-    assert_ne!(
-        typed["status"], "ok",
+    assert_eq!(
+        typed["status"], "failed",
         "a refused group is never done: {many}"
     );
     assert!(
-        many.to_string().contains("permission"),
+        many.to_string().contains("no action create"),
         "the refusal says why: {many}"
     );
+    // Nothing of theirs reached the tracker, while the same writes the person
+    // who owns it makes are taken: what was refused is whose they were.
+    let held = owner.tilo_read(json!({"path": "tasks/Issues"})).await;
+    assert!(
+        !held.to_string().contains("Second"),
+        "the refused group wrote nothing: {held}"
+    );
+    for title in ["Second", "Third"] {
+        let made = ended(&mut owner, "tasks#create", json!({"title": title})).await;
+        assert_eq!(
+            made["result"]["structuredContent"]["status"], "ok",
+            "the owner's {title}: {made}"
+        );
+    }
 }
 
 /// Two callers write to one workspace over one session: the workspace refuses
