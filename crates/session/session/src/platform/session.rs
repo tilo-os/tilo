@@ -894,13 +894,13 @@ impl Session {
                 engine: engine.clone(),
                 hints: hints.clone(),
                 peek: super_peek.clone(),
+                wallpaper,
             },
             sync.clone(),
             &overview,
             &emoji.link(),
             &overlays,
             &switcher,
-            &wallpaper,
         )));
         compositor.add_surface(crate::shell::under(options.shell, Rc::clone(&chrome)));
         // Search's code is asked for as the session starts, so it is in by the

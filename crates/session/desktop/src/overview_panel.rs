@@ -676,7 +676,7 @@ impl Widget for OverviewPanel {
             (ui::scene_parts::PartKey::new("overview.ground", 0), rect),
             ui::lift::Pose::faded(p),
             |scene, transform| {
-                ui::overlay::scrim::whole_view(scene, transform, rect, &self.wallpaper, theme)
+                ui::overlay::scrim::whole_view(scene, transform, rect, &self.wallpaper, theme);
             },
         );
         self.paint_panel_at(scene, transform, text, theme, panel_curve(p));
@@ -1561,7 +1561,7 @@ mod tests {
             .places
             .iter()
             .fold(None::<vello::kurbo::Rect>, |all, place| {
-                Some(all.map_or(place.bounds(), |all| all.union(place.bounds())))
+                Some(all.map_or_else(|| place.bounds(), |all| all.union(place.bounds())))
             })
             .expect("a pictured strip");
         assert!(

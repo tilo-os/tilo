@@ -936,7 +936,7 @@ fn every_overview_card_shows_the_window_it_pictures() {
     // strip, not because the window happens to be in front.
     let shown = session
         .handle()
-        .read(|tree| tree.active_strip_id())
+        .read(tilo_desktop_model::Layout::active_strip_id)
         .expect("a strip is shown");
     let holding = session.handle().read(|tree| {
         tree.active_workspace()

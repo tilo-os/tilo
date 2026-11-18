@@ -112,10 +112,10 @@ fn paint_shell(
     shape: &impl Shape,
     blur: Option<f32>,
     ground: Color,
-) -> bool {
+) {
     let Some(blur_px) = blur else {
         scene.fill(Fill::NonZero, transform, ground, None, shape);
-        return false;
+        return;
     };
     let gradient = source.state.borrow().gradient;
     let (brush, brush_transform) =
@@ -130,39 +130,11 @@ fn paint_shell(
             (Brush::Gradient(gradient), None)
         } else {
             scene.fill(Fill::NonZero, transform, ground, None, shape);
-            return false;
+            return;
         };
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, shape);
     scene.fill(Fill::NonZero, transform, &brush, brush_transform, shape);
     scene.pop_layer();
-    true
-}
-
-/// Fill `shape` with `material` over `source`: the shell's wallpaper, blurred and fitted to the
-/// shape, behind it under the material's tint of `ground`; where the shell shows its gradient, that
-/// gradient across the shape; `ground` alone for an opaque material or a shell that shows neither.
-pub(crate) fn fill(
-    scene: &mut Scene,
-    source: &Source,
-    transform: Affine,
-    shape: &impl Shape,
-    material: Material,
-    theme: &Theme,
-    ground: Color,
-) {
-    let blur =
-        super::blurs(material, theme).then_some(theme.tokens.colors.surfaces.material_blur_px);
-    if !paint_shell(scene, source, transform, shape, blur, ground) {
-        return;
-    }
-    super::settle(scene, transform, shape, theme, ground);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        ground.with_alpha(theme.tokens.colors.surfaces.material_opacity),
-        None,
-        shape,
-    );
 }
 
 /// Fill `shape` with the shell itself, blurred as a floating surface blurs it but under no tint: a

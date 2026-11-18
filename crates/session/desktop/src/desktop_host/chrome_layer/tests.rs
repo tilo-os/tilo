@@ -527,9 +527,9 @@ fn the_overviews_ground_is_the_wallpapers_and_not_the_fallback() {
     chrome.set_wallpaper(wallpaper.clone());
     let theme = ui::Theme::dark();
     let draw = |chrome: &mut DesktopChrome| {
-        use ui::widget::Widget as _;
+        use ui::widget::DrawChild as _;
         let mut scene = ui::vello::Scene::new();
-        chrome.draw(
+        chrome.draw_child(
             &mut scene,
             ui::kurbo::Affine::IDENTITY,
             &mut ui::TextRenderer::new(),
@@ -565,7 +565,7 @@ fn the_overviews_ground_is_the_wallpapers_and_not_the_fallback() {
         }
     }
     let picture = ui::raster::rgba8(pixels, 64, 64);
-    wallpaper.set(Some(picture.clone()));
+    wallpaper.set(Some(picture));
     assert_eq!(
         image_fills(&draw(&mut chrome)),
         bare + 1,
