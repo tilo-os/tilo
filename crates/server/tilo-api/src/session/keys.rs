@@ -136,11 +136,9 @@ fn refused(error: &ActionCallError) -> Outcome {
     match error {
         // The workspace records its keys' revocations: one it refuses as
         // revoked asks its person for another.
-        ActionCallError::Refused { reason } if reason.contains("key_revoked") => failed(
-            "key_revoked",
-            "this key was revoked",
-            "ask the person for a new key",
-        ),
+        ActionCallError::Refused { reason } if reason.contains("key_revoked") => {
+            failed("key_revoked", "this key was revoked", crate::APPROVE_AGAIN)
+        }
         ActionCallError::UnknownAction => failed(
             "not_found",
             "the workspace holds no such key, or it is not this key's to revoke",

@@ -1283,11 +1283,19 @@ impl Workspaces {
     ) -> Result<JoinReply, CollaborationError> {
         let proving = crate::timing::start();
         let (invitation, person) = (presented.invitation.clone(), presented.cert.user_public_key);
+        let cert = presented.cert.clone();
         let reply = self
             .prove(presented, &valid_name(name)?, token, now)
             .await?;
         if let JoinReply::Admitted { workspace, .. } = &reply {
             self.accepted(workspace, &invitation, person).await;
+            // A key that came in with an invitation is listed as every key
+            // the workspace admits is, so its person can revoke it there.
+            if let Some(scope) = cert.capabilities.agent {
+                let governed = self.workspace(workspace).await?;
+                let mut governed = governed.lock().await;
+                self.list_grant(&mut governed, &cert, scope, now).await?;
+            }
         }
         crate::timing::event("join.prove.admitted", proving, 0);
         let retaining = crate::timing::start();

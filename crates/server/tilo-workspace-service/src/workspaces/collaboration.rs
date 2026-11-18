@@ -435,7 +435,7 @@ impl Workspaces {
     /// Record the grant `cert` was admitted under in `workspace`'s governance,
     /// reaching `scope`, authored by this host: the workspace's holders and
     /// the API servers that read them see it from then on.
-    async fn list_grant(
+    pub(super) async fn list_grant(
         &self,
         workspace: &mut GovernedWorkspace,
         cert: &DeviceCert,

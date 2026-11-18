@@ -9,6 +9,13 @@ use super::{
 };
 use collab_types::signer::DeviceSigner;
 
+/// What a refused change made by a key adds: the workspace holds no grant
+/// its person approved for the key (or its grant was revoked), and the one
+/// command that approves one.
+const KEY_NOT_APPROVED: &str = ". This key is not approved for this workspace, or its grant \
+     was revoked: the person types `tilo keys create \"<name>\"` and approves the new key in \
+     their Tilo tab (on their own computer, `tilo login` again)";
+
 /// `person`'s access under `policy`, held to the foreign-device bound on a
 /// `foreign` device and to `delegate`'s bound on a delegate's.
 fn access_of(
@@ -767,7 +774,8 @@ impl StatePeer {
             .then(|| collab_types::MemberId::bot(installation.id))
     }
 
-    /// What the keys their people approved for this workspace may do at
+    /// What the keys their people approved for this workspace, and the agent
+    /// devices they delegated, may do at
     /// `now`, as grants naming each key's agent
     /// ([`collab_types::workspace_grant::key_agent_id`]): what an agent of its
     /// person may ([`tilo_action_policy::Acting::handed_preset`]). A key is
@@ -792,6 +800,22 @@ impl StatePeer {
                         || grant.expires_ms.is_some_and(|expiry| now_ms >= expiry))
             })
         };
+        // An agent device its person delegated, with the delegation their
+        // root signed, which the workspace holds the same way.
+        let delegated = self.core.certificates.keys().filter_map(|device| {
+            match backend::member::legacy(&self.core, device, now) {
+                Ok((_, Some(delegate)))
+                    if delegate
+                        .actor
+                        .member_id()
+                        .is_some_and(|member| member.agent_id().is_some()) =>
+                {
+                    Some(delegate.grants)
+                }
+                _ => None,
+            }
+        });
+        let delegated: Vec<tilo_action_policy::Grant> = delegated.flatten().collect();
         self.core
             .certificates
             .keys()
@@ -810,6 +834,7 @@ impl StatePeer {
                 )
             })
             .flatten()
+            .chain(delegated)
             .collect()
     }
 
@@ -895,10 +920,19 @@ impl StatePeer {
             Err(refusal) => {
                 // Who the change names as having made it, and who signed it:
                 // what a refusal report needs to say whose change it was.
-                let invokers: Vec<String> = collab_types::claimed_invokers(envelope)
+                let claimed = collab_types::claimed_invokers(envelope);
+                let invokers: Vec<String> = claimed
                     .iter()
                     .map(|invoker| serde_json::to_string(invoker).unwrap_or_default())
                     .collect();
+                // A key the workspace holds no grant for is told how to get one.
+                let by_key = claimed.iter().any(|invoker| {
+                    invoker.nodes().into_iter().any(|node| {
+                        node.agent_id()
+                            .and_then(tilo_action_policy::key_of_agent)
+                            .is_some()
+                    })
+                });
                 tracing::warn!(
                     route = ?route,
                     signer = %hex::encode(source),
@@ -906,7 +940,7 @@ impl StatePeer {
                     %refusal,
                     "a change was refused"
                 );
-                Err(format!(
+                let mut said = format!(
                     "document change forbidden: {refusal} (made by {}, signed by device {})",
                     if invokers.is_empty() {
                         "its signer".to_owned()
@@ -914,7 +948,11 @@ impl StatePeer {
                         invokers.join(", ")
                     },
                     hex::encode(source)
-                ))
+                );
+                if by_key {
+                    said.push_str(KEY_NOT_APPROVED);
+                }
+                Err(said)
             }
         }
     }

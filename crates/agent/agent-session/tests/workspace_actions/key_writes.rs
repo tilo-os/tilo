@@ -183,6 +183,67 @@ async fn a_keys_writes_land() {
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+
+    // Its person revokes the key's grant in the workspace: a write to the
+    // tree's own document and one into a part of the notebook are refused
+    // alike, and neither answers that it went in.
+    let person = root.verifying_key().to_bytes();
+    let grants = workspaces.grants_of(&workspace, &person).await.unwrap();
+    assert_eq!(grants.len(), 1, "the workspace lists the key: {grants:?}");
+    assert!(
+        workspaces
+            .revoke_grant(&workspace, &grants[0].id, tilo_clock::unix_now_ms())
+            .await
+            .unwrap()
+    );
+    let (status, put) = json_of(
+        key.send(
+            hyper::Method::POST,
+            &format!("{base}/uploads"),
+            b"after the revocation\n",
+            &[("content-type", "application/octet-stream")],
+        )
+        .await,
+    )
+    .await;
+    let tree_write = if status == 201 {
+        key.post(
+            &format!("{base}/resources/files/actions/open"),
+            &json!({"content": put["content"], "name": "late.txt", "dir": ""}),
+            &[],
+        )
+        .await
+    } else {
+        (status, put)
+    };
+    let part_write = key
+        .post(
+            &format!("{notebook}/new-note"),
+            &json!({"title": "after the revocation"}),
+            &[],
+        )
+        .await;
+    for (what, (status, answer)) in [("the tree", tree_write), ("a part", part_write)] {
+        assert!(
+            !(200..300).contains(&status) || answer["status"] != "ok",
+            "a revoked key's write to {what} answers an error: {status} {answer}"
+        );
+        assert!(
+            answer.to_string().contains("tilo keys create"),
+            "the refusal says how to approve a key again: {answer}"
+        );
+    }
+
+    // Doing what it says gives a key that writes again.
+    let page = enrol(&root, "Ada's browser again", DeviceCapabilities::member());
+    let token = super::api_on_server::approved_key(&on_server, &root, &page, "Ada's backend").await;
+    let again = Key { api: &api, token };
+    again
+        .did(
+            &format!("{notebook}/new-note"),
+            &json!({"title": "with the new key"}),
+        )
+        .await;
 }
 
 /// Whether `tree` holds the file `dir/name`.

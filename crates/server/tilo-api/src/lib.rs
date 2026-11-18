@@ -1452,7 +1452,7 @@ impl Server {
             if why.contains("key_revoked") {
                 return Err(
                     v1::errors::ApiError::new("key_revoked", "this key was revoked")
-                        .next("ask the person for a new key"),
+                        .next(crate::APPROVE_AGAIN),
                 );
             }
             return Err(unavailable(why.to_owned()));
@@ -1647,6 +1647,11 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// What a key that no longer acts (revoked, expired, or no longer granted in
+/// its workspace) is told to do: the one command that approves a key again.
+pub(crate) const APPROVE_AGAIN: &str = "approve a new key: the person types `tilo keys create \"<name>\"` \
+     and approves it in their Tilo tab (on their own computer, `tilo login` again)";
+
 /// Why a token the server was sent reaches nothing, as every refusal of the server is
 /// typed: `{"error": {code, message, next_steps}}`, with when it was revoked
 /// (`revoked_at_ms`) or expired (`expired_at_ms`) when the server knows. A
@@ -1664,7 +1669,7 @@ pub(crate) fn denial(denied: store::Denied) -> Value {
                 || "this key was revoked".to_owned(),
                 |at| format!("this key was revoked on {}", pages::date(at)),
             ),
-            "ask the person for a new key",
+            crate::APPROVE_AGAIN,
             at_ms.map(|at| ("revoked_at_ms", at)),
         ),
         store::Denied::Expired { at_ms } => (
