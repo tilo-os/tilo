@@ -24,7 +24,7 @@
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Outbox};
 
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_server_client::CertificationOutcome;
 use tilo_server_client::invite::guest_certificate;
