@@ -1278,7 +1278,8 @@ struct ProviderFailure {
     outcome_unknown: bool,
     /// The provider provably did no work for this request: no connection to
     /// it could be made, or it refused the request as rate-limited (HTTP
-    /// 429, not for exhausted quota) or overloaded (HTTP 529). The one
+    /// 429, not for exhausted quota), overloaded (HTTP 529) or unavailable
+    /// for now (HTTP 503, not when it says it is switched off). The one
     /// ground on which a Plan is sent again.
     unprocessed: bool,
     /// The provider's HTTP status, when one was received.
