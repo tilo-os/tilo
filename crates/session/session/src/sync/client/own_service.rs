@@ -110,6 +110,49 @@ impl KeySink for DeviceKeySink {
     fn settled(&self, _workspace: &str, _state: tilo_peer_state::StatePeer) {}
 }
 
+/// Found the workspaces `engine` makes on this device's own workspace service when no peer network
+/// opened it: the session takes part in none, or its endpoint did not bind. The service is the one
+/// a networked session opens, on the same store, on an endpoint under the device's key that only
+/// this process reaches; so a desktop with no network keeps its layout through a restart, and
+/// once a session's network comes up it carries what was founded here, with nothing to move.
+pub(crate) fn found_alone(engine: &Arc<Engine>) {
+    if engine.founds() {
+        return;
+    }
+    let identity = engine.identity().clone();
+    let (own, _unrouted) = OwnService::deferred();
+    let opening = async {
+        let secret = identity
+            .signer
+            .endpoint_secret()
+            .ok_or("this device's key never leaves its store, so it opens no workspace service")?;
+        let endpoint = super::loopback_endpoint()?
+            .secret_key(iroh::SecretKey::from_bytes(&secret))
+            .bind()
+            .await
+            .map_err(|error| format!("this device's own endpoint: {error}"))?;
+        open(&own, &identity, engine, endpoint.clone()).await?;
+        Ok::<_, String>(endpoint)
+    };
+    let opened = tilo_rt::try_app()
+        .map_err(|error| error.to_string())
+        .and_then(|runtime| runtime.block_on(opening).map_err(|error| error.to_string()))
+        .and_then(|opened| opened);
+    match opened {
+        Ok(endpoint) => engine.serve_founding(Arc::new(Founding {
+            service: own,
+            endpoint,
+            link: engine.link(),
+            identity,
+            engine: Arc::downgrade(engine),
+            network: None,
+        })),
+        Err(error) => {
+            tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
+        }
+    }
+}
+
 /// Founds a workspace this device made on its own workspace service: the service creates it and
 /// invites this device, and this device redeems the invitation in process, as it redeems any.
 pub(super) struct Founding {
@@ -117,8 +160,12 @@ pub(super) struct Founding {
     pub(super) endpoint: iroh::Endpoint,
     pub(super) identity: DeviceIdentity,
     pub(super) engine: std::sync::Weak<Engine>,
-    pub(super) network: tokio::sync::mpsc::Sender<tilo_network_actor::NetCmd>,
-    pub(super) events: tokio::sync::mpsc::Sender<tilo_network_actor::NetEvent>,
+    /// The peer network the workspace is carried on: `None` while this device takes part in none,
+    /// when it is held here and carried once a session's network joins it.
+    pub(super) network: Option<(
+        tokio::sync::mpsc::Sender<tilo_network_actor::NetCmd>,
+        tokio::sync::mpsc::Sender<tilo_network_actor::NetEvent>,
+    )>,
     pub(super) link: Option<Arc<crate::workspace_keys::KeyLink>>,
 }
 
@@ -142,8 +189,9 @@ impl tilo_session_client::engine::Founder for Founding {
                 self.endpoint.clone(),
                 self.identity.clone(),
                 engine,
-                &self.network,
-                &self.events,
+                self.network
+                    .as_ref()
+                    .map(|(network, events)| super::adopt::Carrier { network, events }),
                 crate::sync::Enrolling {
                     workspace_id: workspace,
                     way: tilo_workspace_directory::Way::Invitation(invitation),

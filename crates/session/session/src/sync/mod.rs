@@ -85,4 +85,6 @@ pub(crate) use client::ReceivedSurface;
 #[cfg(target_os = "linux")]
 pub(crate) use client::SiblingDials;
 #[cfg(target_os = "linux")]
+pub(crate) use client::found_alone;
+#[cfg(target_os = "linux")]
 pub use client::{Entry, PeerDocuments, configured_hosts, device_identity};

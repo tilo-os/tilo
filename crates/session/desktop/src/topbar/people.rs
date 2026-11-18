@@ -748,6 +748,32 @@ mod tests {
         );
     }
 
+    /// An agent here wears its face on the bar whether or not it works, and while it works its
+    /// ring breathes, as a person's does in a call.
+    #[test]
+    fn an_agent_at_work_breathes_and_one_at_rest_stays() {
+        let mut tree = agent_and_person();
+        let (mut bar, _chrome) = bar_over(&tree, true);
+        let rings = |bar: &TopBarChrome| -> Vec<bool> {
+            bar.face_looks
+                .iter()
+                .map(|look| look.call.is_some())
+                .collect()
+        };
+        assert_eq!(rings(&bar), [false, false], "at rest, no ring");
+        for present in &mut tree.workspaces[0].present {
+            present.status = Some(tilo_desktop_model::Status::default());
+        }
+        bar.sync_from_tree(&tree);
+        super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
+        assert_eq!(bar.face_ids, ["ada", "cc"]);
+        assert_eq!(
+            rings(&bar),
+            [false, true],
+            "the agent at work breathes, not Ada"
+        );
+    }
+
     /// A bar as the hosted page stands it on a phone: the Tilo mark, the workspace's name, the
     /// person's own avatar and the bell, so the room left for who is here is the page's.
     fn phone_bar(tree: &Layout, width: f32) -> (TopBarChrome, std::rc::Rc<FixtureChrome>) {

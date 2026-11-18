@@ -353,6 +353,8 @@ impl crate::Shared {
             for agent in &kept {
                 apps.start_agent(agent);
             }
+            // Each agent whose process is up here is in its workspace, as present as its people.
+            self.agent_sessions.processes(&apps.agent_processes());
         }
         self.conversations.feed(
             &self.person,

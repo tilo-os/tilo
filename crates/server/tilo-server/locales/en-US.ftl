@@ -4,6 +4,7 @@ tilo-servers = Servers
 tilo-servers-enroll-server = Add server
 tilo-servers-plan-machine = Plan a machine that is not installed yet
 tilo-servers-begin-install = Its machine enrolled and is installing
+tilo-servers-answer-machine-choice = Answer a question its machine asked
 tilo-servers-finish-install = Its machine finished installing
 tilo-servers-rename-server = Rename server
 tilo-servers-hold-workspace = Hold workspace

@@ -374,10 +374,9 @@ pub struct TopBarChrome {
     /// Same index as `face_initials` : the roster id presence knows them by (idle, in a
     /// call, a wave's bounce).
     face_ids: Vec<String>,
-    /// Same index as `face_initials` : how available each face said they are and whether
-    /// they are in a call, as the roster they were read from says. `None` for a face the roster
-    /// says nothing of, which the presence beside the bar answers instead.
-    face_presence: Vec<Option<(ui::Availability, bool)>>,
+    /// Same index as `face_initials` : how available each face said they are and whether their
+    /// ring breathes (in a call, or an agent at work), as the roster they were read from says.
+    face_presence: Vec<(ui::Availability, bool)>,
     /// How many of the people present the last draw stood a face for: the rest the "+N" badge
     /// counts. The bar stands as many as it has room for, the one this person follows first.
     faces_shown: usize,
@@ -1080,8 +1079,11 @@ impl TopBarChrome {
             self.face_colors.push(Color::from_rgb8(r, g, b));
             self.face_members.push(member.id.clone());
             self.face_ids.push(present.device.clone());
-            self.face_presence
-                .push(Some((present.availability, present.call.is_some())));
+            // A call's breathing ring is an agent's at work too: what the bar shows of anyone busy
+            // with something live.
+            let breathing =
+                present.call.is_some() || (present.member.is_agent() && present.status.is_some());
+            self.face_presence.push((present.availability, breathing));
         }
         self.sync_strips(tree);
     }

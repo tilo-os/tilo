@@ -599,6 +599,16 @@ impl ActionParam {
         self
     }
 
+    /// How a value of this parameter is written, where its declaration says
+    /// more of it than its type does (the keys of an object, the items of a
+    /// list, its choices, its bounds): JSON with a word in angle brackets
+    /// where a value goes and `?` after a key that may be left out. What a
+    /// listing shows before a call, and what a refusal tells after one.
+    #[must_use]
+    pub fn declared_shape(&self) -> Option<String> {
+        refused::declared_shape(self)
+    }
+
     /// Validate this parameter's descriptor independently of any supplied
     /// value, suitable for an untrusted publication boundary.
     pub fn validate_declaration(&self) -> Vec<String> {

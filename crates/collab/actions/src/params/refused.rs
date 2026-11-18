@@ -380,3 +380,12 @@ pub(super) fn no_alternative(alternatives: &[Value]) -> String {
         shapes.join(" or ")
     )
 }
+
+/// How a value of `param` is written, where its declaration says more of it
+/// than its type does: the keys of an object, the items of a list, choices,
+/// bounds.
+pub(super) fn declared_shape(param: &ActionParam) -> Option<String> {
+    let shape = shape_of_param(param);
+    let bare = shape_of_type(written_as(param.ty), &Map::new());
+    (shape != bare).then_some(shape)
+}

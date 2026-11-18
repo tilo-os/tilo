@@ -2958,6 +2958,8 @@ mod status;
 mod typed_calls;
 #[path = "mcp_agent_view_tests.rs"]
 mod viewing;
+#[path = "mcp_agent_page_tests.rs"]
+mod written_out;
 
 #[cfg(test)]
 #[path = "mcp_agent_address_tests.rs"]

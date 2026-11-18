@@ -139,9 +139,9 @@ pub struct Options {
     /// screenshots).
     pub state: Option<std::path::PathBuf>,
     /// Whether the session takes part in the peer network: who is here in each workspace,
-    /// over Iroh. Off, this desktop has no members but its own person, and no workspace service
-    /// of its own either, which is where the workspaces it makes are founded: no layout of theirs
-    /// is written, so nothing it lays out comes back after a restart.
+    /// over Iroh. Off, this desktop has no members but its own person; the workspaces it makes
+    /// are still founded on its own workspace service, so what it lays out comes back after a
+    /// restart.
     pub collab: bool,
     /// A peer network to take part in instead of starting one: a session a test hands the
     /// presence a workspace would have carried ([`sync::Client::untethered`]), which says nothing
@@ -247,6 +247,28 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// over the devices the person's own store holds, and dialing theirs from it
 /// ([`crate::device_mcp`]).
 pub(crate) fn start_collaboration(
+    options: &Options,
+    continuity: crate::platform::fabric::Continuity,
+    engine: Option<std::sync::Arc<engine::Engine>>,
+    beside: (
+        tilo_network_actor::own_service::Protocols,
+        &std::sync::Arc<crate::device_mcp::DeviceAgents>,
+    ),
+    documents: Option<sync::PeerDocuments>,
+) -> Option<Rc<sync::Client>> {
+    let founding = engine.clone();
+    let sync = collaborating(options, continuity, engine, beside, documents);
+    // The workspaces this device makes are founded whether or not its peer network came up: one
+    // that did opened this device's workspace service on its endpoint, and one that did not leaves
+    // it to open here.
+    if let Some(engine) = &founding {
+        sync::found_alone(engine);
+    }
+    sync
+}
+
+/// [`start_collaboration`]'s peer network: the one `options` hands, or this device's own.
+fn collaborating(
     options: &Options,
     continuity: crate::platform::fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,

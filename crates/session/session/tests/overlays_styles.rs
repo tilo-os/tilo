@@ -111,7 +111,7 @@ fn close(session: &mut Session, surface: &str) {
         .invoke(
             "desktop:overlays",
             "close-surface",
-            &Map::from_iter([("slot".to_owned(), Value::String(surface.to_owned()))]),
+            &Map::from_iter([("part".to_owned(), Value::String(surface.to_owned()))]),
         )
         .unwrap();
     until(session, |session| {
@@ -146,7 +146,7 @@ fn type_text(session: &mut Session, text: &str) {
     }
 }
 
-/// Show the style `style` (`strips`, `frames`, `spaces`, `desktop`), as the bar's switch does: the
+/// Show the style `style` (`strips`, `frames`, `frameless`, `desktop`), as the bar's switch does: the
 /// three canvas styles through the shell's own `show_style` (`show_preset`), and the desktop through
 /// the chrome's `apply(windows_desktop)` preset, which draws the traditional desktop. Frames until
 /// the layout has drawn it and placed its bar.
@@ -160,7 +160,7 @@ fn show_style(session: &mut Session, style: &str) {
         });
     } else {
         let named = match style {
-            "strips" | "frames" | "spaces" => format!("so.tilo.shell:{style}"),
+            "strips" | "frames" | "frameless" => format!("so.tilo.shell:{style}"),
             other => panic!("no such style {other}"),
         };
         crate::common::show_preset(session, &named);
@@ -177,7 +177,7 @@ fn styles() -> [(&'static str, &'static str); 4] {
     [
         ("strips", "Strips"),
         ("frames", "Frames"),
-        ("spaces", "Spaces"),
+        ("frameless", "Frameless"),
         ("desktop", "Desktop"),
     ]
 }

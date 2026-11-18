@@ -119,6 +119,16 @@ pub(super) fn post(text: &str) -> Invoke<ChatMessages> {
     post_to("c_chat", text)
 }
 
+/// What an agent keeps of its work for `message`, as the server that carries its turn out
+/// writes it; `say` gives the reply its words while it has none.
+fn keeps(message: &Id, work: WorkUpdate, say: Option<&str>) -> Invoke<ChatMessages> {
+    ChatMessages::RECORD_WORK.with(chat_messages::RecordWork {
+        message: message.clone(),
+        work,
+        say: say.map(str::to_owned),
+    })
+}
+
 tilo_test_env::scenario! {
     /// Who a post is by, and what its author, a member, a guest and a moderator may change.
     fn authors_and_moderators_decide_what_changes_in_the_resource;
@@ -1312,9 +1322,9 @@ tilo_test_env::scenario! {
         let summons = ada.said("@Tide chart the revenue");
         let mut agent = ada.fork_as_member(MemberId::agent("tide"));
         let work = |state: &str, outcome: &str| {
-            ChatMessages::RECORD_WORK.with(chat_messages::RecordWork {
-                message: summons.clone(),
-                work: WorkUpdate {
+            keeps(
+                &summons,
+                WorkUpdate {
                     state: state.into(),
                     app: None,
                     did: Some("Add function".into()),
@@ -1329,8 +1339,8 @@ tilo_test_env::scenario! {
                     }],
                     detail: None,
                 },
-                say: Some("On it.".into()),
-            })
+                Some("On it."),
+            )
         };
         agent.apply(work("doing", "asked")).unwrap();
         agent.apply(work("done", "applied")).unwrap();
@@ -1369,6 +1379,38 @@ tilo_test_env::scenario! {
                 }))
                 .is_err(),
             "an unknown state is refused"
+        );
+    }
+
+    phase a_turns_steps_read_as_every_reader_of_the_reply_is_given_them;
+    // A turn of three steps as the server that carries it out writes it (a listing, a change
+    // that goes through, the same change refused: five writes), and what a read of the reply's
+    // `work` then gives: what an app on a device and every other reader take a turn's line
+    // and its rows from. Both stand in `tests/turn_steps_read.json`, which the
+    // Apple app's tests read too, so no reader is tested against a shape of its own.
+    {
+        let kept: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/turn_steps_read.json"))
+                .expect("the kept turn");
+        let mut ada = Talk::new();
+        ada.apply(post("@Tide add the line to the letter")).unwrap();
+        let summons = ada.said("@Tide add the line to the letter");
+        let mut agent = ada.fork_as_member(MemberId::agent("tide"));
+        for write in kept["writes"].as_array().expect("the turn's writes") {
+            let work: WorkUpdate = serde_json::from_value(write.clone()).expect("a write of work");
+            agent.apply(keeps(&summons, work, None)).unwrap();
+        }
+        let part = agent.part.state().unwrap();
+        let reply = part
+            .messages
+            .get(&reply_id(&summons, &MemberId::agent("tide")))
+            .expect("the agent's reply");
+        let read = Model::to_json(reply.work.as_ref().expect("the reply carries the work"));
+        assert_eq!(
+            read,
+            kept["read"],
+            "a read of the reply's work gives:\n{}",
+            serde_json::to_string_pretty(&read).unwrap_or_default()
         );
     }
 

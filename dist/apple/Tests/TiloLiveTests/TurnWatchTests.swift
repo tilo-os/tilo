@@ -5,7 +5,7 @@ import TiloLive
 import XCTest
 
 /// What a device reads of the turn that writes a reply, from what Chat keeps with the reply:
-/// what it does now, the steps it took, and how long each took by the device's own clock.
+/// what it does now, the steps it took, and how long each took.
 final class TurnWatchTests: XCTestCase {
     private let began = Date(timeIntervalSince1970: 1_794_900_000)
     private let asked = #"{"$variant":"asked"}"#
@@ -25,8 +25,11 @@ final class TurnWatchTests: XCTestCase {
             .replacingOccurrences(of: "\n", with: "\\n") + "\""
     }
 
-    private func row(_ id: String, _ sequence: Int, _ label: String, about resource: String, _ outcome: String) -> String {
-        "{\"id\":\(quoted(id)),\"sequence\":\(sequence),\"resource\":\(quoted(resource)),\"label\":\(quoted(label)),\"outcome\":\(outcome)}"
+    /// A step's row. `tookMs` is the time Chat keeps with a row that ended, in whole milliseconds.
+    private func row(_ id: String, _ sequence: Int, _ label: String, about resource: String, _ outcome: String,
+                     tookMs: Int? = nil) -> String {
+        let took = tookMs.map { ",\"took_ms\":\($0)" } ?? ""
+        return "{\"id\":\(quoted(id)),\"sequence\":\(sequence),\"resource\":\(quoted(resource)),\"label\":\(quoted(label)),\"outcome\":\(outcome)\(took)}"
     }
 
     private func doing(_ did: String, about: String = "") -> String {
@@ -44,6 +47,18 @@ final class TurnWatchTests: XCTestCase {
 
     private func read(_ watch: inout TurnWatch, _ reply: Reply, now: Date) -> Message.Turn? {
         watch.read(work: reply.work, words: reply.words, of: "m1", began: began, going: reply.going, now: now)
+    }
+
+    func testATurnAsChatKeepsItWithTheReplyIsReadStepByStepInOrderWithHowEachEnded() throws {
+        var watch = TurnWatch()
+        let work = try XCTUnwrap(JSON(text: try KeptTurn.work()))
+        let read = watch.read(work: work, words: "", of: "m1", began: began, going: true, now: began)
+        let turn = try XCTUnwrap(read, "a reply whose turn took three steps says nothing of its turn")
+        XCTAssertEqual(turn.now, .step("Append paragraph: word-processor"))
+        XCTAssertEqual(turn.steps.map(\.words),
+                       ["List: word-processor", "Append paragraph: word-processor", "Append paragraph: word-processor"])
+        XCTAssertEqual(turn.steps.map(\.outcome), [.done, .done, .failed])
+        XCTAssertEqual(turn.steps.map(\.took), [nil, nil, nil], "a step Chat keeps no time of, and this device never saw going, was given a time")
     }
 
     func testAToolsBareNameIsNoWordsAndAStepsWordsAreSaidWithWhatItIsAbout() throws {
@@ -90,6 +105,20 @@ final class TurnWatchTests: XCTestCase {
         let read3 = read(&watch, try reply(state: doing("Add an account"), since: 1_794_900_003, trace: both), now: began + 60)
         let later = try XCTUnwrap(read3)
         XCTAssertEqual(later.steps[0].took ?? -1, 3.5, accuracy: 0.001)
+    }
+
+    func testAStepsTimeIsWhatItsRowKeepsAndTheDevicesClockOnlyWhereARowKeepsNone() throws {
+        var watch = TurnWatch()
+        // A step that only reads is first written already ended: no device ever sees it going.
+        let listed = row("s1", 1, "List", about: "settings", applied, tookMs: 240)
+        let goes = row("s2", 2, "Append paragraph", about: "word-processor", asked)
+        let state = doing("Append paragraph", about: "word-processor")
+        let first = read(&watch, try reply(state: state, trace: "[\(listed),\(goes)]"), now: began)
+        XCTAssertEqual(first?.steps.map(\.took), [0.24, nil], "the time a row keeps was not read, or a step that goes was given one")
+        // The change ends 3.5 s later by this device's clock; its row says how long its call took.
+        let ended = row("s2", 2, "Append paragraph", about: "word-processor", applied, tookMs: 1900)
+        let second = read(&watch, try reply(state: state, trace: "[\(listed),\(ended)]"), now: began + 3.5)
+        XCTAssertEqual(second?.steps.map(\.took), [0.24, 1.9], "the device's own clock was read where the row keeps the step's time")
     }
 
     func testThinkingShowsItsNewestWordsTheReplysWordsTakeTheirPlaceAndAStepComesBack() throws {

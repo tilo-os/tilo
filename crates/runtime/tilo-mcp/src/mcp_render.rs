@@ -159,8 +159,22 @@ pub(super) fn action_page(path: &str, action: &ActionDescriptor, called: Option<
         if !description.is_empty() && !description.eq_ignore_ascii_case(param.name.as_ref()) {
             let _ = write!(page, " — {}", first_sentence(description));
         }
+        if let Some(shape) = written_as(param) {
+            let _ = write!(page, "\n    written as {shape}");
+        }
     }
     page
+}
+
+/// How the value of a structured parameter is written, where its declaration
+/// says so: what the star after an object or a list stands for.
+fn written_as(param: &tilo_actions::ActionParam) -> Option<String> {
+    matches!(
+        param.ty,
+        tilo_actions::ParamType::Object | tilo_actions::ParamType::Array
+    )
+    .then(|| param.declared_shape())
+    .flatten()
 }
 
 /// Whether `value` is empty of meaning: null, an empty string, array or
