@@ -1469,6 +1469,9 @@ lto = false
 # Signed app packages stay fully stripped; only the native release binaries
 # keep their symbol table.
 strip = "symbols"
+# Stripping drops line tables anyway, and any debug info at all makes rustc embed
+# its 4.5 KB of gdb scripts in every app, the runtime and each engine.
+debug = false
 # Pin codegen-units here: CARGO_PROFILE_RELEASE_CODEGEN_UNITS (set for fast
 # release links in CI and the image) is inherited by thin-app unless the child
 # profile names its own value. The wrapper also forces one unit on each tapp
