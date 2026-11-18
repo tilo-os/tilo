@@ -1102,7 +1102,7 @@ impl Spawner {
                 output.finish();
                 output.tail()
             });
-        if let Err(error) = std::fs::remove_dir_all(dir) {
+        if let Err(error) = crate::kept::remove_dir(dir) {
             tracing::warn!(dir = %dir.display(), %error, "a kept app's directory stays");
         }
         let (Some(launch), Some(end)) = (launch, end) else {
@@ -1376,12 +1376,24 @@ impl App {
     /// asked to end.
     fn end(&self) {
         #[cfg(target_os = "linux")]
-        if let Some(kept) = &self.kept {
+        let display = self.kept.as_ref().and_then(|kept| {
+            let display = kept.display_and_keeper();
             kept.remove();
-        }
+            display
+        });
         if let Some(dir) = self.cgroup_dir() {
             if let Err(error) = launcher::app_cgroup::kill(&dir) {
                 tracing::warn!(app = %self.name, dir = %dir.display(), %error, "the app did not end");
+            }
+            // The keeper ends with its cgroup, with no moment to remove its X11 display's files:
+            // they go once it is gone.
+            #[cfg(target_os = "linux")]
+            if let Some((number, keeper)) = display
+                && keeper.is_none_or(|keeper| {
+                    crate::kept::ended_within(&keeper, crate::kept::KEEPER_END)
+                })
+            {
+                crate::kept::clear_dead_display(Path::new("/tmp"), number);
             }
             return;
         }
