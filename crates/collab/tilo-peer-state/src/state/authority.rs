@@ -1100,21 +1100,10 @@ impl StatePeer {
 
     /// Whether `envelope` names governance heads this peer does not hold yet.
     fn lacks_governance_of(&self, envelope: &SignedOp) -> bool {
-        !self.governance().held_heads().holds_named(&envelope.governance)
-    }
-
-    /// Whether this copy refused a base of its governor that is newer than
-    /// the workspace document it holds: its governor then governs by roles
-    /// and grants the copy does not hold, and what the copy holds says of no
-    /// write that it is its author's to make.
-    pub(super) fn behind_its_governor(&self) -> bool {
-        self.refused_base.is_some_and(|refused| {
-            self.core
-                .workspace_doc
-                .as_deref()
-                .map_or(0, workspace::base::generation)
-                < refused
-        })
+        !self
+            .governance()
+            .held_heads()
+            .holds_named(&envelope.governance)
     }
 
     /// Whether this copy refused a base of its governor that is newer than
