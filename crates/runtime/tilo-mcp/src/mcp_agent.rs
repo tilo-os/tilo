@@ -1768,19 +1768,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // own actions, a line each. A page is a window of them.
         let mut entries: Vec<(String, Option<Value>)> = Vec::new();
         if want_resources {
-            // Whether a read answers every row listed here: one of the
-            // resources they are listed under reads them as its items (a
-            // notebook its pages), or the app itself does. A row that neither
-            // it nor its own actions read is only a place inside what lists
-            // it (an option, a choice), which the row says.
-            let inherited_read = resolved.node.iter().chain(&resolved.chain).any(|ancestor| {
-                resolved
-                    .levels
-                    .get(&ancestor.id)
-                    .is_some_and(|level| reads_action(&level.own).is_some())
-                    || reads_action(&ancestor.actions).is_some()
-            }) || (resolved.node.is_none()
-                && reads_action(&resolved.actions).is_some());
+            // Whether a read answers the rows listed here without their
+            // offering one: the resource they are listed under reads one of
+            // its items at a time, as a notebook reads its notes. A row
+            // neither that nor its own actions read is only a place inside
+            // what lists it (an option, a choice), which the row says.
+            let inherited_read = read
+                .as_ref()
+                .map(|(level, _)| &level.own)
+                .or_else(|| resolved.node.is_none().then_some(&resolved.actions))
+                .and_then(|own| reads_action(own))
+                .is_some_and(|read| {
+                    read.params
+                        .iter()
+                        .any(|param| param.name.as_ref() == "item")
+                });
             let mut named: Vec<Node> = children.clone();
             named.extend(resolved.node.clone());
             let shared = shared_names(&children, &named);

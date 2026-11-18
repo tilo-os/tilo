@@ -3745,7 +3745,13 @@
           },
           "has_children": {
             "type": "boolean",
+            "description": "Whether a query with this row as its parent answers rows the workspace\nholds now. An app holding no document here says no, though listing it\nwould start it on a new one; a walk reads what is there and starts\nnothing.",
             "default": false
+          },
+          "reads": {
+            "type": "boolean",
+            "description": "Whether a read answers the row as a resource of its own. A row that is\nonly a place inside it (an option or a choice, like a reading font or a\nbuilt-in folder) is part of what lists it and is never read alone; a\nlisting that does not say is read as it always was, every row read.",
+            "default": true
           },
           "actions": {
             "type": "array",

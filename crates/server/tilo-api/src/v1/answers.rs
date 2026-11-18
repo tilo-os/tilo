@@ -263,6 +263,10 @@ pub struct Row {
     pub label: String,
     /// The app's type of it, or `app`.
     pub kind: String,
+    /// Whether a query with this row as its parent answers rows the workspace
+    /// holds now. An app holding no document here says no, though listing it
+    /// would start it on a new one; a walk reads what is there and starts
+    /// nothing.
     #[serde(default)]
     pub has_children: bool,
     /// Whether a read answers the row as a resource of its own. A row that is

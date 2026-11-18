@@ -86,34 +86,52 @@ async fn a_typed_listing_names_no_action_its_text_does_not() {
 }
 
 /// A typed listing says which of its rows a read answers as a resource of
-/// its own: a note its notebook reads is one, though it publishes no read
-/// itself, and a place inside what lists it (an option, a choice) is not, so
-/// a walk that reads resources one by one reads only the rows that are.
+/// its own: a note its notebook reads one at a time is one, though it offers
+/// no read itself, and a place inside what lists it (an option, a choice) is
+/// not, so a walk that reads resources one by one reads only the rows that
+/// are.
 #[tokio::test]
 async fn a_typed_listing_says_which_rows_a_read_answers() {
     let notes = Notes::new(true);
     let mut rows = notes.rows("1");
-    rows.push(notes.row(NOTEBOOK, "font:sans", "font", "Sans", None, false));
+    // The reading settings beside the notes, offering nothing a read answers
+    // of its own, with a font inside them.
+    rows.push(notes.row(
+        NOTEBOOK,
+        "settings",
+        "settings",
+        "Reading settings",
+        None,
+        true,
+    ));
+    rows.push(notes.row("settings", "font:sans", "font", "Sans", None, false));
     *notes.published_kinds.lock().unwrap() = Some(rows);
     let server = agent(&notes);
     let (listing, failed) =
         typed_calls::answer(&server, "tilo_ls", json!({"path": "notes/Notebook"})).await;
     assert!(!failed, "{listing}");
-    let reads = |name: &str| {
+    let reads = |listing: &Value, name: &str| {
         listing["rows"]
             .as_array()
             .and_then(|rows| rows.iter().find(|row| row["name"] == name))
             .map(|row| row["reads"].clone())
     };
     assert_eq!(
-        reads("Todo"),
+        reads(&listing, "Todo"),
         Some(json!(true)),
-        "a note its notebook reads is a resource of its own: {listing}"
+        "the notebook reads its notes one at a time: {listing}"
     );
+    let (fonts, failed) = typed_calls::answer(
+        &server,
+        "tilo_ls",
+        json!({"path": "notes/Notebook/Reading settings"}),
+    )
+    .await;
+    assert!(!failed, "{fonts}");
     assert_eq!(
-        reads("Sans"),
+        reads(&fonts, "Sans"),
         Some(json!(false)),
-        "a font place is part of what lists it: {listing}"
+        "a font is part of the settings' read: {fonts}"
     );
 }
 
@@ -143,8 +161,7 @@ async fn a_read_of_a_place_answers_no_read_without_reading_the_apps_root() {
         let id = notes.id(place);
         assert!(
             !asked.iter().any(|ask| ask.contains(&format!("under {id}"))),
-            "{} was read to find a read it does not answer: {asked:?}",
-            place
+            "{place} was read to find a read it does not answer: {asked:?}"
         );
     }
 }

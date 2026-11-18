@@ -51,9 +51,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 "label": label,
                 "kind": "app",
                 "state": state,
-                // An app with a document in the workspace holds what it
-                // has; the workspace's own folder holds its files; a service
-                // app holds windows, not the workspace's resources.
+                // An app with a document holds what it has; the workspace's
+                // own folder holds its files; a service holds only windows.
                 "has_children": windowed || super::names_files(app_id),
                 // An app is no resource of its own: what it holds is, and a
                 // read of the app answers what it publishes.
@@ -78,10 +77,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     "label": app.label,
                     "kind": "app",
                     "state": state,
-                    // Installed and holding nothing yet: listing it would
-                    // start it on a new document, which a walk never does. The
-                    // workspace's own folder is no app's document, and holds
-                    // its files wherever it is listed.
+                    // Installed and holding nothing yet: listing it would start a
+                    // document a walk never makes. The workspace's folder is no
+                    // app's document, and holds its files wherever it is listed.
                     "has_children": super::names_files(&app.app_id),
                     "reads": false,
                     "actions": [],
