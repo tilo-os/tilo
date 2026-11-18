@@ -2288,33 +2288,6 @@ fn a_step_costs_what_it_changes_not_the_workspace(thousand: &Chunks, ten_thousan
     );
 }
 
-#[test]
-#[ignore = "temporary: the open a single-document workspace costs"]
-fn tmp_open_of_one_document() {
-    let _motion = ui::motion::testing::settled();
-    let tasks = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(package_of(TASKS));
-    let packages = tilolang_tilo::bench::compile(&tasks).expect("compiles");
-    let n = SEEDED;
-    let doc = tilolang_tilo::bench::seeded_record(&packages, n).expect("seeds");
-    let chunks = tilolang_tilo::chunk::Chunks::of(doc);
-    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let storage = kept_index(&route, &chunks, &format!("one-{n}"));
-    let start = ui::rt::thread_cpu_time();
-    let wall = ui::time::Instant::now();
-    let mut session = Session::tasks_over_launched(&route, chunks, Some(storage));
-    let open_us = since(start, wall.elapsed());
-    let wall_us = wall.elapsed().as_micros() as u64;
-    session.wait_index();
-    let ready_us = since(start, wall.elapsed());
-    eprintln!(
-        "one document at {n} tasks: CPU {:.2} ms, wall {:.2} ms; reading the index {:.2} ms",
-        open_us as f64 / 1000.0,
-        wall_us as f64 / 1000.0,
-        ready_us as f64 / 1000.0
-    );
-    session.settle();
-}
-
 /// What a frame asked the layout for: the nodes it built, whether it recomposed the tree, and
 /// how many nodes it invalidated to be measured again.
 #[derive(Debug)]
