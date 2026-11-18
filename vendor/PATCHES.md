@@ -55,6 +55,19 @@ Gateway wire fixtures and vendored Chat tests cover fragmented/interleaved names
 and agreement across emitted, normalized and replay calls. Remove the patch
 once upstream provides this behavior.
 
+## Rig Chat thoughts in a message's content
+
+In the same `rig-core`, the Chat decoder and the Chat raw-document reassembler
+read a thought out of the content it stands in: a delta marked
+`extra_content.google.thought` and a content part marked `thought` for every
+dialect, and, under the quirk
+`thought_tags` of the new dialect `GEMINI`, text between `<thought>` and
+`</thought>` at the head of a content. It is the message's reasoning and never
+its answer text. Google's OpenAI-compatible endpoint returns a thought summary
+this way and documents no form for it. The gateway chooses `GEMINI` for that
+endpoint alone, and its `google_rig_tests.rs` covers the forms. Remove the
+patch once upstream reads these thoughts as reasoning.
+
 ## Rig Responses instructions placement
 
 In the same `rig-core`, a placement of system messages for OpenAI Responses,

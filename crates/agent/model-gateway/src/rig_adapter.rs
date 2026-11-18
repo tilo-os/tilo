@@ -671,6 +671,18 @@ fn turn_url(profile: &ProviderProfile) -> String {
     }
 }
 
+/// The provider behind `profile`'s Chat endpoint. Google's endpoint may write
+/// a thought into the content it belongs to: its dialect reads it out as a
+/// thought.
+fn chat_provider(profile: &ProviderProfile, secret: Option<&str>) -> openai::OpenAIConfig {
+    let dialect = if road::google(profile) {
+        &openai::wire::GEMINI
+    } else {
+        &openai::wire::OPENAI
+    };
+    openai::OpenAIConfig::with_key(dialect, secret.unwrap_or_default())
+}
+
 /// The key under which a neutral block keeps its `OpenAI` Responses item id
 /// and, for reasoning, its ciphertext.
 const RESPONSES_EXTRA: &str = "openai_responses";
@@ -884,7 +896,7 @@ async fn execute(
                 .await
             }
             ProviderProtocol::OpenAiCompatible => {
-                let provider = openai::OpenAIConfig::new(secret.unwrap_or_default());
+                let provider = chat_provider(&transport.profile, secret);
                 run(
                     provider.connect(transport.clone()).chat(model),
                     request,

@@ -44,6 +44,18 @@ Local runtime changes are in the Chat decoder, completion writer and stream-even
   cache. The other placements are unchanged. The gateway's `host_backend`
   tests cover it on the request it sends.
 
+- Read a thought out of the content it stands in, in the Chat decoder and in
+  the Chat raw-document reassembler alike. A delta its provider marks with
+  `extra_content.google.thought`, and a content part marked `thought`, is the
+  message's reasoning for every dialect.
+  Under the new quirk `thought_tags`, which only the new dialect `GEMINI` sets
+  (it is OpenAI's otherwise), so is text between `<thought>` and `</thought>`
+  at the head of a content, in whatever pieces it arrives. Neither is answer
+  text, and the raw message keeps neither as `content`. Google's
+  OpenAI-compatible endpoint returns a thought summary inside the content and
+  documents no form for it; upstream reads it as answer text. The gateway's
+  `google_rig_tests.rs` covers the forms on the request and the reply.
+
 Wire regression coverage lives in the gateway's `rig_stream_tests.rs` and in
 this crate's Chat tests. See `vendor/PATCHES.md`. The manifests and dependencies
 are unchanged. The archive's standalone `Cargo.lock` and Cargo cache marker
