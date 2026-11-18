@@ -81,20 +81,16 @@ impl ActivityTimeline {
     }
 
     /// The chip naming what wrote an attributed change: an agent tool, an app
-    /// or a program, beside the person whose avatar the row wears. An agent's
+    /// or a program, beside the face of the author it wrote for. An agent's
     /// chip wears the agent mark in its own hue, the mark it shows wherever it
-    /// writes; an app's and a program's wear their name alone.
+    /// writes; an app's and a program's wear their name alone. Software that is
+    /// the author itself has no chip: the row's face is already its own.
     pub(super) fn writer_chip(
         entry: &HistoryEntry,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) -> Option<(String, f64, ChipLead)> {
-        // An agent's own device writes under the agent's name; an attributed
-        // session names its tool. Either way the chip is the software's own.
-        let label = crate::history_source::sentence::writer_badge(&entry.author).or_else(|| {
-            (entry.author.relation == crate::widget::history::AuthorRelation::Software)
-                .then(|| entry.author.name.clone())
-        })?;
+        let label = crate::history_source::sentence::writer_badge(&entry.author)?;
         let lead = writer_lead(entry, &label, theme);
         let width =
             crate::widget::ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);
@@ -145,7 +141,7 @@ impl ActivityTimeline {
         at: Point,
         end: f64,
     ) -> f64 {
-        let parts = crate::history_source::sentence::author_parts(lead);
+        let (parts, acted_for) = crate::history_source::sentence::lead_parts(lead);
         // The lead names who ran the band; the facts after it keep the rest of
         // the line, and the time its own gutter past that.
         let lead_end = (at.x + (end - at.x).max(0.0) * LEAD_MAX_SHARE).min(end);
@@ -209,6 +205,19 @@ impl ActivityTimeline {
                     .paint(scene, transform, tr, theme);
                 x += width + 6.0;
             }
+        }
+        if let Some(acted_for) = acted_for {
+            let note = fit_text(tr, &acted_for, &style, (lead_end - x).max(0.0));
+            let (note_w, note_h) = tr.measure_style(&note, None, &style);
+            tr.draw_style(
+                scene,
+                &note,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((x, at.y - f64::from(note_h) / 2.0).into()),
+                None,
+                &style,
+            );
+            x += f64::from(note_w) + 6.0;
         }
         x.min(end)
     }

@@ -555,8 +555,9 @@ impl<'a> Reader<'a> {
 
     fn verb(&self, verb: &VerbCall, what: &Did, scope: &Scope<'_>) -> String {
         let mut args = self.base_args(scope);
+        // An empty value says nothing: a message that needs it falls back to the action's label.
         for (name, value) in &verb.args {
-            if !matches!(name.as_str(), "item" | "actor" | "for") {
+            if !matches!(name.as_str(), "item" | "actor" | "for") && value.as_str() != Some("") {
                 args.set(name.clone(), fluent_value(value));
             }
         }

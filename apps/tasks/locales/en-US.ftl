@@ -116,6 +116,7 @@ tasks-link = Linked { $label } to { $item }
 tasks-delete = Deleted { $item }
 tasks-import = Brought over earlier tasks
 tasks-issue-title = Renamed { $item } to { $new }
+tasks-rename = Renamed { $item } to { $title }
 tasks-issue-status = Moved { $item } to { $new }
 tasks-issue-labels = Changed the labels of { $item }
 tasks-issue-links = Changed the links of { $item }

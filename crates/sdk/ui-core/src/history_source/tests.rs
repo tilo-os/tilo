@@ -848,7 +848,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             rows,
             [
-                ("You".to_owned(), AuthorRelation::Reader),
+                ("Claude Code".to_owned(), AuthorRelation::Software),
                 ("ada".to_owned(), AuthorRelation::Person),
                 ("You".to_owned(), AuthorRelation::Reader),
             ]
@@ -879,10 +879,10 @@ tilo_test_env::scenario! {
         let mut authors = AuthorDirectory::new();
         authors.set_reader(crate::permissions::MemberId::person("kai"));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
-        // The person it acted for, with the agent beside them as its own field.
+        // The agent, for the person it acted for.
         let author = &entries.last().unwrap().author;
-        assert_eq!(author.name, "ada");
-        assert_eq!(author.relation, AuthorRelation::Person);
+        assert_eq!(author.name, "Claude Code");
+        assert_eq!(author.relation, AuthorRelation::Software);
         let parts = crate::history_source::sentence::author_parts(author);
         assert_eq!(parts.person, "ada");
         assert_eq!(parts.writer.as_deref(), Some("Claude Code"));
@@ -896,7 +896,7 @@ tilo_test_env::scenario! {
                     agent: "claude".into(),
                     session: None,
                 }),
-                writer_label: Some("claude".into()),
+                writer_label: None,
                 device: None,
                 folder: None,
             })
@@ -951,17 +951,17 @@ tilo_test_env::scenario! {
         );
         // The line names the agent alone; the hover says whom it worked for, and to that person
         // that it was them.
-        assert!(crate::attribution_hover(author).is_some_and(|hover| hover.contains("For Ada")));
+        assert!(crate::attribution_hover(author).is_some_and(|hover| hover.contains("for Ada")));
         authors.set_reader(crate::permissions::MemberId::person(person));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         let author = &entries.last().unwrap().author;
         assert_eq!(crate::author_line(author), "Scribe");
-        assert!(crate::attribution_hover(author).is_some_and(|hover| hover.contains("For you")));
+        assert!(crate::attribution_hover(author).is_some_and(|hover| hover.contains("for you")));
     }
 
-    phase a_change_in_a_work_group_is_the_persons_with_the_agent_beside_them;
-    // A change an agent made for a person inside a work group reads as that person with the
-    // agent beside them; the group stays on the row as data, and its label is never a name.
+    phase a_change_in_a_work_group_is_the_agents;
+    // A change an agent made for a person inside a work group reads as the agent's; the group
+    // stays on the row as data, and its label is never a name.
     {
         use crate::widget::history::AuthorRelation;
         use tilo_actions::{ActionContext, ActionInvoker};
@@ -979,9 +979,9 @@ tilo_test_env::scenario! {
         authors.set_reader(crate::permissions::MemberId::person("kai"));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         let entry = entries.last().expect("the change");
-        assert_eq!(entry.author.name, "ada");
-        assert_eq!(crate::author_line(&entry.author), "ada");
-        assert_eq!(entry.author.relation, AuthorRelation::Person);
+        assert_eq!(entry.author.name, "Claude Code");
+        assert_eq!(crate::author_line(&entry.author), "Claude Code");
+        assert_eq!(entry.author.relation, AuthorRelation::Software);
         assert_eq!(
             crate::history_source::sentence::author_parts(&entry.author)
                 .writer

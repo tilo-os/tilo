@@ -158,7 +158,7 @@ impl ActivityDigest {
                 // they did: a row that repeated the name read it twice.
                 let who = group.authors_label();
                 let facts = group
-                    .subtitle_facts(recent)
+                    .subtitle_facts()
                     .into_iter()
                     .filter(|fact| *fact != who)
                     .collect::<Vec<_>>()

@@ -120,6 +120,7 @@ tasks-link = { $label } mit { $item } verknüpft
 tasks-delete = { $item } gelöscht
 tasks-import = Frühere Aufgaben übernommen
 tasks-issue-title = { $item } in { $new } umbenannt
+tasks-rename = { $item } in { $title } umbenannt
 tasks-issue-status = { $item } nach { $new } verschoben
 tasks-issue-labels = Labels von { $item } geändert
 tasks-issue-links = Verknüpfungen von { $item } geändert
