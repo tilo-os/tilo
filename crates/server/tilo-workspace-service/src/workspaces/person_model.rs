@@ -333,6 +333,20 @@ impl Answer {
     }
 }
 
+/// How long a provider may show nothing before a call to it is let go, so
+/// that whoever asked may ask anew: no response headers after the request,
+/// and after them no byte of any kind (a piece of the answer, a keep-alive,
+/// a ping). A provider that keeps showing something is held to the call's
+/// deadline alone, however long it works.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Quiet {
+    /// On a model's calls while none of them has timed out.
+    pub first: Duration,
+    /// On its calls after one that timed out: longer, so that a provider
+    /// that shows nothing while it works is let go of once and not again.
+    pub after_silence: Duration,
+}
+
 /// One call on its way to a provider: the person's own provider and model,
 /// and the request.
 pub struct ProviderCall<'a> {
@@ -347,6 +361,10 @@ pub struct ProviderCall<'a> {
     /// Whether the host's operator lets the provider be at an address off
     /// the public internet.
     pub private_addresses: bool,
+    /// How long the provider may show nothing before the call is let go and
+    /// ends as timed out ([`Quiet`]); none where the deadline alone bounds
+    /// it.
+    pub quiet: Option<Duration>,
     key: Option<&'a str>,
 }
 
@@ -455,6 +473,7 @@ impl Workspaces {
             named: None,
             workspace: None,
             spenders: Vec::new(),
+            quiet: None,
         }
     }
 
@@ -540,6 +559,9 @@ pub struct PersonModel {
     /// Whose days the calls spend: an agent's, and that of any piece of its
     /// work that keeps a day of its own.
     spenders: Vec<Spender>,
+    /// How long a provider may show nothing on this model's calls, and
+    /// whether one of them timed out already ([`Self::letting_go`]).
+    quiet: Option<(Quiet, Arc<AtomicBool>)>,
 }
 
 impl std::fmt::Debug for PersonModel {
@@ -601,6 +623,16 @@ impl PersonModel {
         self
     }
 
+    /// The same model, its calls letting go of a provider that shows
+    /// nothing for as long as `quiet` says. Such a call ends as timed out,
+    /// for its caller to ask anew, and from then on this model's calls wait
+    /// the longer of the two times.
+    #[must_use]
+    pub fn letting_go(mut self, quiet: Quiet) -> Self {
+        self.quiet = Some((quiet, Arc::default()));
+        self
+    }
+
     /// What `spender` has spent on its day so far, in millionths of the
     /// currency, as this person's store counts it: nothing on a day not
     /// counted yet.
@@ -644,11 +676,12 @@ impl PersonModel {
             request,
             deadline,
             private_addresses: self.models.private_addresses.load(Ordering::Acquire),
+            quiet: self.quiet_now(),
             key: resolved.key.as_ref().map(|secret| secret.password.as_str()),
         };
         let response = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
-            provider.answer(call, events),
+            self.noting_time_outs(provider.answer(call, events)),
         )
         .await
         .map_err(|_| ModelRefusal::Provider(ModelError::new(ErrorKind::TimedOut)))?
@@ -667,6 +700,32 @@ impl PersonModel {
             linked: resolved.linked(),
             spent_today_micros,
         })
+    }
+
+    /// How long the provider may show nothing on a call made now.
+    fn quiet_now(&self) -> Option<Duration> {
+        self.quiet.as_ref().map(|(quiet, timed_out)| {
+            if timed_out.load(Ordering::Acquire) {
+                quiet.after_silence
+            } else {
+                quiet.first
+            }
+        })
+    }
+
+    /// `answer` as it comes, noting a call that timed out: the model's next
+    /// calls wait the longer time ([`Quiet::after_silence`]).
+    async fn noting_time_outs(
+        &self,
+        answer: ProviderFuture<'_>,
+    ) -> Result<ModelResponse, ModelError> {
+        let answer = answer.await;
+        if let (Err(error), Some((_, timed_out))) = (&answer, &self.quiet)
+            && error.kind == ErrorKind::TimedOut
+        {
+            timed_out.store(true, Ordering::Release);
+        }
+        answer
     }
 
     /// Refuses a call for an agent, or a piece of its work, that has used

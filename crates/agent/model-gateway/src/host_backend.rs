@@ -401,6 +401,10 @@ pub struct PersonTurn<'a> {
     /// Whether the provider may be at an address off the public internet:
     /// the host operator's choice, never the person's.
     pub private_addresses: bool,
+    /// How long the provider may show nothing before the call is let go
+    /// and ends as timed out: no response headers after the request, then
+    /// no byte of any kind. None holds the call to `timeout` alone.
+    pub quiet: Option<Duration>,
 }
 
 impl std::fmt::Debug for PersonTurn<'_> {
@@ -534,6 +538,10 @@ impl PersonProviders {
             true
         };
         let secret = turn.key.map(|key| Zeroizing::new(key.to_owned()));
+        let timing = PlanTiming::start();
+        if let Some(quiet) = turn.quiet {
+            timing.signs.let_go_after(quiet);
+        }
         rig_adapter::complete_with(
             http,
             &call,
@@ -541,7 +549,7 @@ impl PersonProviders {
             request,
             &mut emit,
             (
-                PlanTiming::start(),
+                timing,
                 rig_adapter::Carry {
                     resend: true,
                     callers_deadline: true,

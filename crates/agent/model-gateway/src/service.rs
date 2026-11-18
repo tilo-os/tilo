@@ -26,7 +26,10 @@ mod profile_cache;
 mod rig_adapter;
 #[path = "road.rs"]
 mod road;
+#[path = "signs.rs"]
+mod signs;
 use profile_cache::{PLAN_PROFILES, PROFILE_REUSE, ProfileSources};
+use signs::Signs;
 
 use crate::{
     EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FRAMING, FaceImage, Frame, MAX_DELTA_EVENTS,
@@ -2175,34 +2178,6 @@ struct StreamAssembly {
     reasoning_bytes: u64,
 }
 
-/// When a provider first showed that a request had reached it. A call's
-/// `first_byte` is the first event its decoder understood, and a provider
-/// that holds its answer back sends that last: these are the signs that come
-/// before it, so a call that waited on a silent provider and one that waited
-/// on a working one read differently. Moments only; nothing a provider sent
-/// is kept.
-#[derive(Default)]
-struct Signs {
-    /// When the response's headers came. A request the gateway sent again
-    /// names the headers of its last ask.
-    headers: Mutex<Option<Instant>>,
-    /// When the first bytes of the response's body came, whatever they
-    /// were: a piece of the answer, a keep-alive comment, a ping.
-    first_event: std::sync::OnceLock<Instant>,
-}
-
-impl Signs {
-    /// The response's headers came now.
-    fn headers_came(&self) {
-        *self.headers.lock_recover() = Some(Instant::now());
-    }
-
-    /// Bytes of the response's body came now.
-    fn event_came(&self) {
-        self.first_event.get_or_init(Instant::now);
-    }
-}
-
 /// Timing for one Plan, logged as one content-free line on stderr.
 struct PlanTiming {
     started: Instant,
@@ -2400,15 +2375,15 @@ impl PlanTiming {
              first_token_ms={} first_tool_call_ms={} \
              plan_call_ms={} done_ms={} prompt_tokens={} completion_tokens={} \
              reasoning_tokens={} cached_tokens={} cache_write_tokens={} cost_micros={} tool_calls={} output_allowance={} \
-             source_context={} runtime_context={} timeout_ms={} {} outcome={}{}",
+             source_context={} runtime_context={} timeout_ms={} quiet_ms={} {} outcome={}{}",
             log_token(call.profile_id),
             log_token(call.model_id),
             self.stream,
             self.status
                 .map_or_else(|| "-".to_string(), |status| status.to_string()),
             self.start_unix_ms,
-            ms(since(*self.signs.headers.lock_recover())),
-            ms(since(self.signs.first_event.get().copied())),
+            ms(since(self.signs.headers())),
+            ms(since(self.signs.first_event())),
             ms(self.first_byte),
             ms(self.first_reasoning),
             ms(self.first_token),
@@ -2427,6 +2402,7 @@ impl PlanTiming {
             count(self.runtime_context.map(u64::from)),
             self.timeout_ms
                 .map_or_else(|| "-".into(), |value| value.to_string()),
+            ms(self.signs.quiet()),
             self.progress_log_fields(),
             if outcome.is_ok() { "ok" } else { "error" },
             // Why an answer was not used, so a failed turn is never only
