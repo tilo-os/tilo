@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 mod agent;
 mod aliases;
+mod approving;
 use tilo_api::client as api;
 mod cleanup;
 mod desktop;
@@ -322,6 +323,10 @@ enum Cmd {
     /// Every command as a page of documentation, for tilo.sh/docs.
     #[command(hide = true)]
     HelpMarkdown,
+    /// Answer what this computer's agent asks the person whose root it holds,
+    /// beside a command acting as it.
+    #[command(hide = true)]
+    ApproveHere,
     /// Log this computer in as one of your devices, with the code your Tilo
     /// tab shows.
     #[command(after_help = "Example:\n  tilo login K7Q-MX2P\n\n\
@@ -1037,13 +1042,15 @@ fn run_hosted(
     };
     // Acting as this computer's own device (no key, or the device's own key named), each command
     // is a call to the process holding its device's session, started now when none is up.
-    if !(api_key_absent(api, key_file) && api::desktop_socket().is_some())
+    let as_device = !(api_key_absent(api, key_file) && api::desktop_socket().is_some())
         && api::held_api_for(reach).ok().flatten().is_some()
-        && acts_as_the_login(&cmd, workspace.is_some())
-        && let Err(error) = mcp::ensure_held()
-    {
+        && acts_as_the_login(&cmd, workspace.is_some());
+    if as_device && let Err(error) = mcp::ensure_held() {
         return Ok(Err(error));
     }
+    // What the command, as the computer's agent, asks its person is answered here until it
+    // ends, when this computer holds their root.
+    let _approving = as_device.then(approving::start).flatten();
     Ok(match cmd {
         Cmd::Do { action, args } => Ok(run_do(reach, workspace, action, args, spelling)),
         Cmd::Ls { what, cursor } => workspace
@@ -1255,6 +1262,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Completions { shell } => completions(shell),
         Cmd::Device { cmd } => run_system_command(cmd),
         Cmd::HelpMarkdown => help_markdown(),
+        Cmd::ApproveHere => approving::serve(),
         Cmd::Agent { cmd } => agent::run(cmd),
         Cmd::Migrate { json, cmd } => migrate::run(cmd, json),
         Cmd::Login {

@@ -61,6 +61,12 @@ pub fn dir() -> Result<PathBuf> {
         .join("tilo/identity"))
 }
 
+/// Whether this computer keeps a person's root, without reading it: a process
+/// that reads it makes itself undumpable ([`held`]).
+pub fn holds_root() -> bool {
+    dir().is_ok_and(|dir| IdentityPaths::under(&dir).user_privkey.exists())
+}
+
 /// The person kept here, if this computer holds one.
 pub fn held() -> Result<Option<Person>> {
     let dir = dir()?;

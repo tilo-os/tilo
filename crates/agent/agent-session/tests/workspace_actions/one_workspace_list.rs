@@ -6,6 +6,7 @@
 
 use super::api::ISSUER;
 use super::api_on_server::{OnServer, api_on_server, approved_key, headers, json_of};
+use super::api_v1::Holder;
 use super::*;
 use serde_json::{Value, json};
 use tilo_api::client::Client;
@@ -169,4 +170,168 @@ async fn a_computer_and_a_key_share_the_persons_workspace_list() {
         std::future::ready(Ok(Arc::clone(&direct)))
     }));
     one_list(&on_server, &token, "the tower", &Client::session(&socket)).await;
+
+    // A computer `tilo login` set up: its holder entered the workspace the login named, as the
+    // person's agent there, and its commands go over that session. Making a workspace
+    // is what the person's grants ask them first about; this computer holds Ada's root, which
+    // answers right here, so the command completes in one go.
+    let logged_into = first_workspace(&on_server, &token).await;
+    let mac = Holder::start(&on_server, &ada, &logged_into, "Claude Code").await;
+    let approving = approve_as_root(&on_server, &ada, &agent_of(&mac));
+    let started = std::time::Instant::now();
+    one_list(&on_server, &token, "the mac", &mac.command()).await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(15),
+        "approved here, the commands went on at once: {:?}",
+        started.elapsed()
+    );
+    // A people action asks first too, and is approved here the same way: in a workspace of
+    // Ada's own.
+    let (status, made) = as_key(
+        &on_server,
+        &token,
+        hyper::Method::POST,
+        "/v1/workspaces",
+        &json!({"name": "Ada's letters"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{made}");
+    let letters = made["id"].as_str().unwrap();
+    let invited = mac
+        .command()
+        .post(
+            &format!("/v1/workspaces/{letters}/members/invitations"),
+            &json!({"role": "editor"}),
+        )
+        .await
+        .expect("approved here, the computer's agent invites");
+    assert!(invited.to_string().contains("http"), "{invited}");
+    let answered = approving.stop().await;
+    assert!(
+        answered >= 2,
+        "Ada's root answered the agent's asks: {answered}"
+    );
+    assert!(mac.device.is_live());
+}
+
+/// The first workspace the key `token` lists.
+async fn first_workspace(on_server: &OnServer, token: &str) -> String {
+    let (status, listed) = as_key(
+        on_server,
+        token,
+        hyper::Method::GET,
+        "/v1/workspaces",
+        &json!({}),
+    )
+    .await;
+    assert_eq!(status, 200, "{listed}");
+    ids(&listed).first().cloned().expect("a workspace of Ada's")
+}
+
+/// The person's root, held on the computer, answering what `agent` asks them, allowing each, as
+/// a computer holding their root does while its command is under way; until stopped.
+struct RootApproving {
+    stop: Arc<tokio::sync::Notify>,
+    answered: tokio::task::JoinHandle<usize>,
+}
+
+impl RootApproving {
+    /// Stop answering: how many questions it allowed.
+    async fn stop(self) -> usize {
+        self.stop.notify_one();
+        self.answered.await.unwrap()
+    }
+}
+
+/// The agent the computer `holder` is, as its person's questions name it.
+fn agent_of(holder: &Holder) -> String {
+    tilo_actions::remote::device_agent_id(&holder.laptop.cert.user_public_key, "Claude Code")
+}
+
+fn approve_as_root(on_server: &OnServer, root: &SigningKey, agent: &str) -> RootApproving {
+    use tilo_server_client::questions::QuestionHost as _;
+    let stop = Arc::new(tokio::sync::Notify::new());
+    let stopped = Arc::clone(&stop);
+    let (server, root, agent) = (on_server.server_host(), root.clone(), agent.to_owned());
+    let answered = tokio::spawn(async move {
+        let member = tilo_server_client::MemberApprover::new(server);
+        let mut questions = tilo_server_client::questions::MemberQuestions::of_root(&member, &root);
+        let mut answered = 0;
+        loop {
+            for question in questions.confirmations().await.unwrap_or_default() {
+                if question.agent_id == agent
+                    && questions
+                        .answer(
+                            question.id,
+                            tilo_server_protocol::certify::ConfirmationAnswer::AllowOnce,
+                        )
+                        .await
+                        .is_ok()
+                {
+                    answered += 1;
+                }
+            }
+            tokio::select! {
+                () = stopped.notified() => break,
+                () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+            }
+        }
+        member.close().await;
+        answered
+    });
+    RootApproving { stop, answered }
+}
+
+/// On a computer that does not hold the person's root, a command its agent's grants ask the
+/// person about answers that it waits for their approval, never that the workspace was out of
+/// reach, and what it asked is done once they allow it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_computer_without_the_root_says_it_waits_for_the_persons_approval() {
+    let on_server = api_on_server(ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let token = approved_key(&on_server, &ada, &page, "Visa backend").await;
+    let logged_into = first_workspace(&on_server, &token).await;
+    let mac = Holder::start(&on_server, &ada, &logged_into, "Claude Code").await;
+
+    let waiting = mac
+        .command()
+        .post(
+            "/v1/workspaces",
+            &json!({"name": "Made while Ada was away"}),
+        )
+        .await
+        .expect_err("nobody approved it yet");
+    let said = format!("{waiting:#}");
+    assert_eq!(
+        tilo_api::client::Refusal::of(&waiting).map(tilo_api::client::Refusal::code),
+        Some("awaiting_approval"),
+        "{said}"
+    );
+    assert!(said.contains("Waiting for your approval"), "{said}");
+    assert!(!said.contains("couldn't reach"), "{said}");
+
+    // Ada allows it on a device holding her root: the workspace is made.
+    let approving = approve_as_root(&on_server, &ada, &agent_of(&mac));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let (_, listed) = as_key(
+            &on_server,
+            &token,
+            hyper::Method::GET,
+            "/v1/workspaces",
+            &json!({}),
+        )
+        .await;
+        if listed.to_string().contains("Made while Ada was away") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "allowed, the workspace is made: {listed}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    assert_eq!(approving.stop().await, 1, "Ada was asked once");
+    assert!(mac.device.is_live());
 }

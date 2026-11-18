@@ -390,16 +390,7 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
         device.user
     ))
     .map_err(|error| anyhow!(error))?;
-    let server_web = Origin::new(&http(), &device.host_origin);
-    let info = https::host_info(&server_web).await.map_err(|error| {
-        debug_why("asking the workspace's server", &error);
-        anyhow!(UNREACHED)
-    })?;
-    let host = info
-        .address
-        .as_ref()
-        .map(tilo_server_client::Host::published)
-        .ok_or_else(|| anyhow!(UNREACHED))?;
+    let host = server_of(device).await?;
     let (cert, host_cert) = device.certs()?;
     let signed = SignIn {
         link,
@@ -411,6 +402,23 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
     };
     let entry = entry_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
     Ok(Entered::enter(entry.as_ref(), &signed, Arc::new(key.clone())).await?)
+}
+
+/// Where the server `device` reaches is dialed: at the address its invitation signed, or at
+/// the one its web origin publishes.
+pub(crate) async fn server_of(device: &Device) -> Result<tilo_server_client::Host> {
+    if let Some(address) = &device.server_address {
+        return Ok(tilo_server_client::Host::published(address));
+    }
+    let server_web = Origin::new(&http(), &device.host_origin);
+    let info = https::host_info(&server_web).await.map_err(|error| {
+        debug_why("asking the workspace's server", &error);
+        anyhow!(UNREACHED)
+    })?;
+    info.address
+        .as_ref()
+        .map(tilo_server_client::Host::published)
+        .ok_or_else(|| anyhow!(UNREACHED))
 }
 
 /// [`connect`] to a server its invitation named over iroh: dialed at its signed address, with

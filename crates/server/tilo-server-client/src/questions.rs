@@ -85,6 +85,19 @@ pub struct MemberQuestions<'a, H> {
     pub device: Option<&'a tilo_user_identity::DeviceCert>,
 }
 
+impl<'a, H> MemberQuestions<'a, H> {
+    /// The questions for the person whose root is `root`, each command signed by
+    /// it, asked where `server` reaches: what a computer holding the root
+    /// answers its own agent's questions with.
+    pub fn of_root(server: &'a H, root: &'a dyn DeviceSigner) -> Self {
+        Self {
+            host: server,
+            root,
+            device: None,
+        }
+    }
+}
+
 impl<H: MemberHost> QuestionHost for MemberQuestions<'_, H> {
     async fn confirmations(&mut self) -> Result<Vec<PendingConfirmation>, CertifyError> {
         let approval = crate::pairing::member_approval_as(

@@ -170,6 +170,12 @@ impl Session {
             .map_err(|error| {
                 if error.code == DeviceRefusal::UNANSWERED {
                     failed("unavailable", error.message, "try again shortly")
+                } else if error.code == DeviceRefusal::AWAITING_APPROVAL {
+                    failed(
+                        crate::v1::AWAITING_APPROVAL,
+                        error.message,
+                        "tell the person to approve it in their Tilo; it is done once they allow it",
+                    )
                 } else {
                     failed(
                         "not_permitted",

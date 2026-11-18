@@ -631,6 +631,14 @@ impl InvocationState {
 /// [`ApiError::ConfirmationRequired`]: crate::api::ApiError::ConfirmationRequired
 pub const CONFIRMATION_REQUIRED_CODE: &str = "action_confirmation_required";
 
+/// The phase of an invocation's [`InvocationUpdate::Progress`] while it waits for its person to
+/// approve it on a device that holds their identity: it goes on once they allow it.
+pub const AWAITING_APPROVAL: &str = "awaiting_approval";
+
+/// The reason a provider refuses its caller for now with, when what it asked was put to its
+/// person and they have not answered: the invocation goes on, and is done once they allow it.
+pub const AWAITING_APPROVAL_REASON: &str = "awaiting_approval: it waits for its person to approve it on a device that holds their identity";
+
 /// Why a provider would not do what was asked. Every variant but [`Self::Unanswered`] means
 /// nothing ran.
 ///

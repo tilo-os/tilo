@@ -132,6 +132,11 @@ pub(crate) fn refused(error: &ServerError) -> Outcome {
         ServerError::Unavailable(_) => {
             failed("unavailable", error.to_string(), "try again shortly")
         }
+        ServerError::AwaitingApproval(_) => failed(
+            crate::v1::AWAITING_APPROVAL,
+            error.to_string(),
+            "tell the person to approve it in their Tilo; it is done once they allow it",
+        ),
         ServerError::NoAccountHere => failed(
             "not_permitted",
             error.to_string(),

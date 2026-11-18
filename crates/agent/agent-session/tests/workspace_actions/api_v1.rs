@@ -604,18 +604,18 @@ async fn own_workspace(on_server: &OnServer, person: &SigningKey, page: &Device)
 /// device of: that one session with the server, entered into `workspace` and
 /// the agent `agent`'s session as `tilo login` enters it, and Tilo's API
 /// served over it on a socket of its own, as the computer's commands reach it.
-struct Holder {
-    device: tilo_session_client::device::Device,
+pub(super) struct Holder {
+    pub(super) device: tilo_session_client::device::Device,
     socket: std::path::PathBuf,
     /// The API the holder serves, as `tilo mcp` asks it.
     direct: Arc<tilo_api::direct::Direct>,
     /// The person's device the computer is.
-    laptop: Device,
+    pub(super) laptop: Device,
     _sockets: tempfile::TempDir,
 }
 
 impl Holder {
-    async fn start(
+    pub(super) async fn start(
         on_server: &OnServer,
         person: &SigningKey,
         workspace: &str,
@@ -664,7 +664,7 @@ impl Holder {
     }
 
     /// One command of the computer's, as `tilo` is: a client of the holder's socket.
-    fn command(&self) -> tilo_api::client::Client {
+    pub(super) fn command(&self) -> tilo_api::client::Client {
         tilo_api::client::Client::session(&self.socket)
     }
 }
@@ -707,9 +707,11 @@ async fn a_logged_in_computers_commands_go_over_its_one_held_session() {
     let mut took = Vec::new();
     for _ in 0..10 {
         let started = std::time::Instant::now();
+        let (computer, nothing) = (command(), json!({}));
+        let listing = format!("/v1/workspaces/{workspace}/resources");
         let (opened, scripted) = tokio::join!(
-            command().act(&workspace, "notes", "open", &json!({}), "Open Notes"),
-            script.get(&format!("/v1/workspaces/{workspace}/resources")),
+            computer.act(&workspace, "notes", "open", &nothing, "Open Notes"),
+            script.get(&listing),
         );
         let opened = opened.expect("the action answers");
         scripted.expect("the script's own session answers it");

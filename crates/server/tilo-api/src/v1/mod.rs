@@ -44,6 +44,9 @@ pub const API_VERSION: &str = "1";
 /// The header every answer names the API's version in.
 pub const VERSION_HEADER: &str = "tilo-api-version";
 /// The header naming the invocation a call is a step of, and its title.
+/// The code of a call that waits for its person to approve it on a device that
+/// holds their identity: it is done once they allow it there.
+pub const AWAITING_APPROVAL: &str = tilo_actions::remote::AWAITING_APPROVAL;
 pub const INVOCATION_HEADER: &str = "tilo-invocation";
 pub const INVOCATION_TITLE_HEADER: &str = "tilo-invocation-title";
 /// The header a call made through generated types names their surface in.

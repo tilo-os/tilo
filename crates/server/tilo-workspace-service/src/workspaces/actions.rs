@@ -2421,14 +2421,57 @@ fn succeeded(invocation: InvocationId, value: serde_json::Value) -> InvocationSt
     )
 }
 
+/// How long an invocation that asked its person waits for an answer at hand before its caller
+/// hears that it waits for them.
+const APPROVING: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// What `work` answered within `wait` (until it ends without one), or `Err(asked)` while it is
+/// still under way, waiting for its person when `asked`. One its person was asked about
+/// (`asking`) is given a while for an answer at hand (a computer holding their root answers at
+/// once), and then its caller hears it waits for them; it goes on, and is done once they allow it.
+async fn answered_within(
+    work: &mut tokio::task::JoinHandle<Result<serde_json::Value, ActionCallError>>,
+    wait: Option<std::time::Duration>,
+    asking: &tokio::sync::Notify,
+) -> Result<Result<Result<serde_json::Value, ActionCallError>, tokio::task::JoinError>, bool> {
+    tokio::select! {
+        ran = async {
+            match wait {
+                Some(wait) => tokio::time::timeout(wait, &mut *work).await.map_err(|_| false),
+                None => Ok((&mut *work).await),
+            }
+        } => ran,
+        () = async {
+            asking.notified().await;
+            tokio::time::sleep(APPROVING).await;
+        } => Err(true),
+    }
+}
+
 /// Answer that `invocation` runs, record it so, and record how it ends once
 /// `work` does: the caller follows it there.
 fn still_running(
     host: &HostWorkspaceActions,
     invocation: InvocationId,
     work: tokio::task::JoinHandle<Result<serde_json::Value, ActionCallError>>,
+    asking: bool,
 ) -> InvocationReceipt {
-    let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
+    let update = if asking {
+        InvocationUpdate::Progress {
+            invocation,
+            sequence: 1,
+            phase: tilo_actions::remote::AWAITING_APPROVAL.to_owned(),
+            completed: None,
+            total: None,
+            message: Some(
+                "it waits for its person to approve it on a device that holds their identity"
+                    .to_owned(),
+            ),
+        }
+    } else {
+        InvocationUpdate::Accepted { invocation }
+    };
+    let accepted = InvocationState::new(invocation, update);
     let receipt = accepted.receipt();
     host.log().complete(&invocation, accepted);
     let host = host.clone();
@@ -2593,17 +2636,26 @@ impl ActionProvider for InWorkspace {
             .or_else(|| super::unattended::asks_first(&request));
         let runtime = self.host.shared.runtime.clone();
         self.host.spawn(async move {
-            let mut work = runtime.spawn(async move {
+            // An invocation that puts a question to its person answers its caller at once that
+            // it waits for their approval, rather than at the end of the wait.
+            let asking = std::sync::Arc::new(tokio::sync::Notify::new());
+            let told = std::sync::Arc::clone(&asking);
+            let mut work = runtime.spawn(agents::ASKING.scope(told, async move {
                 workspaces
                     .invoke(workspace_id, &caller, certificate.as_ref(), &request)
                     .await
-            });
-            let ran = match wait {
-                Some(wait) => match tokio::time::timeout(wait, &mut work).await {
-                    Ok(ran) => ran,
-                    Err(_) => return Ok(still_running(&host, invocation, work)),
-                },
-                None => work.await,
+            }));
+            let ran = match answered_within(&mut work, wait, &asking).await {
+                Ok(ran) => ran,
+                Err(asked) => {
+                    let receipt = still_running(&host, invocation, work, asked);
+                    if asked {
+                        return Err(ActionCallError::Refused {
+                            reason: tilo_actions::remote::AWAITING_APPROVAL_REASON.to_owned(),
+                        });
+                    }
+                    return Ok(receipt);
+                }
             };
             match ran {
                 Ok(Ok(value)) => {
