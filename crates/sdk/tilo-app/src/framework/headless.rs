@@ -1279,9 +1279,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &self.checkout().id
     }
 
-    /// The record the window shows now: the one it was opened on, or one
+    /// The document the window shows now: the one it was opened on, or one
     /// its view opened in its place ([`ResourceEnv::open_here`](super::ResourceEnv::open_here)).
-    fn checkout(&self) -> &DocumentCheckout {
+    pub fn checkout(&self) -> &DocumentCheckout {
         self.harness.component_resource().unwrap_or(&self.checkout)
     }
 
