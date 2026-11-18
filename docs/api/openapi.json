@@ -2058,7 +2058,7 @@
             "schema": {
               "type": "string"
             },
-            "description": ""
+            "description": "The open invitation's id, as `GET members` lists it"
           },
           {
             "$ref": "#/components/parameters/Invocation"
