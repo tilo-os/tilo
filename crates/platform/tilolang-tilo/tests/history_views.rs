@@ -592,11 +592,7 @@ fn undo_run_from_the_history_takes_back_every_step_of_the_run() {
             .any(|n| text(n) == Some("Tidy my notes and tasks")),
         "the run's entry says what it was asked"
     );
-    let asked = press_undo(
-        &mut ada,
-        &mut editor,
-        &button(&section, "tilolang-history-undo-run"),
-    );
+    let asked = press_undo(&mut ada, &mut editor, &button(&section, "tilolang-undo"));
     assert_eq!(
         asked,
         UndoAsk::Run {
