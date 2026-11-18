@@ -112,6 +112,9 @@ pub(super) struct Notes {
     /// An action its person is asked to allow, by its name, and when they answer: until
     /// then the app says that its person is asked, and nothing of it has happened.
     person_asked: Arc<Mutex<Option<(&'static str, tokio::time::Instant)>>>,
+    /// An action its person is asked about in the conversation, by its name, and whether the
+    /// question was put: the app ends its call there, as a workspace's service does.
+    asked_there: Arc<Mutex<Option<(&'static str, bool)>>>,
 }
 
 /// Where the test app says a person is asked, as a workspace's service says it.
@@ -181,6 +184,7 @@ impl Notes {
             refuses: Arc::default(),
             late: Arc::default(),
             person_asked: Arc::default(),
+            asked_there: Arc::default(),
         }
     }
 
@@ -1178,7 +1182,7 @@ impl ActionProvider for Notes {
             }))),
             _ => succeeded(None),
         };
-        Some(InvocationState::new(*id, update))
+        Some(InvocationState::new(*id, self.or_asked(id, update)))
     }
 
     fn cancel(
