@@ -368,6 +368,12 @@ impl ResourceCopy {
     /// their count, a data enum as its `$variant` beside its fields by name; `null` for a record
     /// the workspace holds none of.
     ///
+    /// A rich text reads with its paragraphs as lists in their order, each paragraph with its
+    /// id, its kind, its words and its attributes, and without the key of bytes that places
+    /// it: its body, its page header and footer, a note's and a comment's lines, and what a
+    /// paragraph holds ([`tilo_automerge::rich_text`]). So every reader shows a text in order
+    /// and none orders it again.
+    ///
     /// # Errors
     ///
     /// When the copy is no Automerge document.
@@ -561,6 +567,39 @@ mod tests {
             assert_eq!(
                 ResourceCopy::Document(doc.save()).readable().unwrap(),
                 serde_json::json!({"attached": {"$variant": "file", "blob": "ab", "a/b": 3}})
+            );
+        }
+
+        phase a_rich_text_reads_as_its_paragraphs_in_their_order;
+        {
+            // A rich text under a field, as the word processor keeps a document's body: three
+            // paragraphs, written in another order than they stand in.
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "title", "A poem").unwrap();
+            let body = doc.put_object(ROOT, "body", ObjType::Map).unwrap();
+            doc.put(&body, "schema", "tilo.richtext").unwrap();
+            let blocks = doc.put_object(&body, "blocks", ObjType::Map).unwrap();
+            for (id, place, kind, words) in [
+                ("p1", vec![192_u8], "list_item", "and so are you"),
+                ("p2", vec![64], "heading", "A poem"),
+                ("p3", vec![128], "paragraph", "Roses are red"),
+            ] {
+                let block = doc.put_object(&blocks, id, ObjType::Map).unwrap();
+                doc.put(&block, "order", place).unwrap();
+                doc.put(&block, "kind", kind).unwrap();
+                let text = doc.put_object(&block, "text", ObjType::Text).unwrap();
+                doc.splice_text(&text, 0, 0, words).unwrap();
+            }
+            assert_eq!(
+                ResourceCopy::Document(doc.save()).readable().unwrap(),
+                serde_json::json!({"title": "A poem", "body": {
+                    "schema": "tilo.richtext",
+                    "blocks": [
+                        {"id": "p2", "kind": "heading", "text": "A poem"},
+                        {"id": "p3", "kind": "paragraph", "text": "Roses are red"},
+                        {"id": "p1", "kind": "list_item", "text": "and so are you"},
+                    ],
+                }})
             );
         }
 

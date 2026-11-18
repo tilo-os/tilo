@@ -5,16 +5,14 @@
 
 use std::cmp::Ordering;
 
-/// The digits of `key`, right-padded with the insignificant trailing zeros that
-/// a shorter fraction implies, so two keys can be compared digit for digit.
-fn digits(key: &[u8], width: usize) -> impl Iterator<Item = u8> + '_ {
-    key.iter().copied().chain(std::iter::repeat(0)).take(width)
-}
-
 /// Compare two keys as base-256 fractions (missing/trailing digits are 0).
+///
+/// The comparison itself is kept below this crate ([`tilo_automerge::rich_text::key_cmp`]),
+/// where the reader of a whole document as JSON orders a rich text's paragraphs by it too:
+/// that reader cannot link this crate, and there is one rule.
+#[inline]
 pub fn cmp(a: &[u8], b: &[u8]) -> Ordering {
-    let width = a.len().max(b.len());
-    digits(a, width).cmp(digits(b, width))
+    tilo_automerge::rich_text::key_cmp(a, b)
 }
 
 /// `(lo + hi) / 2` as a base-256 fraction (requires `lo < hi`), so the result is
