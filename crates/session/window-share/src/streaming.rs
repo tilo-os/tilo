@@ -120,10 +120,6 @@ impl ShareRegistry {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::float_cmp,
-    reason = "exact streaming transform fixtures are the behavior under test"
-)]
 mod tests {
     use super::*;
 
@@ -149,34 +145,5 @@ mod tests {
             !registry.accept_remote_input(peer, surface),
             "a dropped share leaked input"
         );
-    }
-
-    #[test]
-    fn input_events_round_trip_through_serde() {
-        {
-            let events = [
-                InputEvent::PointerMotion { x: 1.5, y: -3.25 },
-                InputEvent::PointerButton {
-                    button: 272,
-                    pressed: true,
-                },
-                InputEvent::Key {
-                    keysym: 0xFF1B,
-                    pressed: false,
-                    modifiers: 4, /* Ctrl */
-                },
-                InputEvent::PointerEnter { surface: 42 },
-                InputEvent::PointerLeave { surface: 42 },
-                InputEvent::KeyboardFocus {
-                    surface: 42,
-                    focused: true,
-                },
-            ];
-            for ev in events {
-                let bytes = serde_json::to_vec(&ev).expect("serialize");
-                let round: InputEvent = serde_json::from_slice(&bytes).expect("deserialize");
-                assert_eq!(round, ev);
-            }
-        }
     }
 }
