@@ -230,6 +230,19 @@ final class SitePolicyTests: XCTestCase {
         }
     }
 
+    func testAnAddressIsReadAsTheSitesByWhereItLeadsAndNotByWhatItCarries() throws {
+        let phone = SitePolicy(settings: try ShellSettings(site: "https://tilo.wifi.example:24120"))
+        let inside = "https://tilo.wifi.example:24120/#/w/1f0e?pair=abc"
+        XCTAssertEqual(phone.inSite(try XCTUnwrap(URL(string: inside)))?.absoluteString, inside)
+        let made = try XCTUnwrap(URL(string: "http://tilo.localhost:24120/#/@127.0.0.1:24100/w/1f0e?pair=abc"))
+        XCTAssertEqual(phone.inSite(made)?.absoluteString, "https://tilo.wifi.example:24120/#/@tilo.wifi.example:24100/w/1f0e?pair=abc")
+        for text in ["https://other.example/?next=\(inside)", "HTTPS://other.example/?next=\(inside)", "tilo://open?link=\(inside)"] {
+            XCTAssertNil(phone.inSite(try XCTUnwrap(URL(string: text), text)), text)
+        }
+        // Words written round a link are another matter: the link is taken out of them.
+        XCTAssertEqual(phone.link(in: "Open <\(inside)>.")?.absoluteString, inside)
+    }
+
     func testOnlyALinkOfTheSitesOwnComputerIsReadThatWay() throws {
         let phone = SitePolicy(settings: try ShellSettings(site: "https://tilo.wifi.example:24120"))
         let route = "#/@127.0.0.1:24100/w/6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90?pair=\(String(repeating: "a", count: 96))"

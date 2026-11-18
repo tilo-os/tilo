@@ -1332,5 +1332,22 @@ final class TiloSourceTests: XCTestCase {
         } catch {}
         XCTAssertNil(keys.read(), "a key left behind met the next sign-in")
     }
+
+    func testALinkThatLeadsIntoAnotherSiteIsRefusedWithTheNameOfTheSiteThisAppOpens() async throws {
+        try await start()
+        let secret = String(repeating: "ab", count: 48)
+        // Another site, this computer on another port than the site's, and another site's link
+        // that carries an address of this site inside it: none of them leads into this site.
+        for text in ["https://elsewhere.example/#/w/ws-1?pair=\(secret)", "http://tilo.localhost:24520/#/w/ws-1?pair=\(secret)",
+                     "HTTPS://elsewhere.example/?next=\(Self.site)/#/w/ws-1?pair=\(secret)"] {
+            let link = try XCTUnwrap(PairingLink(in: text), text)
+            do {
+                try await source.pair(with: link)
+                XCTFail("paired with \(text)")
+            } catch {
+                XCTAssertEqual(error as? SourceProblem, .refused("This link does not lead into \(Self.site)"), text)
+            }
+        }
+    }
 }
 #endif
