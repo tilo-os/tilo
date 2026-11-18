@@ -137,6 +137,61 @@ pub fn workspace_held_here(state: &Path, workspace: &str, cert: &DeviceCert, key
     }
 }
 
+/// Place `workspace` on the workspace service this device's state keeps under `state`, called
+/// `name`, as a workspace this device's person made there: the store the session's own service
+/// opens when it starts, holding a workspace this device's person is the owner of. What the
+/// session's asks of the workspace's governance — an invitation into it above all — are answered
+/// from.
+pub fn workspace_placed_on_own_service(
+    state: &Path,
+    workspace: &str,
+    name: &str,
+    cert: &DeviceCert,
+    key: &SigningKey,
+) {
+    let root = state.join("tilo").join("workspace-service");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime for this device's own workspace service");
+    runtime.block_on(async {
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+            .bind()
+            .await
+            .expect("this device's endpoint");
+        let service = tilo_workspace_service::service::WorkspaceService::open(
+            tilo_workspace_service::service::ServiceConfig {
+                // The service names no address of its own until something needs it reachable, as
+                // the session's own service does: nothing here waits for a server to name it.
+                reaching: tilo_endpoint_reachability::Reaching::WhenNeeded,
+                ..tilo_workspace_service::service::ServiceConfig::new(
+                    root,
+                    tilo_server_protocol::WorkSetting::none(),
+                )
+            },
+            tilo_workspace_service::service::ServiceIdentity {
+                user_public_key: cert.user_public_key,
+                device_signing_key: key.clone(),
+                device_cert: cert.clone(),
+                revocations: tilo_user_identity::RevocationList::new(),
+            },
+            endpoint.clone(),
+            None,
+        )
+        .await
+        .expect("this device's own workspace service opens");
+        service
+            .place_own_workspace(workspace, name, cert)
+            .await
+            .expect("this device's service places the workspace");
+        drop(service);
+        endpoint.close().await;
+    });
+}
+
 /// What an app presents to join the workspace's channel: the certificate, and the device's proof
 /// that it is the certificate's.
 pub fn presentation(device: &SigningKey, cert: &DeviceCert) -> Vec<u8> {
