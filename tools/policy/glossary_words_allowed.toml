@@ -37,6 +37,12 @@ paths = [
 ]
 
 [[allow]]
+reason = "The nearby check's per-machine working directories, named run_a, run_b and run_c."
+words = ["run"]
+identifiers = ["run_a", "run_b", "run_c"]
+paths = ["os/dev/test-nearby-pairing.sh", "os/dev/nearby-unlock-phase.sh", "os/dev/nearby-wake-phase.sh"]
+
+[[allow]]
 reason = "The hosted-VM service's load of the machine running its VMs, which the glossary keeps as host."
 words = ["host"]
 identifiers = ["HostLoad"]
@@ -135,6 +141,8 @@ paths = [
     "docs/hosted-browser.md",
     "os/containers/tilo-lounge/README.md",
     "os/containers/tilo-lounge/entrypoint.sh",
+    "os/dev/nearby-unlock-phase.sh",
+    "os/dev/test-nearby-pairing.sh",
     "os/containers/tilo-server/Containerfile",
     "os/containers/tilo-sh/stack.sh",
     "os/dev-image/usr/lib/systemd/system/tilo-device-admin.service",
