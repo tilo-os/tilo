@@ -119,7 +119,7 @@ slug = "errors"
 source = "docs/tilo-sh/errors.md"
 section = "Reference"
 nav = "Errors"
-description = "Refused, RateLimited, AskPending and ProtocolError, the codes a host answers with, and keys that are turned away."
+description = "Refused, AskPending and ProtocolError, the codes a host answers with, and keys that are turned away."
 
 [[page]]
 slug = "rest-api"

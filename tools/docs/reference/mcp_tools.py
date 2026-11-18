@@ -37,7 +37,10 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "tilo_ls", "tilo_read", "tilo_view", "tilo_find", "tilo_link", "tilo_watch",
         "tilo_do", "tilo_status", "tilo",
     )),
-    ("Files", ("tilo_put_begin", "tilo_put_append", "tilo_put_finish", "tilo_get")),
+    ("Files", (
+        "tilo_put_begin", "tilo_put_append", "tilo_put_finish", "tilo_put_many", "tilo_put_have",
+        "tilo_get",
+    )),
     ("Devices", ("tilo_devices",)),
 )
 
