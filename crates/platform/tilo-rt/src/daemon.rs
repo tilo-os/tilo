@@ -175,8 +175,16 @@ mod tests {
                 );
             }
             {
+                // The runner may set the variable for every test it starts, so
+                // the default is what `default_workers` makes of it here.
                 let runtime = daemon("capped").build().unwrap();
-                assert!(runtime.metrics().num_workers() <= Daemon::DEFAULT_MAX_WORKERS);
+                let asked = std::env::var(WORKER_THREADS_ENV).ok();
+                let available =
+                    std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get);
+                assert_eq!(
+                    runtime.metrics().num_workers(),
+                    default_workers(asked.as_deref(), available)
+                );
             }
             {
                 // The environment is read in `default_workers`, which takes its
