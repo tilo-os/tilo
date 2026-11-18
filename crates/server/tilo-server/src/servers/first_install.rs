@@ -153,7 +153,7 @@ pub async fn install(
             .ok_or("no planned machine answers that token")?;
         // What this machine has is its own report: the entry is told once,
         // and again only when the machine's drives are not the ones it keeps.
-        if entry.plan.drives.is_empty() && !drives.is_empty() {
+        if entry.plan.drives.is_empty() {
             let report = machine::report(&entry, drives)?;
             apply(
                 workspaces,

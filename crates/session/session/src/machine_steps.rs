@@ -5,9 +5,9 @@
 //! Nothing about a machine is kept by this session itself. The plan is its
 //! entry in the person's Servers workspace ([`tilo_workspace_service::workspaces::servers`]),
 //! which this device holds through its own workspace service: each step is
-//! asked of that service ([`Engine::ask_own_service`]), which makes the
-//! workspace when the first machine is planned and every device of the person
-//! reads the one document from then on.
+//! asked of that service's host operations ([`Engine::ask_own_host`]), which
+//! makes the workspace when the first machine is planned and every device of
+//! the person reads the one document from then on.
 //!
 //! The window's controls reach these steps as the app, and the command as the
 //! person at this device: both are the same address
@@ -65,8 +65,6 @@ impl MachineSteps {
             .as_ref()
             .ok_or("this session keeps no state, so it holds no Servers workspace")?
             .clone();
-        ActionAddress::checked(machines::RESOURCE, action)
-            .ok_or("a machine step names its own address")?;
         let planning = action == machines::PLAN;
         let action = action.to_owned();
         Ok(crate::landing::off_loop(async move {
