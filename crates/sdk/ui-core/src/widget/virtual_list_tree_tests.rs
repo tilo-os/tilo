@@ -587,7 +587,7 @@ tilo_test_env::scenario! {
 
         let (chevron, folded) = list
             .chevrons()
-            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), row, false)
+            .rect(&marks.marks, &Theme::dark(), &ListKey::new(0u64), row, false)
             .expect("the row folds the subtask under it");
         assert!(!folded, "the group starts open");
         assert!(
@@ -613,7 +613,7 @@ tilo_test_env::scenario! {
         let narrow = list.row_box(0).expect("the first row on a phone");
         let (chevron, _) = list
             .chevrons()
-            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), narrow, false)
+            .rect(&marks.marks, &Theme::dark(), &ListKey::new(0u64), narrow, false)
             .expect("the row folds the subtask under it");
         assert!(
             (chevron.center().y - narrow.center().y).abs() < 0.5,
@@ -626,7 +626,7 @@ tilo_test_env::scenario! {
         let row = list.row_box(0).expect("the first row stands somewhere");
         let (chevron, _) = list
             .chevrons()
-            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), row, false)
+            .rect(&marks.marks, &Theme::dark(), &ListKey::new(0u64), row, false)
             .expect("the row folds the subtask under it");
         press(
             &mut list,
@@ -643,7 +643,7 @@ tilo_test_env::scenario! {
         let row = list.row_box(0).expect("the folded row stands somewhere");
         let (chevron, folded) = list
             .chevrons()
-            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), row, list.row_folded(&0))
+            .rect(&marks.marks, &Theme::dark(), &ListKey::new(0u64), row, list.row_folded(&0))
             .expect("a folded row still shows its disclosure");
         assert!(folded, "the chevron points at what it folded away");
         assert!(

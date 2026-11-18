@@ -4,7 +4,6 @@
 //! each model it lists.
 
 use std::any::Any;
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::Range;
@@ -12,9 +11,7 @@ use std::rc::Rc;
 
 use vello::kurbo::{Point, Rect};
 
-use super::{
-    ListModel, ListModelChange, RowBuild, TreeMarks, TreeMove, TreeRow, VecListModel, VirtualRows,
-};
+use super::{ListModel, ListModelChange, RowBuild, TreeMarks, TreeRow, VecListModel, VirtualRows};
 use crate::arriving::Arrival;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::selection::KeySelection;
@@ -45,8 +42,16 @@ impl<K: Eq + Hash + 'static> KeyValue for K {
 pub struct ListKey(Rc<dyn KeyValue>);
 
 impl ListKey {
+    /// The key as the list keeps it; a [`ListKey`] stays itself.
     pub fn new<K: Eq + Hash + 'static>(key: K) -> Self {
-        Self(Rc::new(key))
+        match (&key as &dyn Any).downcast_ref::<Self>() {
+            Some(kept) => kept.clone(),
+            None => Self(Rc::new(key)),
+        }
+    }
+
+    pub fn of<K: Clone + Eq + Hash + 'static>(key: &K) -> Self {
+        Self::new(key.clone())
     }
 
     /// The key as its model wrote it.
@@ -56,11 +61,11 @@ impl ListKey {
     }
 
     pub(super) fn typed<K: Clone + 'static>(&self) -> K {
-        self.of::<K>().clone()
+        self.as_key::<K>().clone()
     }
 
     #[expect(clippy::expect_used, reason = "a list keeps only its model's keys")]
-    fn of<K: 'static>(&self) -> &K {
+    fn as_key<K: 'static>(&self) -> &K {
         self.get().expect("a list keeps only its model's keys")
     }
 }
@@ -93,15 +98,11 @@ pub trait AnyModel: ListModel<Key = ListKey> {
 
 struct Typed<M>(M);
 
-fn key<K: Eq + Hash + 'static>(key: K) -> ListKey {
-    ListKey::new(key)
-}
-
 fn tree_row<K: Eq + Hash + 'static>(row: TreeRow<K>) -> TreeRow<ListKey> {
     TreeRow {
-        parent: row.parent.map(key),
+        parent: row.parent.map(ListKey::new),
         depth: row.depth,
-        above: row.above.map(key),
+        above: row.above.map(ListKey::new),
     }
 }
 
@@ -121,7 +122,7 @@ fn change<K: Clone + Eq + Hash + 'static>(change: &ListModelChange<K>) -> ListMo
             count: *count,
         },
         ListModelChange::RowsChanged { keys } => ListModelChange::RowsChanged {
-            keys: keys.iter().cloned().map(key).collect(),
+            keys: keys.iter().cloned().map(ListKey::new).collect(),
         },
         ListModelChange::Reset => ListModelChange::Reset,
     }
@@ -165,7 +166,7 @@ impl<M: ListModel + 'static> ListModel for Typed<M> {
     }
 
     fn key_at(&self, index: usize) -> Option<ListKey> {
-        self.0.key_at(index).map(key)
+        self.0.key_at(index).map(ListKey::new)
     }
 
     fn index_of(&self, key: &ListKey) -> Option<usize> {
@@ -181,7 +182,7 @@ impl<M: ListModel + 'static> ListModel for Typed<M> {
     }
 
     fn key_presenting(&self, id: &str) -> Option<ListKey> {
-        self.0.key_presenting(id).map(key)
+        self.0.key_presenting(id).map(ListKey::new)
     }
 
     fn item_presented(&self, key: &ListKey) -> Option<String> {
@@ -225,55 +226,6 @@ fn model_mut<M: 'static>(model: &mut dyn AnyModel) -> &mut M {
         .downcast_mut::<Typed<M>>()
         .expect("a list reads the model it was made with")
         .0
-}
-
-/// What [`VirtualRows`] reads and writes of a tree's [`TreeMarks`].
-pub(super) trait KeyedMarks {
-    fn depth(&self, key: &ListKey) -> u32;
-    fn is_folded(&self, key: &ListKey) -> bool;
-    fn is_branch(&self, key: &ListKey) -> bool;
-    fn fold(&self, key: &ListKey, folded: bool);
-    fn mark(&self, depth: HashMap<ListKey, u32>, branches: Vec<ListKey>, nested: Vec<ListKey>);
-    fn clear(&self);
-}
-
-impl<K: Clone + Eq + Hash + 'static> KeyedMarks for TreeMarks<K> {
-    fn depth(&self, key: &ListKey) -> u32 {
-        key.get().map_or(0, |key| TreeMarks::depth(self, key))
-    }
-
-    fn is_folded(&self, key: &ListKey) -> bool {
-        key.get().is_some_and(|key| TreeMarks::is_folded(self, key))
-    }
-
-    fn is_branch(&self, key: &ListKey) -> bool {
-        key.get().is_some_and(|key| TreeMarks::is_branch(self, key))
-    }
-
-    fn fold(&self, key: &ListKey, folded: bool) {
-        if let Some(key) = key.get() {
-            TreeMarks::fold(self, key, folded);
-        }
-    }
-
-    fn mark(&self, depth: HashMap<ListKey, u32>, branches: Vec<ListKey>, nested: Vec<ListKey>) {
-        let typed = |key: ListKey| key.typed::<K>();
-        self.depth
-            .borrow_mut()
-            .extend(depth.into_iter().map(|(key, depth)| (typed(key), depth)));
-        self.branches
-            .borrow_mut()
-            .extend(branches.into_iter().map(typed));
-        self.nested
-            .borrow_mut()
-            .extend(nested.into_iter().map(typed));
-    }
-
-    fn clear(&self) {
-        self.depth.borrow_mut().clear();
-        self.branches.borrow_mut().clear();
-        self.nested.borrow_mut().clear();
-    }
 }
 
 /// A sparse, variable-height list of `M`'s rows: [`VirtualRows`], read as `M` and keyed by
@@ -362,17 +314,27 @@ macro_rules! builders {
 macro_rules! by_key {
     (@one ref $name:ident($($arg:ident: $ty:ty),*) $answer:ty) => {
         pub fn $name(&self, key: &M::Key $(, $arg: $ty)*) -> $answer {
-            self.rows.$name(&ListKey::new(key.clone()) $(, $arg)*)
+            self.rows.$name(&ListKey::of(key) $(, $arg)*)
         }
     };
     (@one mut $name:ident($($arg:ident: $ty:ty),*) $answer:ty) => {
         pub fn $name(&mut self, key: &M::Key $(, $arg: $ty)*) -> $answer {
-            self.rows.$name(&ListKey::new(key.clone()) $(, $arg)*)
+            self.rows.$name(&ListKey::of(key) $(, $arg)*)
         }
     };
     ($($kind:tt $name:ident($($arg:ident: $ty:ty),*) => $answer:ty;)*) => {
         $(by_key!(@one $kind $name($($arg: $ty),*) $answer);)*
     };
+}
+
+macro_rules! by_setter {
+    ($($name:ident = $set:ident($arg:ident: $ty:ty);)*) => {$(
+        #[must_use]
+        pub fn $name(mut self, $arg: $ty) -> Self {
+            self.$set($arg);
+            self
+        }
+    )*};
 }
 
 impl<M: ListModel + 'static> VirtualList<M> {
@@ -381,46 +343,56 @@ impl<M: ListModel + 'static> VirtualList<M> {
         estimated_row_height: f32,
         mut row_builder: impl FnMut(&M, usize, &M::Key) -> Element + 'static,
     ) -> Self {
-        let row_builder = Box::new(move |rows: &dyn AnyModel, index, key: &ListKey, _| {
-            row_builder(self::model(rows), index, key.of())
-        });
-        Self {
-            rows: VirtualRows::build(
-                Box::new(Typed(model)),
-                estimated_row_height,
-                row_builder,
-                false,
-            ),
-            typed: PhantomData,
-        }
+        Self::build(
+            model,
+            estimated_row_height,
+            false,
+            move |model, index, key, _| row_builder(model, index, key),
+        )
     }
 
     pub fn with_selection_delegate(
         model: M,
         estimated_row_height: f32,
+        row_builder: impl FnMut(&M, usize, &M::Key, RowBuild) -> Element + 'static,
+    ) -> Self {
+        Self::build(model, estimated_row_height, true, row_builder)
+    }
+
+    fn build(
+        model: M,
+        estimated_row_height: f32,
+        delegate: bool,
         mut row_builder: impl FnMut(&M, usize, &M::Key, RowBuild) -> Element + 'static,
     ) -> Self {
         let row_builder = Box::new(move |rows: &dyn AnyModel, index, key: &ListKey, build| {
-            row_builder(self::model(rows), index, key.of(), build)
+            row_builder(self::model(rows), index, key.as_key(), build)
         });
         let mut rows = VirtualRows::build(
             Box::new(Typed(model)),
             estimated_row_height,
             row_builder,
-            true,
+            delegate,
         );
-        rows.delegate_selection = true;
+        rows.delegate_selection = delegate;
         Self {
             rows,
             typed: PhantomData,
         }
     }
 
+    by_setter! {
+        on_selected = set_on_selected(callback: impl FnMut(&[M::Key]) + 'static);
+        with_selection = set_selection(selection: KeySelection<M::Key>);
+        on_select = set_on_select(callback: impl FnMut(M::Key, bool) + 'static);
+        on_activate = set_on_activate(callback: impl FnMut(M::Key) + 'static);
+        on_opened = set_on_opened(callback: impl FnMut(M::Key) + 'static);
+    }
+
     by_key! {
         mut reveal() => bool;
         mut begin_rename() => bool;
         mut fold_row(folded: bool) => bool;
-        mut move_row(movement: TreeMove) => bool;
         ref row_rect() => Option<Rect>;
         ref disclosure_rect() => Option<Rect>;
         ref row_depth() => u32;
@@ -480,21 +452,6 @@ impl<M: ListModel + 'static> VirtualList<M> {
         result
     }
 
-    pub fn notify_model_changes(&mut self, changes: &[ListModelChange<M::Key>]) {
-        let changes: Vec<_> = changes.iter().map(change).collect();
-        self.rows.notify_model_changes(&changes);
-    }
-
-    pub fn invalidate_rows(&mut self, keys: impl IntoIterator<Item = M::Key>) {
-        self.rows.invalidate_rows(keys.into_iter().map(key));
-    }
-
-    #[must_use]
-    pub fn on_selected(mut self, callback: impl FnMut(&[M::Key]) + 'static) -> Self {
-        self.set_on_selected(callback);
-        self
-    }
-
     pub fn set_on_selected(&mut self, mut callback: impl FnMut(&[M::Key]) + 'static) {
         self.rows.set_on_selected(move |keys: &[ListKey]| {
             let keys: Vec<M::Key> = keys.iter().map(ListKey::typed).collect();
@@ -502,14 +459,8 @@ impl<M: ListModel + 'static> VirtualList<M> {
         });
     }
 
-    #[must_use]
-    pub fn with_selection(mut self, selection: KeySelection<M::Key>) -> Self {
-        self.set_selection(selection);
-        self
-    }
-
     pub fn set_selection(&mut self, selection: KeySelection<M::Key>) {
-        self.rows.set_selection(selection.map(key));
+        self.rows.set_selection(selection.map(ListKey::new));
     }
 
     #[must_use]
@@ -521,7 +472,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
     pub fn select_only(&mut self, key: Option<M::Key>) {
         let selection = self.rows.selection_mut();
         match key {
-            Some(key) => selection.select_only(self::key(key)),
+            Some(key) => selection.select_only(ListKey::new(key)),
             None => selection.clear(),
         }
     }
@@ -537,32 +488,14 @@ impl<M: ListModel + 'static> VirtualList<M> {
         self
     }
 
-    #[must_use]
-    pub fn on_select(mut self, callback: impl FnMut(M::Key, bool) + 'static) -> Self {
-        self.set_on_select(callback);
-        self
-    }
-
     pub fn set_on_select(&mut self, mut callback: impl FnMut(M::Key, bool) + 'static) {
         self.rows
             .set_on_select(move |key: ListKey, chosen| callback(key.typed(), chosen));
     }
 
-    #[must_use]
-    pub fn on_activate(mut self, callback: impl FnMut(M::Key) + 'static) -> Self {
-        self.set_on_activate(callback);
-        self
-    }
-
     pub fn set_on_activate(&mut self, mut callback: impl FnMut(M::Key) + 'static) {
         self.rows
             .set_on_activate(move |key: ListKey| callback(key.typed()));
-    }
-
-    #[must_use]
-    pub fn on_opened(mut self, callback: impl FnMut(M::Key) + 'static) -> Self {
-        self.set_on_opened(callback);
-        self
     }
 
     pub fn set_on_opened(&mut self, mut callback: impl FnMut(M::Key) + 'static) {
@@ -662,6 +595,14 @@ impl<M: ListModel + 'static> VirtualList<M> {
     }
 
     #[must_use]
+    pub fn with_menu_around(mut self, offers: impl Fn(&M, &M::Key) -> bool + 'static) -> Self {
+        self.rows = self.rows.with_menu_around(move |rows, key: &ListKey| {
+            key.get().is_some_and(|key| offers(model(rows), key))
+        });
+        self
+    }
+
+    #[must_use]
     pub fn with_row_menu_reporter(
         mut self,
         mut report: impl FnMut(M::Key, Rect, Point) + 'static,
@@ -672,27 +613,9 @@ impl<M: ListModel + 'static> VirtualList<M> {
         self
     }
 
-    #[must_use]
-    pub fn with_menu_around(mut self, offers: impl Fn(&M, &M::Key) -> bool + 'static) -> Self {
-        self.rows = self.rows.with_menu_around(move |rows, key: &ListKey| {
-            key.get().is_some_and(|key| offers(model(rows), key))
-        });
-        self
-    }
-
-    #[must_use]
-    pub fn with_tree(mut self, marks: Rc<TreeMarks<M::Key>>) -> Self {
-        self.rows = self.rows.with_tree(marks);
-        self
-    }
-
-    pub fn focus_row(&mut self, key: M::Key) {
-        self.rows.focus_row(self::key(key));
-    }
-
-    #[must_use]
-    pub fn focused_key(&self) -> Option<&M::Key> {
-        self.rows.focused_key()?.get()
+    pub fn invalidate_rows(&mut self, keys: impl IntoIterator<Item = M::Key>) {
+        self.rows
+            .invalidate_rows(keys.into_iter().map(ListKey::new));
     }
 
     #[must_use]
@@ -701,35 +624,56 @@ impl<M: ListModel + 'static> VirtualList<M> {
     }
 
     #[must_use]
-    pub fn renaming(&self) -> Option<&M::Key> {
-        self.rows.renaming()?.get()
-    }
-
-    pub fn set_key_presenting(&mut self, f: impl Fn(&str) -> Option<M::Key> + 'static) {
-        self.rows.set_key_presenting(move |id: &str| f(id).map(key));
-    }
-
-    pub fn open_context_menu(&mut self, key: Option<&M::Key>, at: Point) -> bool {
-        let key = key.map(|key| self::key(key.clone()));
-        self.rows.open_context_menu(key.as_ref(), at)
-    }
-
-    pub fn open_row_menu(&mut self, key: M::Key, at: Point) -> bool {
-        self.rows.open_row_menu(self::key(key), at)
-    }
-
-    #[must_use]
     pub fn open_row(&self) -> Option<&M::Key> {
         self.rows.open_row()?.get()
     }
 
     pub fn set_open(&mut self, key: Option<M::Key>) {
-        self.rows.set_open(key.map(self::key));
+        self.rows.set_open(key.map(ListKey::new));
+    }
+
+    pub fn set_key_presenting(&mut self, f: impl Fn(&str) -> Option<M::Key> + 'static) {
+        self.rows
+            .set_key_presenting(move |id: &str| f(id).map(ListKey::new));
+    }
+
+    pub fn notify_model_changes(&mut self, changes: &[ListModelChange<M::Key>]) {
+        let changes: Vec<_> = changes.iter().map(change).collect();
+        self.rows.notify_model_changes(&changes);
+    }
+
+    #[must_use]
+    pub fn with_tree(mut self, marks: Rc<TreeMarks<M::Key>>) -> Self {
+        self.rows = self.rows.with_tree(Rc::clone(&marks.marks));
+        self
+    }
+
+    pub fn focus_row(&mut self, key: M::Key) {
+        self.rows.focus_row(ListKey::new(key));
+    }
+
+    #[must_use]
+    pub fn focused_key(&self) -> Option<&M::Key> {
+        self.rows.focused_key()?.get()
+    }
+
+    #[must_use]
+    pub fn renaming(&self) -> Option<&M::Key> {
+        self.rows.renaming()?.get()
+    }
+
+    pub fn open_context_menu(&mut self, key: Option<&M::Key>, at: Point) -> bool {
+        let key = key.map(|key| ListKey::of(key));
+        self.rows.open_context_menu(key.as_ref(), at)
+    }
+
+    pub fn open_row_menu(&mut self, key: M::Key, at: Point) -> bool {
+        self.rows.open_row_menu(ListKey::new(key), at)
     }
 
     pub fn stage_reorder(&mut self, source: &M::Key, before: &M::Key) -> bool {
         self.rows
-            .stage_reorder(&key(source.clone()), &key(before.clone()))
+            .stage_reorder(&ListKey::of(source), &ListKey::of(before))
     }
 
     #[must_use]

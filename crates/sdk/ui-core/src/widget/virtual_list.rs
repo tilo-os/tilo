@@ -440,7 +440,7 @@ pub struct VirtualRows {
     view_count: Option<usize>,
     heads_nothing: std::cell::Cell<Option<bool>>,
     row_groups: HashMap<ListKey, Option<groups::Group>>,
-    tree: Option<Rc<dyn typed::KeyedMarks>>,
+    tree: Option<Rc<tree::Marks>>,
     tree_rows: HashMap<ListKey, TreeRow<ListKey>>,
     tree_hidden: HashSet<ListKey>,
     first_level_branch: Option<bool>,
