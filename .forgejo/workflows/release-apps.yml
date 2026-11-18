@@ -607,6 +607,12 @@ jobs:
             SCCACHE_RECACHE=1 dist/apps/package-apps.sh
           fi
           [[ -z ${RUSTC_WRAPPER:-} ]] || "$RUSTC_WRAPPER" --show-stats || true
+      # Every app that keeps a model ships its module inside its package, so a
+      # device holding the workspace's keys applies the app's actions from what
+      # it downloads. One build of each, into target/app-models, which the
+      # packaging below reads: the packing itself builds no wasm.
+      - name: Build each app's model module
+        run: bash tools/ci/app-models.sh
       - name: Package and sign selected tapps
         id: package
         env:
@@ -633,6 +639,8 @@ jobs:
             exit 1
           fi
           unset TAPP_PUBLISHER_IDENTITY RUNTIME_BUNDLE_SIGNING_KEY
+          # The modules the model step above built; the packing builds none.
+          export TILO_APP_MODELS="$PWD/target/app-models"
           cleanup_identities() {
             [[ -z ${identity:-} ]] || rm -f "$identity"
             [[ -z ${runtime_identity:-} ]] || rm -f "$runtime_identity"

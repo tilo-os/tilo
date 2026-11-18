@@ -62,6 +62,15 @@ case $tools_profile in
 esac
 release_dir=$target_dir/$tools_dir
 thin_app_dir=$target_dir/thin-app
+# Every app that keeps a model ships its built module inside the package, so a
+# device holding the workspace's keys applies the app's actions with no build
+# of its own. The modules are the `app-models` check's output (`tools/ci/app-models.sh`,
+# kept under the target directory); a pack given them through `TILO_APP_MODELS`
+# takes that output and builds no wasm crate. One given none builds them here
+# first, through the same script the check does, and then packs what it built;
+# an app whose guest crate is beside it and whose module is not there fails
+# below either way, rather than shipping without one.
+app_models=$(realpath -m "${TILO_APP_MODELS:-${CARGO_TARGET_DIR:-$repo_root/target}/app-models}")
 # TILO_APP_TOOLS_BUILT=1: the packing tools are already in $release_dir, built by an earlier run,
 # so none is built.
 tools_built=${TILO_APP_TOOLS_BUILT:-}
@@ -215,6 +224,12 @@ pathlib.Path(sys.argv[1]).write_text(json.dumps({
 }) + "\n")
 PY
 
+# A pack given no modules builds them now, once, through the app-models check's
+# own script; one given them takes that output and builds nothing.
+if [[ -z ${TILO_APP_MODELS:-} ]]; then
+    bash "$repo_root/tools/ci/app-models.sh"
+fi
+
 while IFS=$'\t' read -r name package binary id version manifest; do
     built="$thin_app_dir/$binary"
     [[ -x $built ]] || { printf 'missing app binary: %s\n' "$built" >&2; exit 1; }
@@ -244,6 +259,20 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     surface="$repo_root/$(dirname "$manifest")/surface.toml"
     if [[ -f $surface ]]; then
         install -pm 0644 "$surface" "$payload/surface.toml"
+    fi
+    # An app declares a model by keeping a guest crate beside it (apps/tasks ->
+    # apps/tasks-model-wasm). The module the app-models check built for it ships
+    # at the payload root, where every device holding the workspace's keys reads
+    # it and `tilo-app package` stages it. A declared model with no module built
+    # fails the pack here: the app would ship unable to apply its own actions.
+    if [[ -f $app_dir-model-wasm/Cargo.toml ]]; then
+        module="$(basename "$app_dir")/model.wasm"
+        [[ -f $app_models/$module ]] || {
+            printf 'app=%s declares a model but %s is not built; build it with `t outputs app-models`\n' \
+                "$name" "$app_models/$module" >&2
+            exit 1
+        }
+        install -pm 0644 "$app_models/$module" "$payload/model.wasm"
     fi
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged_manifest"

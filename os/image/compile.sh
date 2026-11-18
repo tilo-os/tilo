@@ -13,6 +13,10 @@
 #   TILO_CHROMIUM_ENGINE  what `--chromium` left: the engine taken from there
 #                      instead of built again; `apart` leaves it out of OUT, for an
 #                      image build given it beside the tree (os/dev/build-image.sh)
+#   TILO_APP_MODELS    the modules `tools/ci/app-models.sh` built for every app
+#                      that keeps a model (the app-models check's output), taken
+#                      instead of building them here; the packing below ships
+#                      them inside each app's package
 #   TILO_GITHUB_ASSET_CACHE  the checksum-pinned external assets (default
 #                      os/external-assets/cache), for the CEF distribution
 #
@@ -423,7 +427,15 @@ case "$TILO_RUST_LTO" in \
          && while IFS= read -r engine; do cp "$target/thin-app/$engine" "$out"/; done < "$out"/runtime-engines \
          && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
          && [ -n "${LIBSTD}" ] \
-         && cp "${LIBSTD}" "$out"/; \
+         && cp "${LIBSTD}" "$out"/ \
+         && build_phase rust-app-models \
+         && rm -rf "$out/app-models" \
+         && if [ -n "${TILO_APP_MODELS:-}" ]; then \
+              cp -a "${TILO_APP_MODELS}" "$out"/app-models; \
+            else \
+              bash tools/ci/app-models.sh \
+              && cp -a "$target/app-models" "$out"/app-models; \
+            fi; \
        fi \
     && build_phase rust-boot-greeter \
     && cp Cargo.lock "$scratch/Cargo.lock" \

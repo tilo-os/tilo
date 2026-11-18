@@ -18,6 +18,10 @@
 #   COHORT_APPS    the app directories this cohort ships, space separated; an
 #                  app left out of the cohort is neither packed nor installed
 #                  [default: every app with a built binary]
+#   APP_MODELS     each app's built model module, `<app>/model.wasm`, from the
+#                  app-models check's output; an app whose guest crate is beside
+#                  it must have one here, or the pack fails
+#                                          [default: <BIN_DIR>/../app-models]
 #   TAPP_DIR       install these already-verified release tapps instead of
 #                  packing BIN_DIR (optional)
 #   EXPECTED_PUBKEY require every prebuilt tapp to use this publisher (64 hex)
@@ -94,6 +98,7 @@ INSTALL_BIN="${INSTALL_BIN:-$BIN_DIR/tilo-install}"
 BUNDLE_BIN="${BUNDLE_BIN:-$BIN_DIR/tilo-runtime-bundle}"
 SHIM_BIN="${SHIM_BIN:-$BIN_DIR/tilo-cli-shim}"
 COHORT_APPS="${COHORT_APPS:-}"
+APP_MODELS="${APP_MODELS:-$(dirname "$BIN_DIR")/app-models}"
 TAPP_DIR="${TAPP_DIR:-}"
 RUNTIME_ID="${RUNTIME_ID:-}"
 EXPECTED_PUBKEY="${EXPECTED_PUBKEY:-}"
@@ -226,6 +231,15 @@ export TILO_APPS_DATA_DIR="$STORE"
 
 # --- pack + install every manifest -----------------------------------------
 shipped=(); missing=(); failed=()
+# Which packages carry a model, by package id: an app keeps one by keeping a
+# guest crate beside it (apps/tasks -> apps/tasks-model-wasm). A prebuilt tapp
+# of one of these must still hold the module this pack would have staged.
+declare -A model_ids=()
+for manifest in "$REPO"/apps/*/tilo-app.toml; do
+    [ -f "$(dirname "$manifest")-model-wasm/Cargo.toml" ] || continue
+    model_id=$(sed -n 's/^id  *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)
+    [ -z "$model_id" ] || model_ids["$model_id"]="$(basename "$(dirname "$manifest")")"
+done
 
 if [ "$prebuilt" = 1 ]; then
     for tapp in "$TAPP_DIR"/*.tapp; do
@@ -243,6 +257,11 @@ if [ "$prebuilt" = 1 ]; then
             | sed -n 's/^id  *= *"\([^"]*\)".*/\1/p' | head -1)
         if [ -n "$budget_id" ] && ! over=$(check_budget "$(basename "$tapp")" "$budget_id" "$tapp_bytes"); then
             failed+=("$over")
+            continue
+        fi
+        if [ -n "${model_ids[$budget_id]:-}" ] \
+                && ! printf '%s\n' "$package_details" | grep -Eq '^  model\.wasm  \('; then
+            failed+=("$(basename "$tapp"): the app declares a model but the package carries no model.wasm")
             continue
         fi
         package_pubkey=$(printf '%s\n' "$package_details" \
@@ -307,6 +326,20 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     # workspace's writes of the app against it and names it in the app's own.
     if [ -f "$(dirname "$manifest")/surface.toml" ]; then
         install -pm 0644 "$(dirname "$manifest")/surface.toml" "$payload/surface.toml"
+    fi
+    # An app declares a model by keeping a guest crate beside it (apps/tasks ->
+    # apps/tasks-model-wasm). The module the app-models check built for it ships
+    # at the payload root, where `tilo-app package` stages it and every device
+    # holding the workspace's keys reads it. A declared model with no module
+    # built fails the pack: the app would install unable to apply its actions.
+    if [ -f "$(dirname "$manifest")-model-wasm/Cargo.toml" ]; then
+        module="$APP_MODELS/$app/model.wasm"
+        if [ ! -f "$module" ]; then
+            failed+=("$app ($id): declares a model but $module was not built (t outputs app-models)")
+            continue
+        fi
+        install -pm 0644 "$module" "$payload/model.wasm" \
+            || { failed+=("$app ($id): could not stage its model module"); continue; }
     fi
 
     # `tilo-app-package pack` refuses a manifest whose publisher.identity disagrees

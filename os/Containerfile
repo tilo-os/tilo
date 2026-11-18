@@ -447,7 +447,8 @@ COPY sdk/typescript/native /build/sdk/typescript/native
 COPY vendor /build/vendor
 COPY dist /build/dist
 COPY docs/developers/tasks /build/docs/developers/tasks
-COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py /build/tools/ci/
+COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py \
+     tools/ci/app-models.sh /build/tools/ci/
 # build-thin-apps.sh routes a cached build through this dispatcher
 # (RUSTC_WRAPPER), which finds the size wrapper beside it in tools/ci/.
 COPY tools/ci/thin-app/sccache /build/tools/ci/thin-app/sccache
@@ -525,7 +526,7 @@ ARG RPMS_REF
 # static archives, plus the LLVM tools and clang-tools-extra; nothing here links
 # or runs them, and the dev image installs this list (os/scripts/builder-packages.txt).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        rust cargo sccache capnproto \
+        rust cargo rust-std-static-wasm32-unknown-unknown sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang pkgconf-pkg-config \
         bash-devel readline-devel \
@@ -817,6 +818,7 @@ RUN --mount=type=secret,id=app_publisher_identity \
          export IDENTITY_JSON=/run/secrets/app_publisher_identity; \
        fi \
     && BIN_DIR=/out/thin-apps \
+    APP_MODELS=/out/app-models \
     TAPP_DIR=/out/prebuilt-apps \
     TAPP_BUDGET="$([ "$TILO_RUST_LTO" = off ] && echo report || echo enforce)" \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \

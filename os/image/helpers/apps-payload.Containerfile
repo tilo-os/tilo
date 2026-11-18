@@ -190,6 +190,7 @@ RUN --mount=type=secret,id=app_publisher_identity \
          export IDENTITY_JSON=/run/secrets/app_publisher_identity; \
        fi \
     && BIN_DIR=/out/thin-apps \
+    APP_MODELS=/out/app-models \
     TAPP_DIR=/out/prebuilt-apps \
     TAPP_BUDGET="$([ "$TILO_RUST_LTO" = off ] && echo report || echo enforce)" \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \

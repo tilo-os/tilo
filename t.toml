@@ -601,10 +601,13 @@ default = false
 # out of their packages' own test families (which build no module) and run
 # here, where the module is in place. `workspace-unify` comes beside the
 # package so its features resolve as the test family's build gives them.
+# The server's test is handed a package the image's pack path built
+# (tools/ci/pack-tasks-tapp.sh), so what it applies an action from is a package
+# an image would install, not one the test staged.
 [[check]]
 name = "test-packaged-model"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\" cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored && TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\" cargo test --locked -p tilo-agent-session --test it an_agent_applies_a_packaged -- --ignored\n"
+run = "set -euo pipefail\nexport TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\"\nbash tools/ci/pack-tasks-tapp.sh /target/packaged-model\nTILO_APP_PACKAGE=/target/packaged-model/so.tilo.tasks.tapp cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored\ncargo test --locked -p tilo-agent-session --test it an_agent_applies_a_packaged -- --ignored\n"
 needs = ["app-models"]
 
 [[check]]
@@ -2945,13 +2948,16 @@ export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 export TILO_RELEASE_APPS=$(python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | python3 -c 'import json, sys; print(" ".join(json.load(sys.stdin)["apps"]))')
 export TILO_APP_PREBUILT=/target/apps-build/{arch}
 export TILO_APP_TOOLS_BUILT=1
+# Each app's module, built once by the app-models check: the packages carry
+# them, and no wasm crate builds in a signing run.
+export TILO_APP_MODELS=/target/app-models
 export TILO_APP_RELEASE_OUT=/target/app-release/{arch}
 export TILO_APP_RELEASE_SOURCE="$T_COMMIT"
 export TILO_APP_RELEASE_SEQUENCE=$(git show -s --format=%ct "$T_COMMIT")
 dist/apps/package-apps.sh
 # The package CLI the publication runs on: the same bytes the tapps were packed with.
 install -m 0755 /target/apps-build/{arch}/release/tilo-app-package /target/app-release/{arch}/tilo-app-package'''
-needs = ["apps-build-{arch}"]
+needs = ["apps-build-{arch}", "app-models"]
 requires = ["arch={arch}"]
 secrets = ["TAPP_PUBLISHER_IDENTITY", "RUNTIME_BUNDLE_SIGNING_KEY"]
 git = true
@@ -2969,6 +2975,8 @@ arch = ["x86_64", "aarch64"]
 name = "app-reproducible-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/apps/check-reproducible-tapp.sh calculator"
+needs = ["app-models"]
+env = { TILO_APP_MODELS = "/target/app-models" }
 requires = ["arch={arch}"]
 on = ["dispatch"]
 heavy = true
@@ -3050,7 +3058,8 @@ arch = ["x86_64", "aarch64"]
 name = "app-sizes-{arch}"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -euo pipefail\n# One release build of the default collection, then the two budgets over it: every app's\n# signed tapp (tools/perf/tapp-size-budget/) and the shared runtime's bytes, relocations and\n# symbol lookups (tools/perf/runtime-size-budget/). package-apps.sh builds with throwaway\n# identities when no publisher key is given, which is all a size build needs.\n# Each measure prints its numbers and its own verdict, so an over-budget tapp never hides\n# the runtime's numbers, or the reverse.\nexport CARGO_INCREMENTAL=0\nexport CARGO_BUILD_JOBS=$(bash -c 'source tools/apps/release-lib.sh; cargo_jobs')\nexport TILO_RELEASE_APPS=$(python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | python3 -c 'import json, sys; print(\" \".join(json.load(sys.stdin)[\"apps\"]))')\nexport TILO_APP_RELEASE_OUT=/target/app-sizes/{arch}\ndist/apps/package-apps.sh\nfailed=\npython3 tools/perf/tapp_size_ratchet.py measure /target/app-sizes/{arch} --arch {arch} || failed=1\nlibdir=$(rustc --print target-libdir)\npython3 tools/perf/runtime_size_ratchet.py measure \"$CARGO_TARGET_DIR/thin-app/libruntime_dylib.so\" --arch {arch} --apps-dir \"$CARGO_TARGET_DIR/thin-app\" --library-dir \"$libdir\" $(sed \"s|^|--engine $CARGO_TARGET_DIR/thin-app/|\" \"$CARGO_TARGET_DIR/thin-app/runtime-engines\") || failed=1\n[[ -z $failed ]]\n"
+run = "set -euo pipefail\n# One release build of the default collection, then the two budgets over it: every app's\n# signed tapp (tools/perf/tapp-size-budget/) and the shared runtime's bytes, relocations and\n# symbol lookups (tools/perf/runtime-size-budget/). package-apps.sh builds with throwaway\n# identities when no publisher key is given, which is all a size build needs.\n# Each measure prints its numbers and its own verdict, so an over-budget tapp never hides\n# the runtime's numbers, or the reverse. The modules the packages carry are the app-models\n# check's, so the app bytes measured here are the ones a release ships.\nexport CARGO_INCREMENTAL=0\nexport CARGO_BUILD_JOBS=$(bash -c 'source tools/apps/release-lib.sh; cargo_jobs')\nexport TILO_RELEASE_APPS=$(python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | python3 -c 'import json, sys; print(\" \".join(json.load(sys.stdin)[\"apps\"]))')\nexport TILO_APP_MODELS=/target/app-models\nexport TILO_APP_RELEASE_OUT=/target/app-sizes/{arch}\ndist/apps/package-apps.sh\nfailed=\npython3 tools/perf/tapp_size_ratchet.py measure /target/app-sizes/{arch} --arch {arch} || failed=1\nlibdir=$(rustc --print target-libdir)\npython3 tools/perf/runtime_size_ratchet.py measure \"$CARGO_TARGET_DIR/thin-app/libruntime_dylib.so\" --arch {arch} --apps-dir \"$CARGO_TARGET_DIR/thin-app\" --library-dir \"$libdir\" $(sed \"s|^|--engine $CARGO_TARGET_DIR/thin-app/|\" \"$CARGO_TARGET_DIR/thin-app/runtime-engines\") || failed=1\n[[ -z $failed ]]\n"
+needs = ["app-models"]
 outputs = ["/target/app-sizes/{arch}/**"]
 requires = ["arch={arch}"]
 timeout_secs = 5400
@@ -5140,9 +5149,9 @@ name = "os-compile-release-x86_64"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/image/compile.sh /target/os/x86_64/compiled-release"
-needs = ["test-assets", "os-chromium-x86_64"]
+needs = ["test-assets", "os-chromium-x86_64", "app-models"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/x86_64/chromium", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/x86_64/chromium", TILO_APP_MODELS = "/target/app-models", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/compiled-release/**"]
 timeout_secs = 10800
@@ -5364,9 +5373,9 @@ name = "os-compile-release-aarch64"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/image/compile.sh /target/os/aarch64/compiled-release"
-needs = ["test-assets", "os-chromium-aarch64"]
+needs = ["test-assets", "os-chromium-aarch64", "app-models"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/aarch64/chromium", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/aarch64/chromium", TILO_APP_MODELS = "/target/app-models", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/compiled-release/**"]
 timeout_secs = 10800

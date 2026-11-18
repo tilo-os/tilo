@@ -25,9 +25,10 @@ const NOW_MS: i64 = 1_760_000_000_000;
 const TASKS_SURFACE: &[u8] = include_bytes!("../../../../../apps/tasks/surface.toml");
 
 /// The Tasks model module, built for wasm32 by `tilo-app model` beside the app
-/// (`apps/tasks-model-wasm`). A tree keeps no built module, so the check that
-/// exercises this test needs `app-models`, whose outputs land under the target
-/// directory; `t outputs app-models` fetches them for a test taken here.
+/// (`apps/tasks-model-wasm`). A tree keeps no built module, so the fixture path
+/// that needs one reads what the `app-models` check built, under the target
+/// directory; the check itself hands this test a package from the pack path,
+/// and the test reads that package's own module.
 #[expect(
     clippy::expect_used,
     reason = "a module the app-models check did not build is a test failure"
@@ -47,6 +48,49 @@ fn tasks_model() -> Vec<u8> {
         module.display()
     );
     std::fs::read(&module).expect(&asked)
+}
+
+/// The model module a package carries: the bytes every device applies the
+/// app's actions with, as the package's signed root names them.
+#[expect(
+    clippy::expect_used,
+    reason = "a package the pack path built without its model is a test failure"
+)]
+fn packaged_model(package: &[u8]) -> Vec<u8> {
+    let mut blobs = std::collections::BTreeMap::new();
+    let package = tapp::read(package, &mut blobs).expect("the package reads");
+    let hash = package
+        .meta
+        .collection
+        .entries
+        .get(tilo_app_package::MODEL_MODULE)
+        .expect("the package carries its model module");
+    blobs
+        .get(hash)
+        .cloned()
+        .expect("the package carries the module's bytes")
+}
+
+/// The package the server installs: the image's own pack path built it when the
+/// check names one (`TILO_APP_PACKAGE`, from `tools/ci/pack-tasks-tapp.sh`, so
+/// what applies the action is a package an image would install), else the
+/// fixture below, which stages the same payload a test can make itself.
+#[expect(
+    clippy::expect_used,
+    reason = "a package the check said it built and is not there is a test failure"
+)]
+fn installed_package() -> Vec<u8> {
+    std::env::var_os("TILO_APP_PACKAGE").map_or_else(
+        || package(TASKS, Some(&tasks_model())),
+        |path| {
+            let path = PathBuf::from(path);
+            let asked = format!(
+                "reading {}; build it with `t test test-packaged-model`",
+                path.display()
+            );
+            std::fs::read(&path).expect(&asked)
+        },
+    )
 }
 
 /// An app's package: `model`, when it has one, is the payload's model module,
@@ -111,8 +155,7 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
     let server = test_host(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Packaged model").await.unwrap();
-    let model = tasks_model();
-    let package = package(TASKS, Some(&model));
+    let package = installed_package();
     assert!(
         workspaces
             .prepare_packaged_application(&created.workspace, &cert, TASKS, "", &package)
@@ -165,8 +208,9 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
         "the tracker holds the project the action made"
     );
     // Another holder of the resource replays the invocation with the same
-    // module: the change it writes is the change the server published.
-    let model = Model::compile(&tasks_model()).unwrap();
+    // module, read from the package itself: the change it writes is the change
+    // the server published.
+    let model = Model::compile(&packaged_model(&package)).unwrap();
     let replayed = model
         .ask(&Request {
             op: Op::Apply,

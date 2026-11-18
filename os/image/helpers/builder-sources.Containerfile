@@ -23,7 +23,8 @@ COPY sdk/typescript/native /build/sdk/typescript/native
 COPY vendor /build/vendor
 COPY dist /build/dist
 COPY docs/developers/tasks /build/docs/developers/tasks
-COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py /build/tools/ci/
+COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py \
+     tools/ci/app-models.sh /build/tools/ci/
 # build-thin-apps.sh routes a cached build through this dispatcher
 # (RUSTC_WRAPPER), which finds the size wrapper beside it in tools/ci/.
 COPY tools/ci/thin-app/sccache /build/tools/ci/thin-app/sccache

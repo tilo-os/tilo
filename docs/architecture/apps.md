@@ -32,10 +32,13 @@ crate beside it, `apps/<app>-model-wasm`, whose whole content is the app's
 resource served through `tilo-model-guest`. One mechanism builds every app's
 module: `tilo-app model` builds that guest crate for `wasm32-unknown-unknown`,
 with the crate's own `.cargo` config saying what makes it a module rather than
-a page (no JavaScript glue, no browser clocks), and packaging writes the result
-into the payload as `model.wasm`. So building an app's package builds its
-model, and a tree keeps none: `t test app-models` builds them all, and the
-checks that read one declare it.
+a page (no JavaScript glue, no browser clocks). `t test app-models` builds them
+all, once, and keeps each under the target directory. Both pack paths take
+that output rather than building it again: the release pack
+(`dist/apps/package-apps.sh`) when it signs, and the image pack
+(`os/scripts/pack-apps.sh`), whose app store a freshly installed system boots
+with. Each writes it into the payload as `model.wasm`, signed with the rest, and
+refuses an app whose guest crate it finds and whose module is not there.
 
 An app written against the framework writes none of the following: storage, sync, merge,
 undo, history, presence, identity, signing, encryption, key handling, transport,

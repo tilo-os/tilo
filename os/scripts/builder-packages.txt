@@ -29,6 +29,7 @@ pipewire-devel
 pkgconf-pkg-config
 python3
 readline-devel
+rust-std-static-wasm32-unknown-unknown
 sccache
 sqlite-devel
 systemd-devel

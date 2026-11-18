@@ -61,7 +61,18 @@ pub fn build(app_dir: &Path) -> Result<Option<PathBuf>> {
     // The guest crate's own `.cargo/config.toml` carries what makes a module a
     // module rather than a page (no JavaScript glue, no browser clocks), so
     // cargo starts in the crate's directory and reads it from there.
-    let status = Command::new(crate::targets::cargo_program())
+    let mut command = Command::new(crate::targets::cargo_program());
+    // The module is what the guest crate's own release profile says: short and
+    // stripped. Release-profile overrides a caller exports for the app's native
+    // build (`CARGO_PROFILE_RELEASE_LTO`, `…_CODEGEN_UNITS`) would otherwise
+    // silently change the bytes every device applies actions with, so the same
+    // source would give a different module depending on who built it.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("CARGO_PROFILE_RELEASE_") {
+            command.env_remove(&key);
+        }
+    }
+    let status = command
         .arg("build")
         .arg("--locked")
         .arg("--release")
