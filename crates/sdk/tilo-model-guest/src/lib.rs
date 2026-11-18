@@ -20,18 +20,21 @@
 //!
 //! An app's module serves every resource it declares: a request names the
 //! resource kind it is for, and the module routes it to that resource's verbs.
-//! An app builds one module per version by exporting [`serve`] over its
-//! resources:
+//! An app's guest crate declares its entry with [`model!`], naming the app (its
+//! directory under `apps/`) and its resources:
 //!
 //! ```text
-//! #[unsafe(no_mangle)]
-//! pub extern "C" fn tilo_model_apply() -> i32 {
-//!     tilo_model_guest::serve(&[
-//!         tilo_model_guest::Served::of::<tube_model::Library>(),
-//!         tilo_model_guest::Served::of::<tube_model::WatchHistory>(),
-//!     ])
-//! }
+//! tilo_model_guest::model!("tube", tube_model::Library, tube_model::WatchHistory);
 //! ```
+//!
+//! Built alone (`tilo-app model`, an app outside this repository), that is a
+//! whole module exporting [`EXPORT`]. The repository builds every app's guest
+//! into one module instead (crates/sdk/tilo-models-wasm, with
+//! `--cfg tilo_model_split`), where each entry is `tilo_model_apply_<app>`
+//! and is named in the `tilo_split_exports` section; `wasm-split --models`
+//! then leaves what every app shares (automerge, std, the resource layer) in
+//! one model runtime and only the app's own code in its `model.wasm`. A device
+//! links that module after the runtime it names (`tilo-model-engine`).
 
 #![deny(rust_2018_idioms, missing_docs)]
 
@@ -47,6 +50,56 @@ pub const EXPORT: &str = "tilo_model_apply";
 
 /// The import module these calls are under.
 pub const IMPORT_MODULE: &str = "tilo_model";
+
+/// Declare the app's entry: what the device calls to serve a request for one
+/// of the resources `$resource` of app `$app` (its directory under `apps/`).
+///
+/// A module built alone exports it as [`EXPORT`]. Built into the combined
+/// module (`--cfg tilo_model_split`), it is `tilo_model_apply_<app>`, so every
+/// app's entry has a name of its own there, and the `tilo_split_exports`
+/// section names it as the export of the module `<app>`, which is what
+/// `wasm-split` splits that app's own code into.
+#[cfg(not(tilo_model_split))]
+#[macro_export]
+macro_rules! model {
+    ($app:literal, $($resource:ty),+ $(,)?) => {
+        /// Serve one request from the device that holds the workspace's keys.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn tilo_model_apply() -> i32 {
+            $crate::serve(&[$($crate::Served::of::<$resource>()),+])
+        }
+    };
+}
+
+/// Declare the app's entry ([`model!`] as the combined module builds it).
+#[cfg(tilo_model_split)]
+#[macro_export]
+macro_rules! model {
+    ($app:literal, $($resource:ty),+ $(,)?) => {
+        /// Serve one request from the device that holds the workspace's keys.
+        #[unsafe(export_name = concat!("tilo_model_apply_", $app))]
+        pub extern "C" fn tilo_model_apply() -> i32 {
+            $crate::serve(&[$($crate::Served::of::<$resource>()),+])
+        }
+
+        const _: () = {
+            const LINE: &str = concat!($app, " tilo_model_apply_", $app, "\n");
+            /// The split's lazy export: `<module> <export>`.
+            #[unsafe(link_section = "tilo_split_exports")]
+            #[used]
+            static ENTRY: [u8; LINE.len()] = $crate::bytes(LINE);
+        };
+    };
+}
+
+/// `text`'s bytes as an array, for a static a section holds.
+#[doc(hidden)]
+#[must_use]
+pub const fn bytes<const N: usize>(text: &str) -> [u8; N] {
+    let mut out = [0_u8; N];
+    out.copy_from_slice(text.as_bytes());
+    out
+}
 
 #[link(wasm_import_module = "tilo_model")]
 unsafe extern "C" {
@@ -188,21 +241,35 @@ fn genesis<R: Resource>(request: &Request) -> Result<Answer, String> {
     let actor = tilo_resource::genesis::actor(&request.id, R::KIND, &request.home);
     let mut doc = tilo_resource::Doc::new().with_actor(actor);
     R::initialize(&mut doc).map_err(|error| format!("initializing the resource: {error}"))?;
+    Ok(genesis_answer(&mut doc))
+}
+
+/// The genesis change committed, and the document's bytes as the answer: the
+/// same for every resource, so one function every app's module shares (in the
+/// model runtime when the apps are built together), not a copy per resource.
+#[inline(never)]
+fn genesis_answer(doc: &mut tilo_resource::Doc) -> Answer {
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
             .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
             .with_time(0),
     );
-    Ok(Answer {
+    Answer {
         document: Some(encode(&doc.save())),
         ..Answer::default()
-    })
+    }
 }
 
-/// One action, applied as an invocation of its actor against the document
-/// the device gave: what the envelope names makes the change the same for
-/// every holder.
-fn apply<R: Resource>(request: &Request) -> Result<Answer, String> {
+/// Who acts, for whom, and the document: what an action's invocation reads of
+/// the request before the resource's own code, shared by every resource.
+struct Invocation {
+    member: MemberId,
+    acting: Acting,
+    document: Vec<u8>,
+}
+
+#[inline(never)]
+fn invocation(request: &Request) -> Result<Invocation, String> {
     let member = MemberId::of_actor_bytes(request.member.as_bytes())
         .ok_or_else(|| format!("`{}` names no member", request.member))?;
     // The actor the device admitted, when it named one: an agent acting for
@@ -213,11 +280,39 @@ fn apply<R: Resource>(request: &Request) -> Result<Answer, String> {
             .map_err(|error| format!("who acts: {error}"))?,
         None => Acting::member(member.clone()),
     };
+    Ok(Invocation {
+        member,
+        acting,
+        document: decode(&request.document)?,
+    })
+}
+
+/// The answer to an applied action: its changes and the envelope a peer
+/// replays, shared by every resource.
+#[inline(never)]
+fn applied(envelope: &ActionEnvelope, changes: &[u8]) -> Result<Answer, String> {
+    let envelope =
+        serde_json::to_value(envelope).map_err(|error| format!("the invocation: {error}"))?;
+    Ok(Answer {
+        changes: Some(encode(changes)),
+        envelope: Some(envelope),
+        ..Answer::default()
+    })
+}
+
+/// One action, applied as an invocation of its actor against the document
+/// the device gave: what the envelope names makes the change the same for
+/// every holder.
+fn apply<R: Resource>(request: &Request) -> Result<Answer, String> {
+    let Invocation {
+        member,
+        acting,
+        document,
+    } = invocation(request)?;
     let action =
         tilo_resource::build_action::<R>(&request.action, &request.arguments, request.now)?;
     let encoded = tilo_resource::encode::<R>(&action)
         .map_err(|error| format!("{}: {error}", request.action))?;
-    let document = decode(&request.document)?;
     let mut replica = tilo_resource::replica::Replica::<R>::load(&document)
         .map_err(|error| format!("the document: {error}"))?;
     let heads = replica.doc_mut().get_heads();
@@ -238,13 +333,7 @@ fn apply<R: Resource>(request: &Request) -> Result<Answer, String> {
         .replay(&envelope)
         .map_err(|error| format!("{}: {error}", request.action))?;
     let changes = replica.doc_mut().save_after(&heads);
-    let envelope =
-        serde_json::to_value(&envelope).map_err(|error| format!("the invocation: {error}"))?;
-    Ok(Answer {
-        changes: Some(encode(&changes)),
-        envelope: Some(envelope),
-        ..Answer::default()
-    })
+    applied(&envelope, &changes)
 }
 
 /// The invocation's id: a function of what the request asks and the resource

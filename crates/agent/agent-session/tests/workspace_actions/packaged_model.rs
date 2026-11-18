@@ -35,9 +35,10 @@ const TRACKER: &str = "tasks.tracker";
 /// The signed surface the Tasks app ships: its verbs, and how each is decided.
 const TASKS_SURFACE: &[u8] = include_bytes!("../../../../../apps/tasks/surface.toml");
 
-/// The Tasks model module, built for wasm32 by `tilo-app model` beside the app
-/// (`apps/tasks-model-wasm`). A tree keeps no built module, so the check that
-/// builds them keeps it under the target directory (`t outputs app-models`).
+/// The Tasks model module the `app-models` check built from the guest crate
+/// beside the app (`apps/tasks-model-wasm`), under the target directory or
+/// `TILO_APP_MODELS` (`t outputs app-models`): the app's own code, which the
+/// engine links after the model runtime beside it.
 fn tasks_model() -> Vec<u8> {
     let directory = std::env::var_os("TILO_APP_MODELS").map_or_else(
         || {

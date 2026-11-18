@@ -10,7 +10,7 @@ const SELECTION: &str = ui::tilo_actions::ContextRequirement::Selection.tag();
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "files.effects")]
 pub enum FilesEffect {
-    #[effect(kind = "read", idempotent)]
+    #[effect(screen, idempotent)]
     #[effect(keywords = "reload, update folder")]
     #[effect(icon = "refresh")]
     #[effect(label = "files-shortcuts-refresh")]
@@ -191,7 +191,7 @@ pub enum FilesEffect {
     #[effect(icon = "keyboard")]
     #[effect(label = "files-shortcuts-title")]
     KeyboardShortcuts,
-    #[effect(kind = "read")]
+    #[effect(own_device, kind = "read")]
     #[effect(keywords = "command line, shell, console")]
     #[effect(icon = "square-terminal")]
     #[effect(label = "files-menu-open-terminal")]
@@ -243,7 +243,7 @@ pub enum FilesEffect {
         template: String,
     },
     /// Open with…
-    #[effect(row, kind = "read")]
+    #[effect(row, screen)]
     #[effect(icon = "app-window")]
     OpenWith {
         #[param("The entry's row id")]
@@ -439,7 +439,7 @@ pub enum FilesEffect {
         transfer: NearbyTransferHandle,
     },
     /// Retry a transfer.
-    #[effect(row, kind = "read")]
+    #[effect(row, own_device, kind = "read")]
     RetryNearby {
         #[param("The failed transfer")]
         transfer: NearbyTransferHandle,

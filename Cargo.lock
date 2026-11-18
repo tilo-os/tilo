@@ -20765,8 +20765,10 @@ name = "tilo-model-engine"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "blake3",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tilolang-runtime",
  "workspace-hack",
@@ -20830,6 +20832,42 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-resource",
  "uuid",
+]
+
+[[package]]
+name = "tilo-models-wasm"
+version = "0.1.0"
+dependencies = [
+ "activity-model-wasm",
+ "api-tester-model-wasm",
+ "assistant-model-wasm",
+ "backups-model-wasm",
+ "browser-model-wasm",
+ "calculator-model-wasm",
+ "calendar-model-wasm",
+ "camera-model-wasm",
+ "clocks-model-wasm",
+ "console-model-wasm",
+ "contacts-model-wasm",
+ "containers-model-wasm",
+ "db-client-model-wasm",
+ "diffmerge-model-wasm",
+ "disk-usage-model-wasm",
+ "disks-model-wasm",
+ "file-explorer-model-wasm",
+ "firewall-model-wasm",
+ "git-client-model-wasm",
+ "hex-editor-model-wasm",
+ "logs-model-wasm",
+ "maps-model-wasm",
+ "monitor-model-wasm",
+ "passwords-model-wasm",
+ "poker-model-wasm",
+ "print-centre-model-wasm",
+ "publisher-model-wasm",
+ "scratchpad-model-wasm",
+ "tasks-model-wasm",
+ "tube-model-wasm",
 ]
 
 [[package]]

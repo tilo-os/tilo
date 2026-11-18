@@ -65,6 +65,12 @@ impl Presentation {
         self.activation_requested.replace(false)
     }
 
+    /// Ask the window to come forward: what showing an item on the person's behalf does, so the
+    /// window that shows it is the one they see.
+    pub(crate) fn request_activation(&self) {
+        self.activation_requested.set(true);
+    }
+
     pub(crate) fn start_operation(
         &mut self,
         op: &ui_core::host_operation::ResourceOperation<'_>,

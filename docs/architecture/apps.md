@@ -29,24 +29,50 @@ the moment the app is installed, with no build of its own.
 
 An app's model is one crate, `apps/<app>-model`, and the module is one guest
 crate beside it, `apps/<app>-model-wasm`, whose whole content is the app's
-resources served through `tilo-model-guest`. A module is one per app, whatever
-number of resource kinds the app declares (Tube serves `tube.library` and
+resources, `tilo_model_guest::model!("<app>", <resource>, ...)`, served
+through `tilo-model-guest`. A module is one per app, whatever number of
+resource kinds the app declares (Tube serves `tube.library` and
 `tube.watch-history` alike): each request names the resource kind it is for,
-and the module routes it to that resource's verbs. One mechanism builds every
-app's module: `tilo-app model` builds that guest crate in the workspace's
-release profile with the size settings a module is built for (opt-level `z`,
-no unwinding, no debug info or symbols) for `wasm32-unknown-unknown`, then
-optimizes it with `wasm-opt`. The crate's own `.cargo` config says what makes
-a module rather than a page (no JavaScript glue, no browser clocks). The guest
-crates are workspace members, so every app's module shares one lockfile and one
-wasm32 target directory: what they have in common compiles once, and the
-module is built for size, since it is the same bytes on every device.
-`t test app-models` builds them all, once, and keeps each under the target
-directory. Both pack paths take that output rather than building it again: the
-release pack (`dist/apps/package-apps.sh`) when it signs, and the image pack
+and the module routes it to that resource's verbs. The guest crates are
+workspace members, so every app's module shares one lockfile and one wasm32
+target directory, and each is built for size (opt-level `z`, no unwinding, no
+debug info, then `wasm-opt`), since it is the same bytes on every device. The
+crate's own `.cargo` config says what makes a module rather than a page (no
+JavaScript glue, no browser clocks). Built alone (`tilo-app model`), a guest is
+a whole module, and `tilo-app package` ships it so: any device calls it as it
+is.
+
+Nearly all of such a module is code every app's model shares: automerge, std,
+the resource layer, serde_json. So the apps this repository ships are built
+together. `t test app-models` (tools/ci/app-models.sh) links every guest crate
+into one module (crates/sdk/tilo-models-wasm) and splits it with
+`wasm-split --models` (tools/web/wasm-split): what only one app's entry
+reaches becomes that app's `model.wasm`, tens of KB, and everything else the
+model runtime, kept once beside them as `app-model-runtime/` (its modules and a
+`runtime.json` naming it by a BLAKE3 hash of their bytes). Each app's module
+names that hash, and the export to call, in a `tilo_model_runtime` section.
+Both pack paths take that output rather than building it again: the release
+pack (`dist/apps/package-apps.sh`) when it signs, and the image pack
 (`os/scripts/pack-apps.sh`), whose app store a freshly installed system boots
-with. Each writes it into the payload as `model.wasm`, signed with the rest,
-and refuses an app whose guest crate it finds and whose module is not there.
+with. Each writes an app's module into its payload as `model.wasm`, signed with
+the rest, and refuses an app whose guest crate it finds and whose module is not
+there. The model runtime is in no app's package: the runtime bundle every app
+of the release names carries it, signed, as `lib/app-model-runtime`, and
+`tools/perf/runtime-size-budget/` holds its bytes. An app's package therefore
+counts only its own model code against its budget.
+
+A device links a split module after the runtime it names
+(`tilo-model-engine`, on the engine that executes every WebAssembly module, which
+caches the runtime's compiled modules once per process): the runtime's start
+module with the model ABI, its shared modules, then the app's module, each
+import answered by the exports of the modules before it, as the page links a
+split bundle. It finds the runtime by its hash in the directories
+`TILO_APP_MODEL_RUNTIME` lists, then under `TILO_APP_MODELS` (the app-models
+output the tests are given), then in every installed runtime bundle (the
+person's and `/usr/lib/tilo-runtime`). The server's image carries the runtime
+of the release it was built with and names it in `TILO_APP_MODEL_RUNTIME`. A
+module whose runtime is not there is refused with both hashes named, never
+linked against other code; a whole module names none and is called as before.
 
 An app written against the framework writes none of the following: storage, sync, merge,
 undo, history, presence, identity, signing, encryption, key handling, transport,

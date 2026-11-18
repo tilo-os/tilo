@@ -28,11 +28,13 @@ const NOW_MS: i64 = 1_760_000_000_000;
 /// decided against.
 const TASKS_SURFACE: &[u8] = include_bytes!("../../../../../apps/tasks/surface.toml");
 
-/// The app's model module, built for wasm32 by `tilo-app model` beside the app
-/// (`apps/<app>-model-wasm`). A tree keeps no built module, so the fixture path
-/// that needs one reads what the `app-models` check built, under the target
-/// directory; the check itself hands this test a package from the pack path,
-/// and the test reads that package's own module.
+/// The app's model module the `app-models` check built (tools/ci/app-models.sh)
+/// from the guest crate beside the app (`apps/<app>-model-wasm`): the app's own
+/// code, which links against the model runtime beside it under
+/// `TILO_APP_MODELS`, where the engine finds it as a device finds it. A tree
+/// keeps no built module, so the fixture path that needs one reads that output;
+/// the check itself hands this test a package from the pack path, and the test
+/// reads that package's own module.
 #[expect(
     clippy::expect_used,
     reason = "a module the app-models check did not build is a test failure"
@@ -214,8 +216,16 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
     );
     // Another holder of the resource replays the invocation with the same
     // module, read from the package itself: the change it writes is the change
-    // the server published.
-    let model = Model::compile(&packaged_model(&package)).unwrap();
+    // the server published. The packs ship it split, so what applied the
+    // action above was the app's code linked after the model runtime.
+    let module = packaged_model(&package);
+    assert!(
+        tilo_model_engine::linked_runtime(&module)
+            .unwrap()
+            .is_some(),
+        "the package carries the app's module split from the model runtime"
+    );
+    let model = Model::compile(&module).unwrap();
     let replayed = model
         .ask(&Request {
             op: Op::Apply,

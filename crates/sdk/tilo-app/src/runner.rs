@@ -133,6 +133,7 @@ impl Presentation {
     pub(crate) fn take_window_activation_intent(&self) -> bool {
         false
     }
+    pub(crate) fn request_activation(&self) {}
     pub(crate) fn without_ground(&mut self) {}
     /// What this page's view shows, as lines: a page draws no picture of its own view for
     /// a caller, and says so where one was asked for rather than leaving it unexplained.

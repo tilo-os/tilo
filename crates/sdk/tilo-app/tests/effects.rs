@@ -237,10 +237,12 @@ pub enum MailEffect {
     /// A read receipt cannot authorize a document edit.
     #[effect(job, kind = "read")]
     ReadReceipt,
-    /// Note what was read, as an edit, and answer what it noted: a read effect
-    /// with no answer only changes the person's screen, and no one else invokes it.
-    #[effect(kind = "read", returns)]
+    /// Note what was read, as an edit.
+    #[effect(kind = "undoable")]
     Note { text: String },
+    /// Show the drafts folder: it only changes this screen.
+    #[effect(screen)]
+    ShowDrafts,
     /// Show the sent folder.
     #[effect(view)]
     ShowSent,
@@ -300,13 +302,14 @@ impl ResourceApp for MailApp {
             MailEffect::Stall => Ok(Effected::Pending),
             MailEffect::Receipt | MailEffect::ReadReceipt => Ok(deferred_receipt(cx)),
             MailEffect::Note { text } => {
-                cx.submit(Mailbox::FETCHED.with(text.clone()));
-                Ok(Effected::value(text))
+                cx.submit(Mailbox::FETCHED.with(text));
+                Ok(Effected::done())
             }
             MailEffect::ShowSent => {
                 shown.set(true);
                 Ok(Effected::done())
             }
+            MailEffect::ShowDrafts => Ok(Effected::done()),
         })
         .status(move || {
             if reached.get() {
@@ -462,7 +465,7 @@ tilo_test_env::scenario! {
         let mut capture = TestApp::<MailApp>::capture(None).unwrap();
         let live_surface = live.agent_surface();
         let captured_surface = capture.agent_surface();
-        for id in ["count", "fetch", "connect", "stall", "note", "show-sent"] {
+        for id in ["count", "fetch", "connect", "stall", "note", "show-sent", "show-drafts"] {
             let live_spec = effect(&live_surface, id).unwrap();
             let captured_spec = effect(&captured_surface, id).unwrap();
             assert_eq!(
@@ -514,34 +517,25 @@ tilo_test_env::scenario! {
             .is_err()
         );
 
-        // The effect runs; the edit it submits is refused, and says so.
-        app.effect(&MailEffect::Note {
-            text: "seen".into(),
-        })
-        .unwrap();
+        // An effect that writes is not a viewer's, whatever it answers, and nothing is written.
+        assert!(
+            app.effect(&MailEffect::Note {
+                text: "seen".into(),
+            })
+            .is_err()
+        );
         app.settle();
         assert_eq!(app.state().fetched, "");
-        let tree = app.harness().inspection_json().unwrap();
-        assert!(
-            tree.contains("Refused apply: this mailbox is open to view only")
-                || tree.contains("Refused fetched: this mailbox is open to view only"),
-            "{tree}"
-        );
     }
 
     phase an_effect_lends_its_invoker_no_more_than_they_were_admitted_for;
     {
         let mut app = TestApp::<MailApp>::new().unwrap();
-        // A read effect that answers nothing can only move the screen it is
-        // invoked on, so an agent is refused it as the person's alone.
+        // An effect declared to only change the screen is refused to an agent as the
+        // person's alone.
         let refused = app
-            .effect_by(
-                &MemberId::agent("viewer"),
-                &MailEffect::Note {
-                    text: "seen".into(),
-                },
-            )
-            .unwrap_err();
+            .effect_by(&MemberId::agent("viewer"), &MailEffect::ShowDrafts)
+            .expect_err("a screen effect is the person's");
         assert!(
             matches!(
                 &refused,
@@ -549,8 +543,36 @@ tilo_test_env::scenario! {
             ),
             "{refused:?}"
         );
+
+        // One that writes and answers nothing is a viewer's no more than any write: refused at
+        // once, as one this app does not offer them, and nothing is written.
+        app.set_role(tilo_app::Role::Viewer);
+        let refused = app
+            .effect_by(
+                &MemberId::agent("viewer"),
+                &MailEffect::Note {
+                    text: "seen".into(),
+                },
+            )
+            .expect_err("a viewer writes nothing");
+        assert!(
+            matches!(&refused, tilo_actions::ApiError::Unknown(address) if address.action == "note"),
+            "{refused:?}"
+        );
         app.settle();
         assert_eq!(app.state().fetched, "", "nothing was written");
+
+        // The writer's is kept.
+        app.set_role(tilo_app::Role::Owner);
+        app.effect_by(
+            &MemberId::agent("writer"),
+            &MailEffect::Note {
+                text: "seen".into(),
+            },
+        )
+        .unwrap();
+        app.settle();
+        assert_eq!(app.state().fetched, "seen", "the writer's edit is kept");
 
         // Someone admitted to write gets the edit their effect submits, as
         // theirs.

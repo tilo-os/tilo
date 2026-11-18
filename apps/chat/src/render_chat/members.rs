@@ -112,7 +112,7 @@ impl ChatApp {
                         row,
                         Hit::ShowPerson {
                             person: person.id.clone(),
-                            place: format!("member:{}", crate::chat::member_slot(&person.id)),
+                            place: format!("member:{}", crate::chat::member_marks(&person.id)),
                         },
                     );
                 }

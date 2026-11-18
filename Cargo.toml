@@ -257,6 +257,7 @@ members = [
     "crates/sdk/tilo-rich-edit",
     "crates/sdk/tilo-resource-macros",
     "crates/sdk/tilo-model-guest",
+    "crates/sdk/tilo-models-wasm",
     "crates/sdk/tilo-recurrence",
     "crates/sdk/ui-macros",
     "crates/sdk/view-macros",
@@ -664,8 +665,10 @@ ignored = ["workspace-hack", "tilo-winit-x11"]
 [workspace.lints.rust]
 # `tilo_no_js`: a wasm32-unknown-unknown build for a host that is not a
 # JavaScript page (a sandboxed format provider), which must link no
-# wasm-bindgen glue.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tilo_no_js)"] }
+# wasm-bindgen glue. `tilo_model_split`: the build that links every app's model
+# into one module (crates/sdk/tilo-models-wasm), where `tilo_model_guest::model!`
+# names each app's entry by its app.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tilo_no_js)", "cfg(tilo_model_split)"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }

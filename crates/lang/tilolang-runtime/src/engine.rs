@@ -11,6 +11,12 @@
 //!   per-instance limit traps.
 //! * Imports reach the host through the [`Host`] trait; the engine knows nothing of the ABI
 //!   beyond the signatures in [`crate::abi`].
+//! * A module may also be a linked set ([`Engine::compile_linked`]): modules instantiated into
+//!   one store, the first with the imports the engine links and each after it with the exports of the
+//!   ones before it, as the page links a split bundle. An app's model is one: the model runtime
+//!   every app shares, compiled once per process, then the app's own module. Each module of a
+//!   set is compiled, cached and tiered on its own, by its own hash; the set moves to compiled
+//!   code once all of its modules are.
 //!
 //! With the `wasmtime` feature, which every shipped build has, the engine is tiered
 //! ([`EngineKind::Tiered`], `engine/tiering.rs`): a module runs on wasmi, the interpreter, from
@@ -361,11 +367,13 @@ trait Backend: Send + Sync + Sized + 'static {
     /// Import `(module, name, params, result)` of another ABI, answered by
     /// [`Host::guest_import`].
     fn linker(&self, imports: &[Imports]) -> Result<Self::Linker, String>;
-    /// An instance with fuel for one call, its start function run.
+    /// An instance of `modules` with fuel for one call, their start functions called: the first
+    /// linked with `linker`, each after it with every import answered by the export of that
+    /// name of the latest module before it that has one ([`Engine::compile_linked`]).
     fn instantiate(
         &self,
         linker: &Self::Linker,
-        module: &Self::Module,
+        modules: &[Self::Module],
         limits: &EngineLimits,
     ) -> Result<Self::Instance, CallError>;
     /// Call `export` with `cx` in the store and `fuel` to spend, and take `cx` out again.
@@ -602,9 +610,13 @@ fn shared() -> Result<&'static Shared, String> {
 // ---- one runtime's engine --------------------------------------------------------------------
 
 struct Compiled<B: Backend> {
-    module: B::Module,
+    /// The module, or the modules of a linked set in the order they are instantiated.
+    modules: Vec<B::Module>,
     idle: Vec<B::Instance>,
 }
+
+/// One module of what [`Engine::compile_linked`] compiles: its hash and its bytes.
+type Part<'a> = (ModuleHash, &'a [u8]);
 
 /// One runtime's instances of the modules it loaded, on one engine.
 struct Pools<B: Backend> {
@@ -660,49 +672,63 @@ impl<B: Backend> Pools<B> {
         Ok(Ref::map(self.linker.borrow(), |(_, linker)| linker))
     }
 
+    /// Compile `parts` (one module, or a linked set's) for `hash`, each part taken from the
+    /// process's cache when it holds it.
     fn compile(
         &self,
         hash: &ModuleHash,
-        bytes: &[u8],
+        parts: &[Part<'_>],
         limits: &EngineLimits,
         compiled_in: impl FnOnce(Duration),
     ) -> Result<(), CallError> {
         if self.has(hash) {
             return Ok(());
         }
-        let module = if let Some(module) = self.compiler.known(hash) {
-            module
-        } else {
-            let started = tilo_clock::now();
-            let module = self
-                .compiler
-                .backend
-                .compile(bytes)
-                .map_err(CallError::Link)?;
-            compiled_in(started.elapsed());
-            self.compiler.keep(hash.clone(), module.clone());
-            module
-        };
-        self.adopt(hash, module, limits)
+        let mut modules = Vec::with_capacity(parts.len());
+        let mut compiling: Option<Duration> = None;
+        for (part, bytes) in parts {
+            let module = if let Some(module) = self.compiler.known(part) {
+                module
+            } else {
+                let started = tilo_clock::now();
+                let module = self
+                    .compiler
+                    .backend
+                    .compile(bytes)
+                    .map_err(CallError::Link)?;
+                compiling = Some(
+                    compiling
+                        .unwrap_or_default()
+                        .saturating_add(started.elapsed()),
+                );
+                self.compiler.keep(part.clone(), module.clone());
+                module
+            };
+            modules.push(module);
+        }
+        if let Some(took) = compiling {
+            compiled_in(took);
+        }
+        self.adopt(hash, modules, limits)
     }
 
-    /// Run `module` for `hash` from now on, with its first instance made.
+    /// Use `modules` for `hash` from now on, with its first instance made.
     fn adopt(
         &self,
         hash: &ModuleHash,
-        module: B::Module,
+        modules: Vec<B::Module>,
         limits: &EngineLimits,
     ) -> Result<(), CallError> {
         let first = {
             let linker = self.linker()?;
             self.compiler
                 .backend
-                .instantiate(&linker, &module, limits)?
+                .instantiate(&linker, &modules, limits)?
         };
         self.modules.borrow_mut().insert(
             hash.clone(),
             Compiled {
-                module,
+                modules,
                 idle: vec![first],
             },
         );
@@ -724,7 +750,9 @@ impl<B: Backend> Pools<B> {
         self.modules
             .borrow()
             .get(module)
-            .map_or_else(Vec::new, |c| B::exports(&c.module))
+            .map_or_else(Vec::new, |c| {
+                c.modules.iter().flat_map(B::exports).collect()
+            })
     }
 
     fn cached(&self) -> usize {
@@ -741,7 +769,7 @@ impl<B: Backend> Pools<B> {
             let c = modules
                 .get_mut(module)
                 .ok_or_else(|| CallError::Link(format!("module {module} is not compiled")))?;
-            (c.module.clone(), c.idle.pop())
+            (c.modules.clone(), c.idle.pop())
         };
         if let Some(instance) = idle {
             return Ok(instance);
@@ -779,6 +807,9 @@ struct TieredPools {
     tiering: &'static tiering::Tiering,
     base: Pools<wasmi_backend::Wasmi>,
     top: Pools<wasmtime_backend::Wasmtime>,
+    /// The modules of each linked set, by the set's hash: each is compiled on its own, and the
+    /// set moves to compiled code once all of them are. A single module is its own part.
+    sets: RefCell<HashMap<ModuleHash, Vec<ModuleHash>>>,
 }
 
 #[cfg(feature = "wasmtime")]
@@ -788,30 +819,52 @@ impl TieredPools {
             tiering: &tiers.top,
             base: Pools::new(&tiers.base)?,
             top: Pools::new(&tiers.top.compiler)?,
+            sets: RefCell::new(HashMap::new()),
         })
     }
 
     fn compile(
         &self,
         hash: &ModuleHash,
-        bytes: &[u8],
+        parts: &[Part<'_>],
         limits: &EngineLimits,
         compiled_in: impl FnOnce(Duration),
     ) -> Result<(), CallError> {
         if self.has(hash) {
             return Ok(());
         }
+        if parts.len() != 1 || parts.first().is_some_and(|(part, _)| part != hash) {
+            self.sets.borrow_mut().insert(
+                hash.clone(),
+                parts.iter().map(|(part, _)| part.clone()).collect(),
+            );
+        }
         // Compiled earlier, in this process or (from the disk cache) in an earlier one: it
         // starts compiled.
         let started = tilo_clock::now();
-        if let Some(module) = self.tiering.ready(hash) {
-            let adopted = self.top.adopt(hash, module, limits);
+        let ready: Option<Vec<_>> = parts
+            .iter()
+            .map(|(part, _)| self.tiering.ready(part))
+            .collect();
+        if let Some(modules) = ready {
+            let adopted = self.top.adopt(hash, modules, limits);
             compiled_in(started.elapsed());
             return adopted;
         }
-        self.base.compile(hash, bytes, limits, compiled_in)?;
-        self.tiering.request(hash, bytes);
+        self.base.compile(hash, parts, limits, compiled_in)?;
+        for (part, bytes) in parts {
+            self.tiering.request(part, bytes);
+        }
         Ok(())
+    }
+
+    /// The modules `hash` is made of: a linked set's, or the module itself.
+    fn parts(&self, hash: &ModuleHash) -> Vec<ModuleHash> {
+        self.sets
+            .borrow()
+            .get(hash)
+            .cloned()
+            .unwrap_or_else(|| vec![hash.clone()])
     }
 
     fn has(&self, hash: &ModuleHash) -> bool {
@@ -822,13 +875,19 @@ impl TieredPools {
     /// into it: a call still running on wasmi keeps its instance, which is dropped when it
     /// ends.
     fn tier_up(&self, hash: &ModuleHash, limits: &EngineLimits) {
-        if self.top.has(hash) || !self.base.has(hash) {
+        // A set whose compiled modules did not instantiate stays on wasmi (`reject`).
+        if self.top.has(hash) || !self.base.has(hash) || self.tiering.failure(hash).is_some() {
             return;
         }
-        let Some(module) = self.tiering.compiled(hash) else {
+        let Some(modules) = self
+            .parts(hash)
+            .iter()
+            .map(|part| self.tiering.compiled(part))
+            .collect::<Option<Vec<_>>>()
+        else {
             return;
         };
-        match self.top.adopt(hash, module, limits) {
+        match self.top.adopt(hash, modules, limits) {
             Ok(()) => self.base.remove(hash),
             Err(error) => self.tiering.reject(hash, error.to_string()),
         }
@@ -883,7 +942,7 @@ enum Pooled {
     #[cfg(feature = "wasmtime")]
     Wasmtime(Pools<wasmtime_backend::Wasmtime>),
     #[cfg(feature = "wasmtime")]
-    Tiered(TieredPools),
+    Tiered(Box<TieredPools>),
 }
 
 /// The same expression for whichever engine the process runs: [`Pools`] and [`TieredPools`]
@@ -928,7 +987,7 @@ impl Engine {
             #[cfg(feature = "wasmtime")]
             Shared::Wasmtime(compiler) => Pooled::Wasmtime(Pools::new(compiler)?),
             #[cfg(feature = "wasmtime")]
-            Shared::Tiered(tiers) => Pooled::Tiered(TieredPools::new(tiers)?),
+            Shared::Tiered(tiers) => Pooled::Tiered(Box::new(TieredPools::new(tiers)?)),
         };
         Ok(Self {
             kind,
@@ -964,7 +1023,9 @@ impl Engine {
     pub fn settle_compile(&self, module: &ModuleHash) {
         #[cfg(feature = "wasmtime")]
         if let Pooled::Tiered(pools) = &self.pooled {
-            pools.tiering.settle(module);
+            for part in pools.parts(module) {
+                pools.tiering.settle(&part);
+            }
         }
         #[cfg(not(feature = "wasmtime"))]
         let _ = module;
@@ -976,7 +1037,12 @@ impl Engine {
     pub fn compile_failure(&self, module: &ModuleHash) -> Option<String> {
         match &self.pooled {
             #[cfg(feature = "wasmtime")]
-            Pooled::Tiered(pools) => pools.tiering.failure(module),
+            Pooled::Tiered(pools) => pools.tiering.failure(module).or_else(|| {
+                pools
+                    .parts(module)
+                    .iter()
+                    .find_map(|part| pools.tiering.failure(part))
+            }),
             _ => {
                 let _ = module;
                 None
@@ -1014,9 +1080,44 @@ impl Engine {
     /// ([`Host::guest_abi`]).
     pub fn compile(&self, bytes: &[u8]) -> Result<ModuleHash, CallError> {
         let hash = ModuleHash::of_bytes(bytes);
+        let parts = [(hash.clone(), bytes)];
         let counted =
             |took: Duration| self.count(|p| p.compiling = p.compiling.saturating_add(took));
-        on_engine!(&self.pooled, pools => pools.compile(&hash, bytes, &self.limits, counted))?;
+        on_engine!(&self.pooled, pools => pools.compile(&hash, &parts, &self.limits, counted))?;
+        Ok(hash)
+    }
+
+    /// Compile (or fetch from the cache) `modules` as one linked set, called like one module:
+    /// an instance of the set instantiates the first module with the imports the engine links,
+    /// then each after it with every import answered by the export of that name of the latest
+    /// module before it that has one, as the page links a split bundle (its modules import by
+    /// name the memory, table, globals and functions the start module exports). A call looks
+    /// its export up in the same order. Each module is compiled once per process, cached by its
+    /// own hash, so the modules several sets share are compiled once; the set is named by the
+    /// hashes of its modules, in order.
+    ///
+    /// # Errors
+    ///
+    /// A [`CallError::Link`] for a module that does not compile, an empty set, or a first
+    /// instance that cannot be made (an import nothing before it exports).
+    pub fn compile_linked(&self, modules: &[&[u8]]) -> Result<ModuleHash, CallError> {
+        if modules.is_empty() {
+            return Err(CallError::Link("a linked set of no modules".into()));
+        }
+        let parts: Vec<Part<'_>> = modules
+            .iter()
+            .map(|bytes| (ModuleHash::of_bytes(bytes), *bytes))
+            .collect();
+        let mut set = blake3::Hasher::new();
+        set.update(b"tilolang.linked\0");
+        for (part, _) in &parts {
+            set.update(part.0.as_bytes());
+            set.update(b"\0");
+        }
+        let hash = ModuleHash(set.finalize().to_hex().to_string());
+        let counted =
+            |took: Duration| self.count(|p| p.compiling = p.compiling.saturating_add(took));
+        on_engine!(&self.pooled, pools => pools.compile(&hash, &parts, &self.limits, counted))?;
         Ok(hash)
     }
 

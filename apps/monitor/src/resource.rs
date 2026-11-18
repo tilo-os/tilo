@@ -23,24 +23,24 @@ pub use monitor_model::{Monitor, SortKey};
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "monitor.effect")]
 pub enum MonitorEffect {
-    #[effect(kind = "read", label = "monitor-effect-refresh")]
+    #[effect(screen, label = "monitor-effect-refresh")]
     Refresh,
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ShowTab {
         #[param("processes | resources")]
         tab: String,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Filter {
         #[param("Process filter text, or omit to clear")]
         query: Option<String>,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Inspect {
         #[param("The process row's id")]
         process: String,
     },
-    #[effect(kind = "read")]
+    #[effect(own_device, kind = "read")]
     CopyPid {
         #[param("The process row's id")]
         process: String,

@@ -2,15 +2,18 @@
 //!
 //! Every device that holds a workspace's keys applies an installed app's
 //! actions from these bytes, with no build of its own (`tilo-model-engine`,
-//! `crates/sdk/tilo-model-guest`). One mechanism builds it for every app: the
-//! app keeps its model as a guest crate beside it, `apps/tasks` →
-//! `apps/tasks-model-wasm`, which exports the model ABI over the app's
-//! resources, and [`build`] builds that crate for `wasm32-unknown-unknown` in
-//! the release profile the guest crate sizes for the wire, then optimizes the
-//! module with `wasm-opt`.
-//! Packaging writes the result into the payload as [`MODEL_MODULE`]; a tree
-//! keeps no built module, so `t`'s `app-models` check builds them for the checks
-//! that read one.
+//! `crates/sdk/tilo-model-guest`). The app keeps its model as a guest crate
+//! beside it, `apps/tasks` → `apps/tasks-model-wasm`, which declares its entry
+//! with `tilo_model_guest::model!`, and [`build`] builds that crate alone for
+//! `wasm32-unknown-unknown` in the release profile the guest crate sizes for
+//! the wire, then optimizes the module with `wasm-opt`: a whole module, which
+//! any device calls as it is. That is what `tilo-app package` stages as
+//! [`MODEL_MODULE`], for an app built on its own.
+//!
+//! The apps this repository ships are built together instead
+//! (tools/ci/app-models.sh, `t`'s `app-models` check): each one's module then
+//! holds only its own code and links against the model runtime the shared
+//! runtime bundle carries once, and the release and image packs take those.
 //!
 //! The guest crates are workspace members, so every app's module shares one
 //! lockfile and one wasm32 target directory: a dependency compiles once for

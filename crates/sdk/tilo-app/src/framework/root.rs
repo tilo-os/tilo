@@ -1886,6 +1886,8 @@ impl RootModel for ResourceRoot {
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| "open needs the anchor of an item".to_owned())?;
             self.stages.open(anchor)?;
+            // Whichever window of the app shows the item, it comes forward with it.
+            self.native_presentation.request_activation();
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(
                     tilo_actions::ActionOutput::default(),

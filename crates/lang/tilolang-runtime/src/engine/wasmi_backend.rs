@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use wasmi::errors::HostError;
 use wasmi::{
-    Caller, CompilationMode, Config, Extern, Func, FuncType, Instance, Linker, Module, Store,
-    StoreLimits, StoreLimitsBuilder, TrapCode, Val, ValType,
+    Caller, CompilationMode, Config, Extern, Func, FuncType, Instance, Linker, Memory, Module,
+    Store, StoreLimits, StoreLimitsBuilder, TrapCode, Val, ValType,
 };
 
 use super::{
@@ -35,11 +35,16 @@ impl Wasmi {
 pub(super) struct Slot {
     cx: Option<Cx>,
     limits: StoreLimits,
+    /// The first module's exported memory, once it is made: what an import answers in. In a
+    /// linked set the calling code may be a later module's, which exports no memory of its
+    /// own but shares this one.
+    memory: Option<Memory>,
 }
 
 pub(super) struct Pooled {
     store: Store<Slot>,
-    instance: Instance,
+    /// The module's instance, or a linked set's, in the order they were made.
+    instances: Vec<Instance>,
     /// Export handles and result types, resolved on first use.
     funcs: HashMap<String, (Func, Vec<ValType>)>,
 }
@@ -78,7 +83,10 @@ fn run_import(
     results: &mut [Val],
 ) -> Result<(), wasmi::Error> {
     let args = params.iter().map(to_wasm).collect::<Result<Vec<_>, _>>()?;
-    let memory = caller.get_export("memory").and_then(Extern::into_memory);
+    let memory = caller
+        .data()
+        .memory
+        .or_else(|| caller.get_export("memory").and_then(Extern::into_memory));
     let bytes: &[u8] = memory.as_ref().map_or(&[][..], |m| m.data(caller));
     match import(caller.data().cx.as_ref(), id, bytes, &args) {
         Ok(out) => {
@@ -99,7 +107,10 @@ fn run_guest_import(
     results: &mut [Val],
 ) -> Result<(), wasmi::Error> {
     let args = params.iter().map(to_wasm).collect::<Result<Vec<_>, _>>()?;
-    let memory = caller.get_export("memory").and_then(Extern::into_memory);
+    let memory = caller
+        .data()
+        .memory
+        .or_else(|| caller.get_export("memory").and_then(Extern::into_memory));
     let answer = {
         let bytes: &[u8] = memory.as_ref().map_or(&[][..], |m| m.data(&caller));
         guest_import(caller.data().cx.as_ref(), module, name, bytes, &args)
@@ -191,7 +202,7 @@ impl Backend for Wasmi {
     fn instantiate(
         &self,
         linker: &Linker<Slot>,
-        module: &Module,
+        modules: &[Module],
         limits: &EngineLimits,
     ) -> Result<Pooled, CallError> {
         let store_limits = StoreLimitsBuilder::new()
@@ -203,18 +214,45 @@ impl Backend for Wasmi {
             Slot {
                 cx: None,
                 limits: store_limits,
+                memory: None,
             },
         );
         store.limiter(|slot| &mut slot.limits);
         store
             .set_fuel(limits.fuel_per_call)
             .map_err(|e| CallError::Link(e.to_string()))?;
-        let instance = linker
-            .instantiate_and_start(&mut store, module)
+        let (first, rest) = modules
+            .split_first()
+            .ok_or_else(|| CallError::Link("no module to instantiate".into()))?;
+        let first = linker
+            .instantiate_and_start(&mut store, first)
             .map_err(|e| CallError::Link(e.to_string()))?;
+        store.data_mut().memory = first.get_memory(&store, "memory");
+        let mut instances = vec![first];
+        for module in rest {
+            let imports = module
+                .imports()
+                .map(|import| {
+                    instances
+                        .iter()
+                        .rev()
+                        .find_map(|instance| instance.get_export(&store, import.name()))
+                        .ok_or_else(|| {
+                            CallError::Link(format!(
+                                "no module before it exports {}::{}",
+                                import.module(),
+                                import.name()
+                            ))
+                        })
+                })
+                .collect::<Result<Vec<Extern>, _>>()?;
+            let instance = Instance::new(&mut store, module, &imports)
+                .map_err(|e| CallError::Link(e.to_string()))?;
+            instances.push(instance);
+        }
         Ok(Pooled {
             store,
-            instance,
+            instances,
             funcs: HashMap::new(),
         })
     }
@@ -253,8 +291,10 @@ fn run(
         found.clone()
     } else {
         let func = pooled
-            .instance
-            .get_func(&pooled.store, export)
+            .instances
+            .iter()
+            .rev()
+            .find_map(|instance| instance.get_func(&pooled.store, export))
             .ok_or_else(|| CallError::NoExport(export.to_owned()))?;
         let results = func.ty(&pooled.store).results().to_vec();
         pooled

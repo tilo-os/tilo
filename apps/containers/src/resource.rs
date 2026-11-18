@@ -33,7 +33,7 @@ pub enum ContainersEffect {
         #[param("logs | stats | inspect | terminal")]
         tab: String,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Create,
     /// What one container is and how it stands: its name, image, state, command,
     /// creation time, ports, mounts, environment names, labels and latest use. It is

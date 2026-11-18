@@ -15,7 +15,7 @@ pub use print_centre_model::{
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "print-centre.effects")]
 pub enum PrintCentreEffect {
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Refresh,
     #[effect(job)]
     FindPrinters,

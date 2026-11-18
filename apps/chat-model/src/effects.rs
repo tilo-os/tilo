@@ -177,13 +177,13 @@ pub enum ChatEffect {
     ///
     /// Joins the channel's call muted, listening: being in a workspace's call is
     /// for whoever may read the workspace, as the channel itself is.
-    #[effect(row, kind = "read")]
+    #[effect(row, attended, kind = "read")]
     JoinCall { channel: String },
     /// Leave call
-    #[effect(row, idempotent, kind = "read")]
+    #[effect(row, idempotent, attended, kind = "read")]
     LeaveCall { channel: String },
     /// Mute
-    #[effect(row, idempotent, kind = "read")]
+    #[effect(row, idempotent, attended, kind = "read")]
     Mute { channel: String },
     /// Unmute
     ///
@@ -194,12 +194,12 @@ pub enum ChatEffect {
     /// Deafen
     ///
     /// Hear nothing of the call, and be muted, until undeafened.
-    #[effect(row, idempotent, kind = "read")]
+    #[effect(row, idempotent, attended, kind = "read")]
     Deafen { channel: String },
     /// Undeafen
     ///
     /// Hear the call again; the microphone comes back as it was.
-    #[effect(row, idempotent, kind = "read")]
+    #[effect(row, idempotent, attended, kind = "read")]
     Undeafen { channel: String },
     /// Turn camera on
     ///
@@ -208,7 +208,7 @@ pub enum ChatEffect {
     #[effect(row, kind = "undoable")]
     CameraOn { channel: String },
     /// Turn camera off
-    #[effect(row, idempotent, kind = "read")]
+    #[effect(row, idempotent, attended, kind = "read")]
     CameraOff { channel: String },
     /// Share screen
     ///
@@ -217,7 +217,7 @@ pub enum ChatEffect {
     #[effect(row, kind = "undoable")]
     ShareScreen { channel: String },
     /// Stop sharing screen
-    #[effect(row, idempotent, kind = "read")]
+    #[effect(row, idempotent, attended, kind = "read")]
     StopSharingScreen { channel: String },
     /// Call status
     ///
@@ -229,7 +229,7 @@ pub enum ChatEffect {
     ///
     /// Joins the workspace's voice channel, making one when the workspace has none,
     /// or reveals the call already running.
-    #[effect(idempotent, kind = "read")]
+    #[effect(idempotent, attended, kind = "read")]
     StartCall,
     /// Start a video call
     ///
@@ -238,7 +238,7 @@ pub enum ChatEffect {
     #[effect(idempotent, kind = "undoable")]
     StartVideoCall,
     /// Select microphone
-    #[effect(kind = "read")]
+    #[effect(attended, kind = "read")]
     SelectInput {
         #[param("Id of the voice channel")]
         channel: String,

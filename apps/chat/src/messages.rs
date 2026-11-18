@@ -117,7 +117,7 @@ impl ChatMessages {
                         name: String::new(),
                         anchor: item_resource_id::<Chat>(
                             "people",
-                            &crate::chat::member_slot(&message.author),
+                            &crate::chat::member_marks(&message.author),
                         ),
                         agent: !message.author.is_person(),
                         identity: message.author.id().to_owned(),

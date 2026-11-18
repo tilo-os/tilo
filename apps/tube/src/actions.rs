@@ -32,37 +32,37 @@ pub enum TubeEffect {
         kind: String,
     },
     /// Open video.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     OpenVideo {
         #[param("The video's id")]
         video: String,
     },
     /// Open creator.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     OpenCreator {
         #[param("The creator's channel id")]
         creator: String,
     },
     /// Open playlist.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     OpenPlaylist {
         #[param("The playlist's id")]
         playlist: String,
     },
     /// Search for videos.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Search {
         #[param("What to search for")]
         query: NonBlank,
     },
     /// Play or pause.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     TogglePlayback,
     /// Seek to seconds.
     ///
     /// Moves the open video to a moment; a segment you chose to skip is
     /// skipped from there as during playback.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Seek {
         #[param("Position in the open video, in seconds from its start")]
         seconds: f64,
@@ -71,10 +71,10 @@ pub enum TubeEffect {
     ///
     /// Jumps to the end of the marked segment playing now, one you chose to
     /// see with a skip button rather than skip on its own.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     SkipSegment,
     /// Copy share link.
-    #[effect(kind = "read")]
+    #[effect(own_device, kind = "read")]
     Share {
         #[param("The video's id")]
         video: String,

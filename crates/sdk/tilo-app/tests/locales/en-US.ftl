@@ -145,6 +145,7 @@ test-mailbox-effects-receipt = Settle an external receipt as the original caller
 test-mailbox-effects-read-receipt = A read receipt cannot authorize a document edit
 test-mailbox-effects-note = Note what was read, as an edit
 test-mailbox-effects-show-sent = Show the sent folder
+test-mailbox-effects-show-drafts = Show the drafts folder: it only changes this screen
 test-tally-effects-tally = Tally
 test-tally-effects-count = Count a row
 test-counter-effects-count = Count
