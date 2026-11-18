@@ -985,6 +985,70 @@ fn a_kept_launchs_own_x11_display_is_served_to_the_input_method() {
     let _x11 = x11;
 }
 
+/// The lock and socket a kept launch's X11 display holds in `/tmp`, by the display's name in the
+/// keeper's directory `dir`.
+fn display_files(dir: &Path) -> [PathBuf; 2] {
+    let display = fs::read_to_string(dir.join("x11")).expect("the display's name");
+    let number = display.trim().trim_start_matches(':').to_owned();
+    [
+        PathBuf::from(format!("/tmp/.X{number}-lock")),
+        PathBuf::from(format!("/tmp/.X11-unix/X{number}")),
+    ]
+}
+
+/// The directory of the keeper `which` once its display is named there.
+fn named_display(rig: &Rig, pass: &mut Pass, which: &str) -> PathBuf {
+    crate::common::wait_for(
+        &mut pass.session,
+        format!("the {which} keeper names its display"),
+        |_| {
+            testing::described(&rig.root)
+                .into_iter()
+                .find_map(|(dir, _)| fs::read_to_string(dir.join("x11")).ok().map(|_| dir))
+        },
+    )
+}
+
+/// A kept launch's X11 display leaves nothing in `/tmp` however its keeper ends: killed while the
+/// desktop is up, when it has no moment to remove its own lock, or at the logout that ends it.
+#[test]
+fn a_kept_launchs_x11_display_leaves_nothing_in_tmp_however_its_keeper_ends() {
+    tilo_test_env::require_capability!(XServer, x_servers(), "the keeper's X11 display");
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::keeping_x11(&["Only"]);
+    let mut pass = rig.desktop(false);
+
+    // Killed while the desktop is up.
+    rig.launch(&pass);
+    shown_and_told(&rig, &mut pass, &["Only"]);
+    let files = display_files(&named_display(&rig, &mut pass, "first"));
+    assert!(
+        files.iter().all(|file| file.exists()),
+        "the keeper holds its display: {files:?}"
+    );
+    let (_, pid, _) = rig.kept();
+    signal(parent_of(pid), libc::SIGKILL);
+    tilo_test_env::exited("the app of a keeper that is gone", pid);
+    until(
+        &mut pass.session,
+        "the killed keeper's display files go",
+        |_| files.iter().all(|file| !file.exists()),
+    );
+
+    pass.end(Teardown::Logout);
+
+    // Ended by the logout.
+    let rig = Rig::keeping_x11(&["Only"]);
+    let mut pass = rig.desktop(false);
+    rig.launch(&pass);
+    shown_and_told(&rig, &mut pass, &["Only"]);
+    let files = display_files(&named_display(&rig, &mut pass, "second"));
+    pass.end(Teardown::Logout);
+    tilo_test_env::wait_until("the logout's keeper leaves no display files", || {
+        files.iter().all(|file| !file.exists())
+    });
+}
+
 /// The X program behind a kept launch can lose its server, as Xwayland does when its programs are
 /// killed: its windows leave the desktop, and the session goes on stepping.
 #[test]

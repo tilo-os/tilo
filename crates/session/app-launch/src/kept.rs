@@ -67,9 +67,24 @@ pub mod testing;
 /// keeper is not taken.
 pub(crate) const ANSWER: Duration = Duration::from_secs(5);
 
-/// How long a session ending a kept launch's cgroup waits for its keeper to be gone before it
-/// clears what the keeper's X11 display left: a killed process ends in moments.
+/// How long a session that is ending waits for a keeper it ended to be gone before it clears what
+/// the keeper's X11 display left: a killed process ends in moments.
 pub(crate) const KEEPER_END: Duration = Duration::from_secs(1);
+
+/// How long a session that goes on watches a keeper it removed the directory of, to clear what its
+/// X11 display left once it is gone: longer than a keeper told to end gives its app.
+const KEEPER_GONE: Duration = Duration::from_secs(30);
+
+/// Where whoever removes a keeper's directory waits for the keeper to be gone before it clears
+/// what the keeper's X11 display left in `/tmp`. A keeper that ends on its own removes its files
+/// itself; one killed (its cgroup ended, by a logout or the memory guard) cannot.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Await {
+    /// Here, up to this long: the session is ending, and nothing of it would clear them later.
+    Here(Duration),
+    /// On a thread of its own, up to [`KEEPER_GONE`]: the session's loop never waits on a keeper.
+    Aside,
+}
 
 /// A connection to the desktop for the process `pid`: what a keeper is attached with.
 pub type Desktop = Arc<dyn Fn(u32) -> io::Result<UnixStream> + Send + Sync>;
@@ -148,15 +163,43 @@ fn display_number(dir: &Path) -> Option<u32> {
     x11_of(dir)?.0.strip_prefix(':')?.parse().ok()
 }
 
-/// Remove the keeper directory `dir`, and what its X11 display left in `/tmp` once its keeper is
-/// gone.
-pub(crate) fn remove_dir(dir: &Path) -> io::Result<()> {
+/// Remove the keeper directory `dir`, and what its X11 display left in `/tmp` once its keeper
+/// (`keeper`, `None` for one already gone) is gone, waiting for that as `wait` says.
+pub(crate) fn remove_dir(dir: &Path, keeper: Option<OwnedFd>, wait: Await) -> io::Result<()> {
     let display = display_number(dir);
     let removed = std::fs::remove_dir_all(dir);
     if let Some(number) = display {
-        clear_dead_display(Path::new("/tmp"), number);
+        clear_once_gone(PathBuf::from("/tmp"), number, keeper, wait);
     }
     removed
+}
+
+/// Clear what X11 display `number` left in `tmp` once `keeper` is gone, waiting as `wait` says:
+/// at once for a keeper that is gone already.
+fn clear_once_gone(tmp: PathBuf, number: u32, keeper: Option<OwnedFd>, wait: Await) {
+    let Some(keeper) = keeper.filter(|keeper| !ended_within(keeper, Duration::ZERO)) else {
+        clear_dead_display(&tmp, number);
+        return;
+    };
+    match wait {
+        Await::Here(patience) => {
+            if ended_within(&keeper, patience) {
+                clear_dead_display(&tmp, number);
+            }
+        }
+        Await::Aside => {
+            let watching = std::thread::Builder::new()
+                .name("keeper-gone".into())
+                .spawn(move || {
+                    if ended_within(&keeper, KEEPER_GONE) {
+                        clear_dead_display(&tmp, number);
+                    }
+                });
+            if let Err(error) = watching {
+                tracing::warn!(%error, number, "a removed keeper's X11 display files stay");
+            }
+        }
+    }
 }
 
 /// Remove the lock and socket files of X11 display `number` under `tmp` when no process holds
@@ -380,12 +423,10 @@ impl Kept {
         self.adopted.store(true, Ordering::Release);
     }
 
-    /// The X11 display the keeper bound, by number, and a descriptor of the keeper's process:
-    /// what is left to clear once a keeper ended by its cgroup is gone.
-    pub(crate) fn display_and_keeper(&self) -> Option<(u32, Option<OwnedFd>)> {
-        let number = display_number(&self.dir)?;
+    /// A descriptor of the keeper's process, while it is known.
+    fn keeper_fd(&self) -> Option<OwnedFd> {
         let keeper = self.keeper.load(Ordering::Acquire);
-        Some((number, (keeper != 0).then(|| pidfd(keeper)).flatten()))
+        (keeper != 0).then(|| pidfd(keeper)).flatten()
     }
 
     /// Let go of the keeper without touching it: the next desktop takes it back.
@@ -423,10 +464,16 @@ impl Kept {
     /// The launch ends: its directory goes with it, unless a service's (the service reuses or
     /// removes it).
     pub(crate) fn remove(&self) {
+        self.remove_awaiting(Await::Aside);
+    }
+
+    /// [`Self::remove`], waiting for the keeper to be gone as `wait` says before what its X11
+    /// display left in `/tmp` goes.
+    pub(crate) fn remove_awaiting(&self, wait: Await) {
         if self.service {
             return;
         }
-        if let Err(error) = remove_dir(&self.dir)
+        if let Err(error) = remove_dir(&self.dir, self.keeper_fd(), wait)
             && error.kind() != io::ErrorKind::NotFound
         {
             tracing::warn!(dir = %self.dir.display(), %error, "a kept app's directory stays");
@@ -549,7 +596,8 @@ pub(crate) fn end_outdated(dir: &Path, keeper: u32, keeper_started: Option<u64>)
             signal(keeper, libc::SIGTERM);
         }
     }
-    if let Err(error) = remove_dir(dir)
+    let keeper = keeper_alive.then(|| pidfd(keeper)).flatten();
+    if let Err(error) = remove_dir(dir, keeper, Await::Aside)
         && error.kind() != io::ErrorKind::NotFound
     {
         tracing::warn!(dir = %dir.display(), %error, "an outdated keeper's directory stays");
@@ -746,9 +794,11 @@ pub(crate) fn pidfd(pid: u32) -> Option<OwnedFd> {
 /// End the keeper `keeper` and everything in its cgroup: a leftover from a run that did not end
 /// in a restart. A keeper outside an app's cgroup is asked to end, and its app ends with it.
 pub(crate) fn end_leftover(dir: &Path) {
+    let mut ended = None;
     if let Ok(control) = tilo_files::native::socket::connect(&dir.join("control"))
         && let Ok(keeper) = peer_pid(&control)
     {
+        ended = pidfd(keeper);
         tracing::info!(dir = %dir.display(), keeper, "a kept app left from before ends");
         let cgroup = std::fs::read_to_string(format!("/proc/{keeper}/cgroup"))
             .ok()
@@ -763,7 +813,7 @@ pub(crate) fn end_leftover(dir: &Path) {
             None => signal(keeper, libc::SIGTERM),
         }
     }
-    if let Err(error) = remove_dir(dir)
+    if let Err(error) = remove_dir(dir, ended, Await::Aside)
         && error.kind() != io::ErrorKind::NotFound
     {
         tracing::warn!(dir = %dir.display(), %error, "a leftover keeper directory stays");
@@ -974,6 +1024,65 @@ mod tests {
         // A killed keeper's display leaves nothing behind.
         assert!(clear_dead_display(tmp.path(), number));
         assert!(!lock.exists() && !socket.exists());
+    }
+
+    /// Whoever removes a keeper's directory clears what its display left once the keeper is gone:
+    /// at once when it is gone already (a keeper that died, one ended at start), before the
+    /// session goes on when it ends while the session waits (a logout), from a watch of its own
+    /// when the session goes on (a force quit, the memory guard), and never while it lives.
+    #[test]
+    fn a_removed_keepers_display_files_go_once_the_keeper_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".X11-unix")).unwrap();
+        let number = unused_display().saturating_add(1);
+        let lock = tmp.path().join(format!(".X{number}-lock"));
+        let socket = tmp.path().join(".X11-unix").join(format!("X{number}"));
+        let gone = || !lock.exists() && !socket.exists();
+        // A keeper that lives for `seconds`, its display's lock naming it.
+        let keeper = |seconds: &str| {
+            let child = std::process::Command::new("sleep")
+                .arg(seconds)
+                .spawn()
+                .unwrap();
+            std::fs::write(&lock, format!("{:>10}\n", child.id())).unwrap();
+            std::fs::write(&socket, "").unwrap();
+            let fd = pidfd(child.id()).unwrap();
+            (child, fd)
+        };
+        let clear = |fd: OwnedFd, wait: Await| {
+            clear_once_gone(tmp.path().to_owned(), number, Some(fd), wait);
+        };
+
+        // Gone already: its files go at once.
+        let (mut child, fd) = keeper("60");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        clear(fd, Await::Aside);
+        assert!(gone(), "a dead keeper's display files go at once");
+
+        // Ending while the session waits for it: its files are gone before the session goes on.
+        let (mut child, fd) = keeper("0.2");
+        clear(fd, Await::Here(Duration::from_secs(30)));
+        assert!(
+            gone(),
+            "a keeper that ended while waited for leaves nothing"
+        );
+        child.wait().unwrap();
+
+        // Alive past the wait: its files stay, for it to remove as it ends.
+        let (mut child, fd) = keeper("60");
+        clear(fd, Await::Here(Duration::ZERO));
+        assert!(!gone(), "a live keeper's display files stay");
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        // Watched aside: nothing waits, and its files go once it is gone.
+        let (mut child, fd) = keeper("60");
+        clear(fd, Await::Aside);
+        assert!(!gone(), "a live keeper's display files stay while it lives");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        tilo_test_env::wait_until("the watched keeper's display files go", gone);
     }
 
     #[test]

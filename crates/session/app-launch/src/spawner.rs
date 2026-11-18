@@ -655,7 +655,8 @@ impl Spawner {
             }
             #[cfg(not(target_os = "linux"))]
             let _ = teardown;
-            app.end();
+            // The session ends: nothing of it is left to clear a keeper's files later.
+            app.end(true);
         }
     }
 }
@@ -783,7 +784,7 @@ impl Spawner {
     /// End the launch `id` as a logout would; its end is reported as any other.
     pub fn end_one(&self, id: u64) {
         if let Some(app) = running(&self.running).get(&id) {
-            app.end();
+            app.end(false);
         }
     }
 
@@ -1126,7 +1127,7 @@ impl Spawner {
                 output.finish();
                 output.tail()
             });
-        if let Err(error) = crate::kept::remove_dir(dir) {
+        if let Err(error) = crate::kept::remove_dir(dir, None, crate::kept::Await::Aside) {
             tracing::warn!(dir = %dir.display(), %error, "a kept app's directory stays");
         }
         let Some(launch) = launch else {
@@ -1403,27 +1404,29 @@ impl App {
     /// End the app; one that has ended already is left as it is. Its whole
     /// cgroup goes, so a program it started and left behind ends too; a
     /// launcher that never got a scope of its own (no user manager) is only
-    /// asked to end.
-    fn end(&self) {
+    /// asked to end. A kept launch's directory goes once it was ended, and what its keeper's X11
+    /// display left in `/tmp` once the keeper is gone: a keeper ended with its cgroup has no
+    /// moment to remove those files itself. `session_ends` when nothing of the session is left to
+    /// clear them later, so the wait for the keeper is here; otherwise it is off the loop.
+    fn end(&self, session_ends: bool) {
+        self.stop();
         #[cfg(target_os = "linux")]
-        let display = self.kept.as_ref().and_then(|kept| {
-            let display = kept.display_and_keeper();
-            kept.remove();
-            display
-        });
+        if let Some(kept) = &self.kept {
+            kept.remove_awaiting(if session_ends {
+                crate::kept::Await::Here(crate::kept::KEEPER_END)
+            } else {
+                crate::kept::Await::Aside
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = session_ends;
+    }
+
+    /// End the launch's cgroup, or ask its process to end where it has none.
+    fn stop(&self) {
         if let Some(dir) = self.cgroup_dir() {
             if let Err(error) = launcher::app_cgroup::kill(&dir) {
                 tracing::warn!(app = %self.name, dir = %dir.display(), %error, "the app did not end");
-            }
-            // The keeper ends with its cgroup, with no moment to remove its X11 display's files:
-            // they go once it is gone.
-            #[cfg(target_os = "linux")]
-            if let Some((number, keeper)) = display
-                && keeper.is_none_or(|keeper| {
-                    crate::kept::ended_within(&keeper, crate::kept::KEEPER_END)
-                })
-            {
-                crate::kept::clear_dead_display(Path::new("/tmp"), number);
             }
             return;
         }
