@@ -595,8 +595,9 @@ impl ResultSpec {
             Self::None | Self::Job if declared.is_none() => Ok(()),
             Self::None => Err("action declared no result but returned one".into()),
             // An absent value is `null`: a result its schema lets be null may be
-            // left out by an executor with nothing to report.
-            Self::Json { schema } => match declared {
+            // left out by an executor with nothing to report. An answer that
+            // holds only what the write made is still the object it answered.
+            Self::Json { schema } => match declared.or_else(|| output.value.clone()) {
                 Some(value) => crate::params::validate_schema(&value, schema),
                 None => crate::params::validate_schema(&serde_json::Value::Null, schema)
                     .map_err(|_| "action did not return its declared JSON result".to_string()),
