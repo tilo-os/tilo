@@ -445,10 +445,6 @@ pub struct PresenceCtx {
     /// Last marker tip actually painted for each agent. This is local visual
     /// continuity only: it never enters pointer presence or action state.
     interaction_markers: HashMap<tilo_actions::Actor, interaction::AgentMarkerContinuity>,
-    /// Invocations whose exact place a widget already painted this frame —
-    /// the characters a write landed in. The rail leaves them out instead of
-    /// naming the same activity a second time.
-    shown: std::cell::RefCell<std::collections::HashSet<tilo_actions::InvocationId>>,
     /// What each write put into a text, by writer and place, drawn where it stands
     /// ([`Self::draw_writes_in`]): an agent's last write in a place stays marked there.
     written: std::cell::RefCell<HashMap<written::WrittenPlace, written::Written>>,

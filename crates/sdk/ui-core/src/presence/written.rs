@@ -170,7 +170,7 @@ impl PresenceCtx {
         let mut gone = Vec::new();
         for (at, interaction, drawn, (start, end)) in here {
             // The text it wrote is its place, drawn or not: no card stands for it elsewhere.
-            self.note_shown(interaction.invocation);
+            self.note_placed(interaction.invocation);
             let landed = interaction.phase.is_terminal();
             let put_away = edited
                 .zip(drawn)

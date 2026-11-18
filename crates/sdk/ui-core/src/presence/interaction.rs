@@ -114,6 +114,9 @@ pub(super) struct InteractionPresenceEntry {
     /// would never see it. Until a frame draws it, it waits, for at most
     /// [`ACTIVE_INTERACTION_EXPIRY`] after it arrived.
     drawn_at: std::cell::Cell<Option<Instant>>,
+    /// A widget drew its place ([`PresenceCtx::note_placed`]); a frame that keeps that drawing
+    /// (cached, or culled outside its damage) still shows it, so this holds across frames.
+    placed: std::cell::Cell<bool>,
     /// When its cursor last flashed for an arrival; `None` when a flash of
     /// the same agent just went off ([`AGENT_PULSE_QUIET`]).
     pulsed_at: Option<Instant>,
@@ -229,6 +232,7 @@ impl PresenceCtx {
             let person = interaction.actor.acted_for_person().map(MemberId::person);
             self.set_acting_for(member.clone(), person);
         }
+        let placed = self.placed(interaction.invocation);
         let (first_received_at, superseded, pulsed) =
             match self.interactions.get(&interaction.invocation) {
                 // What a write put in a text is named once it applied: it shows then, as a write
@@ -267,6 +271,7 @@ impl PresenceCtx {
                 first_received_at,
                 received_at: now,
                 drawn_at: std::cell::Cell::new(None),
+                placed: std::cell::Cell::new(placed),
                 pulsed_at,
                 superseded,
             },
@@ -345,19 +350,19 @@ impl PresenceCtx {
         before != self.interactions.len()
     }
 
-    /// Say that this frame paints `invocation`'s exact place: the characters
-    /// a write landed in, or the row it names. The activity rail then leaves
-    /// the invocation out, so one action is not named twice on one frame.
-    pub fn note_shown(&self, invocation: InvocationId) {
-        if self.interactions.contains_key(&invocation) {
-            self.shown.borrow_mut().insert(invocation);
+    /// Say that a widget drew `invocation`'s exact place, the characters a write landed in: no
+    /// card names it from then on, however many later frames keep that drawing.
+    pub fn note_placed(&self, invocation: InvocationId) {
+        if let Some(entry) = self.interactions.get(&invocation) {
+            entry.placed.set(true);
         }
     }
 
-    /// What widgets reported shown since the last frame; taken by the pass
-    /// that would otherwise put them in the rail.
-    pub(crate) fn take_shown(&self) -> Vec<InvocationId> {
-        self.shown.borrow_mut().drain().collect()
+    /// Whether a widget drew `invocation`'s place ([`Self::note_placed`]).
+    pub(crate) fn placed(&self, invocation: InvocationId) -> bool {
+        self.interactions
+            .get(&invocation)
+            .is_some_and(|entry| entry.placed.get())
     }
 
     /// A frame drew `invocation`'s current phase at `now`: its dwell counts from the first such
@@ -375,7 +380,7 @@ impl PresenceCtx {
     /// anchors against the current accessibility tree before falling back to
     /// the activity rail.
     pub fn visible_interactions(&self, now: Instant) -> Vec<SemanticInteraction> {
-        self.visible_entries(now)
+        self.visible_entries_excluding(now, &[])
             .into_iter()
             .map(|entry| entry.interaction.clone())
             .collect()
@@ -815,8 +820,8 @@ impl PresenceCtx {
         }
     }
 
-    /// The work a card stands for: what is visible and not drawn in place,
-    /// leaving out a read, which changes nothing a person could look at (the
+    /// The work a card stands for: what is visible and not drawn in place
+    /// ([`Self::note_placed`], `excluded`), leaving out a read, which changes nothing a person could look at (the
     /// line beside the agent's face says what it reads).
     fn card_entries(
         &self,
@@ -825,14 +830,13 @@ impl PresenceCtx {
     ) -> Vec<&InteractionPresenceEntry> {
         let mut entries = self.visible_entries_excluding(now, excluded);
         entries.retain(|entry| {
-            tilo_actions::step::kind(entry.interaction.action.step, &entry.interaction.anchor)
-                != tilo_actions::StepKind::Read
+            !entry.placed.get()
+                && tilo_actions::step::kind(
+                    entry.interaction.action.step,
+                    &entry.interaction.anchor,
+                ) != tilo_actions::StepKind::Read
         });
         entries
-    }
-
-    fn visible_entries(&self, now: Instant) -> Vec<&InteractionPresenceEntry> {
-        self.visible_entries_excluding(now, &[])
     }
 
     fn newest_agent_entry(
@@ -1880,26 +1884,27 @@ pub(crate) mod tests {
     #[test]
     fn a_place_a_widget_painted_leaves_the_rail() {
         let at = crate::time::now();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let mut presence = PresenceCtx::empty();
         let event = interaction(70, 1, InteractionPhase::Applying);
         presence.apply_interaction_at(event.clone(), at).unwrap();
         assert_eq!(
-            presence.visible_entries_excluding(at, &[]).len(),
+            presence.interaction_card_layout(viewport, at).len(),
             1,
-            "an unwritten place is named by the rail"
+            "an unwritten place is named by a card"
         );
-        presence.note_shown(event.invocation);
-        let shown = presence.take_shown();
-        assert_eq!(shown, vec![event.invocation]);
+        presence.note_placed(event.invocation);
         assert!(
-            presence.visible_entries_excluding(at, &shown).is_empty(),
-            "the characters are the mark; the rail leaves them out"
+            presence.interaction_card_layout(viewport, at).is_empty(),
+            "the characters are the mark; no card names them"
         );
-        assert!(presence.take_shown().is_empty(), "shown is one frame's");
-        presence.note_shown(InvocationId(Uuid::from_u128(999)));
+        let later = at + Duration::from_millis(400);
+        presence
+            .apply_interaction_at(interaction(70, 2, InteractionPhase::Committed), later)
+            .unwrap();
         assert!(
-            presence.take_shown().is_empty(),
-            "an invocation this surface never saw cannot silence a rail entry"
+            presence.interaction_card_layout(viewport, later).is_empty(),
+            "a later frame keeping the widget's drawing shows its next phase there"
         );
     }
 

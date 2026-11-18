@@ -23,13 +23,13 @@ pub(crate) fn draw_action_presence(
     now: crate::time::Instant,
 ) -> Vec<PaintedActionMarker> {
     let mut painted = Vec::new();
-    let mut resolved = presence.take_shown();
+    let mut resolved = Vec::new();
     let occupied = occupied(tree, viewport);
     for interaction in presence.visible_interactions(now) {
         // Words written under an item that no view here shows in place (a comment added to an
         // issue, seen in the list) stand on the item's row.
         let under = crate::presence::written_under(&interaction.anchor)
-            .filter(|_| !resolved.contains(&interaction.invocation));
+            .filter(|_| !presence.placed(interaction.invocation));
         let Some(bounds) = text_loci
             .iter()
             .find(|(invocation, _)| *invocation == interaction.invocation)
