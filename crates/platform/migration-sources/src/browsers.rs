@@ -179,7 +179,8 @@ fn firefox_profiles(location: &Location, directory: &Path, found: &mut Vec<Brows
         return;
     };
     for (name, path, relative) in firefox_sections(&ini) {
-        let profile = if relative {
+        let name = if name.is_empty() { path.clone() } else { name };
+        let profile = if relative == Some(true) {
             directory.join(&path)
         } else {
             PathBuf::from(&path)
@@ -195,29 +196,32 @@ fn firefox_profiles(location: &Location, directory: &Path, found: &mut Vec<Brows
     }
 }
 
-/// Each `[Profile…]` section of a Firefox `profiles.ini`: its name, path and whether the path is
-/// relative to the ini's directory.
+/// Each `[Profile…]` section of a Firefox `profiles.ini`: its name (empty when it has none),
+/// its path, and whether the path is relative to the ini's directory (`IsRelative=1`; `None`
+/// when the section does not say). A section without a path is left out.
 #[must_use]
-pub fn firefox_sections(ini: &str) -> Vec<(String, String, bool)> {
+pub fn firefox_sections(ini: &str) -> Vec<(String, String, Option<bool>)> {
     let mut sections = Vec::new();
-    let mut current: Option<(Option<String>, Option<String>, bool)> = None;
-    let mut flush = |current: &mut Option<(Option<String>, Option<String>, bool)>| {
+    let mut current: Option<(String, Option<String>, Option<bool>)> = None;
+    let mut flush = |current: &mut Option<(String, Option<String>, Option<bool>)>| {
         if let Some((name, Some(path), relative)) = current.take() {
-            sections.push((name.unwrap_or_else(|| path.clone()), path, relative));
+            sections.push((name, path, relative));
         }
     };
-    for line in ini.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
+    for line in ini.lines().map(str::trim) {
+        if line.starts_with('[') && line.ends_with(']') {
             flush(&mut current);
-            current = line.starts_with("[Profile").then_some((None, None, true));
+            current = line
+                .starts_with("[Profile")
+                .then(|| (String::new(), None, None));
         } else if let Some((key, value)) = line.split_once('=')
             && let Some((name, path, relative)) = current.as_mut()
         {
+            let value = value.trim();
             match key.trim() {
-                "Name" => *name = Some(value.trim().to_owned()),
-                "Path" => *path = Some(value.trim().to_owned()),
-                "IsRelative" => *relative = value.trim() != "0",
+                "Name" => *name = value.to_owned(),
+                "Path" => *path = Some(value.to_owned()),
+                "IsRelative" => *relative = Some(value == "1"),
                 _ => {}
             }
         }
@@ -390,8 +394,12 @@ mod tests {
         assert_eq!(
             firefox_sections(ini),
             [
-                ("default".to_owned(), "y.default".to_owned(), true),
-                ("default-release".to_owned(), "/data/ff".to_owned(), false),
+                ("default".to_owned(), "y.default".to_owned(), Some(true)),
+                (
+                    "default-release".to_owned(),
+                    "/data/ff".to_owned(),
+                    Some(false)
+                ),
             ]
         );
     }
