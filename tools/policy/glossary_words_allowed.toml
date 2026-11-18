@@ -236,6 +236,7 @@ paths = [
     "apps/chat/*",
     "apps/tl/chat/*",
     "crates/agent/agent-session/tests/workspace_actions/carried_names.rs",
+    "crates/agent/agent-session/tests/workspace_actions/held_roles.rs",
     "crates/sdk/ui-core/src/mentions.rs",
     "crates/session/session/src/mentions.rs",
 ]
