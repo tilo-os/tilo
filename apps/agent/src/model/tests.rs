@@ -147,22 +147,14 @@ tilo_test_env::scenario! {
                 arguments: "\"parameters\":{\"text\":\"preview\"}}".into(),
             })
             .unwrap();
-        let mut scanners = BTreeMap::new();
-        let mut saw_preview = false;
-        for frame in [first, next] {
-            stream_plan_delta(&mut scanners, &frame, &mut |signal| {
-                if matches!(
-                    signal,
-                    StreamSignal::CallArgument {
-                        text: "preview",
-                        ..
-                    }
-                ) {
-                    saw_preview = true;
-                }
-            });
-        }
-        assert!(saw_preview);
+        // Each frame names its call: the second by the name only the first carried.
+        let read = |frame: &str| serde_json::from_str::<Value>(frame).unwrap();
+        assert_eq!(read(&first)["name"], tools::INVOKE);
+        assert_eq!(read(&next)["name"], tools::INVOKE);
+        assert_eq!(
+            read(&next)["delta"],
+            "\"parameters\":{\"text\":\"preview\"}}"
+        );
         assert!(
             previews
                 .frame(&StreamEvent::Failed {
