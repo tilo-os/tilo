@@ -25,9 +25,11 @@
 //!
 //! The workspace's id follows from the person's root
 //! ([`admin_workspace_id`]), so each of their devices finds the same one
-//! without being told. It is made once, by one of the person's own devices,
-//! when it is first needed ([`founded`]): the first machine planned, or the
-//! first server taken in. A server never makes it; a later server asks an
+//! without being told. It is made in the person's name when it is first needed
+//! ([`founded`]): the first machine planned, or the first server taken in. The
+//! founding history is the same on every device that makes it, so two of them
+//! that make it before they see one another make one workspace, and each names
+//! itself among its holders. A server never makes it; a later server asks an
 //! earlier one to take it in ([`admit`]), which enters it in the document, and
 //! the holders then hand it the workspace as they hand a server any workspace
 //! its entry names. A device that does not hold it asks a holder to take it in
@@ -1150,8 +1152,10 @@ fn validate_label(label: &str) -> Result<String, Refusal> {
     Ok(label.to_owned())
 }
 
-/// Whether this device holds its person's Servers workspace: it made it, or the
-/// workspace names it among its holders, so it writes the document as its own.
+/// Whether this device holds its person's Servers workspace: the workspace
+/// names it among its holders, so it writes the document as its own. The
+/// founding history names no device — every one of the person's devices may
+/// make it — and names each one as it founds or is handed it.
 pub async fn holds_admin(workspaces: &Workspaces) -> bool {
     let own = workspaces.serving_certificate();
     let Some(state) = workspaces
@@ -1160,12 +1164,11 @@ pub async fn holds_admin(workspaces: &Workspaces) -> bool {
     else {
         return false;
     };
-    let governance = state.governance();
-    governance.founder() == Some(own.device_public_key)
-        || governance
-            .keeping_devices()
-            .iter()
-            .any(|hint| hint.host.device_public_key == own.device_public_key)
+    state
+        .governance()
+        .keeping_devices()
+        .iter()
+        .any(|hint| hint.host.device_public_key == own.device_public_key)
 }
 
 /// Make this device's person's Servers workspace here, unless this device

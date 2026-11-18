@@ -177,6 +177,28 @@ impl StatePeer {
         self.require_member_writer(key, now)
     }
 
+    /// A device that may admit another of the owner's devices into a
+    /// workspace founded in the person's name: a current member's, or one the
+    /// owner's root certifies, which writes the workspace's first governance
+    /// before any roster names it — the same rule the receiver judges that
+    /// first governance by ([`super::StatePeer::receive_from`]).
+    pub(super) fn require_admitting_owner_device(
+        &self,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        if self.require_member_writer(key, now).is_ok() {
+            return Ok(());
+        }
+        let cert = self
+            .certificate(&key.device_public_key(), now)
+            .map_err(|error| error.to_string())?;
+        if cert.user_public_key == self.core.owner {
+            return Ok(());
+        }
+        Err("only a member's device or one of the workspace owner's admits a device".into())
+    }
+
     /// `device`'s certificate when it is one of the owner's devices, current
     /// at `now`: the owner's own device publishes the records they wrote, from
     /// any device their root certifies, so no one device of theirs is needed
@@ -969,6 +991,45 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<&DeviceCert, MembershipError> {
         self.core.certificate_typed(source, now).map_err(Into::into)
+    }
+
+    /// Take in `cert`, a device of the workspace's owner, as a certificate its
+    /// governance changes are judged by: what a workspace a person founded in
+    /// their own name, before any of their devices was known to the others,
+    /// takes in from the device handing it over, so the changes it made beside
+    /// this copy can be read here.
+    ///
+    /// The certificate is checked as the person's root signed it; the changes
+    /// it signs are judged as every governance change is.
+    ///
+    /// # Errors
+    ///
+    /// `cert` is another person's device, revoked, or does not hold up.
+    pub fn admit_owner_device(&mut self, cert: &DeviceCert, now: SystemTime) -> Result<(), String> {
+        if cert.user_public_key != self.core.owner {
+            return Err("only the workspace owner's own device writes its governance".into());
+        }
+        if self
+            .core
+            .certificates
+            .get(&cert.device_public_key)
+            .map(AsRef::as_ref)
+            == Some(cert)
+        {
+            return Ok(());
+        }
+        if self
+            .core
+            .revocations
+            .is_revoked(&cert.user_public_key, &cert.device_public_key)
+        {
+            return Err("device revoked".into());
+        }
+        let verified = super::VerifiedCertificate::new(cert.clone(), now_ns(now))?;
+        self.core
+            .certificates
+            .insert(cert.device_public_key, verified);
+        Ok(())
     }
     /// The certificate of `source` as the workspace names it among its
     /// holders, by the address it signed: a holder that is no member, which

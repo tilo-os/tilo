@@ -53,6 +53,7 @@ mod device_actions;
 mod device_actions_tests;
 mod device_keys;
 mod follow;
+mod founding;
 mod removals;
 pub use device_actions::{HostJobs, Offer};
 pub use follow::ResourceWrite;
@@ -162,7 +163,10 @@ pub(crate) use voice::carried_call_workspace;
 mod wait_list;
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+// The tests below take it from here, as they take the rest they read.
+#[cfg(test)]
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_peer_state::store::{Appetite, Store as LinkStore};
@@ -379,92 +383,6 @@ impl GovernedWorkspace {
     /// the workspace's channels.
     fn seals(&self) -> bool {
         self.device.is_some()
-    }
-
-    fn create(
-        dir: &Path,
-        name: &str,
-        authority: &DeviceCert,
-        key: &SigningKey,
-        device: Option<&DeviceKeys>,
-        now: SystemTime,
-    ) -> Result<Self, String> {
-        Self::create_in(
-            dir,
-            &uuid::Uuid::new_v4().to_string(),
-            name,
-            (authority, key),
-            device,
-            now,
-        )
-    }
-
-    /// A new governed workspace under the identity `workspace`: a fresh one, or the
-    /// workspace a workspace already is when it moves here from the device that
-    /// made it (a workspace is its workspace, and keeps it when its governance
-    /// moves).
-    fn create_in(
-        dir: &Path,
-        workspace: &str,
-        name: &str,
-        (authority, key): (&DeviceCert, &SigningKey),
-        device: Option<&DeviceKeys>,
-        now: SystemTime,
-    ) -> Result<Self, String> {
-        let name = tilo_peer_state::workspace_membership::valid_founding_name(name)?;
-        let workspace = uuid::Uuid::parse_str(workspace)
-            .map_err(|_| "a workspace is a UUID".to_owned())?
-            .hyphenated()
-            .to_string();
-        if dir.join(format!("{workspace}.workspace")).exists() {
-            return Err("this host has that workspace already".into());
-        }
-        let roster = vec![authority.clone()];
-        let mut peer = StatePeer::new(
-            &workspace,
-            authority.clone(),
-            roster.clone(),
-            RevocationList::new(),
-            now,
-        )?;
-        select_exact_admission(&mut peer)?;
-        let mut seed = tilo_peer_state::workspace_seed(&workspace, authority, &roster, name, now)?;
-        if device.is_some() {
-            // The workspace's records are sealed channels this node opens on
-            // first use: a seed record would go out in the clear before its
-            // channel exists, and every member who joins after the channel
-            // opened refuses that cleartext. The shared desktop starts with
-            // the first layout written to it, sealed, as in a workspace that
-            // never had one (`prepare_desktop_document`).
-            seed.documents.clear();
-        }
-        peer.install_seed(seed, key, now)?;
-        prepare_governance(&mut peer, key, now)?;
-        let outgoing = peer
-            .publication_mut()
-            .durable_bootstrap_messages(key, now, 1)?
-            .iter()
-            .map(|message| publication(message, true))
-            .collect::<Result<Vec<_>, _>>()?;
-        let path = dir.join(format!("{workspace}.workspace"));
-        let mut parts = peer_parts::PeerParts::open(&path)?;
-        let record = WorkspaceDocumentEntry {
-            version: DOCUMENT_VERSION,
-            workspace_id: WorkspaceId::parse(&workspace)
-                .ok_or_else(|| "a workspace is named by its id".to_string())?,
-            workspace: workspace.clone(),
-            owner: authority.clone(),
-            peer: parts.stage(&peer)?,
-            generation: 1,
-            outgoing,
-            published: 0,
-            collaboration: collaboration::CollaborationState::default(),
-        };
-        let (publications, _) = appended::Appended::open(&path, PUBLICATIONS, 0)?;
-        let (receipts, _) = appended::Appended::open(&path, RECEIPTS, 0)?;
-        let mut this = Self::assemble(record, peer, path, parts, (publications, receipts), device)?;
-        this.persist()?;
-        Ok(this)
     }
 
     fn open(path: PathBuf, device: Option<&DeviceKeys>) -> Result<Self, String> {
