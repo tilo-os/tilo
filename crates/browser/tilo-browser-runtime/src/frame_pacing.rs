@@ -3,7 +3,7 @@
 //! The page draws on animation frames. A submission's completion is a promise
 //! from the browser, and the browser can report it long after the frame it
 //! stands for is on screen — longer still while the page hands nothing more
-//! over. Measured in a browser rasterising through SwiftShader, a page that
+//! over. Measured in a browser rasterising through `SwiftShader`, a page that
 //! stopped drawing after two frames saw the next completion 3–14 s later,
 //! while the same page drawing on had every completion in 29–308 ms: opening
 //! a window took 0.7–6 s while it waited, and 0.2–0.5 s drawing on.
