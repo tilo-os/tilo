@@ -28,9 +28,11 @@ pub(crate) enum Read {
 pub(crate) trait Workspace {
     /// Ask for the record the app `app` keeps for the workspace: as it stands, or with `after`
     /// once it differs from that revision.
-    fn read(&mut self, app: &str, after: Option<String>);
-    /// The reads answered since the last call, each with the app it was asked of.
-    fn take_read(&mut self) -> Vec<(String, Read)>;
+    /// `document` names one document of the app's own to read in place of that one; empty, it is
+    /// the one above.
+    fn read(&mut self, app: &str, document: &str, after: Option<String>);
+    /// The reads answered since the last call, each with the app and the document it was asked of.
+    fn take_read(&mut self) -> Vec<(String, String, Read)>;
     /// Invoke `verb` of the app `app` on its resource `resource`, as the person at the window.
     fn invoke(&mut self, app: &str, resource: &str, verb: &str, arguments: Map<String, Json>);
     /// Why each invocation that did not do what was asked did not, since the last call.
@@ -40,7 +42,7 @@ pub(crate) trait Workspace {
 /// The workspace through the action API of the window that shows the view.
 pub(crate) struct Session {
     api: ui::RemoteActions,
-    reads: Vec<(String, ResourceReadCall)>,
+    reads: Vec<(String, String, ResourceReadCall)>,
     calls: Vec<InvocationCall>,
     failed: Vec<String>,
 }
@@ -57,21 +59,24 @@ impl Session {
 }
 
 impl Workspace for Session {
-    fn read(&mut self, app: &str, after: Option<String>) {
+    fn read(&mut self, app: &str, document: &str, after: Option<String>) {
         let read = ResourceReadRequest {
             app: app.to_owned(),
-            record: String::new(),
+            record: document.to_owned(),
             joined: false,
             wait_ms: after.is_some().then_some(WAIT_MS),
             after,
         };
-        self.reads
-            .push((app.to_owned(), self.api.read_resource(None, read)));
+        self.reads.push((
+            app.to_owned(),
+            document.to_owned(),
+            self.api.read_resource(None, read),
+        ));
     }
 
-    fn take_read(&mut self) -> Vec<(String, Read)> {
+    fn take_read(&mut self) -> Vec<(String, String, Read)> {
         let mut done = Vec::new();
-        self.reads.retain(|(app, call)| {
+        self.reads.retain(|(app, document, call)| {
             let read = call.with(|arrival| match arrival {
                 Arrival::Pending { .. } => None,
                 Arrival::Ready(answer) => Some(answered(answer)),
@@ -79,7 +84,7 @@ impl Workspace for Session {
             });
             match read {
                 Some(read) => {
-                    done.push((app.clone(), read));
+                    done.push((app.clone(), document.clone(), read));
                     false
                 }
                 None => true,
