@@ -368,8 +368,20 @@ impl PageWorkspaceSettings {
                 .as_ref()
                 .map_or(&[], |workspace| &workspace.holders),
         );
-        let mut people =
-            workspace_people::tab(content_of(&rows, &viewer, role == Some(Role::Owner), &kept));
+        // A page cannot sign a revocation: only the member's own device can, so
+        // the sheet it builds offers none.
+        let delegated = workspace_people::delegations(
+            workspace
+                .as_ref()
+                .map_or(&[], |workspace| &workspace.delegations),
+        );
+        let mut people = workspace_people::tab(content_of(
+            &rows,
+            &viewer,
+            role == Some(Role::Owner),
+            &kept,
+            &delegated,
+        ));
         // What the workspace did is the session's to show; a page offers only the decision.
         people.remove_decision.review.clear();
         // Which servers keep the workspace is its owners' to choose: the page shows them the tab

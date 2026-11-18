@@ -60,8 +60,9 @@ pub(crate) struct Feeding<'a> {
     /// This session's search: the machine's app lists, and the apps a page or a link the sheet asks
     /// for opens in.
     pub(crate) search: &'a SessionSearch,
-    /// The shell revision the panes were last fed at.
-    pub(crate) fed: &'a Cell<Option<u64>>,
+    /// The shell's revision and the workspace state's the panes were last fed
+    /// at.
+    pub(crate) fed: &'a Cell<Option<(u64, u64)>>,
     /// The workspace's agents and emoji, read and changed through Chat's records.
     pub(crate) tabs: &'a WorkspaceTabs,
     /// The session's file chooser, where a picture to add is chosen.
@@ -141,7 +142,7 @@ pub(crate) fn refresh(state: Option<&sheet::WorkspaceSettingsState>, fed: &Feedi
         && fed
             .handle
             .read(|tree| fed.tabs.agents.moved(tree, fed.person));
-    if !emoji_moved && !agents_moved && fed.fed.get() == Some(fed.handle.revision()) {
+    if !emoji_moved && !agents_moved && fed.fed.get() == Some(fed_revision(fed)) {
         return;
     }
     let review = shown
@@ -150,6 +151,16 @@ pub(crate) fn refresh(state: Option<&sheet::WorkspaceSettingsState>, fed: &Feedi
         .as_ref()
         .map(|review| review.agent.clone());
     show(state, fed, shown.tab, review.as_deref());
+}
+
+/// What the sheet's panes are built from, as it stands: the shell the person
+/// sees, and the workspace state every member's change moves — a delegation
+/// given or taken back among them.
+fn fed_revision(fed: &Feeding<'_>) -> (u64, u64) {
+    (
+        fed.handle.revision(),
+        fed.engine.map_or(0, |engine| engine.owner().revision()),
+    )
 }
 
 /// Show the sheet's panes as the shell stands for the person, on `tab` .
@@ -171,7 +182,7 @@ fn show(
     );
     shown.notice = state.notice();
     state.show(shown);
-    fed.fed.set(Some(fed.handle.revision()));
+    fed.fed.set(Some(fed_revision(fed)));
 }
 
 /// Show the workspace in front on one of the person's devices, or keep it off there: the row says
@@ -271,6 +282,9 @@ fn ask(
             govern(state, fed, move |ws, actor| {
                 domain::remove_member(ws, actor, &member)
             });
+        }
+        sheet::WorkspaceSettingsEffect::RevokeDelegation { server } => {
+            revoke_delegation(state, fed, &server);
         }
         sheet::WorkspaceSettingsEffect::Grant {
             subject,
@@ -378,6 +392,39 @@ fn withdraw_bot(state: &sheet::WorkspaceSettingsState, fed: &Feeding<'_>, entry:
             refused(&state, &reason);
         }
     });
+}
+
+/// Take back this device's delegation of its person's work to the server
+/// `server`: only the device that signed it can, so the sheet offers it only
+/// there and the change is this device's own.
+fn revoke_delegation(state: &sheet::WorkspaceSettingsState, fed: &Feeding<'_>, server: &str) {
+    let Some(workspace_id) = fed
+        .handle
+        .read(|tree| tree.active_workspace().map(Workspace::id))
+    else {
+        return;
+    };
+    let Some(engine) = governing(fed, workspace_id) else {
+        tracing::debug!("this device holds no workspace state to revoke a delegation in");
+        return;
+    };
+    let Some(server) = device_key(server) else {
+        tracing::debug!(%server, "not a device key: nothing revoked");
+        return;
+    };
+    let revoked = crate::landing::off_loop(async move {
+        crate::membership::Membership::of(&engine, workspace_id)
+            .revoke_delegation(server)
+            .await
+    });
+    let state = state.clone();
+    fed.landings
+        .then(revoked, move |revoked| match answered(revoked) {
+            // What the workspace took shows on the next pass, which reads the
+            // delegations as they stand.
+            Ok(()) => state.dismiss_notice(),
+            Err(reason) => refused(&state, &reason),
+        });
 }
 
 /// This device's engine, when it holds the governance of `workspace`.
@@ -687,11 +734,15 @@ fn settings(
         tab,
         general: general(tree, person, personal, engine),
         people: workspace.map_or_else(sheet::People::default, |ws| {
+            let workspace = ws.id().to_string();
             people(
                 ws,
                 &names,
                 person,
-                &engine.map_or_else(Vec::new, |engine| engine.holders(&ws.id().to_string())),
+                &engine.map_or_else(Vec::new, |engine| engine.holders(&workspace)),
+                &engine.map_or_else(Vec::new, |engine| {
+                    crate::workspace_people::held_delegations(&engine.delegations(&workspace))
+                }),
             )
         }),
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
@@ -956,17 +1007,20 @@ fn own_name() -> Option<String> {
     ui::local_identity::load().map(|identity| identity.display_name)
 }
 
-/// The People tab: who shares the workspace, their roles, and the holders of
-/// the workspace with what each can read.
+/// The People tab: who shares the workspace, their roles, the holders of
+/// the workspace with what each can read, and the work its members gave
+/// servers.
 fn people(
     ws: &Workspace,
     names: &PeopleNames,
     person: &UserId,
     holders: &[Holder],
+    delegations: &[domain::people::MemberDelegation],
 ) -> sheet::People {
     let kept: Vec<domain::people::MemberHolder> = holders
         .iter()
         .map(|holder| domain::people::MemberHolder {
+            device: holder.device.clone(),
             name: holder.label.clone(),
             reads: holder.reads,
             cloud: holder.cloud,
@@ -978,6 +1032,7 @@ fn people(
         person,
         ws.owns(person),
         &kept,
+        delegations,
     ))
 }
 

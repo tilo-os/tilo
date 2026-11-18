@@ -101,6 +101,7 @@ paths = [
     "crates/platform/tilo-net-p2p/src/lib.rs",
     "crates/session/client/src/session.rs",
     "crates/session/session/src/sync/client/mod.rs",
+    "crates/session/session/src/enrollment.rs",
     "crates/session/session/src/window_share.rs",
     "crates/system/fs/src/full_replica.rs",
     "crates/system/tilo-auth/Cargo.toml",
@@ -782,3 +783,20 @@ paths = ["apps/diffmerge-model/src/model.rs"]
 reason = "The model's local name for the vector position it fills while aligning one side against the other."
 words = ["slot"]
 paths = ["apps/diffmerge-model/src/model.rs"]
+
+[[allow]]
+reason = "The workspace service's name for the device whose workspace it serves and the key and environments that device holds, with its tests' name for such a device, and the mail servers an account names in its `incomingHost` and `outgoingHost`."
+words = ["host"]
+identifiers = ["host", "test_host", "incomingHost", "outgoingHost"]
+paths = [
+    "crates/agent/agent-session/tests/workspace_actions/hosted_consent_notification.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/delegated_work.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/hosted_use.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host/turn_delegation_tests.rs",
+]
+
+[[allow]]
+reason = "Chat's own name for the conversation a question is put in, as its ask action's argument."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/hosted_consent_notification.rs"]

@@ -26,6 +26,8 @@ pub(crate) enum X11 {
 
 pub(crate) struct App {
     child: Child,
+    /// The OOM kills the cgroup the keeper and its app share had counted when the app started.
+    oom_kills: Option<u64>,
     pub pid: u32,
     pub started_at: Option<u64>,
     /// Readable once the process ended.
@@ -102,6 +104,7 @@ impl App {
         }
         Ok(Self {
             started_at: tilo_process::start_time(pid),
+            oom_kills: own_oom_kills(),
             child,
             pid,
             pidfd,
@@ -113,7 +116,13 @@ impl App {
     pub(crate) fn try_end(&mut self) -> Option<End> {
         let end = match self.child.try_wait() {
             Ok(Some(status)) => Some(match status.signal() {
-                Some(signal) => End::Signalled { signal },
+                // Read while the keeper still holds the cgroup open: once its last process ends
+                // the cgroup is removed, and with it what the kernel counted.
+                Some(signal) => End::Signalled {
+                    signal,
+                    memory: signal == libc::SIGKILL
+                        && own_oom_kills().is_some_and(|now| now > self.oom_kills.unwrap_or(0)),
+                },
                 None => End::Exited {
                     code: status.code().unwrap_or_default(),
                 },
@@ -272,4 +281,48 @@ fn pass_on(
             finished.store(true, Ordering::Release);
         })?;
     Ok(ended)
+}
+
+/// The OOM kills `memory.events` of the keeper's own cgroup counts: those of its app, which shares
+/// it.
+fn own_oom_kills() -> Option<u64> {
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let path = cgroup.lines().find_map(|line| line.strip_prefix("0::"))?;
+    oom_kills_in(&Path::new("/sys/fs/cgroup").join(path.trim_start_matches('/')))
+}
+
+/// The OOM kills the cgroup `dir` counts, its own and whole-group ones.
+fn oom_kills_in(dir: &Path) -> Option<u64> {
+    let events = std::fs::read_to_string(dir.join("memory.events")).ok()?;
+    let count = |key: &str| {
+        events
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix(key)?
+                    .strip_prefix(' ')?
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+            })
+            .unwrap_or(0)
+    };
+    Some(count("oom_kill").saturating_add(count("oom_group_kill")))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "a failed step is the assertion")]
+mod tests {
+    use super::oom_kills_in;
+
+    #[test]
+    fn a_cgroups_oom_kills_are_read_from_its_memory_events() {
+        let dir = tempfile::tempdir().expect("a directory");
+        assert_eq!(oom_kills_in(dir.path()), None, "no cgroup there");
+        std::fs::write(
+            dir.path().join("memory.events"),
+            "low 0\nhigh 0\nmax 12\noom 2\noom_kill 1\noom_group_kill 0\n",
+        )
+        .expect("the events");
+        assert_eq!(oom_kills_in(dir.path()), Some(1));
+    }
 }

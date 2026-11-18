@@ -33,6 +33,10 @@ use tilo_user_identity::{
 mod protocol;
 #[path = "enroll_transport.rs"]
 mod transport;
+#[path = "enroll_waiting.rs"]
+mod waiting;
+
+use waiting::{Console, Decision, Person, WaitingMachine, hardware_summary};
 
 use protocol::{
     decrypt_pair_offer, decrypt_request, decrypt_response, encrypt_pair_offer, encrypt_request,
@@ -219,6 +223,12 @@ enum Command {
         /// it) instead of listening.
         #[arg(long)]
         dial: Option<String>,
+        /// Ask the person before admitting each machine that dials this one:
+        /// one JSON line per machine on standard output, then `approve <ask>`
+        /// or `decline <ask>` on standard input. Serving goes on for the whole
+        /// window, so a person has time to look at what wants to join.
+        #[arg(long)]
+        ask: bool,
     },
     /// Approve one nearby ordinary device and give it the current fleet and
     /// home-peer registry needed to reconnect after this device goes offline.
@@ -330,6 +340,10 @@ struct Request {
     device_public_key: [u8; 32],
     server_node_id: [u8; 32],
     label: String,
+    /// What the machine is, in its own words, for the person deciding whether
+    /// to admit it ([`hardware_summary`]).
+    #[serde(default)]
+    hardware: String,
     kind: EnrollmentKind,
 }
 
@@ -420,6 +434,8 @@ struct PairSolicitation {
     device_public_key: [u8; 32],
     server_node_id: [u8; 32],
     label: String,
+    /// What the machine is, in its own words ([`hardware_summary`]).
+    hardware: String,
     kind: EnrollmentKind,
 }
 
@@ -1255,6 +1271,8 @@ fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
         && VerifyingKey::from_bytes(&solicitation.device_public_key).is_ok()
         && solicitation.server_node_id != [0; 32]
         && tilo_server::valid_home_peer_label(&solicitation.label)
+        && solicitation.hardware.len() <= 200
+        && !solicitation.hardware.chars().any(char::is_control)
 }
 
 /// Send `bytes` to `destination`, which this machine's own broadcast address
@@ -1489,6 +1507,7 @@ fn prepare_join(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<Pr
         device_public_key: device.verifying_key().to_bytes(),
         server_node_id: tilo_server::daemon::server_node_id(&device),
         label: label.chars().take(80).collect(),
+        hardware: hardware_summary(),
         kind,
     };
     let (request_bytes, response_secret) =
@@ -1795,6 +1814,7 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
         device_public_key: device.verifying_key().to_bytes(),
         server_node_id,
         label: label.clone(),
+        hardware: hardware_summary(),
         kind,
     })?;
     let code = pairing_code(device.verifying_key().to_bytes(), server_node_id);
@@ -2839,6 +2859,7 @@ fn run() -> anyhow::Result<()> {
             iroh,
             relay,
             dial,
+            ask,
         } => {
             ensure_offered(if iroh || dial.is_some() {
                 tilo_identity::enrollment::Method::Token
@@ -2869,7 +2890,13 @@ fn run() -> anyhow::Result<()> {
                     None => (None, None),
                 };
                 let (machine, code) = dialed;
-                transport::serve(&options, relay.as_ref(), machine.as_ref(), code.as_deref())
+                transport::serve(
+                    &options,
+                    relay.as_ref(),
+                    machine.as_ref(),
+                    code.as_deref(),
+                    ask,
+                )
             } else {
                 approve(&options)
             }

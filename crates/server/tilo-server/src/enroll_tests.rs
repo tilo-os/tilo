@@ -583,6 +583,7 @@ tilo_test_env::scenario! {
             device_public_key: [7; 32],
             server_node_id: [8; 32],
             label: "NAS".into(),
+            hardware: "8 cores · 16 GB memory".into(),
             kind: EnrollmentKind::HomePeer,
         };
         let (encrypted, _) = encrypt_request(&request, issuer.verifying_key().to_bytes()).unwrap();
@@ -1771,6 +1772,7 @@ fn sample_request() -> Request {
             .to_bytes(),
         server_node_id: [8; 32],
         label: "NAS".into(),
+        hardware: "8 cores · 16 GB memory".into(),
         kind: EnrollmentKind::HomePeer,
     }
 }
@@ -1834,6 +1836,7 @@ tilo_test_env::scenario! {
             device_public_key: server.verifying_key().to_bytes(),
             server_node_id: [8; 32],
             label: "NAS".into(),
+            hardware: "4 cores · 8 GB memory".into(),
             kind: EnrollmentKind::HomePeer,
         };
         assert!(valid_solicitation(&solicitation));

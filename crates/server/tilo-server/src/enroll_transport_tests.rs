@@ -174,7 +174,9 @@ fn a_token_enrolls_a_machine_over_a_packet_relay() {
     // Nowhere on a local network: the token names the relay that reaches the
     // approving device, and the machine dials it there.
     let token = approver.token(&[Dial {
-        endpoint: approver.device.verifying_key().to_bytes(),
+        endpoint: tilo_user_identity::enrollment_endpoint(
+            &approver.device.verifying_key().to_bytes(),
+        ),
         relay_url: relay.url().to_string(),
     }]);
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -198,15 +200,15 @@ fn a_token_enrolls_a_machine_over_a_packet_relay() {
                 ready: Some(&ready_tx),
                 approved: None,
             };
-            transport::serve(&options, Some(&relays), None, None)
+            transport::serve(&options, Some(&relays), None, None, false)
         })
     };
     ready_rx
         .recv_timeout(tilo_test_env::hang_bound())
         .expect("the approving device's endpoint came up");
     let joined = transport::join(&token, machine.options("New laptop"));
+    let joined = joined.unwrap_or_else(|error| panic!("the machine enrolls: {error:#}"));
     approver_thread.join().unwrap().expect("the approval");
-    let joined = joined.expect("the machine enrolled");
     assert!(
         joined.is_some(),
         "a personal device gets the identity it joined"
@@ -229,6 +231,104 @@ fn a_token_enrolls_a_machine_over_a_packet_relay() {
     )
     .unwrap();
     assert!(personal.contains(&expected_device), "{personal:?}");
+}
+
+/// A person answering the machines that dial their device: what a session's
+/// sheet makes of the ask.
+struct Answers(crate::Decision);
+
+impl crate::Person for Answers {
+    fn decide(&mut self, _machine: &crate::WaitingMachine) -> anyhow::Result<crate::Decision> {
+        Ok(self.0)
+    }
+}
+
+/// Serve one enrollment with `answering` deciding the machine that dials, and
+/// wait until the endpoint is up.
+fn serve_answered(
+    approver: &Approver,
+    relay: &Loopback,
+    expected_device: String,
+    expected_service: String,
+    answering: crate::Decision,
+) -> std::thread::JoinHandle<anyhow::Result<()>> {
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let root = approver.root.path().to_path_buf();
+    let identities = approver.identities.path().to_path_buf();
+    let relays = relay.relays();
+    let serving = std::thread::spawn(move || {
+        let options = ApprovalOptions {
+            identity_root: &root,
+            identity_dir: Some(&identities),
+            timeout: 5,
+            workspace_cache: std::path::Path::new(""),
+            acl: std::path::Path::new(""),
+            server_workspace_ids: &[],
+            expected_device: Some(&expected_device),
+            expected_service: Some(&expected_service),
+            kind: EnrollmentKind::PersonalDevice,
+            port: 0,
+            ready: Some(&ready_tx),
+            approved: None,
+        };
+        let mut answers = Answers(answering);
+        transport::serve_with(&options, Some(&relays), None, None, Some(&mut answers))
+    });
+    ready_rx
+        .recv_timeout(tilo_test_env::hang_bound())
+        .expect("the approving device's endpoint came up");
+    serving
+}
+
+#[test]
+fn a_machine_is_admitted_only_when_the_person_answers_yes() {
+    for answering in [crate::Decision::Approve, crate::Decision::Decline] {
+        let runtime = runtime();
+        let relay = loopback_relay(&runtime);
+        let approver = Approver::new();
+        let machine = Machine::new(45);
+        let expected_device = hex::encode(machine.device.verifying_key().to_bytes());
+        let expected_service = hex::encode(tilo_server::daemon::server_node_id(&machine.device));
+        let token = approver.token(&[Dial {
+            endpoint: tilo_user_identity::enrollment_endpoint(
+                &approver.device.verifying_key().to_bytes(),
+            ),
+            relay_url: relay.url().to_string(),
+        }]);
+        let serving = serve_answered(
+            &approver,
+            &relay,
+            expected_device.clone(),
+            expected_service,
+            answering,
+        );
+        let joined = transport::join(&token, machine.options("New laptop"));
+        // The person answers machines for the whole window, which then ends.
+        let served = serving.join().unwrap();
+        match answering {
+            crate::Decision::Approve => {
+                let cert = machine.enrolled();
+                assert_eq!(
+                    cert.device_public_key,
+                    machine.device.verifying_key().to_bytes()
+                );
+                assert!(joined.expect("the machine enrolled").is_some());
+            }
+            crate::Decision::Decline => {
+                assert!(served.is_err(), "the window that admitted nobody says so");
+                assert!(
+                    joined.is_err(),
+                    "a machine the person declined learns nothing of the identity"
+                );
+                assert!(
+                    !IdentityPaths::under(machine.root.path())
+                        .device_cert
+                        .exists(),
+                    "a declined machine keeps no certificate"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -289,7 +389,13 @@ fn a_code_shown_on_a_machine_enrolls_it_over_a_packet_relay() {
     // The approving device dials the machine the code belongs to, through the
     // relay only.
     let relays = relay.relays();
-    let served = transport::serve(&options, Some(&relays), Some(&machine_addr), Some(&code));
+    let served = transport::serve(
+        &options,
+        Some(&relays),
+        Some(&machine_addr),
+        Some(&code),
+        false,
+    );
     // Whichever side finished first, the machine's result is what is checked.
     let answered = served;
     let joined = machine_thread.join().unwrap();

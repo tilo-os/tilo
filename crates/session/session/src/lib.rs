@@ -204,6 +204,7 @@ mod emoji;
 #[cfg(target_os = "linux")]
 mod engine_records;
 mod engine_write;
+mod enrollment;
 #[cfg(target_os = "linux")]
 mod env;
 #[cfg(target_os = "linux")]

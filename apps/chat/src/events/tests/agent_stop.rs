@@ -155,7 +155,7 @@ fn another_member_is_offered_no_stop_and_is_refused() {
     read_again(&mut app, &mut doc);
     assert_eq!(stop_mark(&doc), None, "and the turn goes on");
     assert!(
-        said_of_the_work(&app).contains("Working"),
+        said_of_the_work(&app).contains("Add function: Revenue curve"),
         "{}",
         said_of_the_work(&app)
     );

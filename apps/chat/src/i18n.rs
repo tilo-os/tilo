@@ -77,6 +77,8 @@ mod tests {
         "chat-emoji-group",
         "chat-agent-work-waiting",
         "chat-agent-work-did",
+        "chat-agent-work-at-step",
+        "chat-agent-work-step-about",
         "chat-agent-work-refused",
         "chat-agent-work-step-requested",
         "chat-agent-work-step-applied",

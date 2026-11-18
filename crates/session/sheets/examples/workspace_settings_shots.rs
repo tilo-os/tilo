@@ -16,7 +16,11 @@ fn main() -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let mut names: Vec<String> = std::env::args().skip(2).collect();
     if names.is_empty() {
-        names = vec!["people".to_owned(), "people-member".to_owned()];
+        names = vec![
+            "people".to_owned(),
+            "people-member".to_owned(),
+            "people-revoking".to_owned(),
+        ];
     }
     for name in &names {
         let file = format!("workspace-settings-{}.png", name.replace(':', "-"));

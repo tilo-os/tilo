@@ -111,10 +111,17 @@ pub(crate) fn recorded_end(dir: &Path) -> Option<End> {
     serde_json::from_slice::<wire::End>(&bytes).ok().map(end_of)
 }
 
-pub(crate) const fn end_of(end: wire::End) -> End {
+pub(crate) fn end_of(end: wire::End) -> End {
     match end {
         wire::End::Exited { code } => End::exited(code),
-        wire::End::Signalled { signal } => End::signalled(signal),
+        wire::End::Signalled { signal, memory } => {
+            let end = End::signalled(signal);
+            if memory {
+                end.remembering(crate::spawner::Cause::Kernel)
+            } else {
+                end
+            }
+        }
     }
 }
 
@@ -856,6 +863,20 @@ mod tests {
     use crate::plan::{Kind, Planned};
     use crate::spawner::{Event, Spawner, Teardown};
     use tilo_test_env::SpawnUnderEnvLock as _;
+
+    #[test]
+    fn an_end_the_keeper_saw_the_kernel_make_for_memory_says_so() {
+        let end = end_of(wire::End::Signalled {
+            signal: libc::SIGKILL,
+            memory: true,
+        });
+        assert_eq!(end.memory(), Some(crate::spawner::Cause::Kernel));
+        let killed = end_of(wire::End::Signalled {
+            signal: libc::SIGKILL,
+            memory: false,
+        });
+        assert_eq!(killed.memory(), None);
+    }
 
     /// Not a test: the keeper process the others start, as `tilo-app-keeper` would run.
     #[test]

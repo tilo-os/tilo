@@ -70,6 +70,35 @@ pub struct Dial {
     pub relay_url: String,
 }
 
+/// The endpoint a device answers enrollments under, as the token that names it
+/// and the device that serves it both compute it: derived from the device's
+/// key, so an enrollment endpoint never contends with the device's own session
+/// for its iroh identity.
+///
+/// A token names this endpoint; it is up while the device serves an enrollment.
+#[must_use]
+pub fn enrollment_endpoint(device_public_key: &[u8; 32]) -> [u8; 32] {
+    let seed = blake3::derive_key(ENROLLMENT_ENDPOINT_CONTEXT, device_public_key);
+    ed25519_dalek::SigningKey::from_bytes(&seed)
+        .verifying_key()
+        .to_bytes()
+}
+
+/// The key a device serves enrollments under, whose public key is
+/// [`enrollment_endpoint`]`(device)`.
+#[must_use]
+pub fn enrollment_serving_key(device: &ed25519_dalek::SigningKey) -> ed25519_dalek::SigningKey {
+    let seed = blake3::derive_key(
+        ENROLLMENT_ENDPOINT_CONTEXT,
+        &device.verifying_key().to_bytes(),
+    );
+    ed25519_dalek::SigningKey::from_bytes(&seed)
+}
+
+/// What the endpoint key above is derived under: frozen, since a token names
+/// the endpoint it reaches.
+const ENROLLMENT_ENDPOINT_CONTEXT: &str = "tilo enrollment endpoint v1";
+
 /// A signed enrollment intent minted by a trusted device.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -443,6 +472,24 @@ mod tests {
             assert_eq!(
                 verify_enrollment_token(&token, 5_000).unwrap_err(),
                 EnrollmentError::BadSignature
+            );
+        }
+
+        phase the_serving_key_is_the_endpoint_a_token_names;
+        // A token names the endpoint derived from the device's public key; the
+        // device serves under the key derived from the same, so the two agree.
+        {
+            let (device, _) = DeviceIdentity::generate("primary", 100);
+            let serving = enrollment_serving_key(&device);
+            assert_eq!(
+                serving.verifying_key().to_bytes(),
+                enrollment_endpoint(&device.verifying_key().to_bytes())
+            );
+            let other = DeviceIdentity::generate("secondary", 100).0;
+            assert_ne!(
+                enrollment_endpoint(&other.verifying_key().to_bytes()),
+                enrollment_endpoint(&device.verifying_key().to_bytes()),
+                "another device serves under another endpoint"
             );
         }
 

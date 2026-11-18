@@ -67,6 +67,8 @@ impl ChatApp {
         let conversation = self
             .messages
             .iter()
+            // A reply that says nothing is not told, as it is not drawn.
+            .filter(|message| crate::model::stands(&self.messages, message))
             .filter(|message| {
                 if self.thread_is_page() {
                     Some(&message.id) == self.thread_open.as_ref()

@@ -310,6 +310,11 @@ pub enum WorkspaceMembershipCommand {
         ttl_ms: u64,
         rank: neighbour_wire::placement::Rank,
     },
+    /// Revoke the caller's delegation of their own work to the server
+    /// `server`, as the member's device that signed it: the delegation is
+    /// that device's to take back, so it travels from the member's own device
+    /// and no other ([`crate::WorkDelegation`]).
+    RevokeWorkDelegation { server: [u8; 32] },
 }
 
 /// The longest lease id a member claims.

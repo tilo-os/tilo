@@ -120,6 +120,7 @@ pub use enrollment::{
     MAX_ENROLLMENT_TOKEN_LIFETIME_NS, decode_enrollment_token, encode_enrollment_token,
     mint_enrollment_token, verify_enrollment_token,
 };
+pub use enrollment::{enrollment_endpoint, enrollment_serving_key};
 pub use fleet::{CertifiedFleet, DeviceCertification, FleetError};
 pub use image::{
     IMAGE_ENDORSEMENT_PREIMAGE_TAG, IMAGE_SIGNING_AUTHORIZATION_PREIMAGE_TAG, ImageEndorsement,

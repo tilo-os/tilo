@@ -51,6 +51,32 @@ pub struct PeopleContent {
     /// The holders of the workspace, under their own heading.
     pub holders_header: String,
     pub holders: Vec<Holder>,
+    /// The work members gave servers, under their own heading.
+    pub delegated_header: String,
+    pub delegated: Vec<Delegation>,
+}
+
+/// One delegation of a member's work to a server, in the viewer's words: who
+/// gave it, what it lets the server take, and until when.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Delegation {
+    /// The delegation it is revoked by: the server's device key and the
+    /// member's, hex.
+    pub key: String,
+    /// The server that may take the work, by its device key: what a revoke asks
+    /// for.
+    pub server: String,
+    /// Who gave the work, as the row says them.
+    pub who: String,
+    /// Whether that is the viewer.
+    pub you: bool,
+    /// What the server may take, and of whom, in the viewer's words.
+    pub detail: String,
+    /// When it stops, in the viewer's words.
+    pub until: String,
+    /// Whether the viewer may revoke it here: only the device that signed it
+    /// can.
+    pub revocable: bool,
 }
 
 /// One holder of the workspace, in the viewer's words.
@@ -67,11 +93,31 @@ pub struct Holder {
 /// holder's own signed address: what it calls itself and what it can read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemberHolder {
+    /// Its device key, hex: what a delegation names it by.
+    pub device: String,
     pub name: String,
     /// Whether it holds the workspace's keys: it reads the workspace.
     pub reads: bool,
     /// Whether the machine under it is rented from a cloud provider.
     pub cloud: bool,
+}
+
+/// One member's delegation of their own work to a server, as the viewer's
+/// device learns it from the workspace: who, to what, and until when.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberDelegation {
+    /// The member whose work it is.
+    pub person: UserId,
+    /// The server that may take it: its device key, hex.
+    pub server: String,
+    /// The agent of theirs it acts as, when it acts as one.
+    pub agent: Option<String>,
+    /// What it may take, in the viewer's words.
+    pub work: String,
+    /// When it stops, in the viewer's words.
+    pub until: String,
+    /// Whether the viewer's own device signed it, so may revoke it here.
+    pub revocable: bool,
 }
 
 /// One member as the People tab reads them, from wherever the viewer's device learns of its
@@ -121,8 +167,15 @@ pub fn content(
     viewer: &UserId,
     is_owner: bool,
     holders: &[MemberHolder],
+    delegations: &[MemberDelegation],
 ) -> PeopleContent {
-    content_of(&members(ws, names, viewer), viewer, is_owner, holders)
+    content_of(
+        &members(ws, names, viewer),
+        viewer,
+        is_owner,
+        holders,
+        delegations,
+    )
 }
 
 /// What the People tab shows of `members`, in their order, to `viewer` .
@@ -132,6 +185,7 @@ pub fn content_of(
     viewer: &UserId,
     is_owner: bool,
     holders: &[MemberHolder],
+    delegations: &[MemberDelegation],
 ) -> PeopleContent {
     // An administrator governs every member who is not one; only the owner governs them too.
     let administers = is_owner
@@ -205,6 +259,61 @@ pub fn content_of(
                 },
             })
             .collect(),
+        delegated_header: t("workspace-settings-delegated-header"),
+        delegated: delegations
+            .iter()
+            .map(|delegation| delegation_row(members, holders, delegation, viewer))
+            .collect(),
+    }
+}
+
+/// One delegation as its row reads it, with the member named as the list names
+/// them and the server as its own holder names it.
+fn delegation_row(
+    members: &[Member],
+    holders: &[MemberHolder],
+    delegation: &MemberDelegation,
+    viewer: &UserId,
+) -> Delegation {
+    let who = members
+        .iter()
+        .find(|member| member.user == delegation.person)
+        .map_or_else(
+            || t("workspace-settings-delegated-former-member"),
+            |member| member.name.clone(),
+        );
+    let server = holders
+        .iter()
+        .find(|holder| holder.device == delegation.server)
+        .map(|holder| holder.name.trim())
+        .filter(|name| !name.is_empty())
+        .map_or_else(|| t("workspace-settings-kept-unnamed"), str::to_owned);
+    let detail = if let Some(agent) = &delegation.agent {
+        t_args(
+            "workspace-settings-delegated-detail-agent",
+            &[
+                ("work", delegation.work.as_str().into()),
+                ("server", server.as_str().into()),
+                ("agent", agent.as_str().into()),
+            ],
+        )
+    } else {
+        t_args(
+            "workspace-settings-delegated-detail",
+            &[
+                ("work", delegation.work.as_str().into()),
+                ("server", server.as_str().into()),
+            ],
+        )
+    };
+    Delegation {
+        key: format!("{}/{}", delegation.server, delegation.person),
+        server: delegation.server.clone(),
+        who,
+        you: delegation.person == *viewer,
+        detail,
+        until: delegation.until.clone(),
+        revocable: delegation.revocable,
     }
 }
 
@@ -236,22 +345,25 @@ mod tests {
         let members = [member("owner", CapRole::Owner, true, false)];
         let holders = [
             MemberHolder {
+                device: "nas".to_owned(),
                 name: "Kitchen NAS".to_owned(),
                 reads: true,
                 cloud: false,
             },
             MemberHolder {
+                device: "cloud".to_owned(),
                 name: "tilo.sh".to_owned(),
                 reads: true,
                 cloud: true,
             },
             MemberHolder {
+                device: "backup".to_owned(),
                 name: "Backup box".to_owned(),
                 reads: false,
                 cloud: false,
             },
         ];
-        let content = content_of(&members, &"owner".to_owned(), true, &holders);
+        let content = content_of(&members, &"owner".to_owned(), true, &holders, &[]);
         assert_eq!(content.holders_header, "Where it is kept");
         let said: Vec<(&str, &str)> = content
             .holders
@@ -279,14 +391,14 @@ mod tests {
             member("eve", CapRole::Editor, false, false),
         ];
         // The owner governs everyone but themselves.
-        let owner = content_of(&members, &"owner".to_owned(), true, &[]);
+        let owner = content_of(&members, &"owner".to_owned(), true, &[], &[]);
         assert_eq!(
             manages(&owner),
             [("owner", false), ("admin", true), ("eve", true)]
         );
         assert_eq!(owner.note, None);
         // An administrator governs every member who is not one, never the owner.
-        let admin = content_of(&members, &"admin".to_owned(), false, &[]);
+        let admin = content_of(&members, &"admin".to_owned(), false, &[], &[]);
         assert_eq!(
             manages(&admin),
             [("owner", false), ("admin", false), ("eve", true)]
@@ -297,9 +409,92 @@ mod tests {
             crate::workspace_settings::administrator_label()
         );
         // Anyone else governs nobody, and is told who does.
-        let eve = content_of(&members, &"eve".to_owned(), false, &[]);
+        let eve = content_of(&members, &"eve".to_owned(), false, &[], &[]);
         assert!(manages(&eve).iter().all(|(_, may)| !may));
         assert!(eve.note.is_some());
         assert_eq!(eve.people[2].role_key, "editor");
+    }
+
+    /// A delegation names the member who gave the work by the name the list
+    /// names them, and the server by its own holder's name; only the viewer's
+    /// own delegation is theirs to revoke here.
+    #[test]
+    fn a_delegation_names_who_gave_which_work_to_which_server() {
+        let members = [
+            member("owner", CapRole::Owner, true, false),
+            member("ada", CapRole::Editor, false, false),
+        ];
+        let holders = [MemberHolder {
+            device: "server".to_owned(),
+            name: "Kitchen NAS".to_owned(),
+            reads: true,
+            cloud: false,
+        }];
+        let delegation = |person: &str, revocable: bool| MemberDelegation {
+            person: person.to_owned(),
+            server: "server".to_owned(),
+            agent: None,
+            work: "Mail: reading and undoable changes allowed".to_owned(),
+            until: "Until 3 December 2026".to_owned(),
+            revocable,
+        };
+        let content = content_of(
+            &members,
+            &"ada".to_owned(),
+            false,
+            &holders,
+            &[delegation("ada", true), delegation("owner", false)],
+        );
+        assert_eq!(content.delegated_header, "Work given to servers");
+        let said: Vec<(&str, &str, &str, bool, bool)> = content
+            .delegated
+            .iter()
+            .map(|row| {
+                (
+                    row.who.as_str(),
+                    row.detail.as_str(),
+                    row.until.as_str(),
+                    row.you,
+                    row.revocable,
+                )
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (
+                    "ada",
+                    "Mail: reading and undoable changes allowed, taken by Kitchen NAS",
+                    "Until 3 December 2026",
+                    true,
+                    true
+                ),
+                (
+                    "owner",
+                    "Mail: reading and undoable changes allowed, taken by Kitchen NAS",
+                    "Until 3 December 2026",
+                    false,
+                    false
+                ),
+            ]
+        );
+        // A member the workspace no longer has, and a server it no longer
+        // holds, still read as what they are.
+        let strangers = content_of(
+            &members,
+            &"ada".to_owned(),
+            false,
+            &[],
+            &[MemberDelegation {
+                person: "gone".to_owned(),
+                ..delegation("gone", false)
+            }],
+        );
+        assert_eq!(strangers.delegated[0].who, "A former member");
+        assert!(
+            strangers.delegated[0].detail.ends_with("taken by A server"),
+            "{}",
+            strangers.delegated[0].detail
+        );
     }
 }

@@ -21640,6 +21640,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-action-policy",
  "tilo-device-identity",
  "tilo-files",
  "tilo-paths",

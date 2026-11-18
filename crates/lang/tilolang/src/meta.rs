@@ -121,6 +121,11 @@ pub struct PackageMeta {
     pub uses: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub named_roots: Vec<NamedRootMeta>,
+    /// The names among [`Self::named_roots`] of which the app keeps one for each document (a
+    /// workbook of Sheets) and none for the workspace: `app.name` alone names none of them, and
+    /// one is named by its own id (`@app.Type:id`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub each_document: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<AliasMeta>,
     #[serde(default)]

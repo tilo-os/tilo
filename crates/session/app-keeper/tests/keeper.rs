@@ -391,7 +391,13 @@ fn the_apps_end_is_reported_and_recorded() {
     rig.pump(&mut [], |rig, _| rig.keeper.finished());
     let recorded = std::fs::read(rig.dir.path().join("keeper").join("ended")).unwrap();
     let end: End = serde_json::from_slice(&recorded).unwrap();
-    assert_eq!(end, End::Signalled { signal: 9 });
+    assert_eq!(
+        end,
+        End::Signalled {
+            signal: 9,
+            memory: false
+        }
+    );
 }
 
 #[test]
@@ -421,7 +427,10 @@ fn an_app_whose_desktop_never_comes_back_ends_with_the_login() {
     });
     assert_eq!(
         end,
-        End::Signalled { signal: 15 },
+        End::Signalled {
+            signal: 15,
+            memory: false
+        },
         "asked to end, not killed"
     );
     rig.pump(&mut [], |rig, _| rig.keeper.finished());
@@ -467,7 +476,10 @@ fn a_session_at_another_version_holds_the_app_while_it_stays_connected() {
     });
     assert_eq!(
         end,
-        End::Signalled { signal: 15 },
+        End::Signalled {
+            signal: 15,
+            memory: false
+        },
         "once it went, the app ends after the bound"
     );
 }

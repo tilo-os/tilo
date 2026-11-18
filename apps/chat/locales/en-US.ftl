@@ -93,7 +93,17 @@ chat-start-video-call = Start a video call
 
 # Durable evidence attached to an agent's reply; availability comes from presence.
 chat-agent-work-waiting = Waiting for { $app }
-chat-agent-work-did = Did { $count } things
+chat-agent-work-did = { $count ->
+    [one] Did one thing
+   *[other] Did { $count } things
+}
+# The one line of an agent at work: the step it is at ($what) and how many it has taken.
+chat-agent-work-at-step = { $what } · { $count ->
+    [one] 1 step
+   *[other] { $count } steps
+}
+# A step ($step) and what it is about ($about), both in the system's own words.
+chat-agent-work-step-about = { $step }: { $about }
 chat-agent-work-refused = Could not complete this request
 chat-agent-work-step-requested = Requested: { $target }
 chat-agent-work-step-applied = Applied: { $target }

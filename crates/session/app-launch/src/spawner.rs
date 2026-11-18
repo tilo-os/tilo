@@ -171,6 +171,8 @@ pub struct Spawner {
     ends: memory::Ends,
     /// The watch over the apps' memory: theirs while they run.
     memory: Option<launcher::memory_monitor::Watch>,
+    /// What notes the kernel's OOM kills in the apps' cgroups as they happen.
+    kills: Option<memory::KernelKills>,
     /// What starts an app behind a keeper, once the session has a desktop to attach keepers to.
     #[cfg(target_os = "linux")]
     keeping: Option<crate::kept::Keeping>,
@@ -304,6 +306,9 @@ impl Spawner {
                 None
             }
         };
+        let kills = memory::KernelKills::spawn(Arc::clone(&ends))
+            .map_err(|error| tracing::warn!(%error, "the kernel's OOM kills go unnoted"))
+            .ok();
         Self {
             wake,
             events: mpsc::channel(),
@@ -311,6 +316,7 @@ impl Spawner {
             running,
             ends,
             memory,
+            kills,
             #[cfg(target_os = "linux")]
             keeping: None,
             #[cfg(target_os = "linux")]
@@ -401,7 +407,7 @@ impl Spawner {
     /// tier and gives memory back first; one whose window the person sees
     /// again is in the foreground tier. `own` keeps the session's tier.
     pub fn tier_by_visibility(&self, on_screen: &[u32], own: Option<&Path>) {
-        memory::tier_by_visibility(&self.running, on_screen, own);
+        memory::tier_by_visibility(&self.running, on_screen, own, self.kills.as_ref());
     }
 
     /// Start `planned` with exactly the environment it planned: nothing the
@@ -645,6 +651,7 @@ impl Drop for Spawner {
         self.end_running(Teardown::Logout);
         // The watch over the apps' memory ends with the session running them.
         self.memory = None;
+        self.kills = None;
     }
 }
 

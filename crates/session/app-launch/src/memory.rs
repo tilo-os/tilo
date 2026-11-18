@@ -28,7 +28,11 @@
 //! person is told the session closed it rather than that it stopped working
 //! ([`Cause::Runaway`], which the launch's end carries to
 //! [`crate::Spawner::events`]). An app the kernel ended for memory says so
-//! too ([`Cause::Kernel`]), from its cgroup's own events.
+//! too ([`Cause::Kernel`]), from its cgroup's own events, noted as the kernel
+//! counts the kill ([`KernelKills`]): once the last process of a launch ended,
+//! its scope is collected and the cgroup with what it counted is gone before
+//! the end is reported. A kept app's keeper notes it in the app's end itself,
+//! so a desktop that adopts it later says so as well.
 //!
 //! The watch rides on the spawner: [`crate::Spawner::new`] starts it and
 //! dropping the spawner stops it, so a session that ends leaves no thread
@@ -37,6 +41,8 @@
 //! reclaim from, and the watch finds no apps.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
+use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -166,18 +172,186 @@ fn put_in_tiers(
 
 /// Put every cgroup a launch of `apps` runs in in its tier: the startup tier
 /// while the launch is opening, then the tier of what the person can see —
-/// and [`Tier::Session`] for `own`, the cgroup this session runs in.
-pub(crate) fn tier_by_visibility(apps: &Running, on_screen: &[u32], own: Option<&Path>) {
+/// and [`Tier::Session`] for `own`, the cgroup this session is in. `kills`
+/// watches each launch's own cgroup from here on.
+pub(crate) fn tier_by_visibility(
+    apps: &Running,
+    on_screen: &[u32],
+    own: Option<&Path>,
+    kills: Option<&KernelKills>,
+) {
     let visible: Vec<PathBuf> = on_screen
         .iter()
         .filter_map(|pid| launcher::app_cgroup::cgroup_of_pid(*pid))
         .collect();
+    let launches = launches_of(apps);
+    if let Some(kills) = kills {
+        for launch in launches
+            .iter()
+            .filter(|launch| Some(launch.dir.as_path()) != own)
+        {
+            kills.watch(&launch.dir);
+        }
+    }
     put_in_tiers(
-        &launches_of(apps),
+        &launches,
         &visible,
         own,
         launcher::priority::mem_total_bytes(),
     );
+}
+
+/// The kernel's OOM kills in the launches' cgroups, noted in [`Ends`] as the
+/// kernel counts them: `memory.events` changes as it does, and the change is
+/// read on a thread of its own while the cgroup still exists.
+pub(crate) struct KernelKills {
+    inotify: Arc<OwnedFd>,
+    /// The cgroup of each watch.
+    watched: Arc<Mutex<BTreeMap<i32, PathBuf>>>,
+    /// Written to end the thread.
+    stop: OwnedFd,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl KernelKills {
+    pub(crate) fn spawn(ends: Ends) -> io::Result<Self> {
+        // SAFETY: both calls take the flags they document and return a new descriptor.
+        let (inotify, stop) = unsafe {
+            (
+                libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK),
+                libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK),
+            )
+        };
+        if inotify < 0 || stop < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the kernel just returned these descriptors, owned by nobody else.
+        let (inotify, stop) = unsafe {
+            (
+                Arc::new(OwnedFd::from_raw_fd(inotify)),
+                OwnedFd::from_raw_fd(stop),
+            )
+        };
+        let watched = Arc::new(Mutex::new(BTreeMap::new()));
+        let thread = {
+            let (inotify, watched, waiting) = (
+                Arc::clone(&inotify),
+                Arc::clone(&watched),
+                stop.try_clone()?,
+            );
+            std::thread::Builder::new()
+                .name("tilo-app-oom".into())
+                .spawn(move || note_kills(&inotify, &watched, &waiting, &ends))?
+        };
+        Ok(Self {
+            inotify,
+            watched,
+            stop,
+            thread: Some(thread),
+        })
+    }
+
+    /// Watch the launch cgroup `dir`, once.
+    pub(crate) fn watch(&self, dir: &Path) {
+        let mut watched = self.watched.lock_recover();
+        if watched.values().any(|known| known == dir) {
+            return;
+        }
+        let Ok(path) = std::ffi::CString::new(
+            dir.join("memory.events")
+                .into_os_string()
+                .into_encoded_bytes(),
+        ) else {
+            return;
+        };
+        // SAFETY: a NUL-terminated path and the inotify descriptor this value owns.
+        let wd = unsafe {
+            libc::inotify_add_watch(self.inotify.as_raw_fd(), path.as_ptr(), libc::IN_MODIFY)
+        };
+        if wd >= 0 {
+            watched.insert(wd, dir.to_path_buf());
+        }
+    }
+}
+
+impl Drop for KernelKills {
+    fn drop(&mut self) {
+        let one = 1_u64.to_ne_bytes();
+        // SAFETY: writing one event to the eventfd this value owns.
+        unsafe { libc::write(self.stop.as_raw_fd(), one.as_ptr().cast(), one.len()) };
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Until `stop` is written: read each cgroup whose `memory.events` changed,
+/// and note a kill the kernel made in it.
+fn note_kills(
+    inotify: &OwnedFd,
+    watched: &Mutex<BTreeMap<i32, PathBuf>>,
+    stop: &OwnedFd,
+    ends: &Ends,
+) {
+    // Enough for many events at once: each is 16 bytes, with no name for a watched file.
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let mut fds = [
+            libc::pollfd {
+                fd: inotify.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: stop.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // SAFETY: two valid pollfd entries.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+        if ready < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        if ready < 0 || fds[1].revents != 0 {
+            return;
+        }
+        // SAFETY: reading into a buffer of its own length.
+        let read = unsafe {
+            libc::read(
+                inotify.as_raw_fd(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+            )
+        };
+        let Ok(read) = usize::try_from(read) else {
+            continue;
+        };
+        let mut at: usize = 0;
+        while let Some(header) = buffer.get(at..at.saturating_add(16)).filter(|_| at < read) {
+            let field = |from: usize| {
+                header
+                    .get(from..from.saturating_add(4))
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .map_or(0, u32::from_ne_bytes)
+            };
+            let wd = i32::from_ne_bytes(field(0).to_ne_bytes());
+            let (mask, len) = (field(4), field(12));
+            at = at.saturating_add(16).saturating_add(len as usize);
+            if mask & libc::IN_IGNORED != 0 {
+                // The cgroup is gone: what it counted was noted when it changed.
+                watched.lock_recover().remove(&wd);
+                continue;
+            }
+            let Some(dir) = watched.lock_recover().get(&wd).cloned() else {
+                continue;
+            };
+            let events = launcher::app_cgroup::memory_events(&dir);
+            if events.oom_kill > 0 || events.oom_group_kill > 0 {
+                recorded(ends).entry(dir).or_insert(Cause::Kernel);
+            }
+        }
+    }
 }
 
 /// Why memory ended the app whose cgroup is `dir`, once: what the watch
@@ -496,6 +670,31 @@ mod tests {
             )
             .unwrap();
             assert_eq!(take_end(&ends, &killed.0), Some(Cause::Kernel));
+        }
+
+        phase a_kill_the_kernel_counts_is_noted_before_the_cgroup_goes;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let ends: Ends = Ends::default();
+            let kills = KernelKills::spawn(Arc::clone(&ends)).unwrap();
+            let app = app_cgroup(&home.path().join("app-probe"), Tier::Background, GIB);
+            let events = app.0.join("memory.events");
+            std::fs::write(&events, "oom 0\noom_kill 0\noom_group_kill 0\n").unwrap();
+            kills.watch(&app.0);
+            kills.watch(&app.0);
+            assert_eq!(kills.watched.lock_recover().len(), 1, "watched once");
+            // Memory running high is no kill.
+            std::fs::write(&events, "max 3\noom 1\noom_kill 0\noom_group_kill 0\n").unwrap();
+            // The kernel ends the whole app; its scope is collected at once.
+            std::fs::write(&events, "max 3\noom 2\noom_kill 0\noom_group_kill 1\n").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !recorded(&ends).contains_key(&app.0) {
+                assert!(std::time::Instant::now() < deadline, "the kill was never noted");
+                std::thread::yield_now();
+            }
+            std::fs::remove_dir_all(&app.0).unwrap();
+            assert_eq!(take_end(&ends, &app.0), Some(Cause::Kernel));
+            drop(kills);
         }
 
         phase an_app_that_holds_more_than_it_gives_back_is_read_whole;

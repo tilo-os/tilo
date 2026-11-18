@@ -1069,22 +1069,9 @@ fn enter_app_scope(app_id: &str) {
         tilo_startup_metrics::handoff_mark("scope-skipped");
         return;
     }
-    if let Err(error) = launcher::scope::join(app_id, app_id) {
+    if let Err(error) = launcher::scope::join(app_id, app_id, launcher::scope::Oom::WholeApp) {
         eprintln!("tilo-launcher: {app_id} runs outside a session scope: {error}");
         return;
-    }
-    if launcher::app_cgroup::current_is_app_cgroup()
-        && let Err(error) = launcher::app_cgroup::set_oom_group(
-            &launcher::app_cgroup::fs_path(
-                &launcher::app_cgroup::app_cgroup_at(
-                    &std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default(),
-                )
-                .unwrap_or_default(),
-            ),
-            true,
-        )
-    {
-        eprintln!("tilo-launcher: {app_id} keeps one OOM victim: {error}");
     }
     tilo_startup_metrics::handoff_mark("scope-joined");
 }

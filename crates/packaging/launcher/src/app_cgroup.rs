@@ -130,16 +130,6 @@ pub fn set_tier(dir: &Path, tier: Tier, total: Option<u64>) -> Result<(), String
     apply(dir, &crate::priority::tier_properties(tier, total))
 }
 
-/// Make the app cgroup at `dir` one OOM group (`on`) or one victim (`off`): the kernel then ends
-/// everything in it together when it picks any of it.
-pub fn set_oom_group(dir: &Path, on: bool) -> io::Result<()> {
-    let path = dir.join("memory.oom.group");
-    if !path.exists() {
-        return Ok(());
-    }
-    std::fs::write(path, if on { "1" } else { "0" })
-}
-
 /// What `memory.events` of a cgroup counts, for it and everything below it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MemoryEvents {

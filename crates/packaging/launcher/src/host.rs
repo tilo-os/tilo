@@ -146,6 +146,7 @@ fn spawn_with(
             busctl,
             &launch.desktop_id,
             &launch.display_name,
+            scope::Oom::OneProcess,
             scope_join_timeout,
         )
     {
@@ -198,7 +199,13 @@ pub fn start_kept(
     let busctl = Path::new(scope::BUSCTL);
     if busctl.is_file()
         && !crate::app_cgroup::current_is_app_cgroup()
-        && let Err(error) = scope::join_with(busctl, app_id, name, scope::JOIN_TIMEOUT)
+        && let Err(error) = scope::join_with(
+            busctl,
+            app_id,
+            name,
+            scope::Oom::OneProcess,
+            scope::JOIN_TIMEOUT,
+        )
     {
         eprintln!("tilo-launcher: {app_id} is outside a session scope: {error}");
     }
@@ -549,7 +556,8 @@ mod tests {
                     scope::request_args(
                         &format!("app-tilo-org.example.Probe\\x2dx-{pid}.scope"),
                         pid,
-                        "Probe"
+                        "Probe",
+                        scope::Oom::OneProcess,
                     )
                 );
             }
@@ -563,6 +571,7 @@ mod tests {
                         &busctl,
                         &launch.desktop_id,
                         &launch.display_name,
+                        scope::Oom::OneProcess,
                         Duration::from_millis(20)
                     )
                     .expect_err("a refusal is reported")

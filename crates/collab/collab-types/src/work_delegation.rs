@@ -27,6 +27,8 @@ const WORK_DELEGATION_DOMAIN: &[u8] = b"tilo-work-delegation-v1\0";
 pub const MAX_DELEGATED_WORK: usize = 32;
 /// Longest agent id a delegation may act as.
 pub const MAX_DELEGATED_ACTOR_BYTES: usize = 64;
+/// Most of the member's vault items one delegation may let the server use.
+pub const MAX_DELEGATED_SECRETS: usize = 32;
 
 /// Why a work delegation is not usable.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -67,6 +69,12 @@ pub struct WorkDelegation {
     /// Which work, by the paths the workspace decides actions by: a change is
     /// the member's work only where one of these allows it.
     pub grants: Vec<Grant>,
+    /// Which of the member's vault items the server may use, by their ids: a
+    /// delegation names none, and then the server uses no secret of theirs.
+    /// An item's own leave and its person's answer still decide each use; this
+    /// says only which items the server may be answered about at all.
+    #[serde(default)]
+    pub secrets: Vec<String>,
     /// When it was issued, ns since the epoch.
     pub issued_at_ns: u64,
     /// When it stops working, ns since the epoch.
@@ -87,6 +95,7 @@ struct Unsigned<'a> {
     workspace: &'a str,
     agent: &'a Option<String>,
     grants: &'a [Grant],
+    secrets: &'a [String],
     issued_at_ns: u64,
     expires_at_ns: u64,
     revoked_at_ns: &'a Option<u64>,
@@ -94,8 +103,9 @@ struct Unsigned<'a> {
 
 impl WorkDelegation {
     /// A delegation by `key`'s device of its person's work to `server` in
-    /// `workspace`, as `agent` (or as the person) and within `grants`, from
-    /// `issued_at_ns` until `expires_at_ns`.
+    /// `workspace`, as `agent` (or as the person) and within `grants`, letting
+    /// it use the vault items `secrets`, from `valid`'s first instant until its
+    /// second, both ns since the epoch.
     ///
     /// # Errors
     /// [`WorkDelegationError::Invalid`] for out-of-bounds fields,
@@ -107,8 +117,8 @@ impl WorkDelegation {
         workspace: impl Into<String>,
         agent: Option<String>,
         grants: Vec<Grant>,
-        issued_at_ns: u64,
-        expires_at_ns: u64,
+        secrets: Vec<String>,
+        (issued_at_ns, expires_at_ns): (u64, u64),
     ) -> Result<Self, WorkDelegationError> {
         Self::sealed(
             key,
@@ -119,6 +129,7 @@ impl WorkDelegation {
                 workspace: workspace.into(),
                 agent,
                 grants,
+                secrets,
                 issued_at_ns,
                 expires_at_ns,
                 revoked_at_ns: None,
@@ -166,6 +177,7 @@ impl WorkDelegation {
             workspace: &self.workspace,
             agent: &self.agent,
             grants: &self.grants,
+            secrets: &self.secrets,
             issued_at_ns: self.issued_at_ns,
             expires_at_ns: self.expires_at_ns,
             revoked_at_ns: &self.revoked_at_ns,
@@ -211,6 +223,11 @@ impl WorkDelegation {
             .is_some_and(|agent| agent.is_empty() || agent.len() > MAX_DELEGATED_ACTOR_BYTES)
         {
             return Err(WorkDelegationError::Invalid("agent"));
+        }
+        if self.secrets.len() > MAX_DELEGATED_SECRETS
+            || self.secrets.iter().any(|item| !is_item_id(item))
+        {
+            return Err(WorkDelegationError::Invalid("secrets"));
         }
         if self.expires_at_ns <= self.issued_at_ns {
             return Err(WorkDelegationError::Invalid("validity window"));
@@ -269,6 +286,14 @@ impl WorkDelegation {
             .any(|grant| grant.kinds.contains(kind) && grant.node.covers(node))
     }
 
+    /// Whether the delegation lets the server use the vault item `item`: only
+    /// the items the member named are theirs to use there, and an item they
+    /// named none of stays on their own devices.
+    #[must_use]
+    pub fn allows_secret(&self, item: &str) -> bool {
+        self.secrets.iter().any(|named| named == item)
+    }
+
     /// The row it is kept under: the server's device key and the member's
     /// root, hex. A server may hold one delegation per member, and a member
     /// one per server, so two holders' rows never replace each other.
@@ -294,12 +319,24 @@ fn key_of(text: &str) -> Option<[u8; 32]> {
     <[u8; 32]>::try_from(bytes.as_slice()).ok()
 }
 
+/// Whether `text` is a vault item's id: 32 lowercase hexadecimal digits, as
+/// the vault makes them.
+fn is_item_id(text: &str) -> bool {
+    text.len() == 32
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// The one vault item the test's delegation names.
+    const SECRET: &str = "0123456789abcdef0123456789abcdef";
 
     fn delegation(key: &SigningKey, server: [u8; 32], expires_at_ns: u64) -> WorkDelegation {
         let person = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
@@ -318,8 +355,8 @@ mod tests {
             "w",
             None,
             vec![grant],
-            1,
-            expires_at_ns,
+            vec![SECRET.to_owned()],
+            (1, expires_at_ns),
         )
         .unwrap()
     }
@@ -380,6 +417,26 @@ mod tests {
             .kind("message")
             .action("send");
         assert!(!delegation.allows(&elsewhere, ActionKind::Undoable));
+
+        // Only the vault items the member named are the server's to use there.
+        assert!(delegation.allows_secret(SECRET));
+        assert!(!delegation.allows_secret("fedcba9876543210fedcba9876543210"));
+
+        // What names no item of theirs lets it use none: a delegation names
+        // what it means to, and a shape no item has is refused where signed.
+        let mut unnamed = delegation.clone();
+        unnamed.secrets.clear();
+        assert!(!unnamed.allows_secret(SECRET));
+        unnamed.secrets = vec!["not-an-item".to_owned()];
+        assert_eq!(
+            unnamed.validate(),
+            Err(WorkDelegationError::Invalid("secrets"))
+        );
+        unnamed.secrets = vec![SECRET.to_owned(); MAX_DELEGATED_SECRETS + 1];
+        assert_eq!(
+            unnamed.validate(),
+            Err(WorkDelegationError::Invalid("secrets"))
+        );
 
         let row = delegation.row_key();
         assert_eq!(

@@ -253,6 +253,27 @@ pub struct Holder {
     pub cloud: bool,
 }
 
+/// One member's delegation of their own work to a server, as the workspace
+/// holds it and every member reads it ([`Engine::delegations`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Delegation {
+    /// The row it is kept under: the server's device key and the member's
+    /// user root, hex.
+    pub key: String,
+    /// Whose work it is: their user root, hex.
+    pub person: String,
+    /// The server that may take it: its device key, hex.
+    pub server: String,
+    /// The agent of theirs it acts as, when it acts as one.
+    pub agent: Option<String>,
+    /// What it may take, by the paths the workspace decides actions by.
+    pub grants: Vec<tilo_action_policy::Grant>,
+    /// When it stops working, ns since the epoch.
+    pub expires_at_ns: u64,
+    /// Whether this device signed it: only that device can revoke it.
+    pub revocable: bool,
+}
+
 /// What this device's own workspace service answers an ask, once it has.
 pub type ServiceAnswer =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
@@ -1647,6 +1668,41 @@ impl Engine {
             .collect();
         holders.sort_by(|a, b| a.label.cmp(&b.label));
         holders
+    }
+
+    /// The work the members of `workspace` gave servers that is live now, each
+    /// as the member's own device signed it: who gave a server which work,
+    /// until when, and which of them this device may take back. Empty while
+    /// this device holds no state for the workspace.
+    pub fn delegations(&self, workspace: &str) -> Vec<Delegation> {
+        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
+            return Vec::new();
+        };
+        let Ok(held) = self.owner.with_current(workspace_id, |view| {
+            let now_ns = tilo_clock::unix_now_ns();
+            Ok(view
+                .peer()
+                .workspace()
+                .work_delegations()
+                .into_iter()
+                .filter(|delegation| delegation.verify(workspace, now_ns).is_ok())
+                .filter(|delegation| delegation.revoked_at_ns.is_none())
+                .collect::<Vec<_>>())
+        }) else {
+            return Vec::new();
+        };
+        let device = self.identity.device_cert.device_public_key;
+        held.into_iter()
+            .map(|delegation| Delegation {
+                key: delegation.row_key(),
+                person: hex::encode(delegation.person),
+                server: hex::encode(delegation.server),
+                agent: delegation.agent.clone(),
+                grants: delegation.grants.clone(),
+                expires_at_ns: delegation.expires_at_ns,
+                revocable: delegation.device == device,
+            })
+            .collect()
     }
 
     /// Where the holders of the workspaces this device holds are reached, one entry per holder, by

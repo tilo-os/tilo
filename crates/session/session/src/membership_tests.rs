@@ -568,6 +568,15 @@ fn a_governed_session_serving() -> GovernedSession {
 }
 
 fn governed_session(served: Option<tempfile::TempDir>) -> GovernedSession {
+    governed_session_seeded(served, |_, _, _| ())
+}
+
+/// `governed_session`, with what `seed` gives the governor to publish once
+/// the workspace has both devices in it.
+fn governed_session_seeded(
+    served: Option<tempfile::TempDir>,
+    seed: impl FnOnce(&mut TestGovernor, &tilo_user_identity::DeviceCert, &SigningKey),
+) -> GovernedSession {
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
     let (identity, cert, key) = provisioned_identity(&mut home);
     let person = hex::encode(cert.user_public_key);
@@ -575,8 +584,15 @@ fn governed_session(served: Option<tempfile::TempDir>) -> GovernedSession {
     let workspace_id = a_workspace_on_the_shell(state.path());
     let now = tilo_clock::wall();
     let hers = tempfile::tempdir().expect("her state directory");
-    let (her, _her_cert, _her_key, ada) =
-        a_second_device(state.path(), hers.path(), workspace_id, &cert, &key, now);
+    let (her, _her_cert, _her_key, ada) = a_second_device(
+        state.path(),
+        hers.path(),
+        workspace_id,
+        &cert,
+        &key,
+        now,
+        seed,
+    );
     let socket = served
         .as_ref()
         .map(|served| served.path().join("collab.sock"));
@@ -909,6 +925,89 @@ fn this_computer(
     (root, device, cert)
 }
 
+/// This computer's device gave a server its own work: the People tab shows
+/// it, with what the server may take and until when, and taking it back from
+/// the sheet stops it in the workspace this device holds.
+#[test]
+fn the_people_tab_takes_back_the_work_given_to_a_server() {
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    let _settled = ui::motion::testing::settled();
+    let server_key = SigningKey::from_bytes(&[0x81; 32]);
+    let server = testing::certificate(
+        &SigningKey::from_bytes(&[0x82; 32]),
+        &server_key,
+        "Kitchen NAS",
+    );
+    let server_device = hex::encode(server.device_public_key);
+    let mut session = governed_session_seeded(None, move |governor, cert, key| {
+        let member = Grantee::person(hex::encode(cert.user_public_key));
+        let grant = Grant::new(
+            "delegated-work",
+            member.clone(),
+            TreePath::workspace(governor.workspace_id().to_string()).app("so.tilo.mail"),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            member,
+        );
+        let now_ns = tilo_peer_state::owner::testing::ns(tilo_clock::wall()).expect("a time");
+        governor
+            .delegate_work(
+                (cert, key),
+                (&server, &server_key),
+                vec![grant],
+                now_ns.saturating_add(3_600_000_000_000),
+            )
+            .expect("the workspace takes the delegation");
+    });
+    let mut app = settings_sheet(&mut session);
+    let shown = session.settings().people.delegated;
+    assert_eq!(shown.len(), 1, "the work this device gave the server");
+    assert_eq!(shown[0].server, server_device);
+    assert!(
+        shown[0].detail.contains("Kitchen NAS"),
+        "the row names the server it went to: {}",
+        shown[0].detail
+    );
+    assert!(shown[0].detail.contains("Mail"), "{}", shown[0].detail);
+    assert!(!shown[0].until.is_empty(), "and when it stops");
+    assert!(
+        shown[0].revocable,
+        "the device that signed it may take it back"
+    );
+
+    // Taking it back asks first, then the workspace refuses the server's work
+    // for this device from then on.
+    press(
+        &mut app,
+        &format!(
+            "ws-people-delegation-revoke-{server_device}/{}",
+            session.person.clone()
+        ),
+    );
+    press(&mut app, "ws-settings-decision.primary");
+    session.frames_until(|session| session.settings().people.delegated.is_empty());
+    assert!(
+        session.settings().people.delegated.is_empty(),
+        "the work is no longer the server's"
+    );
+    // The workspace itself holds the revocation, not only the sheet: the
+    // delegation is kept, signed again with its end.
+    let workspace = session.workspace_id.to_string();
+    let delegations = session
+        .session()
+        .shared
+        .engine
+        .as_ref()
+        .expect("this session holds the workspace")
+        .delegations(&workspace);
+    assert!(
+        delegations.is_empty(),
+        "a revoked delegation is no live work: {delegations:?}"
+    );
+    drop(app);
+    session.close();
+}
+
 /// The session this computer keeps under `state` .
 fn session_keeping(state: &std::path::Path) -> crate::Session {
     let session = crate::Session::headless(
@@ -1180,7 +1279,8 @@ fn the_fixture_governs(mine: &Engine, workspace_id: WorkspaceId) {
 }
 
 /// Another person the workspace admits, on a device of her own: her engine on `her_state` , her
-/// certificate and key, and the id the workspace knows her by.
+/// certificate and key, and the id the workspace knows her by. `seed` makes what the governor
+/// publishes to the devices once the workspace has both of them.
 fn a_second_device(
     state: &std::path::Path,
     her_state: &std::path::Path,
@@ -1188,6 +1288,7 @@ fn a_second_device(
     cert: &tilo_user_identity::DeviceCert,
     key: &SigningKey,
     now: tilo_clock::time::SystemTime,
+    seed: impl FnOnce(&mut TestGovernor, &tilo_user_identity::DeviceCert, &SigningKey),
 ) -> (Engine, tilo_user_identity::DeviceCert, SigningKey, String) {
     let her_key = SigningKey::from_bytes(&[0x72; 32]);
     let her = testing::certificate(&SigningKey::from_bytes(&[0x71; 32]), &her_key, "ada");
@@ -1217,6 +1318,7 @@ fn a_second_device(
     governor = testing::enroll_into(governor, hers.owner(), &her_key, &her)
         .expect("the workspace admits her device");
     let person = hex::encode(her.user_public_key);
+    seed(&mut governor, cert, key);
     for (bytes, _) in governor.outgoing() {
         for engine in [&mine, &hers] {
             engine
@@ -1388,6 +1490,7 @@ fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs()
         &cert,
         &key,
         now,
+        |_, _, _| (),
     );
     let socket_dir = private_directory();
     let socket = socket_dir.path().join("collab.sock");

@@ -534,6 +534,14 @@ workspace-settings-kept-reads = Liest den Arbeitsbereich
 workspace-settings-kept-reads-cloud = Liest den Arbeitsbereich, und der Cloud-Anbieter auch
 workspace-settings-kept-stores = Hält eine verschlüsselte Kopie und liest nichts davon
 workspace-settings-kept-unnamed = Ein Server
+workspace-settings-delegated-header = An Server gegebene Arbeit
+workspace-settings-delegated-detail = { $work }, übernommen von { $server }
+workspace-settings-delegated-detail-agent = { $work }, übernommen von { $server } als { $agent }
+workspace-settings-delegated-former-member = Ein ehemaliges Mitglied
+workspace-settings-delegated-revoke-sheet-title = Diese Arbeit zurücknehmen?
+workspace-settings-delegated-revoke-sheet-description = Der Server übernimmt deine Arbeit sofort nicht mehr.
+workspace-settings-delegated-keep = Behalten
+workspace-settings-delegated-revoke = Zurücknehmen
 workspace-settings-you = Du
 workspace-settings-member-extra = { $count ->
     [one] 1 zusätzliche Berechtigung

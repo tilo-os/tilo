@@ -16,11 +16,15 @@ use tilo_actions::remote::ActionCallError::UnknownAction;
 use tilo_actions::remote::Caller;
 use tilo_user_identity::DeviceCert;
 
-use super::super::tests::{admit_device, governed};
-use crate::workspaces::hosted_use::HostedTurn;
+use super::super::tests::{admit_device, caller, governed};
+use serde_json::json;
+
+use super::turn_use_tests::{a_mail_login, add_mail, asked, proving};
+use crate::workspaces::hosted_use::{HostedTurn, UseAnswer};
 use crate::workspaces::tests::{governor, test_host};
 use crate::workspaces::{WorkspaceId, Workspaces};
 use collab_types::work_delegation::WorkDelegation;
+use tilo_actions::remote::ActionCallError::Refused;
 
 const AGENT: &str = "scout";
 
@@ -49,14 +53,15 @@ fn turn<'a>(workspace_id: WorkspaceId, caller: &'a Caller, keeper: &'a str) -> H
     }
 }
 
-/// The member's delegation of undoable work in `app` to `server`, signed by their
-/// own device `key`.
+/// The member's delegation of undoable work in `app` to `server`, letting it use
+/// the vault items `secrets`, signed by their own device `key`.
 fn delegating(
     key: &SigningKey,
     person: &DeviceCert,
     server: [u8; 32],
     workspace: &str,
     app: &str,
+    secrets: Vec<String>,
 ) -> WorkDelegation {
     let member = Grantee::Member(tilo_action_policy::MemberId::agent(AGENT));
     let grant = Grant::new(
@@ -75,32 +80,23 @@ fn delegating(
         workspace,
         Some(AGENT.to_owned()),
         vec![grant],
-        now.saturating_sub(1),
-        now.saturating_add(600_000_000_000),
+        secrets,
+        (now.saturating_sub(1), now.saturating_add(600_000_000_000)),
     )
     .unwrap()
 }
 
 /// Write `delegation` into `workspace` as `key`, the member's device that signed
-/// it, through the governor's own commit.
+/// it, through the workspace service's own entry for it.
 async fn author(
     workspaces: &Workspaces,
     workspace: &str,
     key: &SigningKey,
-    governor: &SigningKey,
     delegation: &WorkDelegation,
 ) {
-    let now = tilo_clock::wall();
-    let state = workspaces.workspace(workspace).await.unwrap();
-    let mut governed = state.lock().await;
-    let mut candidate = governed.peer().clone();
-    candidate
-        .workspace_mut()
-        .author_work_delegation(delegation, key, now)
-        .unwrap();
-    let collaboration = governed.collaboration().clone();
-    governed
-        .commit(candidate, governor, now, |_, _| Ok(collaboration))
+    workspaces
+        .author_work_delegation(workspace, delegation, key)
+        .await
         .unwrap();
 }
 
@@ -148,8 +144,9 @@ async fn a_turn_acts_on_the_server_only_under_the_members_live_delegation() {
         owner.device_public_key,
         &workspace,
         "so.tilo.mail",
+        Vec::new(),
     );
-    author(workspaces, &workspace, &ada_key, &key, &delegation).await;
+    author(workspaces, &workspace, &ada_key, &delegation).await;
     assert!(
         workspaces.keepers_turn(&by_server).await.is_ok(),
         "the server takes her work on its own device under her delegation"
@@ -187,7 +184,7 @@ async fn a_turn_acts_on_the_server_only_under_the_members_live_delegation() {
     let revoked = delegation
         .revoked(&ada_key, tilo_clock::unix_now_ns())
         .unwrap();
-    author(workspaces, &workspace, &ada_key, &key, &revoked).await;
+    author(workspaces, &workspace, &ada_key, &revoked).await;
     assert_eq!(
         workspaces.keepers_turn(&by_server).await,
         Err(UnknownAction),
@@ -289,8 +286,9 @@ async fn the_members_device_admits_the_servers_work_under_their_delegation() {
         other.device_public_key,
         &workspace,
         "so.tilo.mail",
+        Vec::new(),
     );
-    author(workspaces, &workspace, &ada_key, &key, &delegation).await;
+    author(workspaces, &workspace, &ada_key, &delegation).await;
     take(&mut hers, &workspaces.state(&workspace).await.unwrap());
     let now = tilo_clock::wall();
     assert_eq!(
@@ -338,11 +336,118 @@ async fn the_members_device_admits_the_servers_work_under_their_delegation() {
     let revoked = delegation
         .revoked(&ada_key, tilo_clock::unix_now_ns())
         .unwrap();
-    author(workspaces, &workspace, &ada_key, &key, &revoked).await;
+    author(workspaces, &workspace, &ada_key, &revoked).await;
     take(&mut hers, &workspaces.state(&workspace).await.unwrap());
     let now = tilo_clock::wall();
     assert!(
         hers.permissions(other.device_public_key, now).is_err(),
         "the revocation stops the server's work at once"
     );
+}
+
+/// A server uses a member's vault item only where their delegation names it:
+/// an item it does not name is refused before the vault is opened and stays on
+/// their own devices, a named one is asked about and used, and their
+/// revocation stops both at once again.
+#[tokio::test]
+async fn a_server_uses_only_the_vault_items_the_members_delegation_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let (ada_key, ada) = admit_device(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let login = a_mail_login(&service, workspace_id, (&ada, &as_ada)).await;
+    let item = login
+        .as_str()
+        .unwrap()
+        .trim_start_matches("vault.item:")
+        .to_owned();
+    let proved = proving(workspaces);
+    let keeper = hex::encode(ada.user_public_key);
+    let on_its_device = on_server(&ada, &owner, &workspace);
+    let by_server = turn(workspace_id, &on_its_device, &keeper);
+    let with = |address: &str| add_mail(address, "imap.example.test", &login);
+
+    // Her delegation names the work and no item of hers: the server is refused
+    // before the vault is opened, and nobody is asked about it.
+    let unnamed = delegating(
+        &ada_key,
+        &ada,
+        owner.device_public_key,
+        &workspace,
+        "so.tilo.mail",
+        Vec::new(),
+    );
+    author(workspaces, &workspace, &ada_key, &unnamed).await;
+    let adding = with("ada@example.test");
+    let refused = workspaces
+        .use_for_turn(&by_server, &adding, json!({}))
+        .await;
+    assert!(
+        matches!(&refused, Err(Refused { reason }) if reason.contains("stays on your own devices")),
+        "{refused:?}"
+    );
+    assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
+    assert!(
+        workspaces.open_use_asks(&workspace).is_empty(),
+        "nobody is asked"
+    );
+
+    // A device of her own is not the server's: everything of hers is hers to use
+    // there, and the same use asks her there.
+    let on_hers = on_server(&ada, &ada, &workspace);
+    let by_her_device = turn(workspace_id, &on_hers, &keeper);
+    let later = with("later@example.test");
+    let hers = asked(
+        workspaces
+            .use_for_turn(&by_her_device, &later, json!({}))
+            .await,
+    );
+    assert_eq!(hers.person, keeper);
+
+    // Named, the server's turn is asked about it, and what she allows is made.
+    let named = delegating(
+        &ada_key,
+        &ada,
+        owner.device_public_key,
+        &workspace,
+        "so.tilo.mail",
+        vec![item],
+    );
+    author(workspaces, &workspace, &ada_key, &named).await;
+    let open = asked(
+        workspaces
+            .use_for_turn(&by_server, &adding, json!({}))
+            .await,
+    );
+    assert_eq!(open.agent, AGENT);
+    assert_eq!(open.person, keeper);
+    let account = workspaces
+        .answer_use(&by_server, &open.ask, &open.detail, UseAnswer::Always)
+        .await
+        .expect("allowed, it is made")
+        .expect("it answers the account");
+    assert_eq!(account["address"], "ada@example.test");
+    assert_eq!(proved.lock().unwrap().len(), 1, "it signed in once");
+
+    // Her revocation stops it at once: the server is no device her work is on.
+    assert!(
+        workspaces
+            .revoke_work_delegation(
+                &workspace,
+                &owner.device_public_key,
+                &ada.user_public_key,
+                &ada_key,
+            )
+            .await
+            .unwrap()
+    );
+    let other = with("other@example.test");
+    assert_eq!(
+        workspaces.use_for_turn(&by_server, &other, json!({})).await,
+        Err(UnknownAction)
+    );
+    server.shutdown().await;
 }

@@ -140,7 +140,7 @@ pub fn mint_for_machine(
         return Err(refused("this device may not admit another device"));
     }
     let dial = Dial {
-        endpoint: device.verifying_key().to_bytes(),
+        endpoint: tilo_user_identity::enrollment_endpoint(&device.verifying_key().to_bytes()),
         relay_url: relay_url.to_owned(),
     };
     mint_token(
@@ -863,7 +863,11 @@ mod tests {
             let (issuer, _) =
                 device_for(&fixture.paths, token.user_public_key, now).expect("device");
             assert_eq!(token.dial.len(), 1, "one place to dial: this device");
-            assert_eq!(token.dial[0].endpoint, issuer.verifying_key().to_bytes());
+            assert_eq!(
+                token.dial[0].endpoint,
+                tilo_user_identity::enrollment_endpoint(&issuer.verifying_key().to_bytes()),
+                "the token names the endpoint this device serves enrollments under"
+            );
             assert_eq!(token.dial[0].relay_url, "https://relay.example/");
             let cert = store
                 .complete_enrollment(&fixture.identity_id, &encoded, device(111), "New machine", now)

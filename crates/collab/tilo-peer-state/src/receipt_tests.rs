@@ -970,8 +970,8 @@ fn delegating(
         WORKSPACE,
         None,
         vec![grant],
-        at.saturating_sub(1),
-        at.saturating_add(10_000_000_000),
+        Vec::new(),
+        (at.saturating_sub(1), at.saturating_add(10_000_000_000)),
     )
     .unwrap()
 }
@@ -1190,5 +1190,72 @@ fn a_server_takes_a_members_work_only_under_their_delegation() {
     assert!(
         refused.contains("absent from governed roster") || refused.contains("certified identity"),
         "{refused}"
+    );
+}
+
+/// A member takes their delegation back as a typed command from their own
+/// device; another member's command takes none of their work back, and a
+/// revocation already written is no change.
+#[test]
+fn a_member_revokes_their_delegation_from_their_own_device() {
+    use crate::workspace_membership::WorkspaceMembershipCommand;
+
+    let (mut peer, guest_key, guest) = workspace_with(Role::Editor);
+    let owner_key = SigningKey::from_bytes(&[2; 32]);
+    let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
+    let (_, server) = named_server(&mut peer, &owner_key);
+    let delegation = delegating(
+        &guest_key,
+        guest.user_public_key,
+        server.device_public_key,
+        APP,
+    );
+    assert!(
+        peer.workspace_mut()
+            .author_work_delegation(&delegation, &guest_key, now())
+            .unwrap()
+    );
+
+    // Another member's command names their own work, so it takes nothing of
+    // the guest's delegation back.
+    let by_another = WorkspaceMembershipCommand::RevokeWorkDelegation {
+        server: server.device_public_key,
+    };
+    assert!(
+        !peer
+            .workspace_mut()
+            .apply_workspace_membership_command(&owner, &by_another, &owner_key, now())
+            .unwrap()
+    );
+    assert!(
+        peer.workspace()
+            .work_delegation(&server.device_public_key, &guest.user_public_key, now())
+            .is_some(),
+        "the guest's delegation is theirs alone to take back"
+    );
+
+    // The member's own device revokes it: every holder refuses the server's
+    // work for them from then on, and the row says it was revoked.
+    assert!(
+        peer.workspace_mut()
+            .apply_workspace_membership_command(&guest, &by_another, &guest_key, now())
+            .unwrap()
+    );
+    assert!(
+        peer.workspace()
+            .work_delegation(&server.device_public_key, &guest.user_public_key, now())
+            .is_none()
+    );
+    assert!(
+        peer.workspace().work_delegations()[0]
+            .revoked_at_ns
+            .is_some()
+    );
+    // Saying it again is no change.
+    assert!(
+        !peer
+            .workspace_mut()
+            .apply_workspace_membership_command(&guest, &by_another, &guest_key, now())
+            .unwrap()
     );
 }
