@@ -386,7 +386,7 @@ impl OverviewPanel {
                     colors.text_dim,
                 );
         } else {
-            let style = body.clone();
+            let style = body;
             let lead = t("overview-access-lead");
             let (lead_w, lead_h) = text.measure_style(&lead, None, &style);
             ui::widget::TextLineFace::styled(&lead, &style, TextRole::Body)
