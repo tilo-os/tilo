@@ -21,7 +21,10 @@ fn describe(dir: &std::path::Path, script: &str, cgroup: Option<&std::path::Path
 fn detached_status_empty_until_end() {
     needs_sandbox!();
     let dir = tempfile::tempdir().unwrap();
-    describe(dir.path(), "sleep 2", None);
+    // A duration, not an event: the job's `/tmp` is a private tmpfs, so the test and the
+    // command share no path to signal on. A second is far more than the return from
+    // `start_in_child` and the read below take.
+    describe(dir.path(), "sleep 1", None);
     let pid = start_in_child(dir.path());
     assert_eq!(
         std::fs::metadata(dir.path().join("status")).unwrap().len(),
