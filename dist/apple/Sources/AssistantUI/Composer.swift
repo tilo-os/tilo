@@ -56,9 +56,13 @@ public struct Composer: View {
                 .accessibilityLabel((stops ? AssistantWords.stop : AssistantWords.send).said)
             }
             .padding(16)
-            .background(Token.content, in: RoundedRectangle(cornerRadius: Measure.bubbleRadius))
+            .background {
+                // The shadow is the ground's alone. Set on the field whole, its line cast one onto the
+                // ground inside it, and on an iPhone its words and its arrow each cast one too.
+                RoundedRectangle(cornerRadius: Measure.bubbleRadius).fill(Token.content)
+                    .shadow(color: Token.fieldShadow.color(scheme), radius: 1.5, y: 1)
+            }
             .overlay { RoundedRectangle(cornerRadius: Measure.bubbleRadius).strokeBorder(Token.line, lineWidth: 1) }
-            .shadow(color: Token.fieldShadow.color(scheme), radius: 1.5, y: 1)
 
             if !files.isEmpty {
                 Flow(spacing: 8, lineSpacing: 6) {
