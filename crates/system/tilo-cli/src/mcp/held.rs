@@ -52,6 +52,9 @@ const LOGIN_LOOK: Duration = Duration::from_secs(3);
 #[derive(Clone)]
 pub(crate) struct Place {
     socket: PathBuf,
+    /// Where it serves Tilo's API to this account's programs, over the
+    /// device's one session ([`tilo_api::client::device::api_socket`]).
+    api: PathBuf,
     /// One per device directory, not per key: a computer has one holder, and a login made again
     /// under a new key waits for the holder of the old one to step down instead of running
     /// beside it. Two live endpoints under one device's keys take each other's place at the
@@ -65,20 +68,26 @@ pub(crate) struct Place {
 impl Place {
     /// The holder of the device whose public key is `key`, logged in under
     /// `dir`: a new login is a new device, with a holder of its own. Its
-    /// socket is in this account's own short directory ([`socket_dir`]),
+    /// socket is in this account's own short directory
+    /// ([`tilo_api::client::device::holder_dir`]),
     /// since a socket's path is short (about a hundred bytes) and a home's
     /// state directory need not be.
     pub(crate) fn of(dir: &Path, key: &[u8; 32]) -> Result<Self, String> {
-        Ok(Self::at(&socket_dir(dir)?, dir, key))
+        Ok(Self::at(
+            &tilo_api::client::device::holder_dir(dir)?,
+            dir,
+            key,
+        ))
     }
 
     /// The holder of `key`'s device under `dir`, listening in `sockets`.
     fn at(sockets: &Path, dir: &Path, key: &[u8; 32]) -> Self {
         let mut first = [0; 8];
         first.copy_from_slice(&key[..8]);
-        let name = format!("session-{}", hex::encode(first));
+        let name = tilo_api::client::device::holder_name(key);
         Self {
             socket: sockets.join(format!("{name}.sock")),
+            api: sockets.join(format!("{name}-api.sock")),
             lock: dir.join("holder.lock"),
             log: dir.join(format!("{name}.log")),
             key: first,
@@ -98,39 +107,6 @@ impl Place {
             _ => true,
         }
     }
-}
-
-/// Where this account's holders listen: the session's runtime directory
-/// when it has one, else one of this account's in the temporary directory,
-/// made so that only this account enters it. One someone else made, or
-/// others may enter, is refused: whoever reaches a holder acts as the
-/// person.
-fn socket_dir(device_dir: &Path) -> Result<PathBuf, String> {
-    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
-    let owner = std::fs::metadata(device_dir)
-        .map_err(|error| format!("{} is not readable: {error}", device_dir.display()))?
-        .uid();
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|runtime| runtime.is_absolute() && runtime.is_dir())
-        .map_or_else(
-            || std::env::temp_dir().join(format!("tilo-{owner}")),
-            |runtime| runtime.join("tilo"),
-        );
-    if let Err(error) = std::fs::DirBuilder::new().mode(0o700).create(&dir)
-        && error.kind() != std::io::ErrorKind::AlreadyExists
-    {
-        return Err(format!("{} could not be made: {error}", dir.display()));
-    }
-    let made = std::fs::symlink_metadata(&dir)
-        .map_err(|error| format!("{} is not readable: {error}", dir.display()))?;
-    if !made.is_dir() || made.uid() != owner || made.mode() & 0o077 != 0 {
-        return Err(format!(
-            "{} is not this account's own private directory",
-            dir.display()
-        ));
-    }
-    Ok(dir)
 }
 
 /// A connection to the device's holder when one listens, starting none.
@@ -384,6 +360,7 @@ async fn serve_held<E: Enter>(
         })
         .with_context(|| format!("listen at {}", place.socket.display()))?;
     std::fs::set_permissions(&place.socket, std::fs::Permissions::from_mode(0o600))?;
+    let api = serve_api(place, Arc::clone(&shared));
     let linger = match holding {
         Holding::Linger(linger) => {
             // Enter the workspace while the first agent starts, not at its first call.
@@ -444,9 +421,62 @@ async fn serve_held<E: Enter>(
     }
     // No connection is left to cut off: the next one starts a holder anew.
     let _ = std::fs::remove_file(&place.socket);
+    if let Some(api) = api {
+        api.abort();
+        let _ = std::fs::remove_file(&place.api);
+    }
     drop(listener);
     shared.leaving().await;
     Ok(())
+}
+
+/// Serve Tilo's API to this account's programs at `place`, over the device's
+/// one session once it is in the workspace: `tilo workspace`, `tilo ls -w` and
+/// the other commands that act as the person reach it there rather than with
+/// a session of their own, which would cut this one off. `None` when the
+/// socket could not be made, and those commands reach the workspace
+/// themselves.
+fn serve_api<E: Enter>(
+    place: &Place,
+    shared: Arc<Shared<E>>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _ = std::fs::remove_file(&place.api);
+    let listener = tilo_files::native::socket::bind(&place.api)
+        .and_then(|listener| {
+            listener.set_nonblocking(true)?;
+            tokio::net::UnixListener::from_std(listener)
+        })
+        .and_then(|listener| {
+            std::fs::set_permissions(&place.api, std::fs::Permissions::from_mode(0o600))?;
+            Ok(listener)
+        })
+        .map_err(
+            |error| tracing::warn!(%error, "Tilo's API is not served to this computer's programs"),
+        )
+        .ok()?;
+    Some(tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let shared = Arc::clone(&shared);
+            tokio::spawn(async move {
+                // A program that asks while the device is still entering waits for it, as an
+                // agent's first call does.
+                match shared.session(false, super::Ask::Agent).await {
+                    Ok(session) => {
+                        if let Some(api) = &session.api {
+                            api.serve_stream(stream);
+                        }
+                    }
+                    Err(why) => {
+                        tracing::debug!(%why, "an API connection came before the workspace")
+                    }
+                }
+            });
+        }
+    }))
 }
 
 /// What ends a holder from outside: the user service stopping it, or a

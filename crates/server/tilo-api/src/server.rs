@@ -1,7 +1,7 @@
 //! The person's workspaces on the server, reached as a grant: the same way
 //! into a workspace every device takes ([`Device::enter_workspace`]).
 //!
-//! The grant's own key is the device. It dials the relay's iroh endpoint
+//! The grant's own key is the device. It dials the server's iroh endpoint
 //! (which the server's public origin names, `/peer/v1/host`) with the grant's
 //! certificate, and asks the server's own operations (its person's list, making
 //! and deleting their workspaces, their account) on that session, in no
@@ -176,6 +176,30 @@ impl Server {
     #[must_use]
     pub fn origin(&self) -> &str {
         &self.origin
+    }
+
+    /// `key`'s session that `device` already holds with the server, in the
+    /// workspace it entered: calls go over it rather than a session of their
+    /// own, which would cut it off.
+    #[must_use]
+    pub fn held(self: &Arc<Self>, key: &GrantKey, device: Device) -> Connection {
+        let entered = device.workspace_id();
+        let mut workspaces = HashMap::new();
+        if entered != WorkspaceId::from_u128(0) {
+            workspaces.insert(
+                entered.to_string(),
+                Arc::new(tokio::sync::OnceCell::new_with(Some(entered))),
+            );
+        }
+        Connection {
+            device,
+            key: key.clone(),
+            server: Arc::clone(self),
+            host: self.name.clone(),
+            entered: Mutex::new(workspaces),
+            let_in: Mutex::default(),
+            endpoint: tokio::sync::OnceCell::new(),
+        }
     }
 
     /// `key` on the server: its session, not in any workspace yet.
@@ -543,7 +567,7 @@ impl Server {
 pub struct Connection {
     pub device: Device,
     pub key: GrantKey,
-    /// The host this session answers on: where the workspace it reaches is
+    /// The server this session answers on: where the workspace it reaches is
     /// served, and the one the API server forwarded the call to.
     server: Arc<Server>,
     host: String,

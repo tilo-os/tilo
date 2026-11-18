@@ -56,6 +56,12 @@ const CLOSING: Duration = Duration::from_secs(3);
 /// This device in the workspace: the one session every connection shares.
 pub(crate) struct Session {
     device: Entered,
+    /// Tilo's API as this computer's key, over this one session: what this
+    /// computer's programs (`tilo workspace`, `tilo ls -w`) and its agents'
+    /// account and people calls are answered by, without a session of their
+    /// own that would cut this one off. `None` when the login's key does not
+    /// read as one, and the workspace's own calls still serve.
+    api: Option<Arc<tilo_api::direct::Direct>>,
 }
 
 impl Session {
@@ -113,7 +119,19 @@ impl Enter for LoggedIn {
                 crate::login::debug_why("entering the workspace", &error);
                 crate::login::enter_said(&error)
             })?;
-        Ok(Arc::new(Session { device: entered }))
+        let api = tilo_api::client::login_key(None)
+            .ok()
+            .flatten()
+            .and_then(|file| {
+                tilo_api::direct::Direct::over(&file, entered.clone())
+                    .map_err(|why| tracing::warn!(%why, "Tilo's API is not served here"))
+                    .ok()
+            })
+            .map(Arc::new);
+        Ok(Arc::new(Session {
+            device: entered,
+            api,
+        }))
     }
 }
 
@@ -507,10 +525,58 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
         }
     });
     let answer = match &served {
-        Ok(served) => served.server.handle(request).await,
+        Ok(served) => match account_or_people(request, connection) {
+            Ok(call) => match served.current().and_then(|session| session.api.clone()) {
+                Some(api) => Some(api.mcp(call.clone()).await.unwrap_or_else(|problem| {
+                    unreachable_answer(&call, &problem).unwrap_or(Value::Null)
+                })),
+                None => unreachable_answer(
+                    &call,
+                    "this computer's login does not reach the account here; log in again",
+                ),
+            },
+            Err(request) => served.server.handle(request).await,
+        },
         Err(problem) => unreachable_answer(&request, problem),
     }?;
     Some(answer.to_string())
+}
+
+/// `request` when it is a tool call on the person's account (`account/…`:
+/// their workspaces and keys) or a workspace's people
+/// (`workspace/members#…`), which Tilo's API answers as for any key of
+/// theirs, with the people's calls in the workspace this computer entered
+/// unless they name another; any other request back, for the workspace's own
+/// projection.
+fn account_or_people<E: Enter>(
+    mut request: Value,
+    connection: &Connection<E>,
+) -> Result<Value, Value> {
+    let tool = request.pointer("/params/name").and_then(Value::as_str);
+    if !matches!(tool, Some("tilo_ls" | "tilo_read" | "tilo_do")) {
+        return Err(request);
+    }
+    let path = request
+        .pointer("/params/arguments/path")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let account = path.split(['/', '#']).next() == Some("account");
+    let people = path.split('#').next() == Some("workspace/members")
+        || path.starts_with("workspace/members/");
+    if !account && !people {
+        return Err(request);
+    }
+    if people
+        && let Ok(device) = &connection.shared.device
+        && let Some(arguments) = request
+            .pointer_mut("/params/arguments")
+            .and_then(Value::as_object_mut)
+    {
+        arguments
+            .entry("workspace")
+            .or_insert_with(|| json!(device.workspace));
+    }
+    Ok(request)
 }
 
 /// What `tilo status` asks this computer's peer: who it is, which workspaces it shows where, and
