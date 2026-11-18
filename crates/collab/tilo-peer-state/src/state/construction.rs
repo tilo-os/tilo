@@ -84,7 +84,7 @@ impl StatePeer {
                 revocations,
                 receipts: Shared::default(),
                 workspace_doc: None,
-                documents: Shared::default(),
+                documents: super::documents::Documents::default(),
                 pending: VecDeque::new(),
                 pending_bytes: 0,
                 exact_admissions: ExactAdmissions::default(),

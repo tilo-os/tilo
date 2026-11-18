@@ -697,3 +697,94 @@ fn reopens_as_it_was_stored(owner: NativeWorkspaceOwner, path: &std::path::Path,
         );
     }
 }
+
+/// Make documents `made` of the chat app, empty, a batch of writes per owner turn.
+fn documents(
+    fixture: &Fixture,
+    workspace: crate::owner::WorkspaceId,
+    made: std::ops::Range<usize>,
+    order: &mut u64,
+) {
+    const BATCH: usize = 100;
+    let mut n = made.start;
+    while n < made.end {
+        let end = n.saturating_add(BATCH).min(made.end);
+        let requests = fixture
+            .owner
+            .with_current(workspace, |view| {
+                (n..end)
+                    .map(|n| {
+                        let message = view.peer().clone().publication_mut().publish_document(
+                            "so.tilo.chat",
+                            &format!("r{n}"),
+                            automerge::AutoCommit::new().save(),
+                            &fixture.key,
+                            fixture.now,
+                        )?;
+                        crate::owner::publication::request(&message)
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .unwrap();
+        fixture
+            .owner
+            .commit_documents(requests, fixture.now)
+            .unwrap();
+        answer_everything(fixture, workspace, order);
+        n = end;
+    }
+}
+
+/// A write's receipt names the workspace's whole durable state by a digest,
+/// and taking it walks the documents the write changed, not every document
+/// the workspace holds: one at 300 documents as at 3,000. The digest is the
+/// one the workspace reopens with, and still changes with every write.
+#[tokio::test]
+async fn a_receipt_digests_what_its_write_changed_however_many_documents() {
+    let fixture = fixture();
+    let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
+    let path = fixture.directory.path().join("owner.json");
+    let digest = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_current(workspace, |view| view.peer().durable_hash())
+            .unwrap()
+    };
+    let mut order = 0_u64;
+    let mut measured = Vec::new();
+    let mut held = 0;
+    for size in [300, 3_000] {
+        documents(&fixture, workspace, held..size, &mut order);
+        held = size;
+        let mut walked = Vec::new();
+        let mut times = Vec::new();
+        for n in 0..5 {
+            let before = digest(&fixture.owner);
+            crate::state::DOCUMENTS_WALKED.with(|walked| walked.set(0));
+            times.push(write_text(
+                &fixture.owner,
+                &fixture.key,
+                fixture.now,
+                workspace,
+                &format!("r{n}"),
+                &format!("text {n} at {size}"),
+            ));
+            walked.push(crate::state::DOCUMENTS_WALKED.with(std::cell::Cell::get));
+            assert_ne!(digest(&fixture.owner), before, "a write changes the digest");
+        }
+        times.sort();
+        measured.push((size, times[2]));
+        assert!(
+            walked.iter().all(|walked| *walked == 1),
+            "each write at {size} documents digests {walked:?} documents again"
+        );
+    }
+    println!("a write commits at 300 and 3,000 documents in {measured:?}");
+    let before = digest(&fixture.owner);
+    drop(fixture.owner);
+    let reopened = open_file(&path).unwrap();
+    assert_eq!(
+        digest(&reopened),
+        before,
+        "the workspace reopens with the digest it was stored with"
+    );
+}

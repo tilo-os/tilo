@@ -62,10 +62,10 @@ tilo_test_env::scenario! {
         let cases: Vec<(&str, Change)> = vec![
             ("missing", |peer| peer.core.documents.clear()),
             ("encrypted", |peer| {
+                let route = peer.core.documents.keys().next().unwrap().clone();
                 peer.core
                     .documents
-                    .values_mut()
-                    .next()
+                    .get_mut(&route)
                     .unwrap()
                     .encryption_required = true;
             }),
@@ -102,7 +102,8 @@ tilo_test_env::scenario! {
             doc.get(&entry, "v").unwrap().unwrap().1
         };
         {
-            let document = peer.core.documents.values_mut().next().unwrap();
+            let route = peer.core.documents.keys().next().unwrap().clone();
+            let document = peer.core.documents.get_mut(&route).unwrap();
             document.doc.put(&voice, "kind", "text").unwrap();
             document.doc.commit();
         }

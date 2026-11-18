@@ -414,6 +414,35 @@ impl NativeWorkspaceOwner {
         .ok_or_else(|| "native document write committed nothing".to_owned())
     }
 
+    /// [`Self::commit_document`] for many writes in one turn: one publication for all of them.
+    #[cfg(test)]
+    pub(crate) fn commit_documents(
+        &self,
+        mut requests: Vec<OwnerCommitRequest>,
+        now: SystemTime,
+    ) -> Result<Vec<OwnerCommitReceipt>, String> {
+        let Some(first) = requests.first() else {
+            return Ok(Vec::new());
+        };
+        let workspace =
+            WorkspaceId::parse(&first.workspace).ok_or("invalid native document workspace")?;
+        let _turn = self.0.mutation.lock();
+        let candidate = self.view(workspace)?;
+        let mut refused = None;
+        Ok(self
+            .commit_writes(
+                workspace,
+                &candidate,
+                &mut requests,
+                None,
+                now,
+                &mut refused,
+            )?
+            .into_iter()
+            .map(|(_, receipt)| receipt)
+            .collect())
+    }
+
     /// Admit and durably commit writes of this device to `workspace`, in order and in the owner's
     /// turn with their outgoing ownership: one durable publication for all of them. A write the
     /// document holds already is an exact retry, answered as it was taken. A write whose sequence

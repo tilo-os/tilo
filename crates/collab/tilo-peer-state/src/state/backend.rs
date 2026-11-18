@@ -295,6 +295,7 @@ impl StoredDocument {
     /// with it changed though the record did not.
     pub(super) fn reencode(&mut self) {
         self.encoded = Arc::default();
+        self.digests = Arc::default();
     }
     /// The record's durable encoding as `encode` makes it for `route`,
     /// made once per state of the record.
@@ -367,7 +368,7 @@ pub(super) struct PeerCore {
     pub(super) revocations: RevocationList,
     pub(super) receipts: Shared<BTreeMap<String, Vec<u8>>>,
     pub(super) workspace_doc: Option<CachedDocument>,
-    pub(super) documents: Shared<BTreeMap<Route, StoredDocument>>,
+    pub(super) documents: super::documents::Documents,
     pub(super) pending: VecDeque<([u8; 32], NeighbourMsg, bool)>,
     pub(super) pending_bytes: usize,
     pub(super) exact_admissions: ExactAdmissions,
