@@ -27,6 +27,13 @@
 # Firecracker, which change only when the snapshot or the base does. This layer
 # is built from it in seconds.
 ARG HOST_BASE=localhost/tilo-host-base:latest
+
+# NetworkManager's resolver file, restored as the image's last layer (as the
+# desktop image does): the base leaves a placeholder there, because a RUN with
+# /etc/resolv.conf pointing into /run has the build put its own DNS file there.
+FROM ${HOST_BASE} AS runtime-resolver-link
+RUN mkdir -p /out && ln -s ../run/NetworkManager/resolv.conf /out/resolv.conf
+
 FROM ${HOST_BASE}
 
 ARG SOURCE_REVISION
@@ -306,6 +313,31 @@ RUN for u in \
         wireplumber.service \
     ; do systemctl mask "$u" || true; done
 
+# Nothing merges a system or configuration extension at boot. systemd-sysext and
+# systemd-confext would merge every image or plain directory under /etc, /run and
+# /var/lib/{extensions,confexts} with systemd's default image policy, which takes
+# unsigned images, so a file written to /var would overlay /usr or /etc on the
+# next boot. These units exist in the base; a missing one fails the build.
+RUN systemctl mask systemd-sysext.service systemd-confext.service systemd-sysext.socket \
+    && for u in systemd-sysext.service systemd-confext.service systemd-sysext.socket; do \
+         test "$(readlink "/etc/systemd/system/$u")" = /dev/null; \
+       done
+
+# No one signs in at a server's consoles. Its consoles show the enrollment code,
+# and a person reaches the machine through their own workspaces: every account,
+# root's included, carries a locked password, so a getty and the emergency shell
+# (sulogin) open for nobody. A test disk adds its own account at install
+# (os/account.env), never in the image.
+#
+# The only setuid program left is sudo, for such an added account; every other
+# setuid and setgid bit in /usr goes. The services run as their own accounts with
+# NoNewPrivileges= (tilo-hosted takes its capabilities from its unit), so none of
+# those programs did anything for them but widen what a compromised one could try.
+RUN usermod -L root \
+    && awk -F: '$2 !~ /^[!*]/ { print "unlocked account: " $1; bad = 1 } END { exit bad }' /etc/shadow \
+    && find /usr -xdev -type f -perm /6000 ! -path /usr/bin/sudo -exec chmod ug-s {} + \
+    && test "$(find /usr -xdev -type f -perm /6000)" = /usr/bin/sudo
+
 # Signed-image trust roots — the same policy the desktop image uses. It
 # requires a logged release signature for the official Tilo repositories and
 # refuses unlisted origins; this operator-built image records
@@ -318,10 +350,34 @@ COPY os/etc/containers/registries.d/registry.tilo.so.yaml /etc/containers/regist
 # Same bootloader swap as the desktop image (os/Containerfile.host-base installs systemd-boot
 # and drops the GRUB stack); the install-time configuration it reads is this image's.
 COPY os/usr/lib/bootc/install/40-tilo.toml /usr/lib/bootc/install/40-tilo.toml
+# The desktop's kernel hardening arguments (kernel lockdown, zeroed allocations,
+# no merged slabs, a randomised stack offset, no vsyscall page) and its refusal
+# to import systemd credentials from firmware or the boot loader. bootc writes
+# kargs.d into the boot entry at install and at every update.
+COPY os/usr/lib/bootc/kargs.d/01-hardening.toml os/usr/lib/bootc/kargs.d/05-credentials.toml \
+    /usr/lib/bootc/kargs.d/
+# Nor do the consoles' gettys ask for credentials: there are none, and asking
+# keeps them from starting.
+COPY os/usr/lib/systemd/system/serial-getty@.service.d/10-tilo-no-credentials.conf \
+    /usr/lib/systemd/system/serial-getty@.service.d/10-tilo-no-credentials.conf
+COPY os/usr/lib/systemd/system/getty@.service.d/10-tilo-no-credentials.conf \
+    /usr/lib/systemd/system/getty@.service.d/10-tilo-no-credentials.conf
 
 # firewalld default zone: the FedoraServer zone drops all inbound
 # except explicitly permitted. Iroh punches out; the server does not
-# need any inbound-hole in the firewall to be reachable.
-RUN firewall-offline-cmd --set-default-zone=FedoraServer
+# need any inbound-hole in the firewall to be reachable. The zone's own
+# ssh and cockpit services go: neither program is on the machine, and an
+# open port is one a later package could start listening on.
+# The base's mDNS responder answers on every interface, and nothing on a server
+# is found that way: it shows a code, or spends the token made for it.
+RUN systemctl mask avahi-daemon.service avahi-daemon.socket
+
+RUN firewall-offline-cmd --set-default-zone=FedoraServer \
+    && firewall-offline-cmd --zone=FedoraServer --remove-service-from-zone=ssh \
+    && firewall-offline-cmd --zone=FedoraServer --remove-service-from-zone=cockpit \
+    && test "$(firewall-offline-cmd --zone=FedoraServer --list-services)" = dhcpv6-client
 
 RUN bootc container lint
+# The last layer: NetworkManager's resolver file (the runtime-resolver-link stage
+# says why it comes after every RUN).
+COPY --from=runtime-resolver-link /out/ /etc/

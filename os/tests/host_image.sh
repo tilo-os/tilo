@@ -199,6 +199,30 @@ grep -q '^ExecStartPost=-/usr/libexec/tilo-deployment entries' \
 # nothing treats it as a development image.
 [[ $(cat "$root/usr/lib/tilo/image-flavour") == server ]] || die 'the image does not name its boot layout'
 
+# Boot hardening: the kernel arguments bootc writes into the boot entry, no
+# extension merged over /usr at boot, nobody signing in at a console, sudo the
+# only setuid program, no listener of the base's left and no port the firewall
+# opens for one.
+for karg in lockdown=integrity init_on_alloc=1 slab_nomerge vsyscall=none \
+  systemd.import_credentials=no; do
+  grep -qs "\"$karg\"" "$root"/usr/lib/bootc/kargs.d/*.toml || die "the boot entry would not carry $karg"
+done
+for unit in systemd-sysext.service systemd-confext.service systemd-sysext.socket \
+  avahi-daemon.service avahi-daemon.socket; do
+  [[ $(readlink "$root/etc/systemd/system/$unit") == /dev/null ]] || die "$unit is not masked"
+done
+unlocked=$(awk -F: '$2 !~ /^[!*]/ { print $1 }' "$root/etc/shadow")
+[[ -z $unlocked ]] || die "accounts a console would sign in: $unlocked"
+setuid=$(cd "$root" && find usr -xdev -type f -perm /6000 | sort)
+[[ $setuid == usr/bin/sudo ]] || die "setuid or setgid programs besides sudo: $setuid"
+for pkg in systemd-resolved systemd-networkd systemd-coredump; do
+  if inside rpm -q "$pkg" >/dev/null 2>&1; then die "$pkg is installed"; fi
+done
+[[ $(readlink "$root/etc/resolv.conf") == ../run/NetworkManager/resolv.conf ]] \
+  || die 'the resolver file is not the one NetworkManager writes'
+[[ $(inside firewall-offline-cmd --zone=FedoraServer --list-services) == dhcpv6-client ]] \
+  || die 'the firewall opens a service besides dhcpv6-client'
+
 # Nothing of a desktop's session is in it.
 [[ ! -e $root/usr/bin/greetd && ! -e $root/usr/libexec/tilo/tilo-greeter ]] \
   || die 'the server image carries a sign-in stack'
