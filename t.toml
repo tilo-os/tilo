@@ -6291,8 +6291,7 @@ default = false
 # The server OS's base and the layer above it (os/Containerfile.host-base, Containerfile.host).
 # Splitting them is what makes a server change cheap: the base is the mirrored bootc base and the
 # frozen package set, which change only when those do, and t serves it to every commit that keeps
-# them; the image is the server's programs and the files that name them, a copying build of
-# seconds.
+# them; the image is the server's programs and the files that name them, one copying layer.
 # Together they are the dev loop: `t test test-image-host host-assurance-x86_64` builds the
 # changed programs, lays them on the cached base, and boots the result in a VM without signing or
 # publishing anything.
