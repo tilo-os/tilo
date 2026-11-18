@@ -32,6 +32,10 @@ struct Served {
     ada: SigningKey,
 }
 
+/// A search with many hits in one conversation.
+#[path = "hosted_search_many.rs"]
+mod many_hits;
+
 /// A rule about reading what is at `node`.
 fn reading(node: String, answer: &str) -> Bound {
     Bound {

@@ -28,7 +28,9 @@
 //! same catalogue a listing reads, so a caller acts on a hit by the path it lists: the note, not
 //! the notebook it is in.
 
-use tilo_actions::remote::{ChangePage, Found, Within};
+use std::collections::{HashMap, HashSet};
+
+use tilo_actions::remote::{ChangePage, Found, MAX_CATALOGUE_PAGE, Within};
 use ui::history_source::feed::DocumentKey;
 use ui::search::index_publication::IndexEntry;
 
@@ -44,6 +46,58 @@ const MOST_FOUND: usize = 20;
 
 /// The most rows of a record's listing read to name one resource a search found in it.
 const NAMING_ROWS: u32 = 64;
+
+/// How many hits of one search in one resource it takes for the levels they are named in to be
+/// read once for all of them, where fewer hits each ask the listing for their own row. A
+/// listing page costs what the resource holds whatever it lists, so asking for every hit costs
+/// the hits times that.
+const MANY_HITS: usize = 8;
+
+/// What the listings name for the hits of one search, kept while the search names them.
+#[derive(Default)]
+struct Named {
+    /// The resources so many hits stand in that their levels are read once.
+    many: HashSet<DocumentRoute>,
+    /// Each level read so far, by its resource and the parent it lists under.
+    levels: HashMap<(DocumentRoute, Option<String>), Level>,
+}
+
+impl Named {
+    /// For the hits `ranked` names among `docs`, each made of the entry beside it in
+    /// `searched`.
+    fn of(
+        ranked: &[usize],
+        docs: &[crate::search::SearchDoc],
+        searched: &[Option<IndexEntry>],
+    ) -> Self {
+        let mut hits: HashMap<&DocumentRoute, usize> = HashMap::new();
+        for at in ranked {
+            if let (Some(doc), Some(Some(_))) = (docs.get(*at), searched.get(*at)) {
+                let count = hits.entry(&doc.route).or_default();
+                *count = count.saturating_add(1);
+            }
+        }
+        Self {
+            many: hits
+                .into_iter()
+                .filter(|(_, count)| *count >= MANY_HITS)
+                .map(|(route, _)| route.clone())
+                .collect(),
+            levels: HashMap::new(),
+        }
+    }
+}
+
+/// One level of a resource's listing, as far as a search has read it.
+#[derive(Default)]
+struct Level {
+    /// The resources it names so far, each by its id, with its kind and its label.
+    rows: HashMap<String, (String, String)>,
+    /// Where its next page begins and at which revision, while one follows.
+    next: Option<(Vec<u8>, String)>,
+    /// Whether its first page was asked for.
+    begun: bool,
+}
 
 /// How much of one resource a search's caller may read.
 enum Readable {
@@ -170,6 +224,9 @@ impl Worker {
             });
             newest
         };
+        // Where many hits stand in one resource, the levels they are named in are read once
+        // for all of them ([`Named`]).
+        let mut named = Named::of(&ranked, &docs, &searched);
         let mut found: Vec<Found> = Vec::new();
         for at in ranked {
             if found.len() >= MOST_FOUND {
@@ -179,7 +236,9 @@ impl Worker {
                 continue;
             };
             let resource = match what {
-                Some(entry) => self.named_resource(workspace_id, caller, &doc.route, entry),
+                Some(entry) => {
+                    self.named_resource(workspace_id, caller, (&doc.route, entry), &mut named)
+                }
                 None => self.leading_resource(workspace_id, caller, &doc.route),
             };
             if let Some(resource) = resource
@@ -333,13 +392,33 @@ impl Worker {
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-        route: &DocumentRoute,
-        entry: &IndexEntry,
+        (route, entry): (&DocumentRoute, &IndexEntry),
+        named: &mut Named,
     ) -> Option<Found> {
         let id = entry.resource.as_str();
+        let provider = record_provider(route);
+        let listed_once = named.many.contains(route);
         for parent in naming_parents(route, id) {
+            if listed_once {
+                let level = (route, provider.as_str(), parent);
+                if let Some((kind, label)) =
+                    self.named_in_level(workspace_id, caller, level, id, named)
+                {
+                    return Some(Found {
+                        resource: id.to_owned(),
+                        kind,
+                        label,
+                        open: None,
+                        arguments: serde_json::Map::new(),
+                        app: Some(route.app_id.clone()),
+                        provider: Some(provider),
+                        when: entry.when,
+                    });
+                }
+                continue;
+            }
             let query = CatalogueQuery {
-                provider: Some(record_provider(route)),
+                provider: Some(provider.clone()),
                 parent_resource: parent,
                 needle: entry.resource.clone(),
                 max_results: NAMING_ROWS,
@@ -362,6 +441,59 @@ impl Worker {
             }
         }
         None
+    }
+
+    /// The kind and the label the level under `parent` of the resource at `route`, which
+    /// `provider` publishes, names `id` by, as `caller` lists it: `None` where that level names no such resource. The level is
+    /// read on a page at a time, only while nothing read of it names `id` yet, and what was
+    /// read is kept in `named` for the search's other hits. It is the listing a hit alone
+    /// would ask, without its own id as the needle: the same rows in the same order.
+    fn named_in_level(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        (route, provider, parent): (&DocumentRoute, &str, Option<String>),
+        id: &str,
+        named: &mut Named,
+    ) -> Option<(String, String)> {
+        let key = (route.clone(), parent);
+        loop {
+            let level = named.levels.entry(key.clone()).or_default();
+            if let Some(row) = level.rows.get(id) {
+                return Some(row.clone());
+            }
+            let (cursor, revision) = match (level.begun, &level.next) {
+                (false, _) => (Vec::new(), None),
+                (true, Some((cursor, revision))) => (cursor.clone(), Some(revision.clone())),
+                (true, None) => return None,
+            };
+            let query = CatalogueQuery {
+                provider: Some(provider.to_owned()),
+                parent_resource: key.1.clone(),
+                max_results: MAX_CATALOGUE_PAGE,
+                cursor,
+                revision,
+                ..CatalogueQuery::default()
+            };
+            let page = self
+                .catalogue_page(workspace_id, caller, &query)
+                .ok()
+                .filter(|page| !page.stale_cursor && !page.rows.is_empty());
+            let level = named.levels.entry(key.clone()).or_default();
+            level.begun = true;
+            level.next = None;
+            if let Some(page) = page {
+                if !page.next_cursor.is_empty() {
+                    level.next = Some((page.next_cursor, page.revision));
+                }
+                for row in page.rows {
+                    level
+                        .rows
+                        .entry(row.resource.id)
+                        .or_insert((row.resource.kind, row.resource.label));
+                }
+            }
+        }
     }
 
     /// The resource the listing of the record at `route` leads with for `caller`, as a search
