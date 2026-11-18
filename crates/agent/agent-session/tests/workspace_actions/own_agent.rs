@@ -371,10 +371,12 @@ fn agent_groups(changes: &[([u8; 32], Vec<u8>)]) -> Vec<Option<tilo_actions::Wor
     for (_, bytes) in changes {
         let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
     }
+    // Read as History reads them: a change that continues the one before it
+    // carries the entry it continues.
+    let mut entries = tilo_actions::EntryReader::default();
     doc.get_changes(&[])
         .iter()
-        .filter_map(|change| change.message())
-        .filter_map(tilo_actions::ActionContext::from_change_message)
+        .filter_map(|change| entries.read(change.actor_id(), change.message()))
         .filter(|context| {
             context
                 .invoker

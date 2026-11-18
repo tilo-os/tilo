@@ -400,7 +400,8 @@ fn claimed_run() -> tilo_actions::ActionContext {
 fn runs_of(page: &mut Browser, route: &DocumentRoute) -> Vec<tilo_actions::WorkGroup> {
     page.pump();
     // The document and every document its app keeps beside it (the parts
-    // Notes keeps its notes in), each read on its own.
+    // Notes keeps its notes in), each read on its own. A change that
+    // continues the one before it carries the entry it continues.
     let mut groups = Vec::new();
     for (_, changes) in page
         .documents
@@ -411,11 +412,11 @@ fn runs_of(page: &mut Browser, route: &DocumentRoute) -> Vec<tilo_actions::WorkG
         for (_, bytes) in changes {
             let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
         }
+        let mut entries = tilo_actions::EntryReader::default();
         groups.extend(
             doc.get_changes(&[])
                 .iter()
-                .filter_map(|change| change.message())
-                .filter_map(tilo_actions::ActionContext::from_change_message)
+                .filter_map(|change| entries.read(change.actor_id(), change.message()))
                 .filter_map(|context| context.group),
         );
     }
