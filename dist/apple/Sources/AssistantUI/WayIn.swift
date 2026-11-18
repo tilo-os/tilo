@@ -152,6 +152,11 @@ private struct PairingAskView: View {
                         .foregroundStyle(place < 2 ? Token.ink : Token.ink2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                // The site this app pairs with, its address in full, whoever handed the link.
+                if !ask.site.isEmpty {
+                    Text(AssistantWords.pairingSite.said(["site": ask.site])).font(.body14).foregroundStyle(Token.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.horizontal, 18).padding(.vertical, 14)
             .frame(maxWidth: 480, alignment: .leading)

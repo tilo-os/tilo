@@ -61,12 +61,16 @@ public struct PairingAsk: Equatable, Sendable {
     /// What going on is called, and what stopping is called.
     public var go: String
     public var stop: String
+    /// The site this app pairs with, its address in full. The card says it under Tilo's own
+    /// sentences, whoever handed the link. Empty where nothing knows it.
+    public var site: String
 
-    public init(heading: String, said: [String], go: String, stop: String) {
+    public init(heading: String, said: [String], go: String, stop: String, site: String = "") {
         self.heading = heading
         self.said = said
         self.go = go
         self.stop = stop
+        self.site = site
     }
 }
 
