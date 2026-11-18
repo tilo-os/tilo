@@ -31,7 +31,6 @@ untyped-live-row 5 apps/maps/src/app/window.rs
 untyped-live-row 1 apps/monitor/src/app.rs
 untyped-live-row 9 apps/music/src/actions.rs
 untyped-live-row 2 apps/music/src/app.rs
-untyped-live-row 4 apps/music/src/app/spotify.rs
 untyped-live-row 6 apps/osk/src/actions.rs
 untyped-live-row 3 apps/passwords/src/actions.rs
 untyped-live-row 3 apps/pdf-viewer/src/actions.rs

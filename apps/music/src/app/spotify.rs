@@ -132,9 +132,8 @@ impl Music {
             .take(50)
             .enumerate()
             .map(|(index, item)| {
-                ui::framework::LiveRow::new(
+                ui::framework::LiveRow::typed::<crate::row_types::SpotifyRemoteItem>(
                     format!("music.spotify-remote:{index}"),
-                    "music.spotify-remote-item",
                     format!(
                         "{}\n{}",
                         crate::i18n::t("music-spotify-remote-queue"),
@@ -150,9 +149,8 @@ impl Music {
         {
             rows.insert(
                 0,
-                ui::framework::LiveRow::new(
+                ui::framework::LiveRow::typed::<crate::row_types::SpotifyRemoteItem>(
                     "music.spotify-remote:current",
-                    "music.spotify-remote-item",
                     remote_item_label(current),
                 ),
             );
@@ -169,8 +167,7 @@ impl Music {
         else {
             return;
         };
-        let row = ui::framework::LiveRow::new(
-            "music.library",
+        let row = ui::framework::LiveRow::typed::<crate::row_types::Library>(
             "music.library",
             crate::i18n::CATALOG.t("music-resource-library"),
         )
@@ -656,9 +653,11 @@ impl Music {
                         _ => "music-spotify-select-device",
                     };
                     let label = crate::i18n::t_args(key, &[("device", (&device.name).into())]);
-                    let row =
-                        ui::framework::LiveRow::new(&address, "music.spotify-device", &device.name)
-                            .effect(&effect);
+                    let row = ui::framework::LiveRow::typed::<crate::row_types::SpotifyDevice>(
+                        &address,
+                        &device.name,
+                    )
+                    .effect(&effect);
                     let binding = tilo_actions::ActionBinding::unit_for(&row, effect.id()).ok()?;
                     Some(
                         ui::widget::Button::new(&id, &label)
@@ -724,28 +723,36 @@ impl Music {
         self.catalogue_entities()
             .into_iter()
             .filter_map(|(id, (label, kind))| {
-                let (address, kind, place) = match kind {
+                let (row, place, artist) = match kind {
                     HomeItemKind::Album => (
-                        crate::actions::album_resource_id(&id),
-                        "music.album",
+                        ui::framework::LiveRow::typed::<crate::row_types::Album>(
+                            crate::actions::album_resource_id(&id),
+                            label,
+                        ),
                         crate::actions::Place::Album(id.clone()),
+                        false,
                     ),
                     HomeItemKind::Artist => (
-                        crate::actions::artist_resource_id(&id),
-                        "music.artist",
+                        ui::framework::LiveRow::typed::<crate::row_types::Artist>(
+                            crate::actions::artist_resource_id(&id),
+                            label,
+                        ),
                         crate::actions::Place::Artist(id.clone()),
+                        true,
                     ),
                     HomeItemKind::Playlist => (
-                        crate::actions::playlist_resource_id(&id),
-                        "music.playlist",
+                        ui::framework::LiveRow::typed::<crate::row_types::Playlist>(
+                            crate::actions::playlist_resource_id(&id),
+                            label,
+                        ),
                         crate::actions::Place::Playlist(id.clone()),
+                        false,
                     ),
                     HomeItemKind::Track => return None,
                 };
-                let mut row = ui::framework::LiveRow::new(address, kind, label)
-                    .effect(&MusicEffect::Open { place });
+                let mut row = row.effect(&MusicEffect::Open { place });
                 if id.starts_with("spotify:") && id != "spotify:collection:liked" {
-                    row = if kind == "music.artist" {
+                    row = if artist {
                         row.operation(crate::actions::bound(
                             &MusicEffect::SpotifySave { uri: id.clone() },
                             &crate::i18n::t("music-spotify-follow-artist"),
@@ -772,9 +779,8 @@ impl Music {
         self.spotify_devices
             .iter()
             .map(|device| {
-                let mut row = ui::framework::LiveRow::new(
+                let mut row = ui::framework::LiveRow::typed::<crate::row_types::SpotifyDevice>(
                     format!("music.spotify-device:{}", device.id),
-                    "music.spotify-device",
                     if device.active {
                         format!(
                             "{} • {}",

@@ -58,6 +58,7 @@ pub mod mpris;
 pub mod net;
 pub mod recommendations;
 pub mod resource;
+pub(crate) mod row_types;
 pub mod search_type;
 pub mod seed;
 pub mod storage;

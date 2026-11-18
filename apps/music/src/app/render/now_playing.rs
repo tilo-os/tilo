@@ -106,19 +106,22 @@ impl NowPlaying {
     }
 }
 
-/// One of the page's links: its name and the item's own Open.
+/// One of the page's links: its name, the item's row, and the item's own
+/// Open.
 struct NowPlayingLink {
     name: String,
-    resource: (String, &'static str, &'static str),
+    row: ui::framework::LiveRow,
+    open: &'static str,
     effect: MusicEffect,
 }
 
 impl NowPlayingLink {
     /// The link, invoking the item's own Open.
     fn control(&self) -> Option<Link> {
-        let (id, kind, label) = &self.resource;
-        let row = ui::framework::LiveRow::new(id.clone(), *kind, self.name.clone())
-            .operation(crate::actions::bound(&self.effect, label));
+        let row = self
+            .row
+            .clone()
+            .operation(crate::actions::bound(&self.effect, self.open));
         let binding = ui::tilo_actions::ActionBinding::unit_for(&row, self.effect.id()).ok()?;
         Some(Link::action(&self.name, binding).with_text_role(TextRole::Body))
     }
@@ -185,22 +188,22 @@ impl Music {
     fn now_playing_links(&self, track: &crate::model::Track) -> Vec<NowPlayingLink> {
         let artist = NowPlayingLink {
             name: self.lib.artist_name(&track.artist_id).to_owned(),
-            resource: (
+            row: ui::framework::LiveRow::typed::<crate::row_types::Artist>(
                 crate::actions::artist_resource_id(&track.artist_id),
-                "music.artist",
-                "Open artist",
+                self.lib.artist_name(&track.artist_id),
             ),
+            open: "Open artist",
             effect: MusicEffect::Open {
                 place: Place::Artist(track.artist_id.clone()),
             },
         };
         let album = NowPlayingLink {
             name: self.lib.album_title(&track.album_id).to_owned(),
-            resource: (
+            row: ui::framework::LiveRow::typed::<crate::row_types::Album>(
                 crate::actions::album_resource_id(&track.album_id),
-                "music.album",
-                "Open album",
+                self.lib.album_title(&track.album_id),
             ),
+            open: "Open album",
             effect: MusicEffect::Open {
                 place: Place::Album(track.album_id.clone()),
             },
@@ -294,7 +297,7 @@ impl Music {
             "now-playing:{:?}",
             links
                 .iter()
-                .map(|link| (&link.name, &link.resource.0))
+                .map(|link| (&link.name, link.row.id()))
                 .collect::<Vec<_>>()
         );
         let end = self.page_part(

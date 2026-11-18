@@ -7,8 +7,7 @@ use ui::widget::toast::ToastKind;
 impl Music {
     /// The invocation of the library's Open audio file, as the bar's slot runs it.
     pub(super) fn open_file_invocation() -> Option<tilo_actions::ControlInvocation> {
-        let row = ui::framework::LiveRow::new(
-            "music.library",
+        let row = ui::framework::LiveRow::typed::<crate::row_types::Library>(
             "music.library",
             crate::i18n::CATALOG.t("music-resource-library"),
         )
@@ -1498,8 +1497,7 @@ impl Music {
         ]
         .into_iter()
         .filter_map(|(effect, key)| {
-            let row = ui::framework::LiveRow::new(
-                "music.library",
+            let row = ui::framework::LiveRow::typed::<crate::row_types::Library>(
                 "music.library",
                 crate::i18n::CATALOG.t("music-resource-library"),
             )
