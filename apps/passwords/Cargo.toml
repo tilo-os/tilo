@@ -17,6 +17,8 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+# The resource the app publishes: the empty record the vault's verbs hang off.
+passwords-model = { path = "../passwords-model" }
 accounts = { path = "../../crates/system/accounts" }
 # The permission requests the messaging service makes for Messages.
 tilo-messaging = { path = "../../crates/platform/tilo-messaging", features = ["service-client"] }

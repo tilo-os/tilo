@@ -12271,6 +12271,7 @@ name = "passwords"
 version = "0.1.0"
 dependencies = [
  "accounts",
+ "passwords-model",
  "runtime-dylib",
  "serde_json",
  "taffy",
@@ -12285,6 +12286,15 @@ dependencies = [
  "tilo-winit",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "passwords-model"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-resource",
+ "workspace-hack",
 ]
 
 [[package]]
