@@ -4519,7 +4519,7 @@ name = "server-installer-medium-x86_64"
 # dnf installs from Fedora's mirrors, which are no fixed host list; the server image itself
 # comes from image-host's archive.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "export TILO_INSTALLER_TARGET_OCI=/target/publish/host/image.oci.tar\nexport TILO_INSTALLER_TARGET_REPOSITORY=registry.tilo.so/tilo/tilo-host\nexport TILO_INSTALLER_TARGET_DIGEST=$(cat /target/publish/host/digest)\nexport TILO_INSTALLER_TARGET_ARCHITECTURE=x86_64\nexport TILO_INSTALLER_TARGET_PROFILE=generic\nexport TILO_INSTALLER_TARGET_UPDATE_ORIGIN=registry.tilo.so/tilo/tilo-host:dev-${T_COMMIT:?}\nbash tools/ci/publish/installer-medium.sh x86_64 /target/os/x86_64/image /target/publish/server-installer-medium/x86_64"
+run = "export TILO_INSTALLER_TARGET_OCI=/target/publish/host/image.oci.tar\nexport TILO_INSTALLER_TARGET_REPOSITORY=registry.tilo.so/tilo/tilo-host\nexport TILO_INSTALLER_TARGET_DIGEST=$(cat /target/publish/host/digest)\nexport TILO_INSTALLER_TARGET_ARCHITECTURE=x86_64\nexport TILO_INSTALLER_TARGET_PROFILE=generic\nexport TILO_INSTALLER_TARGET_UPDATE_ORIGIN=registry.tilo.so/tilo/tilo-host:dev-$(git rev-parse --short=12 HEAD)\nbash tools/ci/publish/installer-medium.sh x86_64 /target/os/x86_64/image /target/publish/server-installer-medium/x86_64"
 needs = ["os-image-x86_64", "image-host"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"

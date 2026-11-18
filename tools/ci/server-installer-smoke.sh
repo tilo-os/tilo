@@ -48,6 +48,7 @@ trap stop EXIT
 python3 "$repo_root/os/dev/installer-console.py" --socket "$("$vm" console)" \
   wait installer --timeout "$TILO_BOOT_WAIT_SECS" --save "$out/console-state.json" \
   || die "the medium never reached the graphical installer"
+cp "$TILO_RUN/serial.log" "$out/serial.log" 2>/dev/null || true
 "$vm" stop >/dev/null 2>&1 || true
 
 python3 - "$out/console-state.json" "$medium/source.json" "$medium/disk.qcow2" \
