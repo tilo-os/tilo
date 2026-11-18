@@ -127,11 +127,12 @@ done
 # gets its store below DIR with plain overlay mounts instead.
 storage_conf=$target/storage.conf
 printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n[storage.options.overlay]\nmountopt = "nodev"\n' > "$storage_conf"
-# The image actions and the layers, bottom first (os/image/layers.toml).
+# The image actions and the layers, bottom first (os/image/layers.toml); an extension's
+# image is no part of the OS image and is left to its own checks.
 read -r images layers < <(python3 -I -c '
 import tomllib
 plan = tomllib.load(open("os/image/layers.toml", "rb"))
-print(",".join(i["name"] for i in plan.get("image", [])), ",".join(l["name"] for l in plan["layer"]))')
+print(",".join(i["name"] for i in plan.get("image", []) if not i.get("extension")), ",".join(l["name"] for l in plan["layer"]))')
 images=${images//,/ } layers=${layers//,/ }
 say() { printf 'build-os: %s\n' "$*" >&2; }
 # A step: run it, or with --dry-run print what would run.

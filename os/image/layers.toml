@@ -35,6 +35,16 @@ targets = ["builder-base"]
 name = "tools"
 targets = ["image-tool-stages", "uki-tools"]
 
+[[image]]
+# The Windows compatibility system extension (tilo-windows-compat.raw and the descriptor
+# its packer prints): no layer of the image, but downloaded by a device when its owner first
+# asks for Windows apps (os/usr/share/tilo/system-extensions/README.md). Only the
+# os-windows-compat checks build it, for tools/ci/publish/windows-compat-sysext.sh to
+# publish; an image build leaves it out (`extension`).
+name = "windows-compat"
+targets = ["windows-compat-sysext"]
+extension = true
+
 # The layers, bottom first, over the pinned base. `piece` is
 # os/image/<piece>.Containerfile and `target` the stage the action builds, over the
 # image of every layer below it given as the stage its piece builds FROM (the

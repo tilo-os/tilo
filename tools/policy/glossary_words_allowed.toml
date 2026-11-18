@@ -1206,3 +1206,8 @@ paths = [
 reason = "The model gateway's module of its wire types, named by the program it backs, not a Tilo concept."
 words = ["host"]
 identifiers = ["host_backend"]
+
+[[allow]]
+reason = "`podman run`, t's run of a publishing check and the publishing channel tools/ci/publish/lib.sh names (dev, release, branch): names those tools give them, not Tilo concepts."
+words = ["run", "channel"]
+paths = ["tools/ci/publish/extension-manifests.sh", "tools/ci/publish/windows-compat-sysext.sh"]
