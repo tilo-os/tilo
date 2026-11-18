@@ -279,7 +279,10 @@ impl ChatApp {
         let replies: Vec<Message> = self
             .messages
             .iter()
-            .filter(|message| message.parent.as_deref() == Some(parent_id))
+            .filter(|message| {
+                message.parent.as_deref() == Some(parent_id)
+                    && model::stands(&self.messages, message)
+            })
             .cloned()
             .collect();
         let mut content = 2.0 * f64::from(sp.s4);

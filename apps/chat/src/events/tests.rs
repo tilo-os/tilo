@@ -2416,6 +2416,7 @@ mod agent_stop;
 mod agent_work;
 mod calls_and_peers;
 mod menus;
+mod reply_without_words;
 mod workspace_state;
 
 tilo_test_env::scenario! {

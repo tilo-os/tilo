@@ -150,6 +150,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "long-thread",
     "agent-work",
     "agent-stopped",
+    "agent-went-on",
     "bridged",
     "narrow",
     "history",
@@ -464,6 +465,12 @@ pub(crate) fn part_scenario(
                 ));
             }
         }
+        Some("agent-went-on") => {
+            for (id, message) in went_on_messages() {
+                start.messages.push(id, message);
+            }
+            steps.extend(went_on_part_steps());
+        }
         _ => {}
     }
     (Some(start), steps)
@@ -646,12 +653,101 @@ pub(crate) fn agent_work_part_steps() -> Vec<(ui::tilo_resource::MemberId, Invok
     vec![(demo_agent(), agent_work(&Id::from_raw(DEMO_SUMMONS)))]
 }
 
+/// The person's first message in the `agent-went-on` scenario, and their second.
+#[cfg(feature = "samples")]
+pub(crate) const WENT_ON_FIRST: &str = "m_went_on_first";
+#[cfg(feature = "samples")]
+pub(crate) const WENT_ON_SECOND: &str = "m_went_on_second";
+
+/// The conversation of the `agent-went-on` scenario: the demo's person with their agent.
+#[cfg(feature = "samples")]
+pub(crate) fn went_on_conversation() -> Id {
+    Chat::direct_id([
+        ui::tilo_resource::MemberId::person(crate::model::ME),
+        demo_agent(),
+    ])
+}
+
+/// `agent-went-on`: the person wrote again while their agent worked. Under their first
+/// message stands the reply its turn left when their second message took the turn along,
+/// as the turn ends it: complete, with no word and no step. Their second message follows;
+/// its answer is the agent's own ([`went_on_part_steps`]).
+#[cfg(feature = "samples")]
+pub(crate) fn went_on_messages() -> Vec<(Id, crate::chat::Message)> {
+    let conversation = went_on_conversation();
+    let me = ui::tilo_resource::MemberId::person(crate::model::ME);
+    let first = Id::from_raw(WENT_ON_FIRST);
+    let asked = crate::demo::NOW - 120;
+    let left = crate::chat::Message {
+        parent: Some(first.clone()),
+        work: Some(crate::chat::Work {
+            state: Some(crate::chat::Transition {
+                state: crate::model::AgentWorkState::ProviderFinished {
+                    outcome: crate::agent_stream::AgentFinish::Complete,
+                },
+                since: asked + 10,
+            }),
+            ..crate::chat::Work::default()
+        }),
+        ..crate::chat::Message::new(
+            conversation.clone(),
+            demo_agent(),
+            asked + 10,
+            String::new(),
+        )
+    };
+    vec![
+        (
+            first.clone(),
+            crate::chat::Message::new(
+                conversation.clone(),
+                me.clone(),
+                asked,
+                "Draft a note to Maya about Friday's call.".into(),
+            ),
+        ),
+        (crate::chat::reply_id(&first, &demo_agent()), left),
+        (
+            Id::from_raw(WENT_ON_SECOND),
+            crate::chat::Message::new(
+                conversation,
+                me,
+                asked + 60,
+                "And say that I bring the numbers.".into(),
+            ),
+        ),
+    ]
+}
+
+/// On the conversation holding [`went_on_messages`]: the one answer, under the person's
+/// second message, by the agent.
+#[cfg(feature = "samples")]
+pub(crate) fn went_on_part_steps() -> Vec<(ui::tilo_resource::MemberId, Invoke<ChatPart>)> {
+    vec![(
+        demo_agent(),
+        work_noted(
+            &Id::from_raw(WENT_ON_SECOND),
+            crate::chat::WorkUpdate {
+                state: "provider_complete".into(),
+                app: None,
+                did: None,
+                about: None,
+                trace: Vec::new(),
+                detail: None,
+            },
+            Some(
+                "The note to Maya is drafted. It says that you bring the numbers on Friday.".into(),
+            ),
+        ),
+    )]
+}
+
 /// The demo agent's resource of the work `summons` asked of it.
 #[cfg(feature = "samples")]
 pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
-    ChatPart::RECORD_WORK.with(chat_part::RecordWork {
-        message: summons.clone(),
-        work: crate::chat::WorkUpdate {
+    work_noted(
+        summons,
+        crate::chat::WorkUpdate {
             state: "doing".into(),
             app: None,
             did: Some("Add function".into()),
@@ -666,7 +762,22 @@ pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
             }],
             detail: None,
         },
-        say: None,
+        None,
+    )
+}
+
+/// What an agent notes of its work on `summons`, with its reply's words where it has some:
+/// Chat's own action, as an agent invokes it.
+#[cfg(feature = "samples")]
+pub(crate) fn work_noted(
+    summons: &Id,
+    work: crate::chat::WorkUpdate,
+    say: Option<String>,
+) -> Invoke<ChatPart> {
+    ChatPart::RECORD_WORK.with(chat_part::RecordWork {
+        message: summons.clone(),
+        work,
+        say,
     })
 }
 
