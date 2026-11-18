@@ -227,33 +227,33 @@ pub(crate) struct PublishedInvocationRuntime {
     pub(crate) failure: Option<String>,
 }
 
-/// Refuse `spec` for `actor` when it only changes what the person at this
-/// device sees and `actor` is someone else: a view of their window
-/// ([`view_operation_permitted`]), or an effect that opens a form or shows a
-/// place ([`tilo_actions::ActionContract::only_shows`]). An agent or another
-/// member never moves this person's screen; they invoke the action that does
-/// the work, with its arguments.
+/// Refuse `spec` on `resource` for `actor` when only the person at this
+/// device invokes it and `actor` is someone else: a view of their window
+/// ([`view_operation_permitted`]), an effect that opens a form or shows a
+/// place ([`tilo_actions::ActionContract::only_shows`]), or anything on a
+/// control the window draws ([`tilo_actions::kind_is_a_drawn_control`]): a
+/// press, drag or focus stands in for this person's pointer and keyboard.
+/// An agent or another member never moves this person's screen; they invoke
+/// the app's own action that does the work, with its arguments.
 pub(crate) fn check_shown_here(
     actor: &tilo_actions::Actor,
     local_author: &tilo_actions::MemberId,
+    resource: &tilo_actions::ResourceSpec,
     spec: &tilo_actions::ActionSpec,
 ) -> Result<(), tilo_actions::ApiError> {
+    let someone_else = actor.member_id() != Some(local_author);
     let private = match spec.kind {
+        _ if tilo_actions::kind_is_a_drawn_control(&resource.kind) => someone_else,
         tilo_actions::OperationKind::View => {
             !view_operation_permitted(actor, local_author, &spec.contract)
         }
-        tilo_actions::OperationKind::Effect => {
-            spec.contract.only_shows() && actor.member_id() != Some(local_author)
-        }
+        tilo_actions::OperationKind::Effect => spec.contract.only_shows() && someone_else,
         tilo_actions::OperationKind::Document => false,
     };
     if private {
         return Err(tilo_actions::ApiError::Unavailable {
-            code: "private_view".into(),
-            reason: format!(
-                "{} changes only what the person at this device sees; only they invoke it",
-                spec.label
-            ),
+            code: tilo_actions::Availability::PRIVATE_VIEW.into(),
+            reason: format!("{} {}", spec.label, tilo_actions::Availability::SHOWN_HERE),
         });
     }
     Ok(())

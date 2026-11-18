@@ -8173,9 +8173,9 @@ impl FrameHarness {
         self.pump_component_wakes();
         let _ = crate::widget::take_presses();
         let resources = self.resources();
-        let spec = tilo_actions::api::resolve(&resources, address)
+        let (resource, spec) = tilo_actions::api::locate(&resources, address)
             .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
-        crate::invocation_scope::check_shown_here(actor, &self.author, spec)?;
+        crate::invocation_scope::check_shown_here(actor, &self.author, resource, spec)?;
         if let tilo_actions::Availability::Unavailable { code, reason } =
             &spec.contract.availability
         {

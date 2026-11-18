@@ -105,7 +105,7 @@ pub(super) struct Notes {
     placed: Arc<Mutex<bool>>,
     /// The action the agent's permissions deny it, listed to it as not allowed, as the
     /// workspace lists one its person's settings for it deny.
-    refuses: Arc<Mutex<Option<&'static str>>>,
+    refuses: Arc<Mutex<Option<(&'static str, tilo_actions::Availability)>>>,
 }
 
 /// What a workspace answers about its installed apps.
@@ -174,7 +174,16 @@ impl Notes {
 
     /// The same Notes, its action `action` denied to the agent: listed as not allowed.
     fn refusing(self, action: &'static str) -> Self {
-        *self.refuses.lock().unwrap() = Some(action);
+        *self.refuses.lock().unwrap() = Some((
+            action,
+            tilo_actions::Availability::not_allowed(Some(tilo_action_policy::Refuser::Settings)),
+        ));
+        self
+    }
+
+    /// The same Notes, its action `action` one only the person at its device invokes.
+    fn showing_only_here(self, action: &'static str) -> Self {
+        *self.refuses.lock().unwrap() = Some((action, tilo_actions::Availability::shown_here()));
         self
     }
 
@@ -468,12 +477,11 @@ impl Notes {
                     locus: tilo_actions::ExecutionLocus::ClientLocal,
                     kind: operation,
                     contract: tilo_actions::ActionContract {
-                        availability: if *self.refuses.lock().unwrap() == Some(name) {
-                            tilo_actions::Availability::not_allowed(Some(
-                                tilo_action_policy::Refuser::Settings,
-                            ))
-                        } else {
-                            tilo_actions::Availability::Available
+                        availability: match &*self.refuses.lock().unwrap() {
+                            Some((refused, availability)) if *refused == name => {
+                                availability.clone()
+                            }
+                            _ => tilo_actions::Availability::Available,
                         },
                         ..tilo_actions::ActionContract::default()
                     },
@@ -2489,6 +2497,22 @@ tilo_test_env::scenario! {
                 text.contains("rename") && text.contains("set this to Deny"),
                 "the listing shows it, refused: {text}"
             );
+            // One that only changes what the person at the device sees is refused as that
+            // action, saying whose it is: never as one the app does not have.
+            let notes = Notes::new(true).showing_only_here("rename");
+            let (text, failed) = tool(
+                &agent(&notes),
+                "tilo_do",
+                json!({"path": "notes/Todo#rename", "args": {"title": "Done"}}),
+            )
+            .await;
+            assert!(failed, "{text}");
+            assert!(
+                text.contains("private_view: #rename only changes what the person at this device sees"),
+                "{text}"
+            );
+            assert!(!text.contains("has no action"), "{text}");
+            assert!(notes.invoked.lock().unwrap().is_empty(), "nothing was invoked");
         });
     }
 
