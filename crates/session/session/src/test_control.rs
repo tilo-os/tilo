@@ -223,6 +223,8 @@ pub(crate) struct Session<'a> {
     /// This device's share of the person's one keyboard and pointer: where the pointer is here, the
     /// device it drives, and what the devices driving this one sent.
     pub(crate) shared_input: Option<&'a crate::shared_input::SharedInput>,
+    /// The person's layout, as the shell's views read it: the resource each place shows.
+    pub(crate) layout: &'a std::cell::RefCell<tilo_session_core::layout::Layout>,
     /// What the person was told, as the session's own notifications service keeps it: the banners
     /// up and the centre behind them, whichever shell draws them.
     pub(crate) notifications: tilo_desktop_surface::DesktopNotifications,
@@ -1206,16 +1208,25 @@ fn asked_of_shell(
             } else {
                 // Where each window is drawn, read off the frame's own layout: a row says what a
                 // tool aiming at that window aims at. How many frames it drew is read off the
-                // compositor, where the client's commits arrive.
+                // compositor, where the client's commits arrive. The resource it shows is the one
+                // the shell's own views read of its place: what the window's bar carries.
                 let rect_of = |id: u64| compositor.window_rect(id);
                 let frames_of = |id: u64| compositor.window_frames(id);
+                let places = session.layout.borrow().reading().places;
+                let resource_of = |tab: u64| {
+                    places
+                        .iter()
+                        .find(|place| place.key == tab.to_string())
+                        .map(|place| place.resource.clone())
+                        .filter(|resource| !resource.is_empty())
+                };
                 match &ctx.scope {
                     None => session
                         .handle
-                        .read(|tree| window_rows(tree, rect_of, frames_of)),
-                    Some(scope) => session
-                        .handle
-                        .read(|tree| window_rows(&within(tree, scope), rect_of, frames_of)),
+                        .read(|tree| window_rows(tree, rect_of, frames_of, resource_of)),
+                    Some(scope) => session.handle.read(|tree| {
+                        window_rows(&within(tree, scope), rect_of, frames_of, resource_of)
+                    }),
                 }
             };
             json!({"answer": {"windows": rows}})

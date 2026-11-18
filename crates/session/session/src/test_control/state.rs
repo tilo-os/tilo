@@ -345,11 +345,14 @@ pub(super) fn presence_stamp(session: &Session<'_>, hash: &mut impl std::hash::H
 /// window's rectangle in the layout, `[x, y, width, height]`, or null while no window of the
 /// tab is mapped: it is what a tool aims at to press something the row names. `frames` is how
 /// many frames the window's client committed: a window showing the same thing keeps its count,
-/// so two reads that agree say it drew nothing between them.
+/// so two reads that agree say it drew nothing between them. `resource` is what the window
+/// shows, as its bar carries it when the person picks it up: null until the app says what the
+/// window shows.
 pub(super) fn window_rows(
     tree: &Layout,
     rect_of: impl Fn(u64) -> Option<(i32, i32, i32, i32)>,
     frames_of: impl Fn(u64) -> u64,
+    resource_of: impl Fn(u64) -> Option<String>,
 ) -> Vec<Json> {
     fn named(name: &str, id: Json) -> Json {
         if name.is_empty() { id } else { name.into() }
@@ -370,6 +373,8 @@ pub(super) fn window_rows(
                 for tab in &group.tabs {
                     let (kind, app_id) = tile_kind(&tab.tile);
                     let window = window_of_tile(&tab.tile);
+                    // What the window's bar carries, on a window that stands.
+                    let resource = window.and_then(|_| resource_of(tab.id));
                     let rect = window
                         .and_then(&rect_of)
                         .map_or(Json::Null, |(x, y, width, height)| {
@@ -388,6 +393,7 @@ pub(super) fn window_rows(
                         "floating": workspace.layout.float_of(group.id).is_some(),
                         "rect": rect,
                         "frames": window.map_or(0, &frames_of),
+                        "resource": resource,
                     }));
                 }
             }
