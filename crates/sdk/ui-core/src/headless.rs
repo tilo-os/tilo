@@ -8150,6 +8150,7 @@ impl FrameHarness {
         confirm: bool,
         confirmation_phrase: Option<&str>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        self.invalidate_local();
         let author = tilo_actions::Actor::Member(self.author.clone());
         self.invoke_action_as(&author, address, arguments, confirm, confirmation_phrase)
     }
