@@ -2488,14 +2488,19 @@ pub fn minted_items(
     envelope: &tilo_actions::ActionEnvelope,
     before: &[ChangeHash],
 ) -> Vec<(String, String)> {
-    // Each map key the changes write, with the object it is first written in.
+    // Each map key the changes write, with the object it is first written in:
+    // only the ids the action logged, when it logged them, rather than every
+    // field of every item it made.
+    let logged: std::collections::HashSet<&str> = minted.iter().map(String::as_str).collect();
     let mut stored = std::collections::HashMap::new();
     for change in doc.get_changes(before) {
         let Some(touches) = doc.committed_document().change_touches(&change) else {
             continue;
         };
         for (obj, key) in touches.writes {
-            if let Some(key) = key {
+            if let Some(key) = key
+                && (logged.is_empty() || logged.contains(key.as_str()))
+            {
                 stored.entry(key).or_insert(obj);
             }
         }
@@ -2517,6 +2522,9 @@ pub fn minted_items(
     };
     // Each item it stored, under the path of map keys down to it from the document's root: `issues`, or
     // `issues/<issue>/comments` for one inside an item.
+    // Items made side by side share their collection, whose path is read once.
+    let mut paths: std::collections::HashMap<&automerge::ObjId, Option<String>> =
+        std::collections::HashMap::new();
     let made: Vec<(String, String)> = ids
         .into_iter()
         .filter_map(|id| {
@@ -2524,8 +2532,13 @@ pub fn minted_items(
             automerge::ReadDoc::get(&*doc, obj, id.as_str())
                 .ok()
                 .flatten()?;
-            let path = tilo_resource::collection::path_to(&*doc, obj)?;
-            Some((id, path.join("/")))
+            let path = paths
+                .entry(obj)
+                .or_insert_with(|| {
+                    tilo_resource::collection::path_to(&*doc, obj).map(|path| path.join("/"))
+                })
+                .clone()?;
+            Some((id, path))
         })
         .collect();
     // The document's own collections publish items. What a write that made one stored inside it
