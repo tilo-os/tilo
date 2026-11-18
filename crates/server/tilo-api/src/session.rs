@@ -218,6 +218,14 @@ impl CallError {
         }
     }
 
+    /// A call the workspace could not finish, for `message`.
+    pub(crate) fn unavailable(message: String) -> Self {
+        Self {
+            code: "unavailable",
+            message,
+        }
+    }
+
     fn unanswered() -> Self {
         Self {
             code: "unavailable",
@@ -927,7 +935,7 @@ impl Session {
         workspace: &str,
         name: &str,
         arguments: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, CallError> {
         self.touch();
         let reply = self
             .serve(
@@ -936,16 +944,9 @@ impl Session {
                         "params":{"name":name,"arguments":arguments}}),
             )
             .await;
-        let message = reply
-            .messages
-            .last()
-            .ok_or("your workspace didn't answer; try again in a minute")?;
+        let message = reply.messages.last().ok_or_else(CallError::unanswered)?;
         if let Some(error) = message.get("error") {
-            return Err(error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("the workspace refused")
-                .to_owned());
+            return Err(CallError::of(error));
         }
         Ok(message.get("result").cloned().unwrap_or_default())
     }

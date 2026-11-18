@@ -1346,7 +1346,7 @@ impl Server {
                     .get(&id)
                     .filter(|session| session.grant == grant.id)
                     .cloned();
-                let Some(session) = session else {
+                let Some(mut session) = session else {
                     return json_reply(
                         StatusCode::NOT_FOUND,
                         &json!({"jsonrpc": "2.0", "id": request.get("id").cloned().unwrap_or(Value::Null),
@@ -1354,6 +1354,27 @@ impl Server {
                                           "message": "unknown session; initialize again"}}),
                     );
                 };
+                // A session that reaches its workspaces no more (its key revoked there) ended:
+                // it is opened again under the same id, which a revoked key is refused saying so.
+                if !session.is_live() {
+                    lock(&self.sessions).remove(&id);
+                    session = match self
+                        .initialized(&grant, session.scope.clone(), session.label.clone())
+                        .await
+                    {
+                        Ok(opened) => opened,
+                        Err(mut refused) => {
+                            if let Some(fields) = refused.as_object_mut() {
+                                fields.insert(
+                                    "id".into(),
+                                    request.get("id").cloned().unwrap_or(Value::Null),
+                                );
+                            }
+                            return json_reply(StatusCode::OK, &refused);
+                        }
+                    };
+                    lock(&self.sessions).insert(id, Arc::clone(&session));
+                }
                 let reply = session.handle(request).await;
                 session_reply(&reply, headers, None)
             }
@@ -1476,34 +1497,49 @@ impl Server {
             .next_run(&grant.person)
             .map_err(|_| unavailable("this key cannot act now".to_owned()))?;
         let label = format!("{} #{number}", grant.client_name);
+        let opened = match self.initialized(grant, grant.scope.clone(), label).await {
+            Ok(opened) => opened,
+            Err(refused) => {
+                let why = refused
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("the workspace refused");
+                // The workspace records its keys' revocations: a key it refused
+                // as revoked is told so, and asks the person for another.
+                if why.contains("key_revoked")
+                    || refused.pointer("/error/data/code").and_then(Value::as_str)
+                        == Some("key_revoked")
+                {
+                    return Err(
+                        v1::errors::ApiError::new("key_revoked", "this key was revoked")
+                            .next(crate::APPROVE_AGAIN),
+                    );
+                }
+                return Err(unavailable(why.to_owned()));
+            }
+        };
+        lock(&self.sessions).insert(id, Arc::clone(&opened));
+        Ok(opened)
+    }
+
+    /// A new session of `grant` in `scope`, named `label`, initialized as a client initializes one:
+    /// the JSON-RPC refusal when it was not (a key its workspace keeps as revoked is told so).
+    async fn initialized(
+        self: &Arc<Self>,
+        grant: &store::Grant,
+        scope: store::Scope,
+        label: String,
+    ) -> Result<Arc<Session>, Value> {
         let opened = Arc::new(
-            self.new_session(grant, grant.scope.clone(), label)
+            self.new_session(grant, scope, label)
                 .await
-                .map_err(unavailable)?,
+                .map_err(|why| session::error(&Value::Null, -32000, &why))?,
         );
         let initialize = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
             "protocolVersion": "2025-06-18", "capabilities": {},
             "clientInfo": {"name": "tilo-api", "version": env!("CARGO_PKG_VERSION")},
         }});
-        if let Err(refused) = opened.initialize(&initialize).await {
-            let why = refused
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or("the workspace refused");
-            // The workspace records its keys' revocations: a key it refused
-            // as revoked is told so, and asks the person for another.
-            if why.contains("key_revoked")
-                || refused.pointer("/error/data/code").and_then(Value::as_str)
-                    == Some("key_revoked")
-            {
-                return Err(
-                    v1::errors::ApiError::new("key_revoked", "this key was revoked")
-                        .next(crate::APPROVE_AGAIN),
-                );
-            }
-            return Err(unavailable(why.to_owned()));
-        }
-        lock(&self.sessions).insert(id, Arc::clone(&opened));
+        opened.initialize(&initialize).await?;
         Ok(opened)
     }
 
