@@ -431,10 +431,11 @@ shows nothing.
 typed, and every character stays: Markdown's own signs are out of sight, except in the words
 the person is writing in (`Markdown.marks`, `Markdown.hidden`, `FieldStyle`). Return sends and
 Shift Return makes a line; on an iPhone's glass keyboard Return makes a line and the arrow
-sends. On the Mac, Up in an empty field brings back the last message the person sent in the
-conversation, Up again the one before and Down the next, until they type, move the caret or
-press Escape (`Stepping`): the messages are the conversation's own, and the app keeps no list
-of them. While an input method is putting a letter together the field takes no key for itself.
+sends. On a keyboard, the Mac's or one attached to an iPhone, Up in an empty field brings back
+the last message the person sent in the conversation, Up again the one before and Down the
+next, until they type, move the caret or press Escape (`Stepping`): the messages are the
+conversation's own, and the app keeps no list of them. Everywhere else the arrows move the
+caret. While an input method is putting a letter together the field takes no key for itself.
 On an iPhone a drag down the conversation takes the keyboard down with the finger, the
 system's own way for a scroll view, and a touch on the conversation puts it away; the words
 being written stay in the field and the conversation stays at its newest piece. Sending
@@ -628,7 +629,8 @@ to someone who cannot see it, `secret` types into the protected field and looks 
 as the app leaves the front, `typing` takes the whole screen with the keyboard up, and
 `keyboard` brings the keyboard up, puts it away and sends a message, light and dark: it says
 what a drag on the conversation does to the keyboard, what the window draws behind the
-keyboard's upper corners and what is kept, takes the whole screen
+keyboard's upper corners, what Up, Down and Escape of an attached keyboard do in the field
+and what is kept, takes the whole screen
 with the keyboard up and with it away, and fails where it found a fault. Asked for `told`, it also hands the system the drawing's
 notifications and live activities there, and writes down what the system then holds.
 
