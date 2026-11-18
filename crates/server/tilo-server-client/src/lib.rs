@@ -71,7 +71,8 @@ pub mod signer;
 pub use certify::{Approver, request_certification};
 #[cfg(feature = "dial")]
 pub use certify::{
-    CERTIFICATION_WAIT_NS, CertificationOutcome, MemberApprover, MemberHost, ask_member, certify,
+    CERTIFICATION_WAIT_NS, CertificationOutcome, KeptAsks, MemberApprover, MemberHost, ask_member,
+    certify,
 };
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
 pub use error::{CertifyError, LinkError};

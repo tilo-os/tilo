@@ -53,6 +53,10 @@ pub(super) struct Dial {
     key: [u8; 32],
     /// This device's signed statement that the endpoint speaks for it.
     delegation: Option<Vec<u8>>,
+    /// What this device asks its server's certification beside the session
+    /// (its person's agents' questions, pairing): over WebTransport on one
+    /// link kept between asks, since a browser's session costs a socket each.
+    asks: Arc<tilo_server_client::KeptAsks>,
     /// The endpoint this device already runs under its key, when it lends
     /// it: the session dials from there instead of binding one of its own.
     /// It is lent as where it lands once bound, since a session may be opened
@@ -100,6 +104,7 @@ impl Dial {
     /// good leaves no socket behind for the host to fan out to until an idle
     /// timeout.
     pub(super) async fn shutdown(&mut self) {
+        self.asks.close().await;
         if let Some(dialer) = self.dialer.take() {
             dialer.close().await;
         }
@@ -136,9 +141,9 @@ impl Task {
     }
 
     /// Ask the host `approval` from the endpoint this session dials it from,
-    /// on a connection of its own beside the session: a page answering its
-    /// person's agents, or pairing their devices, binds no endpoint of its
-    /// own.
+    /// beside the session: a page answering its person's agents, or pairing
+    /// their devices, binds no endpoint of its own, and asks on the one link
+    /// it keeps for that ([`tilo_server_client::KeptAsks`]).
     pub(super) fn ask_member(
         &self,
         approval: Box<tilo_server_protocol::certify::MemberApproval>,
@@ -153,14 +158,9 @@ impl Task {
             .into()));
             return;
         };
+        let asks = Arc::clone(&self.dial.asks);
         n0_future::task::spawn(async move {
-            let asked = async {
-                let link = dialer.link(Purpose::Certify).await?;
-                let reply = tilo_server_client::ask_member(&link, &approval).await;
-                link.close("");
-                reply
-            };
-            let _ = done.send(asked.await);
+            let _ = done.send(asks.ask(&dialer, &approval).await);
         });
     }
 }
