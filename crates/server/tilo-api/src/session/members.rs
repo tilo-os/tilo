@@ -34,7 +34,9 @@
 //! theirs, in a workspace they are a member of. The link is the one a person's shell hands over: the invitation
 //! sealed onto the site's shelf (`https://<site>/i/<handle>#<key>`), or, where
 //! the site keeps nothing, the invitation's own text after the workspace's
-//! route. Following it opens the site's sign-in, with a passkey or by
+//! route. A site only this computer reaches (the person's own page at
+//! `http://tilo.localhost`) shelves nothing: the link carries the invitation
+//! under tilo.sh's page, so it opens wherever it is sent. Following it opens the site's sign-in, with a passkey or by
 //! approving an agent, and lands the person in the workspace with the role.
 //!
 //! The server sends no mail: with `email`, the invitation names that address
@@ -482,12 +484,61 @@ fn entry(args: &Value) -> Result<String, Outcome> {
         })
 }
 
+/// The page a link that carries its invitation opens at, when the server names none of its own and
+/// its site is reached from nowhere else.
+const PUBLIC_INVITE_ENTRY: &str = "https://tilo.sh";
+
+/// The link at `entry` that carries `invitation` itself after its `#`: the server's own address is
+/// in it, signed by the server, so the page or `tilo login` that follows it dials the server with
+/// nothing asked of any site.
+fn carried_link(entry: &str, workspace: &str, invitation: &[u8]) -> String {
+    let text = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(invitation);
+    format!(
+        "{}/#/w/{workspace}?invite={text}",
+        entry.trim_end_matches('/')
+    )
+}
+
+/// Whether a computer other than this one can open `site`: not one named on this computer alone
+/// (`localhost`, `*.localhost`, a `.local` name, a loopback, private or link-local address).
+fn reached_from_elsewhere(site: &str) -> bool {
+    #[cfg(test)]
+    if tests::LOCAL_SITE_STANDS_FOR_PUBLIC.with(std::cell::Cell::get) {
+        return true;
+    }
+    let Ok(url) = url::Url::parse(site) else {
+        return false;
+    };
+    match url.host() {
+        Some(url::Host::Domain(name)) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            // A single label is a name on this network alone, as are the names under these.
+            let last = name.rsplit('.').next().unwrap_or_default();
+            name.contains('.') && !matches!(last, "localhost" | "local" | "internal")
+        }
+        Some(url::Host::Ipv4(address)) => {
+            !(address.is_loopback()
+                || address.is_private()
+                || address.is_link_local()
+                || address.is_unspecified())
+        }
+        Some(url::Host::Ipv6(address)) => {
+            !(address.is_loopback()
+                || address.is_unspecified()
+                || address.is_unique_local()
+                || address.is_unicast_link_local())
+        }
+        None => false,
+    }
+}
+
 impl crate::Server {
     /// The link that brings whoever follows it into `workspace` with
     /// `invitation` (its signed bytes), lasting until `expires_at_ns`: sealed
     /// onto the site's shelf, as a person's shell hands one over, or the
     /// invitation's own text after the workspace's route where the site
-    /// keeps nothing. Either opens the site's sign-in and joins.
+    /// keeps nothing, or no other computer reaches it. Either opens a sign-in
+    /// and joins.
     pub(crate) async fn invitation_link(
         &self,
         workspace: &str,
@@ -498,14 +549,18 @@ impl crate::Server {
         // from: the link carries the signed invitation itself, whose
         // addresses are the server's own, signed by it, and the page or
         // `tilo login` that follows it dials the server with them.
-        if let Some(entry) = &self.config.invite_entry {
-            let text = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(invitation);
-            return format!(
-                "{}/#/w/{workspace}?invite={text}",
-                entry.trim_end_matches('/')
-            );
-        }
+        // So does one whose site only this computer reaches (the person's own page at
+        // `http://tilo.localhost`): a link shelved there opens nowhere else, and a link pasted into
+        // a message must open wherever it is followed.
         let entry = self.config.web_entry.trim_end_matches('/');
+        let carried = self
+            .config
+            .invite_entry
+            .as_deref()
+            .or_else(|| (!reached_from_elsewhere(entry)).then_some(PUBLIC_INVITE_ENTRY));
+        if let Some(carried) = carried {
+            return carried_link(carried, workspace, invitation);
+        }
         // The site's shelf keeps the origin the invitation admits into, never a
         // bare name: a shelf refuses what is not an origin.
         let (host, origin) = self.hosts.first_named();
@@ -537,5 +592,53 @@ impl crate::Server {
             },
             |shelved| shelved.link,
         )
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::{carried_link, reached_from_elsewhere};
+
+    std::thread_local! {
+        /// A test's site listens on loopback, which no other computer reaches: set, it stands for
+        /// a site that others do, so the test sees what such a site keeps.
+        pub(crate) static LOCAL_SITE_STANDS_FOR_PUBLIC: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
+    }
+
+    /// Let this thread's test treat its loopback site as one other computers reach.
+    pub(crate) fn local_site_stands_for_public() {
+        LOCAL_SITE_STANDS_FOR_PUBLIC.with(|stands| stands.set(true));
+    }
+
+    #[test]
+    fn only_a_site_another_computer_names_is_reached_from_elsewhere() {
+        for local in [
+            "http://tilo.localhost:33720",
+            "http://localhost:8080",
+            "http://127.0.0.1:33700",
+            "http://192.168.1.20",
+            "http://10.0.0.7:80",
+            "http://[::1]:33720",
+            "http://studio.local",
+            "http://build-box:8080",
+        ] {
+            assert!(!reached_from_elsewhere(local), "{local}");
+        }
+        for public in [
+            "https://tilo.sh",
+            "https://studio.example.com",
+            "http://203.0.113.9",
+        ] {
+            assert!(reached_from_elsewhere(public), "{public}");
+        }
+    }
+
+    #[test]
+    fn a_carried_link_holds_the_invitation_after_its_fragment() {
+        assert_eq!(
+            carried_link("https://tilo.sh/", "w-1", b"signed"),
+            "https://tilo.sh/#/w/w-1?invite=c2lnbmVk"
+        );
     }
 }

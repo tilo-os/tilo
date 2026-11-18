@@ -941,6 +941,9 @@ impl DeviceRefusal {
     /// The operation waits for the person to approve it on a device that holds their identity,
     /// and goes on once they allow it.
     pub const AWAITING_APPROVAL: &'static str = tilo_actions::remote::AWAITING_APPROVAL;
+    /// The server does not know the person yet: its operator declares them an owner, or an
+    /// invitation brings them in.
+    pub const NOT_ON_THIS_SERVER: &'static str = tilo_actions::remote::NOT_ON_THIS_SERVER;
 
     /// The host's refusal `error`, its typed refusal read off it where it carries one.
     #[must_use]
@@ -953,7 +956,21 @@ impl DeviceRefusal {
             {
                 Self::awaiting_approval()
             }
-            ActionCallError::Refused { reason } => Self::said(error.code(), reason),
+            ActionCallError::Refused { reason } => {
+                match reason
+                    .strip_prefix(tilo_actions::remote::NOT_ON_THIS_SERVER)
+                    .and_then(|said| said.strip_prefix(": "))
+                {
+                    Some(said) => Self {
+                        code: Self::NOT_ON_THIS_SERVER.to_owned(),
+                        message: said.to_owned(),
+                        refusal: None,
+                        retry_after_ms: None,
+                        entry: None,
+                    },
+                    None => Self::said(error.code(), reason),
+                }
+            }
             other => Self::plain(other),
         }
     }

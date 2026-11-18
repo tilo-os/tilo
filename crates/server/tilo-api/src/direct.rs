@@ -505,6 +505,7 @@ mod tests {
     /// key reaches.
     #[tokio::test]
     async fn a_link_a_key_asks_for_is_built_on_its_site() {
+        crate::session::members::tests::local_site_stands_for_public();
         let site = shelf_site().await;
         let (person, _) = UserIdentity::generate("Ada", 1);
         let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);

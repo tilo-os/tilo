@@ -94,7 +94,8 @@ pub struct Config {
     /// is reached only over iroh (`https://tilo.sh`): the link then carries
     /// the signed invitation, the server's own address in it, after its `#`,
     /// so whoever follows it dials the server with nothing asked of the
-    /// server's site. Without it, an invitation is kept on the site's shelf.
+    /// server's site. Without it, an invitation is kept on the site's shelf, unless no other
+    /// computer reaches that site: its link then carries the invitation under tilo.sh's page.
     pub invite_entry: Option<String>,
 }
 

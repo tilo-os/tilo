@@ -85,13 +85,16 @@ pub enum ServerError {
     /// workspaces and keeps no account: nothing makes, branches or deletes
     /// workspaces or keys there.
     NoAccountHere,
+    /// The server does not know the person yet, and says what makes them known there: its
+    /// operator declares them an owner, or an invitation brings them in.
+    NotOnThisServer(String),
 }
 
 impl std::fmt::Display for ServerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => f.write_str("no such workspace of yours"),
-            Self::AwaitingApproval(said) => f.write_str(said),
+            Self::AwaitingApproval(said) | Self::NotOnThisServer(said) => f.write_str(said),
             Self::NoAccountHere => f.write_str(
                 "This Tilo desktop answers its own workspaces only: do this in Tilo itself.",
             ),
@@ -141,6 +144,9 @@ impl From<DeviceRefusal> for ServerError {
     fn from(refusal: DeviceRefusal) -> Self {
         if refusal.code == DeviceRefusal::AWAITING_APPROVAL {
             return Self::AwaitingApproval(refusal.message);
+        }
+        if refusal.code == DeviceRefusal::NOT_ON_THIS_SERVER {
+            return Self::NotOnThisServer(refusal.message);
         }
         // A workspace operation of the server's own answers a typed refusal;
         // the server's other refusals are read as they were.

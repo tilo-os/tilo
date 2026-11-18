@@ -98,6 +98,8 @@ default = []
 toolkit = []
 
 [dev-dependencies]
+# An invitation read as a device that follows its link reads it: the server it names, from it alone.
+tilo-workspace-join = { path = "../../collab/workspace-join" }
 # A synced folder's tree written through a session, as a computer's folder writes it.
 tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
 iroh-blobs.workspace = true

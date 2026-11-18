@@ -135,6 +135,12 @@ pub(crate) fn refused(error: &ServerError) -> Outcome {
             error.to_string(),
             "tell the person to approve it in their Tilo; it is done once they allow it",
         ),
+        ServerError::NotOnThisServer(_) => failed(
+            tilo_actions::remote::NOT_ON_THIS_SERVER,
+            error.to_string(),
+            "ask the server's operator to declare the person's key an owner, or have someone \
+             there send the person an invitation link",
+        ),
         ServerError::NoAccountHere => failed(
             "not_permitted",
             error.to_string(),

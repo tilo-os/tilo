@@ -344,6 +344,13 @@ pub(super) fn handle_host_action(
     match session.trust().cert(peer, tilo_clock::unix_now_ns()) {
         Ok(()) => {}
         Err(crate::workspace_access::DenyReason::NotTrusted) if asks_to_hold(&request.message) => {}
+        // A person nobody here let in yet is told so, and what makes them known: not that some
+        // action is not theirs.
+        Err(crate::workspace_access::DenyReason::NotTrusted) => {
+            return refused(tilo_actions::remote::not_on_this_server(
+                &peer.user_public_key,
+            ));
+        }
         Err(_) => return refused(ActionCallError::NotPermitted),
     }
     let Some(server) = session.app_serving else {

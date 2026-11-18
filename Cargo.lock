@@ -21963,6 +21963,7 @@ dependencies = [
  "tilo-sort",
  "tilo-test-env",
  "tilo-user-identity",
+ "tilo-workspace-join",
  "tilo-workspace-keys",
  "tilo-workspace-service",
  "tokio",

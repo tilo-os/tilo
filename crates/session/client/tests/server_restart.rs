@@ -67,9 +67,9 @@ async fn a_held_session_is_served_again_within_seconds_of_its_server_restarting(
 
     // Nothing tells the session to reconnect: the computer's next action is simply served.
     session.write(route(), &say(&mut note, "after")).unwrap();
-    let served = durable(&session, BACK_WITHIN).await;
+    let kept = durable(&session, BACK_WITHIN).await;
     assert!(
-        served.is_ok(),
+        kept.is_ok(),
         "the computer's next action after its server restarted was not served within {} s \
          (the session is {:?}: {:?})",
         BACK_WITHIN.as_secs(),
@@ -136,7 +136,7 @@ async fn a_session_closed_while_its_server_is_away_stops_dialing_at_once() {
 /// Whether everything `session` wrote is durable at its server within `within`.
 async fn durable(session: &tilo_session_client::Link, within: Duration) -> Result<(), ()> {
     let receipt = session.barrier().map_err(drop)?;
-    tokio::time::timeout(within, async {
+    tokio::time::timeout(within, async move {
         loop {
             if let Ok(answer) = receipt.try_recv() {
                 return answer.map_err(drop);
