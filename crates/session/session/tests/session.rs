@@ -2396,15 +2396,15 @@ fn strip_id(session: &Session, name: &str) -> String {
     })
 }
 
-/// The names of the workspaces, in order, and the strips of each, as a person reads them: a strip
-/// nobody named reads as the shell's own word for its place ("Strip 1").
+/// The names of the workspaces, in order, and the strips of each, as a person reads them: a
+/// workspace or strip nobody named reads as the shell's own word for it ("Workspace", "Strip 1").
 fn workspaces(session: &Session) -> Vec<(String, Vec<String>)> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
             .map(|workspace| {
                 (
-                    workspace.name.clone(),
+                    tilo_desktop_surface::names::workspace(&workspace.name),
                     workspace
                         .strips
                         .iter()
