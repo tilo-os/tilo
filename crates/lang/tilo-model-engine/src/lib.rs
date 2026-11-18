@@ -4,18 +4,25 @@
 //! A model module (`model.wasm` in a `.tapp`'s payload) imports nothing but
 //! the calls [`ABI`] names and exports [`EXPORT`]. This crate compiles the
 //! bytes on the engine the rest of the system executes WebAssembly on
-//! ([`tilolang_runtime::engine`]) and calls it with one JSON request: the
-//! genesis of a new resource, one action with its arguments, or the replay of
-//! an invocation another holder recorded, naming the resource kind it is for
-//! so one module serves every resource its app declares.
+//! ([`tilolang_runtime::engine`]).
+//!
+//! The action framework is this side's, executed natively once per device rather
+//! than compiled into every app's module. [`Model::apply`] binds an
+//! invocation's JSON arguments against the verb the package's signed surface
+//! declares, has the module read the typed action (its recorded bytes and the
+//! facts history files it under, [`tilo_model_guest::Bound`]), builds the
+//! envelope (its id from the request, the base heads, the invoker's actor and
+//! the origin time), writes the history entry and commits the change through
+//! the action executor, exactly as an action of an app compiled in would be.
+//! [`Model::replay`] reproduces an invocation another holder recorded, at the
+//! heads it was made on, through the same executor. The module is asked only
+//! to read the action and apply its verb, given in a compact typed form
+//! ([`tilo_model_guest::wire`]), not JSON.
 //!
 //! The device holds the document. The module reads and writes it through the
-//! device's document calls (`automerge::model_device`): every read is of the
-//! resource at its current heads, and every write lands in this side's
-//! Automerge document, so the change is this device's Automerge's, made the
-//! same way on every holder, and the module carries only the app's own code.
-//! What comes back is the invocation the action API recorded, which a peer
-//! replays through the same calls, and the changes the module's writes made.
+//! device's document calls (`automerge::model_device`): every write lands in
+//! this side's Automerge document, under the actor and in the change the
+//! executor pins, so the change is made the same way on every holder.
 //!
 //! The engine links only [`ABI`]: a module importing anything else fails to
 //! link, which is how "no imports beyond the device's" is enforced rather
@@ -31,6 +38,13 @@ use std::rc::Rc;
 
 use automerge::AutoCommit;
 use automerge::model_device::Documents;
+use automerge::transaction::CommitOptions;
+use tilo_actions::surface::VerbSurface;
+use tilo_actions::{
+    Acting, ActionArgs, ActionContext, ActionEnvelope, ActionError, ActionId, ActionInvoker,
+    ActionParam, ChangeKind, EncodedAction, FrameworkChange, MemberId,
+};
+use tilo_model_guest::{Bound, Op, Refused, wire};
 use tilolang_runtime::engine::{Engine, EngineLimits, GuestAnswer, Host, HostFail, Imports, Wasm};
 use tilolang_runtime::ids::ModuleHash;
 
@@ -46,7 +60,7 @@ pub const ABI: &[Imports] = &[
 ];
 
 /// The export a model module is called through.
-pub const EXPORT: &str = "tilo_model_apply";
+pub const EXPORT: &str = tilo_model_guest::EXPORT;
 
 /// Why a model could not be loaded, asked or understood.
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +77,14 @@ pub enum ModelError {
     Answer(String),
     #[error("the document: {0}")]
     Document(String),
+    #[error("the arguments: {0}")]
+    Arguments(String),
+}
+
+impl From<ActionError> for ModelError {
+    fn from(error: ActionError) -> Self {
+        Self::Refused(error.to_string())
+    }
 }
 
 /// One app version's model, compiled and ready to apply its actions.
@@ -71,67 +93,40 @@ pub struct Model {
     module: ModuleHash,
 }
 
-/// What the device asks a model to do, as the module's ABI carries it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Op {
-    /// Make a new resource's genesis: the module derives the actor its
-    /// identity names ([`tilo_resource::genesis::actor`]), so every holder of
-    /// it writes the same change.
-    Initialize,
-    /// Apply the request's action to the request's document.
-    Apply,
-    /// Replay the request's envelope, an invocation another holder recorded,
-    /// against the request's document: at the envelope's base heads it makes
-    /// the change the holder made, which is how a receiver checks it.
-    Replay,
-}
-
-/// One request to a model.
+/// One invocation of a verb, as the action API admitted it.
 #[derive(Debug)]
-pub struct Request<'a> {
-    /// What the model is asked to do.
-    pub op: Op,
-    /// The resource kind the request is for: an app's module serves every
-    /// resource the app declares, and routes the request by this
-    /// ([`tilo_resource::Resource::KIND`]).
+pub struct Invocation<'a> {
+    /// The app the package is: what history and the receipt name the change
+    /// by.
+    pub app: &'a str,
+    /// The resource kind the verb is of: an app's module serves every
+    /// resource the app declares, and routes the request by this.
     pub kind: &'a str,
+    /// The verb, as the package's signed surface declares it.
+    pub verb: &'a VerbSurface,
     /// The resource's document id: the empty string for what an app keeps per
-    /// workspace, or a named document's id. The module reads it as
-    /// [`Op::Initialize`]'s identity.
+    /// workspace, or a named document's id.
     pub id: &'a str,
-    /// The workspace the resource is minted in.
-    pub home: &'a str,
-    /// The bytes of the document the action acts on (or a replay replays
-    /// against); empty for [`Op::Initialize`].
-    pub bytes: &'a [u8],
-    /// The invoking member ([`tilo_action_policy::MemberId::of_actor_bytes`]:
-    /// a person's key, `agent:<id>` or `bot:<id>`).
-    pub member: &'a str,
-    /// Who acts and for whom, as the device's action API recorded it, when the
-    /// member acts for someone ([`tilo_actions::Acting`]): an agent a person's
-    /// session handed the action to. `None` for a member acting for themselves.
-    pub acting: Option<serde_json::Value>,
-    /// The action's id in the resource's vocabulary.
-    pub action: &'a str,
-    /// Its arguments, as the action API binds them.
+    /// The bytes of the document the action acts on.
+    pub document: &'a [u8],
+    /// The invoking member: the person, agent or bot the change is authored
+    /// by.
+    pub member: &'a MemberId,
+    /// Who acts, and for whom, as the action API admitted it.
+    pub acting: &'a Acting,
+    /// The arguments, as the caller gave them.
     pub arguments: serde_json::Map<String, serde_json::Value>,
     /// The origin clock, milliseconds since the Unix epoch.
     pub now: i64,
-    /// The invocation [`Op::Replay`] replays, as [`Answer::envelope`] carried
-    /// it from the holder that made it.
-    pub envelope: Option<serde_json::Value>,
 }
 
-/// What a model answered.
+/// What applying an invocation made.
 #[derive(Debug)]
-pub struct Answer {
-    /// The bytes of the resource's document, for [`Op::Initialize`].
-    pub document: Option<Vec<u8>>,
-    /// The changes the action (or the replay) added, against the bytes it
-    /// was given.
-    pub changes: Option<Vec<u8>>,
+pub struct Applied {
+    /// The change the action added, against the document it was given.
+    pub changes: Vec<u8>,
     /// The invocation as the action API recorded it: what a peer replays.
-    pub envelope: Option<serde_json::Value>,
+    pub envelope: ActionEnvelope,
 }
 
 impl Model {
@@ -149,88 +144,202 @@ impl Model {
         Ok(Self { engine, module })
     }
 
-    /// Ask the model to do `request`.
+    /// The genesis of the resource `kind` with the document id `id` (`""` for
+    /// what an app keeps per workspace) minted in the workspace `home`: the
+    /// app's initial content in one change at time zero, under the actor
+    /// every device derives from the resource's identity
+    /// ([`tilo_resource::genesis::actor`]), so every holder of it writes the
+    /// same change. Answers the document's bytes.
     ///
     /// # Errors
-    /// Returns [`ModelError`] when the module traps, spends its fuel, imports
-    /// something the device does not answer, answers nothing, or refuses the
-    /// action (in the module's words).
-    pub fn ask(&self, request: &Request<'_>) -> Result<Answer, ModelError> {
-        let mut document = match request.op {
-            Op::Initialize => AutoCommit::new(),
-            Op::Apply | Op::Replay => AutoCommit::load(request.bytes)
-                .map_err(|error| ModelError::Document(error.to_string()))?,
+    /// See [`ModelError`].
+    pub fn initialize(&self, kind: &str, id: &str, home: &str) -> Result<Vec<u8>, ModelError> {
+        let mut document = AutoCommit::new();
+        document.set_actor(tilo_resource::genesis::actor(&document_id(id), kind, home));
+        let (mut document, answer) = self.call(request(Op::Initialize, kind), document);
+        answer?;
+        document.commit_with(
+            CommitOptions::default()
+                .with_message(FrameworkChange::Genesis.change_message())
+                .with_time(0),
+        );
+        Ok(document.save())
+    }
+
+    /// Apply `invocation`: bind its arguments against its verb, have the
+    /// module read the action, and apply it under an envelope whose id, base
+    /// heads, actor and time all come from the request, so two holders given
+    /// the same request write the same change.
+    ///
+    /// # Errors
+    /// Arguments the verb does not take, an action the module refuses, and a
+    /// document that does not load.
+    pub fn apply(&self, invocation: Invocation<'_>) -> Result<Applied, ModelError> {
+        let Invocation {
+            app,
+            kind,
+            verb,
+            id,
+            document,
+            member,
+            acting,
+            arguments,
+            now,
+        } = invocation;
+        let arguments = bind(verb, arguments)?;
+        let typed = serde_json::json!({
+            "op": { "action": verb.id, "args": arguments },
+            "at": now,
+        });
+        let mut asked = request(Op::Bind, kind);
+        wire::encode(&typed, &mut asked);
+        let (_, answer) = self.call(asked, AutoCommit::new());
+        let bound: Bound = serde_json::from_slice(&answer?)
+            .map_err(|error| ModelError::Answer(error.to_string()))?;
+        let action = Guest::recorded(self, kind, bound.payload.as_bytes())?.with_facts(&bound);
+        let encoded = EncodedAction {
+            type_id: bound.action_type,
+            payload: bound.payload.into_bytes(),
         };
-        let before = document.get_heads();
+        let mut document =
+            AutoCommit::load(document).map_err(|error| ModelError::Document(error.to_string()))?;
+        let heads = document.get_heads();
+        let context = ActionContext::for_resource(kind, kind, &bound.label)
+            .with_app(app, &bound.label)
+            .with_invoker(ActionInvoker::admitted(acting))
+            .with_change(bound.change);
+        let pinned = (
+            invocation_id(&document_id(id), member, &encoded, &heads, now),
+            now / 1_000,
+        );
+        let mut envelope = tilo_actions::envelope_at(
+            &mut document,
+            &action,
+            encoded,
+            (&member.actor_bytes(), context),
+            pinned,
+        )?;
+        // The module computes no undo: an action whose own code does writes
+        // none, rather than an entry a device with the app compiled in would
+        // find its undo missing from.
+        if bound.compensates
+            && let Some(context) = envelope.context.as_mut()
+        {
+            context.action = None;
+        }
+        tilo_actions::replay_decoded(&mut document, &envelope, &action, None)?;
+        Ok(Applied {
+            changes: document.save_after(&heads),
+            envelope,
+        })
+    }
+
+    /// Replay `envelope`, an invocation another holder recorded, against the
+    /// resource `kind` whose document is `document`: at the envelope's base
+    /// heads it makes the change the holder made, which is how a receiver
+    /// checks it. Answers the changes it added.
+    ///
+    /// # Errors
+    /// An action the module does not read or refuses, and a document that
+    /// does not load or lacks the envelope's base.
+    pub fn replay(
+        &self,
+        kind: &str,
+        document: &[u8],
+        envelope: &ActionEnvelope,
+    ) -> Result<Vec<u8>, ModelError> {
+        let action = Guest::recorded(self, kind, &envelope.action.payload)?;
+        let mut document =
+            AutoCommit::load(document).map_err(|error| ModelError::Document(error.to_string()))?;
+        let heads = document.get_heads();
+        tilo_actions::replay_decoded(&mut document, envelope, &action, None)?;
+        Ok(document.save_after(&heads))
+    }
+
+    /// Call the module with `request` about `document`, answering the
+    /// document as the module left it and what it answered.
+    fn call(
+        &self,
+        request: Vec<u8>,
+        document: AutoCommit,
+    ) -> (AutoCommit, Result<Vec<u8>, ModelError>) {
         let serving = Rc::new(Serving {
-            request: encode(request)?,
+            request,
             answer: RefCell::new(None),
             documents: RefCell::new(Documents::new(document)),
             document_answer: RefCell::new(Vec::new()),
         });
         let outcome = self.engine.call(&self.module, EXPORT, &[], serving.clone());
-        if let Err(error) = outcome {
-            // A module that panicked wrote why before it trapped.
-            let said = serving
-                .answer
-                .borrow_mut()
-                .take()
-                .and_then(|bytes| serde_json::from_slice::<Wire>(&bytes).ok()?.error);
-            return Err(
-                said.map_or_else(|| ModelError::Call(error.to_string()), ModelError::Refused)
-            );
-        }
-        let bytes = serving
-            .answer
-            .borrow_mut()
-            .take()
-            .ok_or(ModelError::Silent)?;
-        let answer: Wire = serde_json::from_slice(&bytes).map_err(|error| {
-            ModelError::Answer(format!("{error}: {}", String::from_utf8_lossy(&bytes)))
-        })?;
-        if let Some(error) = answer.error {
-            return Err(ModelError::Refused(error));
-        }
-        // What the module wrote is in this side's document.
-        document = serving
+        let document = serving
             .documents
             .replace(Documents::new(AutoCommit::new()))
             .into_document();
-        let (whole, changes) = match request.op {
-            Op::Initialize => (Some(document.save()), None),
-            Op::Apply | Op::Replay => (None, Some(document.save_after(&before))),
+        let answer = serving.answer.borrow_mut().take();
+        let refused = |bytes: &[u8]| serde_json::from_slice::<Refused>(bytes).ok();
+        let answer = match (outcome, answer) {
+            // A module that panicked wrote why before it trapped.
+            (Err(error), answer) => Err(answer.as_deref().and_then(refused).map_or_else(
+                || ModelError::Call(error.to_string()),
+                |said| ModelError::Refused(said.error),
+            )),
+            (Ok(_), None) => Err(ModelError::Silent),
+            (Ok(_), Some(bytes)) => match refused(&bytes) {
+                Some(said) => Err(ModelError::Refused(said.error)),
+                None => Ok(bytes),
+            },
         };
-        Ok(Answer {
-            document: whole,
-            changes,
-            envelope: answer.envelope,
-        })
+        (document, answer)
     }
 }
 
-/// The request as the module reads it.
-fn encode(request: &Request<'_>) -> Result<Vec<u8>, ModelError> {
-    let wire = serde_json::json!({
-        "op": match request.op {
-            Op::Initialize => "initialize",
-            Op::Apply => "apply",
-            Op::Replay => "replay",
-        },
-        "kind": request.kind,
-        "id": document_id(request.id),
-        "home": request.home,
-        "member": request.member,
-        "acting": request.acting,
-        "action": request.action,
-        "arguments": request.arguments,
-        "now": request.now,
-        "envelope": request.envelope,
-    });
-    serde_json::to_vec(&wire).map_err(|error| ModelError::Answer(error.to_string()))
+/// A request's head: the op and the resource kind it is for.
+fn request(op: Op, kind: &str) -> Vec<u8> {
+    let mut bytes = vec![op as u8];
+    wire::text(kind, &mut bytes);
+    bytes
+}
+
+/// `arguments` bound against the parameters `verb` declares, as the action
+/// API binds an installed app's: an argument it does not take, or one of the
+/// wrong type, is refused by name. A parameter published as a field of
+/// another is nested back under it.
+fn bind(
+    verb: &VerbSurface,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> Result<serde_json::Map<String, serde_json::Value>, ModelError> {
+    let arguments = tilo_actions::surface::nest_arguments(verb, arguments.into_iter().collect());
+    let mut params: Vec<ActionParam> = Vec::with_capacity(verb.params.len());
+    for param in &verb.params {
+        let (name, ty, schema) = match &param.within {
+            Some(outer) => (outer.clone(), tilo_actions::ParamType::Object, None),
+            None => (
+                param.name.clone(),
+                tilo_actions::params::param_type_of(&param.schema),
+                Some(param.schema.clone()).filter(|schema| !schema.is_null()),
+            ),
+        };
+        if let Some(known) = params.iter_mut().find(|known| known.name == name) {
+            known.required |= param.required;
+            continue;
+        }
+        let declared = if param.required {
+            ActionParam::required_owned(name.clone(), ty, name)
+        } else {
+            ActionParam::optional_owned(name.clone(), ty, name)
+        };
+        params.push(match schema {
+            Some(schema) => declared.with_schema(schema),
+            None => declared,
+        });
+    }
+    ActionArgs::bind_json(&params, &arguments)
+        .map(|args| args.to_json())
+        .map_err(|error| ModelError::Arguments(error.to_string()))
 }
 
 /// The document id as the module reads it: the empty route is what an app
 /// keeps per workspace, whose ownership key is the package primary's.
+#[must_use]
 pub fn document_id(id: &str) -> String {
     if id.is_empty() {
         "@tilo:package-primary".to_owned()
@@ -239,13 +348,119 @@ pub fn document_id(id: &str) -> String {
     }
 }
 
-/// The module's answer, as it writes it.
-#[derive(Debug, serde::Deserialize)]
-struct Wire {
-    #[serde(default)]
-    envelope: Option<serde_json::Value>,
-    #[serde(default)]
-    error: Option<String>,
+/// The invocation's id: a function of what the request asks and the resource
+/// it asks it of, so every holder making the same request mints the same one.
+fn invocation_id(
+    id: &str,
+    member: &MemberId,
+    encoded: &EncodedAction,
+    heads: &[automerge::ChangeHash],
+    now: i64,
+) -> ActionId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"tilo.model.invocation\0");
+    hasher.update(id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(&member.actor_bytes());
+    hasher.update(&now.to_le_bytes());
+    hasher.update(&encoded.payload);
+    for head in heads {
+        hasher.update(&head.0);
+    }
+    let digest = hasher.finalize();
+    let short = digest
+        .as_bytes()
+        .first_chunk::<16>()
+        .copied()
+        .unwrap_or_default();
+    ActionId(uuid::Uuid::from_bytes(short))
+}
+
+/// A verb of an app's model as the executor applies it: the module applies
+/// it, and the facts the module read from it are what the envelope keeps.
+#[derive(Debug)]
+struct Guest<'a> {
+    model: &'a Model,
+    kind: &'a str,
+    /// The action in the compact form the module reads.
+    action: Vec<u8>,
+    change: ChangeKind,
+    action_kind: tilo_actions::ActionKind,
+    incoming_message: bool,
+}
+
+impl std::fmt::Debug for Model {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Model").finish_non_exhaustive()
+    }
+}
+
+impl<'a> Guest<'a> {
+    /// The action whose recorded JSON is `payload`.
+    fn recorded(model: &'a Model, kind: &'a str, payload: &[u8]) -> Result<Self, ModelError> {
+        let value: serde_json::Value = serde_json::from_slice(payload)
+            .map_err(|error| ModelError::Refused(format!("the recorded action: {error}")))?;
+        let mut action = Vec::with_capacity(payload.len());
+        wire::encode(&value, &mut action);
+        Ok(Self {
+            model,
+            kind,
+            action,
+            change: ChangeKind::default(),
+            action_kind: tilo_actions::ActionKind::Undoable,
+            incoming_message: false,
+        })
+    }
+
+    /// With the facts the module read from the action.
+    fn with_facts(mut self, bound: &Bound) -> Self {
+        self.change = bound.change;
+        self.action_kind = bound.kind;
+        self.incoming_message = bound.incoming_message;
+        self
+    }
+}
+
+impl tilo_actions::Action for Guest<'_> {
+    fn apply(&self, doc: &mut AutoCommit) -> Result<(), ActionError> {
+        let context = tilo_actions::invoking_context();
+        let mut asked = request(Op::Apply, self.kind);
+        asked.extend_from_slice(&self.action);
+        let invoker = context
+            .as_ref()
+            .and_then(|context| context.invoker.as_ref());
+        let invocation = context
+            .as_ref()
+            .and_then(|context| context.source_invocation);
+        for value in [
+            serde_json::to_value(invoker),
+            serde_json::to_value(invocation),
+        ] {
+            wire::encode(&value.map_err(ActionError::Encode)?, &mut asked);
+        }
+        wire::encode(
+            &serde_json::Value::Bool(tilo_actions::executor::is_replaying()),
+            &mut asked,
+        );
+        let document = std::mem::replace(doc, AutoCommit::new());
+        let (document, answer) = self.model.call(asked, document);
+        *doc = document;
+        answer
+            .map(drop)
+            .map_err(|error| ActionError::Refused(error.to_string()))
+    }
+
+    fn change_kind(&self) -> ChangeKind {
+        self.change
+    }
+
+    fn action_kind(&self) -> tilo_actions::ActionKind {
+        self.action_kind
+    }
+
+    fn incoming_message(&self) -> bool {
+        self.incoming_message
+    }
 }
 
 /// This side of one call: the request the module reads, the answer it
@@ -283,7 +498,7 @@ impl Host for Serving {
         memory: &[u8],
         args: &[Wasm],
     ) -> Result<GuestAnswer, HostFail> {
-        if module != "tilo_model" {
+        if module != tilo_model_guest::IMPORT_MODULE {
             return Err(HostFail::Trap(format!(
                 "the model imports {module}::{name}"
             )));

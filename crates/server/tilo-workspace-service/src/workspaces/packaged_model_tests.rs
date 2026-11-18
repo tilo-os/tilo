@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use super::fixtures::{governor, test_host};
 use super::packaged_model::PackagedAction;
 use tilo_app_package::{Manifest, SigningIdentity, pack, tapp};
-use tilo_model_engine::{Model, Op, Request};
+use tilo_model_engine::{Invocation, Model};
 use tilo_resource::Resource as _;
 
 /// The app the test installs, which the server does not have compiled in.
@@ -174,34 +174,51 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
     // the invocation's base heads: the verb reads and writes that holder's
     // document through the same document calls, and the change it writes is the
     // change the server published.
+    // History keeps what was done, as the device wrote it: the action, in
+    // the bytes its own type writes, the app and the person.
+    let mut written = automerge::AutoCommit::load(&after).unwrap();
+    let head = written.get_heads()[0];
+    let entry = tilo_actions::entry_of(written.document(), head).expect("the change has an entry");
+    let recorded = entry.action.as_ref().expect("the entry holds the action");
+    assert_eq!(recorded.type_id, TRACKER);
+    assert!(
+        String::from_utf8_lossy(&recorded.payload).contains("\"create-area\""),
+        "the recorded action is the verb applied"
+    );
+    assert_eq!(
+        entry.app.as_ref().map(|app| app.id.as_str()),
+        Some(TASKS),
+        "the entry names the app the package is"
+    );
+    assert!(entry.invoker.is_some(), "the entry names who acted");
+
+    // Another holder replays the invocation through the same module, at its
+    // base heads: it makes the server's change, byte for byte.
     let model = Model::compile(&model_module("tasks")).unwrap();
-    let replayed = model
-        .ask(&Request {
-            op: Op::Replay,
-            kind: TRACKER,
-            id: "",
-            home: &created.workspace,
-            bytes: &base,
-            member: "",
-            acting: None,
-            action: "",
-            arguments: serde_json::Map::new(),
-            now: 0,
-            envelope: Some(envelope),
-        })
-        .unwrap();
+    let envelope: tilo_actions::ActionEnvelope = serde_json::from_value(envelope).unwrap();
+    let replayed = model.replay(TRACKER, &base, &envelope).unwrap();
     let mut replayed_document = automerge::AutoCommit::load(&base).unwrap();
-    tilo_automerge::ApplyIncoming::load_incoming(
-        &mut replayed_document,
-        &replayed
-            .changes
-            .expect("the module wrote the action's change"),
-    )
-    .unwrap();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut replayed_document, &replayed).unwrap();
     assert_eq!(
         replayed_document.get_heads(),
-        automerge::AutoCommit::load(&after).unwrap().get_heads(),
+        written.get_heads(),
         "the holder's replay of the invocation makes the server's change"
+    );
+
+    // Taking the step back is history's own revert, on the device: nothing of
+    // it reaches the module.
+    let authors = ui::history_source::authors::AuthorDirectory::new();
+    let outcome =
+        ui::history_source::revert::revert_step(&mut written, &head, None, &authors).unwrap();
+    assert!(outcome.wrote, "the revert writes the step's inverse");
+    written.commit();
+    assert!(
+        !tasks_model::Tracker::read(&written)
+            .unwrap()
+            .areas
+            .iter()
+            .any(|(_, area)| area.name.as_str() == "Ship it"),
+        "the reverted step's area is gone"
     );
     server.shutdown().await;
 }
@@ -233,27 +250,9 @@ fn one_module_serves_every_resource_of_its_app() {
     const LIBRARY: &str = "tube.library";
     const HISTORY: &str = "tube.watch-history";
     let model = Model::compile(&model_module("tube")).unwrap();
-    let member = hex::encode([7_u8; 32]);
-    let ask = |op: Op, kind: &str, bytes: &[u8], action: &str, arguments| {
-        model
-            .ask(&Request {
-                op,
-                kind,
-                id: "",
-                home: "a workspace",
-                bytes,
-                member: &member,
-                acting: None,
-                action,
-                arguments,
-                now: NOW_MS,
-                envelope: None,
-            })
-            .unwrap()
-    };
     let genesis = |kind: &str| {
-        ask(Op::Initialize, kind, &[], "", serde_json::Map::new())
-            .document
+        model
+            .initialize(kind, "", "a workspace")
             .expect("the module made the resource's genesis")
     };
     let library = automerge::AutoCommit::load(&genesis(LIBRARY)).unwrap();
@@ -262,22 +261,36 @@ fn one_module_serves_every_resource_of_its_app() {
     let mut history = automerge::AutoCommit::load(&history_document).unwrap();
     tube_model::WatchHistory::read(&history)
         .expect("the watch history's own code reads its genesis");
+    let surface = collab_types::surface::SurfaceFile::parse(include_bytes!(
+        "../../../../../apps/tube/surface.toml"
+    ))
+    .unwrap();
+    let verb = surface
+        .resources
+        .iter()
+        .filter(|resource| resource.kind == HISTORY)
+        .flat_map(|resource| resource.verbs.iter())
+        .find(|verb| verb.id == tube_model::WatchHistory::PROGRESS.id())
+        .expect("the surface declares the verb");
     let mut arguments = serde_json::Map::new();
     arguments.insert("video".into(), serde_json::Value::from("a video"));
     arguments.insert("position_ms".into(), serde_json::Value::from(5_u64));
     arguments.insert("duration_ms".into(), serde_json::Value::from(600_000_u64));
-    let played = ask(
-        Op::Apply,
-        HISTORY,
-        &history_document,
-        tube_model::WatchHistory::PROGRESS.id(),
+    let member = tilo_actions::MemberId::person(hex::encode([7_u8; 32]));
+    let acting = tilo_actions::Acting::member(member.clone());
+    let invocation = |arguments| Invocation {
+        app: "so.tilo.tube",
+        kind: HISTORY,
+        verb,
+        id: "",
+        document: &history_document,
+        member: &member,
+        acting: &acting,
         arguments,
-    );
-    tilo_automerge::ApplyIncoming::load_incoming(
-        &mut history,
-        &played.changes.expect("the module wrote the change"),
-    )
-    .unwrap();
+        now: NOW_MS,
+    };
+    let played = model.apply(invocation(arguments.clone())).unwrap();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut history, &played.changes).unwrap();
     assert!(
         tube_model::WatchHistory::read(&history)
             .unwrap()
@@ -285,21 +298,14 @@ fn one_module_serves_every_resource_of_its_app() {
             .contains_key("a video"),
         "the request naming the watch history ran that resource's verb"
     );
-    let refused = model.ask(&Request {
-        op: Op::Initialize,
-        kind: "tube.nothing",
-        id: "",
-        home: "a workspace",
-        bytes: &[],
-        member: &member,
-        acting: None,
-        action: "",
-        arguments: serde_json::Map::new(),
-        now: NOW_MS,
-        envelope: None,
-    });
+    let mut wrong = arguments;
+    wrong.insert("position_ms".into(), serde_json::Value::from("five"));
     assert!(
-        refused.is_err(),
+        model.apply(invocation(wrong)).is_err(),
+        "the device refuses an argument of the wrong type"
+    );
+    assert!(
+        model.initialize("tube.nothing", "", "a workspace").is_err(),
         "the module refuses a request for a kind it does not serve"
     );
 }

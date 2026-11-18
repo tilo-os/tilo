@@ -13,10 +13,17 @@ path = "src/lib.rs"
 [dependencies]
 # The documents a model module reads and writes are this side's.
 automerge.workspace = true
-serde.workspace = true
+blake3.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# The action framework runs here, natively: binding, envelopes, history
+# entries, commits and replay.
+tilo-actions = { path = "../../collab/actions" }
+# What the module reads and answers.
+tilo-model-guest = { path = "../../sdk/tilo-model-guest" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
 tilolang-runtime = { path = "../tilolang-runtime", default-features = false }
+uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

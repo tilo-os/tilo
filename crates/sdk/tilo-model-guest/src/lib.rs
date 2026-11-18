@@ -1,28 +1,34 @@
-//! An app's model as a WebAssembly module: the guest side of the document
-//! device's model ABI.
+//! An app's model as a WebAssembly module: the guest side of the device's
+//! model ABI.
 //!
-//! The device that holds a workspace's keys executes an installed app's model from
-//! the app's package (`model.wasm`), with no build of its own. The module
-//! imports nothing but the device's calls below and the device's document
-//! calls, and exports [`EXPORT`]; the verbs, declarations and typed arguments
-//! are the app's own, from its model crate.
+//! The device that holds a workspace's keys executes an installed app's
+//! model from the app's package (`model.wasm`), with no build of its own.
+//! The module imports nothing but the device's calls below and the device's
+//! document calls, and exports [`EXPORT`]; the verbs are the app's own, from
+//! its model crate.
+//!
+//! The device does everything about an action but the verb. It binds the
+//! action from its JSON arguments against the verbs the package's signed
+//! surface declares, builds its envelope (its id, base heads, actor and
+//! time), writes its history entry and commits its change, and replays an
+//! invocation another holder recorded at the heads it was made on: the action
+//! framework is executed natively there, once per device rather than once per app.
+//! The module gets the action in a compact typed form ([`wire`]), not JSON,
+//! and only decodes it and applies the verb:
+//!
+//! - [`Op::Initialize`] writes the resource's initial content;
+//! - [`Op::Bind`] reads an action and answers what it is (its recorded
+//!   bytes, the kinds history files it under, the resource's names): the
+//!   facts only the app's types know;
+//! - [`Op::Apply`] applies the action to the device's document, as the
+//!   invoker the envelope pins.
 //!
 //! The device holds the document. A module built with `--cfg
 //! tilo_model_guest` reads and writes it through the device: its
 //! `tilo_resource::Doc` is a handle on the device's document, every read and
 //! write one call (`automerge::model_device`), so a verb acts on the
-//! resource at its current heads exactly as it does natively, and the change
-//! it makes is the device's Automerge's, which the device signs and keeps. The
-//! module carries the app's own code and none of Automerge's storage.
-//!
-//! An invocation is the one the action API makes: the action is built from
-//! the resource's declarations for the JSON arguments exactly as the device
-//! binds them, then applied through the action executor under an envelope
-//! whose id, base heads, actor and time all come from the request. So two
-//! holders of the resource given the same request write the same change, and
-//! a device that receives it replays the envelope to the same change, through
-//! the same calls against the document at the change's parents: the
-//! determinism every key holder needs to verify another's work.
+//! resource exactly as it does natively, and what it writes is the device's
+//! Automerge's, which the device commits under the envelope and signs.
 //!
 //! An app's module serves every resource it declares: a request names the
 //! resource kind it is for, and the module routes it to that resource's verbs.
@@ -41,11 +47,11 @@
 
 #![deny(rust_2018_idioms, missing_docs)]
 
-use serde::Deserialize;
-use tilo_actions::{
-    Acting, Action, ActionContext, ActionEnvelope, ActionId, ActionInvoker, MemberId,
-};
-use tilo_resource::Resource;
+pub mod wire;
+
+use serde::de::DeserializeOwned;
+use tilo_actions::{Action as _, ActionContext, ActionInvoker, InvocationId};
+use tilo_resource::{Resource, Stamped};
 
 /// The export the device calls, with no arguments, returning `0` once it wrote
 /// its answer and anything else when it could not.
@@ -54,6 +60,7 @@ pub const EXPORT: &str = "tilo_model_apply";
 /// The import module these calls are under.
 pub const IMPORT_MODULE: &str = "tilo_model";
 
+#[cfg(target_family = "wasm")]
 #[link(wasm_import_module = "tilo_model")]
 unsafe extern "C" {
     /// How many bytes the request holds.
@@ -65,19 +72,83 @@ unsafe extern "C" {
     fn answer(offset: i32, length: i32);
 }
 
-/// What the device asks the model to do.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Op {
-    /// Make the resource's genesis: the app's initial content, committed as
-    /// one change at time zero under the actor the resource's identity
-    /// derives.
-    Initialize,
-    /// Apply `action`, with `arguments`, to the device's document.
-    Apply,
-    /// Replay `envelope`, an invocation another holder recorded, against the
-    /// device's document: what a holder that receives the change checks it by.
-    Replay,
+/// What the device asks the model to do: the request's first byte. The
+/// resource kind follows it as [`wire::text`], then what the op reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Op {
+    /// Write the resource's initial content into the device's document, which
+    /// the device commits as the resource's genesis.
+    Initialize = 0,
+    /// Read the action that follows and answer what it is ([`Bound`]).
+    Bind = 1,
+    /// Apply the action that follows to the device's document. After it: the
+    /// invoker the envelope pins (or null), the invocation it is part of (or
+    /// null) and whether the device reproduces a recorded change.
+    Apply = 2,
+}
+
+impl Op {
+    /// The op a request's first byte names.
+    #[must_use]
+    pub const fn of(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(Self::Initialize),
+            1 => Some(Self::Bind),
+            2 => Some(Self::Apply),
+            _ => None,
+        }
+    }
+}
+
+/// What a module answers [`Op::Bind`] with: what only the app's types know
+/// about an action.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct Bound {
+    /// The type id the action is recorded under ([`Resource::ACTION_TYPE`]).
+    pub action_type: String,
+    /// The action as it is recorded: its JSON, written by its own type, so
+    /// every device keeps and replays the same bytes.
+    pub payload: String,
+    /// What the resource is called ([`Resource::label`]).
+    pub label: String,
+    /// Whether the change is a person's step or housekeeping.
+    pub change: tilo_actions::ChangeKind,
+    /// What the action is able to do.
+    pub kind: tilo_actions::ActionKind,
+    /// Whether it is a message someone received.
+    pub incoming_message: bool,
+    /// Whether its undo is computed by its own code
+    /// ([`tilo_actions::Action::compensates`]).
+    pub compensates: bool,
+}
+
+/// An action a module reads from its compact form.
+pub trait Recorded: Sized {
+    /// The action the reader is at.
+    ///
+    /// # Errors
+    /// Why the value there is not one.
+    fn read(reader: &mut wire::Reader<'_>) -> Result<Self, wire::Error>;
+}
+
+/// A `#[resource]` type's action: its operation and the origin time, as the recorded
+/// JSON names them.
+#[derive(serde::Deserialize)]
+struct StampedForm<O> {
+    op: O,
+    #[serde(default)]
+    at: i64,
+}
+
+impl<O: DeserializeOwned> Recorded for Stamped<O> {
+    fn read(reader: &mut wire::Reader<'_>) -> Result<Self, wire::Error> {
+        let form: StampedForm<O> = reader.read()?;
+        Ok(Self {
+            operation: form.op,
+            now_ms: form.at,
+        })
+    }
 }
 
 /// One resource an app's module serves, and the code that answers a request
@@ -90,14 +161,18 @@ enum Op {
 pub struct Served {
     /// The resource kind this serves, as the app declares it.
     pub kind: &'static str,
-    /// The handler that answers a request for it.
-    pub handler: fn(&Request) -> Result<Answer, String>,
+    /// The handler that answers a request for it: the op and the rest of the
+    /// request, answering what the device reads back.
+    pub handler: fn(Op, &mut wire::Reader<'_>) -> Result<Vec<u8>, String>,
 }
 
 impl Served {
     /// Serve the resource `R` through its own verbs.
     #[must_use]
-    pub fn of<R: Resource>() -> Self {
+    pub fn of<R: Resource>() -> Self
+    where
+        R::Action: Recorded,
+    {
         Self {
             kind: R::KIND,
             handler: serve_resource::<R>,
@@ -105,171 +180,97 @@ impl Served {
     }
 }
 
-/// One request from the device.
-#[derive(Debug, Deserialize)]
-pub struct Request {
-    op: Op,
-    /// The resource kind the request is for: which of the app's resources the
-    /// module routes it to ([`Resource::KIND`]).
-    pub kind: String,
-    /// The resource's document id: `@tilo:package-primary` for what an app
-    /// keeps per workspace.
-    id: String,
-    /// The workspace the resource is minted in.
-    home: String,
-    /// The invoking member, as [`MemberId::of_actor_bytes`] reads it: a
-    /// person's key, `agent:<id>` or `bot:<id>`.
-    #[serde(default)]
-    member: String,
-    /// Who acts, and for whom, as the device's action API recorded it
-    /// ([`tilo_actions::Acting`]): an agent a person's session handed to, for
-    /// that person, writes changes that say so. Absent for a member acting for
-    /// themselves, which [`Request::member`] alone names.
-    #[serde(default)]
-    acting: Option<serde_json::Value>,
-    /// The action's id in the resource's vocabulary.
-    #[serde(default)]
-    action: String,
-    /// Its arguments, as the action API binds them.
-    #[serde(default)]
-    arguments: serde_json::Map<String, serde_json::Value>,
-    /// The invocation's origin clock, milliseconds since the Unix epoch.
-    #[serde(default)]
-    now: i64,
-    /// The invocation [`Op::Replay`] replays, as the action API recorded it.
-    #[serde(default)]
-    envelope: Option<serde_json::Value>,
-}
-
-/// What the model answers. What it wrote is in the device's document, which
-/// the device saves, signs and keeps.
-#[derive(Debug, Default, serde::Serialize)]
-pub struct Answer {
-    /// The invocation as the action API recorded it: what a peer replays.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    envelope: Option<serde_json::Value>,
-    /// Why the model did not do it, in the device's words for the caller.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+/// What a module answers when it could not do what it was asked.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Refused {
+    /// Why, in the device's words for the caller.
+    pub error: String,
 }
 
 /// Serve the device's requests for every resource an app declares: what its
 /// model module exports as [`EXPORT`]. Each request names the resource kind it
 /// is for, and only that resource's verbs answer it.
+#[cfg(target_family = "wasm")]
 pub fn serve(resources: &[Served]) -> i32 {
     // A module aborts on a panic; what it said is its answer, so the device
     // reports why rather than only that the module trapped.
     std::panic::set_hook(Box::new(|panic| {
-        write(&Answer {
-            error: Some(panic.to_string()),
-            ..Answer::default()
-        });
+        write(&refusal(panic.to_string()));
     }));
-    let answer = match asked(resources) {
+    let answer = match read().and_then(|request| asked(resources, &request)) {
         Ok(answer) => answer,
-        Err(error) => Answer {
-            error: Some(error),
-            ..Answer::default()
-        },
+        Err(error) => refusal(error),
     };
     write(&answer)
 }
 
-fn asked(resources: &[Served]) -> Result<Answer, String> {
-    let request: Request =
-        serde_json::from_slice(&read()?).map_err(|error| format!("the request: {error}"))?;
+/// Answer the request `bytes` with the resource it names.
+///
+/// # Errors
+/// A request the module cannot read, for a kind it does not serve, or one the
+/// resource refuses.
+pub fn asked(resources: &[Served], bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut reader = wire::Reader::new(bytes);
+    let op = reader
+        .byte()
+        .ok()
+        .and_then(Op::of)
+        .ok_or("the request names no op")?;
+    let kind = reader.text().map_err(|error| error.to_string())?;
     let served = resources
         .iter()
-        .find(|served| served.kind == request.kind)
-        .ok_or_else(|| format!("the module serves no `{}` resource", request.kind))?;
-    (served.handler)(&request)
+        .find(|served| served.kind == kind)
+        .ok_or_else(|| format!("the module serves no `{kind}` resource"))?;
+    (served.handler)(op, &mut reader)
+}
+
+/// `error` as the module answers it.
+#[cfg(target_family = "wasm")]
+fn refusal(error: String) -> Vec<u8> {
+    serde_json::to_vec(&Refused { error }).unwrap_or_default()
 }
 
 /// One request for the resource `R`, answered by its own verbs.
-fn serve_resource<R: Resource>(request: &Request) -> Result<Answer, String> {
-    match request.op {
-        Op::Initialize => genesis::<R>(request),
-        Op::Apply => apply::<R>(request),
-        Op::Replay => replay::<R>(request),
+fn serve_resource<R: Resource>(op: Op, reader: &mut wire::Reader<'_>) -> Result<Vec<u8>, String>
+where
+    R::Action: Recorded,
+{
+    let action = match op {
+        Op::Initialize => {
+            let mut doc = device_document()?;
+            R::initialize(&mut doc)
+                .map_err(|error| format!("initializing the resource: {error}"))?;
+            return Ok(b"{}".to_vec());
+        }
+        Op::Bind | Op::Apply => R::Action::read(reader).map_err(|error| error.to_string())?,
+    };
+    if op == Op::Bind {
+        let payload = serde_json::to_string(&action).map_err(|error| error.to_string())?;
+        let bound = Bound {
+            action_type: R::ACTION_TYPE.to_owned(),
+            payload,
+            label: R::label(),
+            change: action.change_kind(),
+            kind: action.action_kind(),
+            incoming_message: action.incoming_message(),
+            compensates: action.compensates(),
+        };
+        return serde_json::to_vec(&bound).map_err(|error| error.to_string());
     }
-}
-
-/// The resource's genesis: the initializer's content in one change at time
-/// zero, under the actor every device derives from its identity
-/// ([`tilo_resource::genesis::actor`]).
-fn genesis<R: Resource>(request: &Request) -> Result<Answer, String> {
-    let actor = tilo_resource::genesis::actor(&request.id, R::KIND, &request.home);
+    let invoker: Option<ActionInvoker> = reader.read().map_err(|error| error.to_string())?;
+    let invocation: Option<InvocationId> = reader.read().map_err(|error| error.to_string())?;
+    let replaying: bool = reader.read().map_err(|error| error.to_string())?;
+    let context = ActionContext {
+        invoker,
+        source_invocation: invocation,
+        ..ActionContext::default()
+    };
     let mut doc = device_document()?;
-    doc.set_actor(actor);
-    R::initialize(&mut doc).map_err(|error| format!("initializing the resource: {error}"))?;
-    doc.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
-            .with_time(0),
-    );
-    Ok(Answer::default())
-}
-
-/// One action, applied as an invocation of its actor against the device's
-/// document: what the envelope names makes the change the same for every
-/// holder.
-fn apply<R: Resource>(request: &Request) -> Result<Answer, String> {
-    let member = MemberId::of_actor_bytes(request.member.as_bytes())
-        .ok_or_else(|| format!("`{}` names no member", request.member))?;
-    // The actor the device admitted, when it named one: an agent acting for
-    // the person whose session handed it the action says so, and the receipt
-    // decides the change by what that agent may do for them.
-    let acting = match &request.acting {
-        Some(acting) => serde_json::from_value::<Acting>(acting.clone())
-            .map_err(|error| format!("who acts: {error}"))?,
-        None => Acting::member(member.clone()),
-    };
-    let action =
-        tilo_resource::build_action::<R>(&request.action, &request.arguments, request.now)?;
-    let encoded = tilo_resource::encode::<R>(&action)
-        .map_err(|error| format!("{}: {error}", request.action))?;
-    let mut replica = tilo_resource::replica::Replica::<R>::from_doc(device_document()?);
-    let heads = replica.doc_mut().get_heads();
-    let context = ActionContext::for_resource(R::KIND, R::KIND, R::label())
-        .with_app(R::APP_ID, R::label())
-        .with_invoker(ActionInvoker::admitted(&acting))
-        .with_change(action.change_kind());
-    let envelope = ActionEnvelope {
-        id: invocation_id(&request.id, &member, &encoded, &heads, request.now),
-        action: encoded,
-        base_heads: heads.iter().map(|head| head.0).collect(),
-        timestamp: request.now / 1_000,
-        locus: action.locus(),
-        actor: Some(member.actor_bytes()),
-        context: Some(context),
-    };
-    replica
-        .replay(&envelope)
-        .map_err(|error| format!("{}: {error}", request.action))?;
-    let envelope =
-        serde_json::to_value(&envelope).map_err(|error| format!("the invocation: {error}"))?;
-    Ok(Answer {
-        envelope: Some(envelope),
-        ..Answer::default()
+    tilo_actions::replaying_as(replaying, || {
+        tilo_actions::with_invoking_context(Some(context), || action.apply(&mut doc))
     })
-}
-
-/// An invocation another holder recorded, replayed against the device's
-/// document through the resource's own verbs: at the envelope's base heads it
-/// makes the same change, which is how the holder that receives it checks it.
-fn replay<R: Resource>(request: &Request) -> Result<Answer, String> {
-    let envelope: ActionEnvelope = request
-        .envelope
-        .clone()
-        .ok_or_else(|| "a replay names no invocation".to_owned())
-        .and_then(|envelope| {
-            serde_json::from_value(envelope).map_err(|error| format!("the invocation: {error}"))
-        })?;
-    let mut replica = tilo_resource::replica::Replica::<R>::from_doc(device_document()?);
-    replica
-        .replay(&envelope)
-        .map_err(|error| format!("replaying the invocation: {error}"))?;
-    Ok(Answer::default())
+    .map_err(|error| error.to_string())?;
+    Ok(b"{}".to_vec())
 }
 
 /// The document the device's request is about.
@@ -292,36 +293,8 @@ fn device_document() -> Result<tilo_resource::Doc, String> {
     )
 }
 
-/// The invocation's id: a function of what the request asks and the resource
-/// it asks it of, so every holder making the same request mints the same one
-/// (its bytes are also the change's actor when no member is named).
-fn invocation_id(
-    id: &str,
-    member: &MemberId,
-    encoded: &tilo_actions::EncodedAction,
-    heads: &[automerge::ChangeHash],
-    now: i64,
-) -> ActionId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"tilo.model.invocation\0");
-    hasher.update(id.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(&member.actor_bytes());
-    hasher.update(&now.to_le_bytes());
-    hasher.update(&encoded.payload);
-    for head in heads {
-        hasher.update(&head.0);
-    }
-    let digest = hasher.finalize();
-    let short = digest
-        .as_bytes()
-        .first_chunk::<16>()
-        .copied()
-        .unwrap_or_default();
-    ActionId(uuid::Uuid::from_bytes(short))
-}
-
 /// The request the device wrote for this call.
+#[cfg(target_family = "wasm")]
 fn read() -> Result<Vec<u8>, String> {
     let length = usize::try_from(unsafe { request_length() })
         .map_err(|_| "the request has no length".to_string())?;
@@ -335,10 +308,8 @@ fn read() -> Result<Vec<u8>, String> {
 }
 
 /// Hand the model's answer to the device.
-fn write(reply: &Answer) -> i32 {
-    let Ok(bytes) = serde_json::to_vec(reply) else {
-        return 1;
-    };
+#[cfg(target_family = "wasm")]
+fn write(bytes: &[u8]) -> i32 {
     let Ok(length) = i32::try_from(bytes.len()) else {
         return 1;
     };
@@ -357,6 +328,7 @@ fn write(reply: &Answer) -> i32 {
 ///
 /// # Safety
 /// Called by getrandom with a writable buffer of `len` bytes.
+#[cfg(target_family = "wasm")]
 #[unsafe(no_mangle)]
 // getrandom's custom backend calls this signature; it can only answer with an
 // error it never makes, and no module build can change that contract.

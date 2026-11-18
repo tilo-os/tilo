@@ -307,6 +307,15 @@ pub trait Action: std::fmt::Debug {
         false
     }
 
+    /// Whether this value's undo is its own code's to compute
+    /// ([`inverse_encoded`](Self::inverse_encoded) may answer one): a device
+    /// applying it from an app's model module, which does not compute undo,
+    /// writes no entry another device would check that undo against. Must be
+    /// a pure function of `self`.
+    fn compensates(&self) -> bool {
+        false
+    }
+
     /// What this value does and to which item, as history records it: a
     /// field edit with its values before and after, a verb with its plain
     /// arguments, or a group of those. Read from `doc` as it is before the

@@ -219,13 +219,13 @@ pub use entry::{
     Scalar, VerbCall,
 };
 pub use envelope::ActionEnvelope;
-pub use executor::Changes;
 pub use executor::{
     ActionTransport, CompensatingScope, Dispatched, EntryReader, HostDecision, LocalTransport,
     UNDONE_KEY, Verified, apply_local, apply_local_by, apply_local_with_context,
     await_compensation, await_settlement, commit_written, current_step, dispatch, dispatch_by,
-    dispatch_by_with_context, dispatch_with_context, entry_message, entry_of, invoking_context,
-    open_step, replay, settle_compensation, verify_change, with_invoking_context,
+    dispatch_by_with_context, dispatch_with_context, entry_message, entry_of, envelope_at,
+    invoking_context, open_step, replay, replay_decoded, replaying_as, settle_compensation,
+    verify_change, with_invoking_context,
 };
 pub use framework::FrameworkChange;
 pub use interaction::{

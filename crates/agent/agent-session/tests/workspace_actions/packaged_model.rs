@@ -344,30 +344,30 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     // Another holder of the resource replays the invocation with the same
     // module, as the same actor and at the same origin clock: the change it
     // writes is the change the server published.
+    let surface = collab_types::surface::SurfaceFile::parse(TASKS_SURFACE).unwrap();
+    let verb = surface
+        .resources
+        .iter()
+        .flat_map(|resource| resource.verbs.iter())
+        .find(|verb| verb.id == "create-area")
+        .unwrap();
     let replayed = tilo_model_engine::Model::compile(&model)
         .unwrap()
-        .ask(&tilo_model_engine::Request {
-            op: tilo_model_engine::Op::Apply,
+        .apply(tilo_model_engine::Invocation {
+            app: TASKS,
             kind: tasks_model::KIND,
+            verb,
             id: "",
-            home: &created.workspace,
-            bytes: &before,
-            member: "agent:assistant",
-            acting: Some(serde_json::to_value(&acting).unwrap()),
-            action: "create-area",
+            document: &before,
+            member: &tilo_actions::MemberId::of_actor_bytes(b"agent:assistant").unwrap(),
+            acting: &acting,
             arguments: create_area("Ship it"),
             now: i64::try_from(now_ms).unwrap(),
-            envelope: None,
         })
         .unwrap();
     let mut replayed_document = automerge::AutoCommit::load(&before).unwrap();
-    tilo_automerge::ApplyIncoming::load_incoming(
-        &mut replayed_document,
-        &replayed
-            .changes
-            .expect("the module wrote the action's change"),
-    )
-    .unwrap();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut replayed_document, &replayed.changes)
+        .unwrap();
     assert_eq!(
         replayed_document.get_heads(),
         document.get_heads(),

@@ -39,6 +39,21 @@ the size of the app's own code rather than one copy of Automerge per app.
 `#[derive(Model)]` and `#[resource]` generate the same code for both builds;
 only what `Doc` is differs.
 
+The module carries none of the action framework either: that is executed natively on
+the device, once per device rather than once per app (`tilo-model-engine`).
+The device binds an invocation's arguments against the verb the package's
+signed surface declares, builds the envelope (an id minted from the request,
+the base heads, the invoker's actor, the origin time), writes the history
+entry and commits the change through the same executor an app compiled in
+uses, and replays another holder's invocation at the heads it was made on.
+The module is handed the bound action in a compact typed form
+(`tilo_model_guest::wire`), not JSON, and does three things only: write a new
+resource's initial content, read an action and say what its own types make
+of it (the bytes it is recorded as, its change and action kinds, whether its
+undo is its own code's), and apply the verb as the invoker the envelope pins.
+History's own verbs, such as reverting a step, are the device's and never
+reach a module.
+
 An app's model is one crate, `apps/<app>-model`, and the module is one guest
 crate beside it, `apps/<app>-model-wasm`, whose whole content is the app's
 resources served through `tilo-model-guest`. A module is one per app, whatever

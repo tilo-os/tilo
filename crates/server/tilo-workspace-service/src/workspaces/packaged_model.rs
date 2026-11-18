@@ -27,7 +27,7 @@ use crate::service_authority::ServiceOperation;
 use tilo_actions::MemberId;
 use tilo_app_package::blobs::BlobHash;
 use tilo_app_package::tapp;
-use tilo_model_engine::{Model, Op, Request};
+use tilo_model_engine::{Invocation, Model};
 use tilo_user_identity::DeviceCert;
 
 /// One action of an installed app, as a holder of the workspace applies it
@@ -192,26 +192,9 @@ impl Workspaces {
         }
         // The model is an engine and its memory, which no thread may carry:
         // it is compiled, asked and let go before anything waits.
-        let genesis = {
-            let model = packaged_model(package, app)?;
-            model
-                .ask(&Request {
-                    op: Op::Initialize,
-                    kind,
-                    id: document,
-                    home: workspace,
-                    bytes: &[],
-                    member: &hex::encode(governor.user_public_key),
-                    acting: None,
-                    action: "",
-                    arguments: serde_json::Map::new(),
-                    now: i64::try_from(now / 1_000_000).unwrap_or(i64::MAX),
-                    envelope: None,
-                })
-                .map_err(|error| CollaborationError::new(error.to_string()))?
-                .document
-                .ok_or_else(|| CollaborationError::new("the model produced no genesis"))?
-        };
+        let genesis = packaged_model(package, app)?
+            .initialize(kind, document, workspace)
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
         if genesis.len() > 64 * 1024 {
             return Err(CollaborationError::new(
                 "the model's genesis exceeds the bootstrap limit",
@@ -309,29 +292,26 @@ impl Workspaces {
             .await
             .map_err(CollaborationError::new)?
             .ok_or_else(|| CollaborationError::new("the document is not prepared"))?;
+        // The device binds the action from the verb the package's signed
+        // surface declares; the module only reads it and applies the verb.
+        let surface = package_surface(package, app)?;
+        let (_, verb) = surface_verb(&surface, |of, verb| of == kind && verb.id == action)?;
         // The model is an engine and its memory, which no thread may carry:
         // it is compiled, asked and let go before anything waits.
-        let answer = {
-            let model = packaged_model(package, app)?;
-            model
-                .ask(&Request {
-                    op: Op::Apply,
-                    kind,
-                    id: document,
-                    home: workspace,
-                    bytes: &bytes,
-                    member: &member_string(&member),
-                    acting: serde_json::to_value(&acting).ok(),
-                    action,
-                    arguments,
-                    now: now_ms,
-                    envelope: None,
-                })
-                .map_err(|error| CollaborationError::new(error.to_string()))?
-        };
-        let changes = answer
-            .changes
-            .ok_or_else(|| CollaborationError::new("the model wrote nothing"))?;
+        let applied = packaged_model(package, app)?
+            .apply(Invocation {
+                app,
+                kind,
+                verb: &verb,
+                id: document,
+                document: &bytes,
+                member: &member,
+                acting: &acting,
+                arguments,
+                now: now_ms,
+            })
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        let changes = applied.changes;
         if changes.len() > 64 * 1024 {
             return Err(CollaborationError::new(
                 "the action's changes exceed the publication limit",
@@ -339,7 +319,7 @@ impl Workspaces {
         }
         // The change names the app version's surface, which the package
         // carries: the receipt is decided here.
-        keep_surface(app, &package_surface(package, app)?);
+        keep_surface(app, &surface);
         // What the model wrote is published as the governor's signed change,
         // sealed with the workspace's keys where its members write sealed.
         let keys = self.sealing_keys(&governed, app, document).await?;
@@ -357,9 +337,8 @@ impl Workspaces {
             Ok(collaboration)
         })?;
         self.settle(&mut governed).await?;
-        answer
-            .envelope
-            .ok_or_else(|| CollaborationError::new("the model made no invocation"))
+        serde_json::to_value(&applied.envelope)
+            .map_err(|error| CollaborationError::new(format!("the invocation: {error}")))
     }
 }
 
@@ -377,20 +356,29 @@ pub fn packaged_action_verb(
     app: &str,
     action: &str,
 ) -> Result<(String, tilo_actions::surface::VerbSurface), CollaborationError> {
-    let bytes = package_surface(package, app)?;
-    let surface = collab_types::surface::SurfaceFile::parse(&bytes)
+    surface_verb(&package_surface(package, app)?, |_, verb| verb.id == action)
+}
+
+/// The first verb of the surface file `surface` that `wanted` picks, with the
+/// kind of the resource that declares it.
+///
+/// # Errors
+/// A surface that does not parse, or one that declares no such verb.
+fn surface_verb(
+    surface: &[u8],
+    wanted: impl Fn(&str, &tilo_actions::surface::VerbSurface) -> bool,
+) -> Result<(String, tilo_actions::surface::VerbSurface), CollaborationError> {
+    let surface = collab_types::surface::SurfaceFile::parse(surface)
         .map_err(|error| CollaborationError::new(format!("the package's surface: {error}")))?;
     surface
         .resources
         .iter()
         .find_map(|resource| {
-            let verb = resource.verbs.iter().find(|verb| verb.id == action)?;
+            let verb = resource
+                .verbs
+                .iter()
+                .find(|verb| wanted(&resource.kind, verb))?;
             Some((resource.kind.clone(), verb.clone()))
         })
         .ok_or_else(|| CollaborationError::new("the app declares no such action"))
-}
-
-/// `member` as the model module reads it ([`MemberId::of_actor_bytes`]).
-fn member_string(member: &MemberId) -> String {
-    String::from_utf8_lossy(&member.actor_bytes()).into_owned()
 }

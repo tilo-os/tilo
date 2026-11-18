@@ -895,51 +895,7 @@ pub mod __private {
         }
     }
 
-    /// The type of a parameter whose Rust type the macros cannot read
-    /// (an app's own enum or struct): what its schema says it is written as.
-    /// A unit enum is text, a struct an object; a value written in several
-    /// shapes is an object.
-    #[must_use]
-    pub fn param_type_of(schema: &serde_json::Value) -> ParamType {
-        fn of(schema: &serde_json::Value) -> Option<ParamType> {
-            // A nullable type: what it is when present.
-            let kind = match schema.get("type") {
-                Some(serde_json::Value::Array(kinds)) => kinds
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .find(|kind| *kind != "null"),
-                Some(kind) => kind.as_str(),
-                None => None,
-            };
-            if let Some(kind) = kind {
-                return Some(match kind {
-                    "string" => ParamType::Text,
-                    "integer" => ParamType::Integer,
-                    "number" => ParamType::Number,
-                    "boolean" => ParamType::Boolean,
-                    "array" => ParamType::Array,
-                    _ => ParamType::Object,
-                });
-            }
-            if let Some(values) = schema.get("enum").and_then(serde_json::Value::as_array) {
-                return values
-                    .iter()
-                    .all(serde_json::Value::is_string)
-                    .then_some(ParamType::Text);
-            }
-            let alternatives = schema
-                .get("oneOf")
-                .or_else(|| schema.get("anyOf"))
-                .and_then(serde_json::Value::as_array)?;
-            let mut kinds = alternatives
-                .iter()
-                .filter(|alternative| alternative.get("type") != Some(&serde_json::json!("null")))
-                .map(of);
-            let first = kinds.next()??;
-            kinds.all(|kind| kind == Some(first)).then_some(first)
-        }
-        of(schema).unwrap_or(ParamType::Object)
-    }
+    pub use tilo_actions::params::param_type_of;
 
     /// The parameters a `#[param(flatten)]` struct's schema lists: each
     /// property by name, typed and described by its own schema, required as
