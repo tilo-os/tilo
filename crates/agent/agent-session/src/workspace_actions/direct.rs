@@ -31,13 +31,15 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use automerge::{ObjId, ObjType, ReadDoc, ScalarValueRef, ValueRef};
+use automerge::{ChangeHash, ObjId, ObjType, ReadDoc, ScalarValueRef, ValueRef};
 use tilo_actions::ActionOutput;
 use tilo_actions::remote::{Caller, CatalogueRow, ChangePage};
 use ui::permissions::MemberId;
 use ui::permissions::policy::PersonId;
 
 use super::{DocumentRoute, Worker, WorkspaceState};
+
+mod reading;
 
 /// The app whose documents keep the workspace's conversations.
 const CHAT: &str = "so.tilo.chat";
@@ -53,7 +55,7 @@ const ROW_NAMES: [&str; 2] = ["item", "id"];
 const OWN_ID: &str = "id";
 
 /// What each document keeps of direct conversations, and the revision it was read at.
-pub(super) type ReadOnce = HashMap<DocumentRoute, ([u8; 32], Arc<[(String, String)]>)>;
+pub(super) type ReadOnce = HashMap<DocumentRoute, ([u8; 32], reading::Reading)>;
 
 /// The key a stored collection keeps an item's own fields under, in the entry it keeps the item
 /// by: the entry stands under the item's id and holds the item's place in the order beside it
@@ -73,78 +75,146 @@ pub(super) fn said_to(person: &PersonId, id: &str) -> bool {
 /// Every entry the document saved as `bytes` keeps of a direct conversation: the key it is kept
 /// under, and the conversation. Nothing for bytes that are no document.
 pub(crate) fn said_directly(bytes: &[u8]) -> Arc<[(String, String)]> {
-    let mut found = Vec::new();
+    let mut walk = Walk::default();
     if let Ok(doc) = automerge::AutoCommit::load(bytes) {
-        gather(&doc, &automerge::ROOT, ObjType::Map, 0, &mut found);
+        walk.gather(&doc, None, (&automerge::ROOT, ObjType::Map, 0));
     }
-    found.into()
+    walk.found.into()
 }
 
-/// Put into `found` every entry at or below `object` that is of a direct conversation, and
-/// answer the direct conversation `object` itself names in one of its own strings, if it names
-/// one: what makes `object` an entry of that conversation, under the key it is kept by.
-fn gather(
-    doc: &impl ReadDoc,
-    object: &ObjId,
-    kind: ObjType,
-    depth: usize,
-    found: &mut Vec<(String, String)>,
-) -> Option<String> {
-    if depth > MOST_DEPTH {
-        return None;
-    }
-    let mut named: Option<String> = None;
-    let mut own_id: Option<String> = None;
-    match kind {
-        ObjType::Map | ObjType::Table => {
-            for item in doc.map_range(object, ..) {
-                let key: &str = &item.key;
-                let key = key.to_owned();
-                if MemberId::direct_conversation_members(&key).is_some() {
-                    found.push((key.clone(), key.clone()));
-                }
-                match item.value {
-                    ValueRef::Object(inner) => {
-                        let below = depth.saturating_add(1);
-                        if let Some(conversation) = gather(doc, &item.id(), inner, below, found) {
-                            if key == ITEM_VALUE {
-                                // The item's own fields name it: its entry is of the conversation.
-                                if named.is_none() {
-                                    named = Some(conversation);
+/// One walk through a document for what it keeps of direct conversations.
+#[derive(Default)]
+struct Walk {
+    /// Every entry found: the key it is kept under, and the conversation.
+    found: Vec<(String, String)>,
+    /// How many objects were read for it.
+    read: usize,
+}
+
+impl Walk {
+    /// Put into what is found every entry at or below `object` that is of a direct
+    /// conversation, in `doc` as it stands or as it stood at the heads `at`, and answer the
+    /// direct conversation `object` itself names in one of its own strings, if it names one:
+    /// what makes `object` an entry of that conversation, under the key it is kept by.
+    fn gather(
+        &mut self,
+        doc: &impl ReadDoc,
+        at: Option<&[ChangeHash]>,
+        (object, kind, depth): (&ObjId, ObjType, usize),
+    ) -> Option<String> {
+        if depth > MOST_DEPTH {
+            return None;
+        }
+        self.read = self.read.saturating_add(1);
+        let mut named: Option<String> = None;
+        let mut own_id: Option<String> = None;
+        match kind {
+            ObjType::Map | ObjType::Table => {
+                let entries = match at {
+                    Some(heads) => doc.map_range_at(object, .., heads),
+                    None => doc.map_range(object, ..),
+                };
+                for item in entries {
+                    let key: &str = &item.key;
+                    let key = key.to_owned();
+                    if MemberId::direct_conversation_members(&key).is_some() {
+                        self.found.push((key.clone(), key.clone()));
+                    }
+                    match item.value {
+                        ValueRef::Object(inner) => {
+                            let id = item.id();
+                            let below = (&id, inner, depth.saturating_add(1));
+                            if let Some(conversation) = self.gather(doc, at, below) {
+                                if key == ITEM_VALUE {
+                                    // The item's own fields name it: its entry is of the conversation.
+                                    if named.is_none() {
+                                        named = Some(conversation);
+                                    }
+                                } else {
+                                    self.found.push((key, conversation));
                                 }
-                            } else {
-                                found.push((key, conversation));
                             }
                         }
-                    }
-                    ValueRef::Scalar(ScalarValueRef::Str(text)) => {
-                        let text: &str = &text;
-                        if key == OWN_ID {
-                            own_id = Some(text.to_owned());
+                        ValueRef::Scalar(ScalarValueRef::Str(text)) => {
+                            let text: &str = &text;
+                            if key == OWN_ID {
+                                own_id = Some(text.to_owned());
+                            }
+                            if named.is_none()
+                                && MemberId::direct_conversation_members(text).is_some()
+                            {
+                                named = Some(text.to_owned());
+                            }
                         }
-                        if named.is_none() && MemberId::direct_conversation_members(text).is_some()
-                        {
-                            named = Some(text.to_owned());
-                        }
+                        ValueRef::Scalar(_) => {}
                     }
-                    ValueRef::Scalar(_) => {}
                 }
             }
-        }
-        ObjType::List => {
-            for item in doc.list_range(object, ..) {
-                if let ValueRef::Object(inner) = item.value {
-                    gather(doc, &item.id(), inner, depth.saturating_add(1), found);
+            ObjType::List => {
+                let items = match at {
+                    Some(heads) => doc.list_range_at(object, .., heads),
+                    None => doc.list_range(object, ..),
+                };
+                for item in items {
+                    if let ValueRef::Object(inner) = item.value {
+                        let id = item.id();
+                        self.gather(doc, at, (&id, inner, depth.saturating_add(1)));
+                    }
                 }
             }
+            ObjType::Text => {}
         }
-        ObjType::Text => {}
+        // An item kept in a list has no key: it is named by the id it keeps of itself.
+        if let (Some(id), Some(conversation)) = (own_id, named.as_ref()) {
+            self.found.push((id, conversation.clone()));
+        }
+        named
     }
-    // An item kept in a list has no key: it is named by the id it keeps of itself.
-    if let (Some(id), Some(conversation)) = (own_id, named.as_ref()) {
-        found.push((id, conversation.clone()));
+
+    /// The direct conversation `object` names and the id it keeps of itself, read from its
+    /// own entries alone, as [`Self::gather`] reads them: nothing below it but the item it
+    /// keeps its fields in, which names it.
+    fn names(
+        &mut self,
+        doc: &impl ReadDoc,
+        at: Option<&[ChangeHash]>,
+        (object, kind, depth): (&ObjId, ObjType, usize),
+    ) -> (Option<String>, Option<String>) {
+        let (mut named, mut own_id) = (None, None);
+        if depth > MOST_DEPTH || !matches!(kind, ObjType::Map | ObjType::Table) {
+            return (named, own_id);
+        }
+        self.read = self.read.saturating_add(1);
+        let entries = match at {
+            Some(heads) => doc.map_range_at(object, .., heads),
+            None => doc.map_range(object, ..),
+        };
+        for item in entries {
+            let key: &str = &item.key;
+            let key = key.to_owned();
+            match item.value {
+                ValueRef::Object(inner) if key == ITEM_VALUE => {
+                    let id = item.id();
+                    let below = (&id, inner, depth.saturating_add(1));
+                    let item_names = self.names(doc, at, below).0;
+                    if named.is_none() {
+                        named = item_names;
+                    }
+                }
+                ValueRef::Scalar(ScalarValueRef::Str(text)) => {
+                    let text: &str = &text;
+                    if key == OWN_ID {
+                        own_id = Some(text.to_owned());
+                    }
+                    if named.is_none() && MemberId::direct_conversation_members(text).is_some() {
+                        named = Some(text.to_owned());
+                    }
+                }
+                ValueRef::Object(_) | ValueRef::Scalar(_) => {}
+            }
+        }
+        (named, own_id)
     }
-    named
 }
 
 /// What of one resource a caller's person is not given: what its documents keep of direct
@@ -371,7 +441,8 @@ impl Worker {
     }
 
     /// What the document at `route` keeps of direct conversations, read again only once the
-    /// document changed. A document that does not read is listed to nobody, and keeps nothing.
+    /// document changed, and then by what it took since ([`reading::Reading::again`]). A
+    /// document that does not read is listed to nobody, and keeps nothing.
     fn directly_kept_in(
         &mut self,
         route: &DocumentRoute,
@@ -382,17 +453,16 @@ impl Worker {
             .document_revision(&route.cluster_id, &route.app_id, &route.document)
             .ok()
             .flatten();
-        if let (Some(revision), Some((read_at, said))) = (revision, self.said_directly.get(route))
+        if let (Some(revision), Some((read_at, read))) = (revision, self.said_directly.get(route))
             && *read_at == revision
         {
-            return Arc::clone(said);
+            return read.said();
         }
-        let said = state
-            .document(route)
-            .map_or_else(|_| said_directly(&[]), |(bytes, _)| said_directly(&bytes));
+        let before = self.said_directly.remove(route).map(|(_, read)| read);
+        let read = reading::Reading::again(before, route, state);
+        let said = read.said();
         if let Some(revision) = revision {
-            self.said_directly
-                .insert(route.clone(), (revision, Arc::clone(&said)));
+            self.said_directly.insert(route.clone(), (revision, read));
         }
         said
     }
@@ -406,13 +476,13 @@ mod tests {
         name.into()
     }
 
-    fn between(members: &[MemberId]) -> String {
+    pub(super) fn between(members: &[MemberId]) -> String {
         MemberId::direct_conversation(members.iter().cloned())
     }
 
     /// A document as an app keeps messages: each under its id, with the conversation it was
     /// said in; and a list of items that each keep their own id.
-    fn saved(messages: &[(&str, &str)], listed: &[(&str, &str)]) -> Vec<u8> {
+    pub(super) fn saved(messages: &[(&str, &str)], listed: &[(&str, &str)]) -> Vec<u8> {
         use automerge::transaction::Transactable as _;
         let mut doc = automerge::AutoCommit::new();
         let map = doc
