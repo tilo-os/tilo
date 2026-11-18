@@ -7,7 +7,8 @@
 //! …/resources/{path}/actions/{action}` with its arguments as the body. The
 //! key is `TILO_API_KEY` (at the server `--api` or `TILO_API_URL` names), a
 //! key file `--key-file` names, or, when this computer logged in (`tilo
-//! login`), its own device key, in process.
+//! login`), its own device: each command a call to the process holding that
+//! device's one session, which a second session would cut off.
 //!
 //! `tilo keys create` is the one command that asks the person: it waits at
 //! the API server's own key page until they approve one in their Tilo.

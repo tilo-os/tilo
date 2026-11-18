@@ -16,7 +16,9 @@
 //! A Tilo desktop serves the same server for its own person ([`Direct::here`]):
 //! as its own device key, inside the desktop, which answers each workspace
 //! itself. The person's programs on that computer reach it over a socket of
-//! the login's own ([`Direct::serve`]).
+//! the login's own ([`Direct::serve`]). A computer `tilo login` made a device
+//! of serves it the same way, from the process holding that device's one
+//! session ([`serve_current`]), so no program of its opens a second one.
 
 use crate::grant_key::GrantKey;
 use crate::store::{GrantKind, Store};
@@ -83,6 +85,72 @@ impl KeyFile {
     pub fn read(path: &std::path::Path) -> Result<Self, String> {
         let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
         serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", path.display()))
+    }
+}
+
+/// Serve the API on `listener` until it closes, each connection as the key
+/// `current` answers with as it comes: to programs of the account that owns
+/// the socket, and nobody else. While `current` has none (the process holding
+/// it is not in the workspace), each call answers why, as `not_in_workspace`.
+///
+/// The kernel's account of the connection's peer is the whole of the
+/// admission: its account must be this process's, and it must live in this
+/// login's own user and mount namespaces, as a session's other sockets require
+/// ([`shares_security_namespaces`]). A program a sandbox put in a namespace of
+/// its own is the same account and is refused all the same.
+pub async fn serve_current<F, Fut>(listener: tokio::net::UnixListener, current: F)
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<Arc<Direct>, String>> + Send + 'static,
+{
+    use std::os::unix::fs::MetadataExt as _;
+    // Only this process's own account is served.
+    let owner = std::fs::metadata("/proc/self")
+        .ok()
+        .map(|metadata| metadata.uid());
+    let current = Arc::new(current);
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        let admitted = stream
+            .peer_cred()
+            .ok()
+            .filter(|credentials| Some(credentials.uid()) == owner)
+            .and_then(|credentials| credentials.pid())
+            .and_then(|pid| u32::try_from(pid).ok())
+            .is_some_and(shares_security_namespaces);
+        if !admitted {
+            tracing::warn!("API: a connection from another account or a sandbox is refused");
+            continue;
+        }
+        let current = Arc::clone(&current);
+        tokio::spawn(async move {
+            match current().await {
+                Ok(direct) => direct.serve_one(stream).await,
+                Err(why) => refuse_connection(stream, &why).await,
+            }
+        });
+    }
+}
+
+/// Answer every call on `stream` with why no key serves it now.
+async fn refuse_connection(stream: tokio::net::UnixStream, why: &str) {
+    let refusal = serde_json::json!({"error": {"code": "not_in_workspace", "message": why}});
+    let service = hyper::service::service_fn(move |_| {
+        let refusal = refusal.clone();
+        async move {
+            Ok::<_, std::convert::Infallible>(crate::json_reply(
+                hyper::StatusCode::BAD_GATEWAY,
+                &refusal,
+            ))
+        }
+    });
+    if let Err(error) = hyper::server::conn::http1::Builder::new()
+        .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+        .await
+    {
+        tracing::debug!(%error, "API connection ended");
     }
 }
 
@@ -213,44 +281,19 @@ impl Direct {
     }
 
     /// Serve the API on `listener` until it closes, every request as this
-    /// key: to programs of the account that owns the socket, and nobody else.
-    ///
-    /// The kernel's account of the connection's peer is the whole of the
-    /// admission: its account must be this session's, and it must live in this
-    /// login's own user and mount namespaces, as this session's other sockets
-    /// require ([`crate::direct::shares_security_namespaces`]). A program a
-    /// sandbox put in a namespace of its own is the same account and is
-    /// refused all the same.
+    /// key: to programs of the account that owns the socket, and nobody else
+    /// ([`serve_current`]).
     pub async fn serve(self, listener: tokio::net::UnixListener) {
-        use std::os::unix::fs::MetadataExt as _;
+        let this = Arc::new(self);
+        serve_current(listener, move || std::future::ready(Ok(Arc::clone(&this)))).await;
+    }
+
+    /// Serve one admitted connection as this key.
+    async fn serve_one(&self, stream: tokio::net::UnixStream) {
         let Ok(authorization) = hyper::header::HeaderValue::from_str(&self.authorization) else {
             return;
         };
-        // Only this process's own account is served.
-        let owner = std::fs::metadata("/proc/self")
-            .ok()
-            .map(|metadata| metadata.uid());
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                return;
-            };
-            let admitted = stream
-                .peer_cred()
-                .ok()
-                .filter(|credentials| Some(credentials.uid()) == owner)
-                .and_then(|credentials| credentials.pid())
-                .and_then(|pid| u32::try_from(pid).ok())
-                .is_some_and(shares_security_namespaces);
-            if !admitted {
-                tracing::warn!("API: a connection from another account or a sandbox is refused");
-                continue;
-            }
-            tokio::spawn(crate::serve_connection(
-                Arc::clone(&self.server),
-                stream,
-                Some(authorization.clone()),
-            ));
-        }
+        crate::serve_connection(Arc::clone(&self.server), stream, Some(authorization)).await;
     }
 
     /// Answer one MCP request (a `tools/call`) as the API's MCP endpoint

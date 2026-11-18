@@ -587,6 +587,82 @@ async fn a_workspaces_listing_reads_the_same_through_mcp_and_the_api() {
     }
 }
 
+/// A computer `tilo login` made a device of holds that device's one session with its server, and
+/// the workspace commands of its login (`tilo do`, `ls`, `read`, `workspace`) are calls to the
+/// API the holder serves over that session: each answered, and the session never cut off by a
+/// second one under the same key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_logged_in_computers_commands_go_over_its_one_held_session() {
+    let on_server = api_on_server(ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    approved_key(&on_server, &ada, &page, "Visa backend").await;
+    let laptop = enrol(&ada, "Ada's laptop", DeviceCapabilities::member());
+    let file = tilo_api::direct::KeyFile::new(
+        &on_server.server,
+        Some(&on_server.web_entry),
+        "Ada's laptop",
+        &laptop.key,
+        &laptop.cert,
+    );
+    // The holder: the device's one session, and the API served over it on a socket of its own.
+    let held = Arc::new(tilo_api::server::Server::new(
+        &tilo_net::Client::builder().build().unwrap(),
+        &on_server.server,
+    ))
+    .connect(
+        &tilo_api::grant_key::GrantKey::held(
+            laptop.key.clone(),
+            laptop.cert.clone(),
+            tilo_clock::unix_now_ms().saturating_mul(1_000_000),
+        )
+        .unwrap(),
+    )
+    .await
+    .expect("the laptop reaches its server");
+    let direct = Arc::new(tilo_api::direct::Direct::over(&file, held.device.clone()).unwrap());
+    let sockets = tempfile::tempdir().unwrap();
+    let socket = sockets.path().join("api.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    tokio::spawn(tilo_api::direct::serve_current(listener, move || {
+        std::future::ready(Ok(Arc::clone(&direct)))
+    }));
+
+    // Each command is its own program, as `tilo` is: a client of the holder's socket.
+    let command = || tilo_api::client::Client::session(&socket);
+    let made = command()
+        .post("/v1/workspaces", &json!({"name": "Ada's notes"}))
+        .await
+        .unwrap();
+    let workspace = made["id"].as_str().expect("a workspace").to_owned();
+    let mut took = Vec::new();
+    for _ in 0..10 {
+        let started = std::time::Instant::now();
+        let opened = command()
+            .act(&workspace, "notes", "open", &json!({}), "Open Notes")
+            .await
+            .expect("the action answers");
+        took.push(started.elapsed());
+        assert_ne!(opened["status"], "pending", "{opened}");
+        let listed = command()
+            .get(&format!("/v1/workspaces/{workspace}/resources"))
+            .await
+            .unwrap();
+        assert!(
+            listed["rows"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+                || listed["text"].as_str().is_some_and(|text| !text.is_empty()),
+            "{listed}"
+        );
+    }
+    eprintln!("an action over the held session took {took:?}");
+    assert!(
+        held.device.is_live(),
+        "the device's one session served every command, and no second one cut it off"
+    );
+}
+
 /// What a hosted workspace answers a key besides actions: what changed in it,
 /// as it changes; search over what it holds; and a run taken back whole.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

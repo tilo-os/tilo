@@ -5,11 +5,13 @@
 //! `docs/developers/api.md` is the callers' reference. A call goes to an API
 //! server over HTTP with a key (`TILO_API_KEY`, and the server named by
 //! `--api` or `TILO_API_URL`), or to a Tilo host in process
-//! ([`crate::direct::Direct`]) as a key this computer holds: the key file
-//! `--key-file` names, or, without an API key, the one `tilo login` kept here.
-//! Every route answers the same either way, so no command here can tell. A
-//! Tilo desktop on this computer serves the same routes to its own person's
-//! programs on a socket of its login ([`Client::session`]).
+//! ([`crate::direct::Direct`]) as the key file `--key-file` names. Every route
+//! answers the same either way, so no command here can tell. A Tilo desktop
+//! on this computer serves the same routes to its own person's programs on a
+//! socket of its login ([`Client::session`]), and so does the process holding
+//! the session of the device `tilo login` made of this computer
+//! ([`device::held_api`]): a server keeps one session per device, and a
+//! program entering as the device on its own would cut that one off.
 //!
 //! A mutating call carries an `Idempotency-Key` of its own, and every retry of
 //! it sends that same key: Tilo never runs one invocation twice.
@@ -227,7 +229,8 @@ enum Transport {
 impl Client {
     /// The client `reach` names: this desktop's own API at its socket when
     /// one serves it, else its key file, else `TILO_API_KEY` at an API
-    /// server, else this computer's own key as `tilo login` kept it.
+    /// server, else this computer's own device as `tilo login` made it, at the
+    /// socket of the process holding its session ([`device::held_api`]).
     pub fn open(reach: Reach<'_>) -> Result<Self> {
         // A desktop of this login serves its person at its own socket, and a
         // program of this login answers as the person there with no key of its
@@ -254,8 +257,8 @@ impl Client {
                 },
             });
         }
-        if let Some(file) = login_key(None)? {
-            return Self::direct(&file);
+        if let Some(socket) = device::held_api()? {
+            return Ok(Self::session(&socket));
         }
         bail!(
             "no key: set {KEY_ENV} (`tilo keys create \"<what will use it>\"` asks you for one), \
@@ -854,7 +857,7 @@ impl Client {
                 Ok(Answer { status, body })
             }
             Transport::Session(socket) => {
-                let reached = || format!("reaching the Tilo desktop at {}", socket.display());
+                let reached = || format!("reaching Tilo on this computer at {}", socket.display());
                 let stream = tilo_files::native::socket::connect(socket).with_context(reached)?;
                 stream.set_nonblocking(true).with_context(reached)?;
                 let stream = tokio::net::UnixStream::from_std(stream).with_context(reached)?;

@@ -8,9 +8,9 @@
 //! `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`), the same tools an
 //! agent gets on a Tilo desktop. Its actions are the workspace's: this
 //! device enters the person's workspace on its host as any device of theirs
-//! does, and asks the host's own device, which serves every record of the
+//! does, and asks the server's own device, which serves every record of the
 //! workspace to the person's devices, through that session
-//! ([`SessionActions`]). Nothing is decided here: the host authenticates
+//! ([`SessionActions`]). Nothing is decided here: the server authenticates
 //! this device and decides each request by the person's own policy, and
 //! what an action changes reaches every device of the workspace as an
 //! ordinary change.
@@ -449,6 +449,23 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
             held::alone(&unreached(&why, &device))
         }
     }
+}
+
+/// Start the process holding this computer's device session when none is up, so the workspace
+/// commands acting as the device reach it: they are calls to its API ([`held`]), never a
+/// session of their own, which would cut that one off. Nothing, when this computer did not log
+/// in.
+///
+/// # Errors
+/// The login is damaged, or the holder did not start.
+pub(crate) fn ensure_held() -> Result<()> {
+    let dir = crate::login::device_dir()?;
+    let Some((key, _)) = crate::login::load(&dir)? else {
+        return Ok(());
+    };
+    let place =
+        held::Place::of(&dir, &key.verifying_key().to_bytes()).map_err(anyhow::Error::msg)?;
+    held::ensure(&place).map_err(anyhow::Error::msg)
 }
 
 /// A connection with no holder to reach: it holds no session, so every call says why, while

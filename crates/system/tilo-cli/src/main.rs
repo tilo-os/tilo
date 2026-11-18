@@ -1035,6 +1035,15 @@ fn run_hosted(
         key_file,
         json,
     };
+    // Acting as this computer's own login, each command is a call to the process holding its
+    // device's session, started now when none is up.
+    if api_key_absent(api, key_file)
+        && api::desktop_socket().is_none()
+        && acts_as_the_login(&cmd, workspace.is_some())
+        && let Err(error) = mcp::ensure_held()
+    {
+        return Ok(Err(error));
+    }
     Ok(match cmd {
         Cmd::Do { action, args } => Ok(run_do(reach, workspace, action, args, spelling)),
         Cmd::Ls { what, cursor } => workspace
@@ -1082,6 +1091,21 @@ fn run_hosted(
         }
         other => return Err(other),
     })
+}
+
+/// Whether `cmd` calls Tilo's API, which without a key is as this computer's login: a `do`
+/// in a named workspace (else it acts on this desktop), an `sdk` or `migrate` into one, and
+/// every other workspace command but `keys export`, which only writes the login's key out.
+fn acts_as_the_login(cmd: &Cmd, named: bool) -> bool {
+    match cmd {
+        Cmd::Do { args, .. } => named || args.iter().any(|arg| arg == "-w" || arg == "--workspace"),
+        Cmd::Sdk { .. } | Cmd::Migrate { .. } => named,
+        Cmd::Keys {
+            cmd: hosted::KeysCmd::Export { .. },
+        } => false,
+        Cmd::Keys { .. } | Cmd::Workspace { .. } | Cmd::View { .. } => true,
+        other => acts_in_a_workspace(other),
+    }
 }
 
 /// Whether these calls act as this computer's own login rather than a key
