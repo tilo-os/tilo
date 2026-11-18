@@ -1083,3 +1083,9 @@ reason = "A holder's signed address names the device it holds a workspace from i
 words = ["host"]
 identifiers = ["host"]
 paths = ["crates/collab/tilo-peer-state/src/state/governance.rs"]
+
+[[allow]]
+reason = "`MemberQuestions`'s `host` field and tokio's `unbounded_channel`: the client whose questions a page answers and the stream carrying the answers, named as the libraries name them."
+words = ["host", "channel"]
+identifiers = ["host", "unbounded_channel"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/packaged_model.rs"]

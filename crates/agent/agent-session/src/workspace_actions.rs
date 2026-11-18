@@ -2072,7 +2072,9 @@ impl Worker {
     /// shared desktop first, then the most recently changed.
     /// The actions `route` lists: someone served within bounds is listed
     /// what their own replica offers them, what the host runs for them and
-    /// nothing else; the owner, what the mounted record offers.
+    /// nothing else; the owner, what the mounted resource offers. An app this
+    /// device only has a package of is listed from the surface the package
+    /// carries, as the actions of an app compiled in are listed from the app.
     fn listed(
         &mut self,
         workspace_id: WorkspaceId,
@@ -2080,6 +2082,9 @@ impl Worker {
         route: &DocumentRoute,
         state: &WorkspaceState,
     ) -> Result<Vec<tilo_actions::ActionDescriptor>, String> {
+        if self.catalogue.get(&route.app_id).is_none() {
+            return self.packaged_descriptors(workspace_id, bounded, route);
+        }
         match bounded {
             Some(who) => self
                 .bounded_actions(workspace_id, who, route, state)
@@ -2090,16 +2095,51 @@ impl Worker {
         }
     }
 
+    /// The actions the version of `route`'s app the workspace installs
+    /// declares, as the surface its package carries lists them: what a caller
+    /// is offered, and never a row the caller's own access refuses. `Err` for
+    /// an app whose package this device does not hold.
+    fn packaged_descriptors(
+        &self,
+        workspace_id: WorkspaceId,
+        bounded: Option<&bounded::Bounded>,
+        route: &DocumentRoute,
+    ) -> Result<Vec<tilo_actions::ActionDescriptor>, String> {
+        let surface = self
+            .packaged_surface(workspace_id, &route.app_id)
+            .ok_or_else(|| format!("{} installs no package this device holds", route.app_id))?;
+        let permissions = match bounded {
+            Some(who) => Some(
+                self.permissions_at(workspace_id, who, route)
+                    .ok_or_else(|| format!("{} is not admitted to this resource", route.app_id))?,
+            ),
+            None => None,
+        };
+        Ok(packaged::descriptors(&surface)
+            .into_iter()
+            .filter(|descriptor| {
+                permissions.as_ref().is_none_or(|permissions| {
+                    permissions.answer(&TreePath::root(), descriptor.contract.kind) != Answer::Deny
+                })
+            })
+            .collect())
+    }
+
     /// The records of `cluster_id` a listing shows: those this member's
     /// replica holds, and those the workspace's host holds of an app the
-    /// catalogue has.
+    /// catalogue has or one this device holds the installed package of.
     ///
     /// A public workspace sends a device its records only when it opens one,
     /// so the replica holds a handful of them: without the host's list, every
     /// app there is installed and none running, and what a member's agent
     /// names is not found. A record listed here that the replica has not been
     /// sent is asked for when a request names it.
-    fn documents(&mut self, state: &WorkspaceState, cluster_id: &str) -> Vec<DocumentRoute> {
+    fn documents(
+        &mut self,
+        workspace_id: Option<WorkspaceId>,
+        state: &WorkspaceState,
+        cluster_id: &str,
+    ) -> Vec<DocumentRoute> {
         let mut routes: Vec<DocumentRoute> = state.documents.to_vec();
         // What this member's replica holds, before the serving device's list adds the
         // documents it has not been sent.
@@ -2142,6 +2182,12 @@ impl Worker {
                 self.catalogue
                     .get(&route.app_id)
                     .is_some_and(|app| opens_as_its_own(app, &route.document))
+                    // An app this device has only a package of keeps its
+                    // where every holder of the workspace sees it: the
+                    // package says what it publishes, never where it is kept.
+                    || (workspace_id.is_some_and(|workspace_id| {
+                        self.installed_package(workspace_id, &route.app_id).is_some()
+                    }) && !is_part(&route.document))
             })
             // What this service holds as a document: one another device made and this one
             // keeps only as retained changes (a window's own document, a sealed one it cannot
@@ -2424,17 +2470,23 @@ impl Worker {
     /// its actions so.
     fn with_document_resource(
         &self,
+        workspace_id: WorkspaceId,
         target: &tilo_actions::remote::RemoteActionTarget,
         app_id: &str,
     ) -> tilo_actions::remote::RemoteActionTarget {
         let mut target = target.clone();
-        if target.address.resource.is_empty()
-            && let Some(definition) = self.catalogue.get(app_id)
-        {
+        if !target.address.resource.is_empty() {
+            return target;
+        }
+        if let Some(definition) = self.catalogue.get(app_id) {
             definition
                 .resource_type
                 .as_str()
                 .clone_into(&mut target.address.resource);
+        } else if let Some(surface) = self.packaged_surface(workspace_id, app_id)
+            && let Some(resource) = packaged::resource_of(&surface, &target.address.action)
+        {
+            resource.kind.clone_into(&mut target.address.resource);
         }
         target
     }
@@ -2495,7 +2547,7 @@ impl Worker {
         if self.catalogue.get(&route.app_id).is_none() && packaged.is_none() {
             return Err(unknown_action());
         }
-        let target = &self.with_document_resource(target, &route.app_id);
+        let target = &self.with_document_resource(workspace_id, target, &route.app_id);
         let arguments = invoke_arguments(&request.argument);
         // What is said in a direct conversation the caller's person takes no part in is not
         // there for them: an action on it is answered as one on nothing, and no read answers
@@ -2508,6 +2560,7 @@ impl Worker {
             let performed = self.perform_packaged(
                 workspace_id,
                 caller,
+                request,
                 &route,
                 &package,
                 (target, arguments, &withheld),
