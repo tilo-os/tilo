@@ -2307,9 +2307,10 @@ pub(crate) fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
         }
     })
     // Undo takes a value back when it takes back the edit it carries, so a
-    // deleting value Undo does take back applies without asking, exactly as
-    // its named declaration does. The declaration says which its edits are,
-    // so nothing is built to ask.
+    // deleting value Undo does take back applies without asking, and one its
+    // declaration says Undo cannot bring back asks first, exactly as its
+    // named declaration does. The declaration says which its edits are, so
+    // nothing is built to ask.
     .with_undo_of(move |args| {
         let Some(value) = object_arg(args, APPLY_PARAM) else {
             return false;
@@ -2321,12 +2322,15 @@ pub(crate) fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
             ids.push(decl.id);
         }
         let carried = crate::schema::declared_invocation(&value, &ids)
-            .and_then(|(id, _)| declarations.iter().find(|decl| decl.id == id))
-            .map_or(tilo_actions::ActionKind::Outside, |decl| decl.kind);
+            .and_then(|(id, _)| declarations.iter().find(|decl| decl.id == id));
         tilo_actions::undo_takes_back(
-            carried,
+            carried.map_or(tilo_actions::ActionKind::Outside, |decl| decl.kind),
             tilo_actions::ChangeKind::Content,
-            false,
+            carried.is_some_and(|decl| {
+                decl.tags
+                    .iter()
+                    .any(|tag| tag == tilo_actions::IRREVERSIBLE_TAG)
+            }),
         )
     })
 }

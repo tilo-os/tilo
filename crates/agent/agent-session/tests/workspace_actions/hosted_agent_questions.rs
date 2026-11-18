@@ -1403,3 +1403,62 @@ async fn a_persons_stop_takes_back_what_the_stopped_turn_asked() {
     assert_eq!(hosted.model.asked().len(), 5, "and no model is asked again");
     hosted.page.peer.close();
 }
+
+/// The assistant shelves a book and takes it off again, the removal carried inside the
+/// library's `carrier` (`apply` or `group`): what Undo cannot take back becomes one question
+/// to its person, whatever carries it, and the agent is told its person is asked.
+async fn the_removal_asks_first_inside(carrier: &str) {
+    let hosted = Hosted::start().await;
+    let carried =
+        serde_json::json!({"action": "remove-from-library", "args": {"book": "book:dusk"}});
+    let args = if carrier == "apply" {
+        serde_json::json!({"action": {"op": carried}})
+    } else {
+        serde_json::json!({"actions": [carried]})
+    };
+    hosted
+        .turn(
+            "Put Dusk on the shelf, then take it off again.",
+            vec![
+                does("dusk-open", "ebook#open", serde_json::json!({})),
+                does(
+                    "dusk-shelve",
+                    "ebook#shelve",
+                    super::api_questions::shelved("dusk", "dusk", ""),
+                ),
+                does("dusk-remove", &format!("ebook/1 book#{carrier}"), args),
+                Reply::text("That is all I did."),
+            ],
+        )
+        .await;
+    let told = hosted.tool_results();
+    assert!(
+        told.contains(ASKED),
+        "inside {carrier} the agent is told its person is asked: {told}"
+    );
+    let (_, held) = the_one_question(&hosted).await;
+    assert!(
+        held.question
+            .as_ref()
+            .is_some_and(chat::question::Question::waiting),
+        "inside {carrier} the question waits for its person"
+    );
+    assert_eq!(
+        hosted.workspaces.open_asks(&hosted.workspace).len(),
+        1,
+        "inside {carrier} the server keeps what was asked"
+    );
+    hosted.page.peer.close();
+}
+
+/// What Undo cannot take back asks first by the assistant's tools inside `apply`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_undo_cannot_take_back_asks_its_person_first_inside_apply() {
+    Box::pin(the_removal_asks_first_inside("apply")).await;
+}
+
+/// What Undo cannot take back asks first by the assistant's tools inside a `group`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_undo_cannot_take_back_asks_its_person_first_inside_a_group() {
+    Box::pin(the_removal_asks_first_inside("group")).await;
+}
