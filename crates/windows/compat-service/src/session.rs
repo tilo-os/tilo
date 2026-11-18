@@ -205,6 +205,23 @@ where
             .map_err(Into::into)
     }
 
+    /// Take up the programs the desktop kept through its last restart: each is open again, ended
+    /// and reported as one this service started.
+    fn take_back(&self) {
+        for taken in self.service.taken_back() {
+            if let Err(error) = crate::programs::watch(
+                &self.programs,
+                &taken.entry_id,
+                &taken.workspace_id,
+                &taken.display_name,
+                taken.program,
+                Box::new(|| {}),
+            ) {
+                tracing::warn!(%error, "a kept Windows program is not watched");
+            }
+        }
+    }
+
     fn launch_entry(
         &self,
         entry: &RegisteredProgram,
@@ -831,6 +848,9 @@ where
             ),
         };
     }
+    // What the desktop kept through its last restart is open again before anything is read of
+    // the programs.
+    managed.take_back();
     let result: Result<ProtocolResponse, SessionError> = (|| match request {
         ProtocolRequest::List { .. } => {
             list_applications(managed, authority, handoff, allowed_entry_ids, ends_read)
@@ -1873,10 +1893,10 @@ mod tests {
     struct IdleExecutor;
 
     impl crate::SandboxExecutor for IdleExecutor {
-        fn start(
+        fn command(
             &self,
             _: &crate::plan::CapsuleCommandPlan,
-        ) -> Result<Box<dyn crate::StartedProgram>, crate::execute::ExecutionError> {
+        ) -> Result<crate::SandboxCommand, crate::execute::ExecutionError> {
             Err(crate::execute::ExecutionError::Seccomp(
                 "idle accept test".into(),
             ))

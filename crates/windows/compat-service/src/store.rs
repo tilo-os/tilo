@@ -775,7 +775,7 @@ pub struct RegisteredProgram {
     pub query: ApplicationQuery,
 }
 
-fn managed_program_id(capsule_id: &str, program_id: &str) -> String {
+pub(crate) fn managed_program_id(capsule_id: &str, program_id: &str) -> String {
     format!("windows-{}", identity_digest(capsule_id, program_id))
 }
 

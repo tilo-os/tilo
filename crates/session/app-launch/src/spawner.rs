@@ -180,6 +180,64 @@ pub struct Spawner {
         tilo_files::native::ChangeWatch,
         Arc<std::sync::atomic::AtomicBool>,
     )>,
+    /// Keeper directories made for launches that have not started yet ([`KeptDirs`]).
+    #[cfg(target_os = "linux")]
+    reserved: Reserved,
+    /// The launch each kept app that ended while no desktop was there was, by the id its end is
+    /// reported under, until [`Self::ended_away`] takes it.
+    #[cfg(target_os = "linux")]
+    away: BTreeMap<u64, tilo_app_keeper::registry::KeptLaunch>,
+}
+
+#[cfg(target_os = "linux")]
+type Reserved = Arc<Mutex<std::collections::BTreeSet<PathBuf>>>;
+
+/// Makes keeper directories for launches whose display must be known before they start (a
+/// sandbox binds the keeper's socket), on a thread other than the spawner's: a directory made
+/// is the spawner's own, never a keeper it adopts, until [`Spawner::start_handed`] starts its
+/// launch or [`Self::give_back`] removes it.
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub struct KeptDirs {
+    root: PathBuf,
+    reserved: Reserved,
+}
+
+#[cfg(target_os = "linux")]
+impl KeptDirs {
+    /// A new keeper directory.
+    ///
+    /// # Errors
+    /// The directory could not be made.
+    pub fn reserve(&self) -> std::io::Result<PathBuf> {
+        let dir = tilo_app_keeper::registry::make_dir(&self.root)?;
+        self.reserved.lock_recover().insert(dir.clone());
+        Ok(dir)
+    }
+
+    /// Remove `dir`, whose launch did not start.
+    pub fn give_back(&self, dir: &Path) {
+        if self.reserved.lock_recover().remove(dir)
+            && let Err(error) = std::fs::remove_dir_all(dir)
+        {
+            tracing::warn!(dir = %dir.display(), %error, "an unused keeper directory stays");
+        }
+    }
+}
+
+/// What a launch through [`Spawner::start_handed`] hands the launcher beyond its plan: a launch
+/// started behind a keeper whose directory was made before it ([`KeptDirs`]), with the command the
+/// launcher starts behind the keeper and the descriptors that command inherits.
+#[cfg(target_os = "linux")]
+pub struct Handed {
+    /// The keeper's directory, from [`KeptDirs::reserve`].
+    pub dir: PathBuf,
+    /// The command the keeper starts, after the launcher's own arguments and `--`.
+    pub command: Vec<std::ffi::OsString>,
+    /// Each descriptor with the number the command finds it at.
+    pub inherited: Vec<(std::os::fd::OwnedFd, i32)>,
+    /// The launch starts with the game performance hints.
+    pub latency_sensitive: bool,
 }
 
 /// What ends a session: a logout ends every app it runs; an in-place restart of the desktop leaves
@@ -239,6 +297,10 @@ impl Spawner {
             keeping: None,
             #[cfg(target_os = "linux")]
             registry: None,
+            #[cfg(target_os = "linux")]
+            reserved: Reserved::default(),
+            #[cfg(target_os = "linux")]
+            away: BTreeMap::new(),
         }
     }
 
@@ -297,7 +359,7 @@ impl Spawner {
     /// the app is handed with its release so it opens the app's later
     /// windows itself.
     ///
-    /// The launcher waits at a launch hold until `record` has written
+    /// The launcher waits at a launch hold until `write_down` has written
     /// the launch down: an app that connected before its launch was known
     /// would be refused by the session's services. A launch without a link
     /// gets no hold, and its command line is its stdin.
@@ -314,10 +376,41 @@ impl Spawner {
     pub fn start_with(
         &mut self,
         planned: &Planned,
-        mut link: Option<HeldLink>,
-        record: &dyn Fn(u32),
+        link: Option<HeldLink>,
+        write_down: &dyn Fn(u32),
         workspace: &str,
         asked: Option<&str>,
+    ) -> Result<(Started, Option<HeldLink>), SpawnError> {
+        self.start_launch(planned, link, write_down, workspace, asked, None)
+    }
+
+    /// [`Self::start_with`] for a kept launch whose keeper directory was made before it, handing
+    /// the launcher `handed`'s command and descriptors.
+    ///
+    /// # Errors
+    /// The program could not be started, or the session keeps no apps.
+    #[cfg(target_os = "linux")]
+    pub fn start_handed(
+        &mut self,
+        planned: &Planned,
+        write_down: &dyn Fn(u32),
+        workspace: &str,
+        asked: Option<&str>,
+        handed: Handed,
+    ) -> Result<Started, SpawnError> {
+        self.start_launch(planned, None, write_down, workspace, asked, Some(handed))
+            .map(|(started, _)| started)
+    }
+
+    fn start_launch(
+        &mut self,
+        planned: &Planned,
+        mut link: Option<HeldLink>,
+        write_down: &dyn Fn(u32),
+        workspace: &str,
+        asked: Option<&str>,
+        #[cfg(target_os = "linux")] handed: Option<Handed>,
+        #[cfg(not(target_os = "linux"))] handed: Option<()>,
     ) -> Result<(Started, Option<HeldLink>), SpawnError> {
         crate::name_surface(planned);
         let mut command = Command::new(&planned.program);
@@ -347,12 +440,20 @@ impl Spawner {
             },
             None => None,
         };
-        let kept = self.kept_launch(planned, workspace, asked, &mut command);
-        let mut child = command.spawn().map_err(|error| SpawnError {
-            app: planned.app.clone(),
-            reason: error.to_string(),
-        })?;
-        drop(command);
+        let (kept, handed_down) =
+            self.kept_launch(planned, workspace, asked, &mut command, handed)?;
+        let spawned = command.spawn();
+        drop((command, handed_down));
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(error) => {
+                self.abandon(kept.as_ref());
+                return Err(SpawnError {
+                    app: planned.app.clone(),
+                    reason: error.to_string(),
+                });
+            }
+        };
         // Both pipes are read on threads of their own, so an app that writes
         // more than a pipe holds never waits for the session, and a session
         // that has stopped reading never holds the app.
@@ -372,7 +473,7 @@ impl Spawner {
         // process and no later one with its pid.
         let app_of = self.app_of(started.pid, &planned.app, kept.as_ref());
         running(&self.running).insert(id, app_of);
-        record(started.pid);
+        write_down(started.pid);
         if let Some(hold) = hold {
             // The launch is written down: the app may connect.
             let served = link.as_mut().and_then(|link| link.serve(started.pid));
@@ -495,14 +596,31 @@ pub struct Adopted {
 impl Spawner {
     /// The keeper `planned` starts behind, when it is kept and the session has keepers: its
     /// directory made and the launcher told to start it there.
+    ///
+    /// A `handed` launch is started in the directory made for it, with its command after the
+    /// launcher's arguments and its descriptors handed down; what this returns beside the keeper
+    /// holds those descriptors until the launcher is started. It is refused without a keeper.
     fn kept_launch(
         &self,
         planned: &Planned,
         workspace: &str,
         asked: Option<&str>,
         command: &mut Command,
-    ) -> Option<Arc<crate::kept::Kept>> {
-        let keeping = self.keeping.as_ref().filter(|_| planned.kept())?;
+        handed: Option<Handed>,
+    ) -> Result<(Option<Arc<crate::kept::Kept>>, Vec<std::os::fd::OwnedFd>), SpawnError> {
+        let refused = |reason: String| SpawnError {
+            app: planned.app.clone(),
+            reason,
+        };
+        let Some(keeping) = self.keeping.as_ref().filter(|_| planned.kept()) else {
+            return match handed {
+                Some(handed) => {
+                    self.kept_dirs_unchecked().give_back(&handed.dir);
+                    Err(refused("this session keeps no apps".to_owned()))
+                }
+                None => Ok((None, Vec::new())),
+            };
+        };
         let launch = tilo_app_keeper::registry::KeptLaunch {
             version: tilo_app_keeper::registry::LAUNCH_VERSION,
             app: planned.app.clone(),
@@ -512,28 +630,83 @@ impl Spawner {
             window_identities: planned.window_identities.clone(),
             service: false,
         };
-        match tilo_app_keeper::registry::new_dir(&keeping.root, &launch) {
-            Ok(dir) => {
-                command
-                    .arg("--keeper")
-                    .arg(&keeping.keeper)
-                    .arg("--keep-in")
-                    .arg(&dir)
-                    .arg("--keep-as")
-                    .arg(launch.encode());
-                Some(crate::kept::Kept::new(dir, false))
-            }
-            Err(error) => {
-                tracing::warn!(app = %planned.app, %error, "the app starts without a keeper: it ends if the desktop restarts");
-                None
-            }
+        let Some(handed) = handed else {
+            return match tilo_app_keeper::registry::new_dir(&keeping.root, &launch) {
+                Ok(dir) => {
+                    keep_in(command, &keeping.keeper, &dir, &launch);
+                    Ok((Some(crate::kept::Kept::new(dir, false)), Vec::new()))
+                }
+                Err(error) => {
+                    tracing::warn!(app = %planned.app, %error, "the app starts without a keeper: it ends if the desktop restarts");
+                    Ok((None, Vec::new()))
+                }
+            };
+        };
+        if let Err(error) = tilo_app_keeper::registry::write_launch(&handed.dir, &launch) {
+            self.kept_dirs_unchecked().give_back(&handed.dir);
+            return Err(refused(format!("its keeper's directory: {error}")));
         }
+        keep_in(command, &keeping.keeper, &handed.dir, &launch);
+        command.arg("--").args(&handed.command);
+        let handed_down: Vec<_> = handed
+            .inherited
+            .iter()
+            .map(|(fd, target)| (std::os::fd::AsRawFd::as_raw_fd(fd), *target))
+            .collect();
+        launcher::inherit::hand_down(command, handed_down, handed.latency_sensitive);
+        Ok((
+            Some(crate::kept::Kept::new(handed.dir, false)),
+            handed.inherited.into_iter().map(|(fd, _)| fd).collect(),
+        ))
+    }
+
+    /// The launch whose keeper is `kept` did not start: a directory made for it is given back.
+    fn abandon(&self, kept: Option<&Arc<crate::kept::Kept>>) {
+        if let Some(kept) = kept {
+            self.kept_dirs_unchecked().give_back(&kept.dir);
+        }
+    }
+
+    /// What makes keeper directories for launches started later with [`Self::start_handed`]:
+    /// none while the session keeps no apps.
+    #[must_use]
+    pub fn kept_dirs(&self) -> Option<KeptDirs> {
+        self.keeping.as_ref().map(|_| self.kept_dirs_unchecked())
+    }
+
+    fn kept_dirs_unchecked(&self) -> KeptDirs {
+        KeptDirs {
+            root: self
+                .keeping
+                .as_ref()
+                .map_or_else(tilo_app_keeper::registry::root, |keeping| {
+                    keeping.root.clone()
+                }),
+            reserved: Arc::clone(&self.reserved),
+        }
+    }
+
+    /// End the launch `id` as a logout would; its end is reported as any other.
+    pub fn end_one(&self, id: u64) {
+        if let Some(app) = running(&self.running).get(&id) {
+            app.end();
+        }
+    }
+
+    /// The launch a kept app that ended while no desktop was there was, by the id its end is
+    /// reported under: taken once.
+    pub fn ended_away(&mut self, id: u64) -> Option<tilo_app_keeper::registry::KeptLaunch> {
+        self.away.remove(&id)
     }
 
     /// The app `pid` runs, behind `kept` when it is kept: shown on the desktop once its keeper
     /// answers.
     fn app_of(&self, pid: u32, name: &str, kept: Option<&Arc<crate::kept::Kept>>) -> App {
         let mut app = App::of(pid, name);
+        if let Some(kept) = kept {
+            // Its launch started: the directory is a keeper's from now on, not one held for later.
+            self.reserved.lock_recover().remove(&kept.dir);
+        }
         if let (Some(kept), Some(keeping)) = (kept, &self.keeping) {
             app.kept = Some(Arc::clone(kept));
             watch_started(Arc::clone(kept), pid, Arc::clone(&keeping.desktop));
@@ -595,10 +768,11 @@ impl Spawner {
         if !changed {
             return Vec::new();
         }
-        let known: Vec<PathBuf> = running(&self.running)
+        let mut known: Vec<PathBuf> = running(&self.running)
             .values()
             .filter_map(|app| app.kept.as_ref().map(|kept| kept.dir.clone()))
             .collect();
+        known.extend(self.reserved.lock_recover().iter().cloned());
         let mut adopted = Vec::new();
         for dir in crate::kept::dirs(&keeping.root) {
             if known.contains(&dir)
@@ -830,6 +1004,7 @@ impl Spawner {
         tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, %end, "not adopted: it ended while the desktop was away");
         let id = self.next;
         self.next = self.next.wrapping_add(1);
+        self.away.insert(id, launch.clone());
         let _ = self.events.0.send(Event {
             id,
             app: launch.app,
@@ -882,6 +1057,23 @@ impl Spawner {
     }
 }
 
+/// Tell the launcher `command` starts to start `keeper` in `dir`, keeping `launch`.
+#[cfg(target_os = "linux")]
+fn keep_in(
+    command: &mut Command,
+    keeper: &Path,
+    dir: &Path,
+    launch: &tilo_app_keeper::registry::KeptLaunch,
+) {
+    command
+        .arg("--keeper")
+        .arg(keeper)
+        .arg("--keep-in")
+        .arg(dir)
+        .arg("--keep-as")
+        .arg(launch.encode());
+}
+
 /// Wait for the keeper the launcher `launcher` starts for `kept`, greet it and show its app on
 /// `desktop`, then drain what it says until it goes: the launch's end is the launcher's to tell.
 #[cfg(target_os = "linux")]
@@ -918,9 +1110,19 @@ fn watch_started(kept: Arc<crate::kept::Kept>, launcher: u32, desktop: crate::ke
 impl Spawner {
     /// Only Linux keeps apps across a restart.
     #[expect(clippy::unused_self, reason = "the Linux spawner's signature")]
-    fn kept_launch(&self, _: &Planned, _: &str, _: Option<&str>, _: &mut Command) -> Option<()> {
-        None
+    fn kept_launch(
+        &self,
+        _: &Planned,
+        _: &str,
+        _: Option<&str>,
+        _: &mut Command,
+        _: Option<()>,
+    ) -> Result<(Option<()>, Vec<()>), SpawnError> {
+        Ok((None, Vec::new()))
     }
+
+    #[expect(clippy::unused_self, reason = "the Linux spawner's signature")]
+    const fn abandon(&self, _: Option<&()>) {}
 
     #[expect(clippy::unused_self, reason = "the Linux spawner's signature")]
     fn app_of(&self, pid: u32, name: &str, _: Option<&()>) -> App {

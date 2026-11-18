@@ -16,6 +16,12 @@ words = ["host"]
 identifiers = ["HostLoad"]
 
 [[allow]]
+reason = "The launcher's name for the machine an application Tilo did not package is installed on: its module and the errors of starting such an application."
+words = ["host"]
+identifiers = ["host", "HostError"]
+paths = ["crates/packaging/launcher/src/host.rs", "crates/packaging/launcher/src/main.rs"]
+
+[[allow]]
 reason = "Generated from sources the check already reads."
 words = ["*"]
 paths = [

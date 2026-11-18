@@ -1,7 +1,6 @@
 use std::fs::File;
 use std::io::{Seek, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
-use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
 use rustix::fs::MemfdFlags;
@@ -15,7 +14,6 @@ pub(crate) const HOME_CHILD_FD: i32 = 34;
 pub(crate) const RUNTIME_LOCK_CHILD_FD: i32 = 35;
 pub(crate) const PASSWD_CHILD_FD: i32 = 36;
 pub(crate) const GROUP_CHILD_FD: i32 = 37;
-use launcher::performance::apply_game_performance_hints;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionOutcome {
@@ -32,9 +30,67 @@ pub trait StartedProgram: Send + Sync {
     fn stop(&self);
 }
 
+/// The command that starts a planned sandbox: Bubblewrap and its arguments, the descriptors it
+/// inherits at the numbers its arguments name, and whether it starts with the game performance
+/// hints.
+///
+/// Started directly ([`Self::spawn`]) or handed to whoever starts it for the session: a program
+/// the session keeps open through a desktop restart starts behind the session's own launch, which
+/// hands the same descriptors down ([`launcher::inherit`]).
+pub struct SandboxCommand {
+    pub program: std::path::PathBuf,
+    pub args: Vec<std::ffi::OsString>,
+    /// Each descriptor with the number the program finds it at.
+    pub inherited: Vec<(std::os::fd::OwnedFd, i32)>,
+    pub latency_sensitive: bool,
+}
+
+impl SandboxCommand {
+    /// `program` with `args`, inheriting nothing.
+    #[must_use]
+    pub fn new(
+        program: impl Into<std::path::PathBuf>,
+        args: impl IntoIterator<Item = impl Into<std::ffi::OsString>>,
+    ) -> Self {
+        Self {
+            program: program.into(),
+            args: args.into_iter().map(Into::into).collect(),
+            inherited: Vec::new(),
+            latency_sensitive: false,
+        }
+    }
+
+    /// Start the command as this process's child.
+    ///
+    /// # Errors
+    /// The program could not be started.
+    pub fn spawn(self) -> Result<Box<dyn StartedProgram>, ExecutionError> {
+        let mut command = Command::new(&self.program);
+        command
+            .args(&self.args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        let handed: Vec<_> = self
+            .inherited
+            .iter()
+            .map(|(fd, target)| (fd.as_raw_fd(), *target))
+            .collect();
+        launcher::inherit::hand_down(&mut command, handed, self.latency_sensitive);
+        let child = command.spawn().map_err(ExecutionError::Spawn)?;
+        drop(self.inherited);
+        Ok(Box::new(ChildProgram::new(child)?))
+    }
+}
+
 pub trait SandboxExecutor: Send + Sync {
-    /// Starts the already-validated Bubblewrap plan without a shell.
-    fn start(&self, plan: &CapsuleCommandPlan) -> Result<Box<dyn StartedProgram>, ExecutionError>;
+    /// The command that starts the already-validated Bubblewrap plan, without a shell.
+    fn command(&self, plan: &CapsuleCommandPlan) -> Result<SandboxCommand, ExecutionError>;
+
+    /// Start the plan as this process's child.
+    fn start(&self, plan: &CapsuleCommandPlan) -> Result<Box<dyn StartedProgram>, ExecutionError> {
+        self.command(plan)?.spawn()
+    }
 
     /// Waits for the plan to end: a setup or an uninstaller, whose end is the answer.
     fn execute(&self, plan: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError> {
@@ -46,13 +102,16 @@ pub trait SandboxExecutor: Send + Sync {
 pub struct BwrapExecutor;
 
 impl SandboxExecutor for BwrapExecutor {
-    fn start(&self, plan: &CapsuleCommandPlan) -> Result<Box<dyn StartedProgram>, ExecutionError> {
+    fn command(&self, plan: &CapsuleCommandPlan) -> Result<SandboxCommand, ExecutionError> {
         let (uid, gid) = (
             rustix::process::geteuid().as_raw(),
             rustix::process::getegid().as_raw(),
         );
         validate_identity_uid(plan.identity_uid, uid)?;
-        let mut filter_file = if let Some(profile) = plan.seccomp_profile {
+        // Every source is duplicated above the numbers the program finds them at, so handing one
+        // down never overwrites the source of the next.
+        let mut inherited = Vec::new();
+        if let Some(profile) = plan.seccomp_profile {
             let filter = launcher::seccomp::compile_baseline(profile)
                 .map_err(|error| ExecutionError::Seccomp(error.to_string()))?;
             let mut file = create_memfd("tilo-compat-seccomp")?;
@@ -62,28 +121,16 @@ impl SandboxExecutor for BwrapExecutor {
             // dup2 shares that offset, so an EOF position yields an empty BPF
             // program and PR_SET_SECCOMP fails with EINVAL.
             file.rewind()?;
-            Some(file)
-        } else {
-            None
-        };
-        // Duplicate above every destination before fork. Otherwise dup2 of
-        // one mapping could overwrite a source needed by the next mapping.
+            inherited.push((duplicate_above_child_slots(file.as_fd())?, SECCOMP_CHILD_FD));
+        }
         let [prefix, home] = plan.directory_fds();
-        let mut inherited = vec![
-            (duplicate_above_child_slots(prefix)?, PREFIX_CHILD_FD),
-            (duplicate_above_child_slots(home)?, HOME_CHILD_FD),
-        ];
+        inherited.push((duplicate_above_child_slots(prefix)?, PREFIX_CHILD_FD));
+        inherited.push((duplicate_above_child_slots(home)?, HOME_CHILD_FD));
         for (name, contents, target) in identity_files(uid, gid) {
             let mut file = create_memfd(name)?;
             file.write_all(contents.as_bytes())?;
             file.rewind()?;
             inherited.push((duplicate_above_child_slots(file.as_fd())?, target));
-        }
-        if let Some(filter) = &filter_file {
-            inherited.push((
-                duplicate_above_child_slots(filter.as_fd())?,
-                SECCOMP_CHILD_FD,
-            ));
         }
         if plan.runtime_lock_required {
             let lock = create_memfd("tilo-runtime-lock")?;
@@ -92,39 +139,12 @@ impl SandboxExecutor for BwrapExecutor {
                 RUNTIME_LOCK_CHILD_FD,
             ));
         }
-        let mappings: Vec<_> = inherited
-            .iter()
-            .map(|(file, target)| (file.as_raw_fd(), *target))
-            .collect();
-
-        let mut command = Command::new("/usr/bin/bwrap");
-        command
-            .args(&plan.bwrap_argv)
-            .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-        let latency_sensitive = plan.latency_sensitive;
-        // SAFETY: the closure only iterates preallocated mappings and calls
-        // async-signal-safe syscalls (performance hints and dup2). Every source differs from every target, so
-        // dup2 also clears CLOEXEC on the inherited target descriptors.
-        // The owned source descriptors remain alive until spawn returns.
-        unsafe {
-            command.pre_exec(move || {
-                if latency_sensitive {
-                    apply_game_performance_hints()?;
-                }
-                for &(source, target) in &mappings {
-                    if libc::dup2(source, target) == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                }
-                Ok(())
-            });
-        }
-        let child = command.spawn().map_err(ExecutionError::Spawn)?;
-        drop(inherited);
-        drop(filter_file.take());
-        Ok(Box::new(ChildProgram::new(child)?))
+        Ok(SandboxCommand {
+            program: "/usr/bin/bwrap".into(),
+            args: plan.bwrap_argv.iter().map(Into::into).collect(),
+            inherited,
+            latency_sensitive: plan.latency_sensitive,
+        })
     }
 }
 
@@ -175,8 +195,8 @@ impl StartedProgram for ChildProgram {
     }
 }
 
-fn duplicate_above_child_slots(fd: BorrowedFd<'_>) -> Result<File, std::io::Error> {
-    Ok(rustix::io::fcntl_dupfd_cloexec(fd, GROUP_CHILD_FD + 1)?.into())
+fn duplicate_above_child_slots(fd: BorrowedFd<'_>) -> Result<std::os::fd::OwnedFd, std::io::Error> {
+    Ok(rustix::io::fcntl_dupfd_cloexec(fd, GROUP_CHILD_FD + 1)?)
 }
 
 fn validate_identity_uid(planned: u32, effective: u32) -> Result<(), ExecutionError> {

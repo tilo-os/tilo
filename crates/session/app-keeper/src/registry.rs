@@ -80,11 +80,29 @@ pub fn find_keeper() -> Option<PathBuf> {
 /// # Errors
 /// When the directory cannot be made or written.
 pub fn new_dir(root: &Path, launch: &KeptLaunch) -> io::Result<PathBuf> {
+    let dir = make_dir(root)?;
+    write_launch(&dir, launch)?;
+    Ok(dir)
+}
+
+/// A new keeper directory under `root`, private to this user, with no launch in it yet: one
+/// whose display must be known before its launch is (a sandbox binds the keeper's socket).
+///
+/// # Errors
+/// When the directory cannot be made.
+pub fn make_dir(root: &Path) -> io::Result<PathBuf> {
     std::fs::create_dir_all(root)?;
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
     let dir = root.join(uuid::Uuid::new_v4().simple().to_string());
     std::fs::create_dir(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-    std::fs::write(dir.join("launch"), launch.encode())?;
     Ok(dir)
+}
+
+/// Write `launch` into the keeper directory `dir`.
+///
+/// # Errors
+/// When the file cannot be written.
+pub fn write_launch(dir: &Path, launch: &KeptLaunch) -> io::Result<()> {
+    std::fs::write(dir.join("launch"), launch.encode())
 }

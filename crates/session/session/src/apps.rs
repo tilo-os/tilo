@@ -34,6 +34,8 @@ mod reach;
 pub(crate) use reach::ReachFirst;
 #[cfg(target_os = "linux")]
 mod outdated;
+#[cfg(target_os = "linux")]
+mod windows;
 
 use crate::agents::Kept;
 use crate::search::AppActions;
@@ -734,6 +736,7 @@ impl Apps {
     #[cfg(target_os = "linux")]
     pub fn keep_behind(&self, keeping: tilo_app_launch::kept::Keeping) {
         self.state.borrow_mut().spawner.keep_behind(keeping);
+        self.keep_windows_programs();
     }
 
     /// Take up what the keepers' registry holds as this run starts: after an in-place restart the
@@ -762,6 +765,7 @@ impl Apps {
     /// windows are claimed.
     #[cfg(target_os = "linux")]
     fn took_up(&self, adopted: Vec<tilo_app_launch::Adopted>, claim: bool) {
+        self.take_back_windows_programs(&adopted);
         let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
         for kept in adopted {
@@ -827,6 +831,8 @@ impl Apps {
         self.follow_policy();
         #[cfg(target_os = "linux")]
         self.follow_kept();
+        #[cfg(target_os = "linux")]
+        self.follow_windows_programs();
     }
 
     /// Start what the desktop and anything waiting on a launch asked for: a launch's answer, and
@@ -1886,104 +1892,6 @@ impl Apps {
                 }
             })
         })
-    }
-
-    /// Start `planned` with the link `link` , which the launch holds until it ends, and write it
-    /// down as a launch of this session before the app can reach a service of it. A service asked
-    /// as nothing has no window to offer again. `instance` is the tab the shell held for its
-    /// window, when it held one. `timed` is the launch timing of the request that led here, which
-    /// an agent start of no person's ask begins for itself.
-    fn spawn(
-        &self,
-        planned: &Planned,
-        asked: Option<&str>,
-        workspace: &str,
-        instance: Option<u64>,
-        link: Option<HeldLink>,
-        timed: Option<u64>,
-    ) -> Result<u64, ApiError> {
-        // An app of a workspace this device is not admitted to yet would take part in nothing
-        // there, and would not join once the host admits the device: it is not started, and
-        // whoever asked is told why at once.
-        self.admitted(workspace)?;
-        let launches = self.state.borrow().launches.clone();
-        let mut state = self.state.borrow_mut();
-        let windowless = planned.env.contains_key(ui::window_link::WINDOWLESS_ENV);
-        // The launch's share in the launch-latency log runs from the request to the first presented
-        // frame: the launcher's and the app's in this log, the surface's in the compositor's. A
-        // launch with no window presents none.
-        let timed = (!windowless)
-            .then(|| timed.unwrap_or_else(|| tilo_startup_metrics::launch_requested(&planned.app)));
-        let started = state.spawner.start_with(
-            planned,
-            link,
-            &|pid| {
-                if let Some(launches) = &launches {
-                    // The launcher binds the session's documents store into a package's sandbox and
-                    // into nothing else, so a package is the launch whose files are answered with paths
-                    // in the store.
-                    if windowless {
-                        launches.started_windowless(pid, &planned.app, workspace);
-                    } else {
-                        launches.started(pid, &planned.app, workspace, !planned.kind.is_host());
-                    }
-                }
-            },
-            workspace,
-            asked,
-        );
-        let started = match started {
-            Ok(started) => started,
-            Err(error) => {
-                if let Some(timed) = timed {
-                    tilo_startup_metrics::launch_failed(timed);
-                }
-                tracing::warn!(app = %planned.app, %workspace, %error, "a launch did not start");
-                return Err(ApiError::Failed(error.to_string()));
-            }
-        };
-        let (started, link) = started;
-        if let Some(timed) = timed {
-            tilo_startup_metrics::launch_spawned(timed, started.pid);
-        }
-        if let Some(asked) = asked {
-            // This launch's ask replaces the last one of the same app in the same workspace, once
-            // that one ended: what a caller reads is how the app's latest launch went.
-            state.launched.retain(|_, launch| {
-                !(launch.app == planned.app
-                    && launch.workspace == workspace
-                    && matches!(launch.got, Got::Closed | Got::CouldNotOpen { .. }))
-            });
-            // A launch with no window to show (an action's run) is not one that could fail to open.
-            let got = if windowless {
-                Got::Windowless
-            } else {
-                Got::Arriving
-            };
-            state.launched.insert(
-                started.id,
-                Launching {
-                    asked: asked.to_owned(),
-                    app: planned.app.clone(),
-                    workspace: workspace.to_owned(),
-                    pid: Some(started.pid),
-                    instance,
-                    started: std::time::Instant::now(),
-                    got,
-                },
-            );
-        }
-        if let Some(link) = link {
-            state.held.insert(started.id, link);
-        }
-        drop(state);
-        tracing::info!(
-            app = %planned.app,
-            pid = started.pid,
-            "started {}",
-            planned.describe()
-        );
-        Ok(started.id)
     }
 }
 

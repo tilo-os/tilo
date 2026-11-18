@@ -38,15 +38,16 @@ pub use catalogue::{
 };
 pub use execute::{
     BwrapExecutor, ChildProgram, ExecutionError, ExecutionOutcome, SECCOMP_CHILD_FD,
-    SandboxExecutor, StartedProgram,
+    SandboxCommand, SandboxExecutor, StartedProgram,
 };
 pub use installer::{
     InstallerError, InstallerInspection, MAX_INSTALLER_BYTES, PeMachine, inspect_installer,
 };
 pub use plan::{
-    AudioBinding, AudioProtocol, CapsuleCommandPlan, LaunchDisplay, LaunchDisplays, LaunchLease,
-    LaunchResourceBroker, NetworkShape, PlanError, ResourceError, ResourceRequest, RuntimeImage,
-    RuntimeRegistry, SandboxPlanner, SystemRuntimeRegistry,
+    AudioBinding, AudioProtocol, CapsuleCommandPlan, KeptDisplay, KeptProgram, LaunchDisplay,
+    LaunchDisplays, LaunchLease, LaunchResourceBroker, NetworkShape, PlanError, ResourceError,
+    ResourceRequest, RuntimeImage, RuntimeRegistry, SandboxPlanner, SystemRuntimeRegistry,
+    TakenBack,
 };
 pub use protocol::{
     ManagedApplication, ManagedInstallation, PROTOCOL_VERSION, ProgramEnd, ProtocolError,

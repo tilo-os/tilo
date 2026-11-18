@@ -78,7 +78,11 @@ the machinery `tilo device swap` uses on a development machine:
    between the two desktops; the kernel's OOM kill of the app's group is the
    backstop, and the end is reported as a memory end from the group's events
    once the new desktop takes it back. An app that ended while no desktop was
-   there is reported from the record its keeper left. A keeper started by an
+   there is reported from the record its keeper left.
+   A Windows program in a Wine capsule is one of these launches: the
+   compatibility service has the desktop start its sandbox behind a keeper
+   (`tilo-launcher windows-program`), and the service the new desktop starts
+   lists it open again, can quit it, and reports its end. A keeper started by an
    older desktop that speaks another version of its interface cannot be shown:
    the new desktop counts it as a launch (tiers, memory watch, ended at
    logout), starts no second copy of its app, and offers to restart it, which

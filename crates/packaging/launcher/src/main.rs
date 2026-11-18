@@ -203,6 +203,11 @@ enum Cmd {
     /// Launch an application Tilo did **not** package: a `.desktop` entry already installed on the
     /// host, Flatpak or otherwise.
     MachineApp(MachineAppArgs),
+    /// Start a Windows program's sandbox, as the compatibility service planned it, behind an app
+    /// keeper in a scope of its own: the session starts each such program through this, so the
+    /// program stays open while the desktop restarts in place.
+    #[command(name = "windows-program", hide = true)]
+    WindowsProgram(WindowsProgramArgs),
     /// Build or retire the pre-built read-only system view every sandbox mounts
     /// (`launcher::sandbox_view`).
     #[command(subcommand)]
@@ -321,6 +326,52 @@ struct MachineAppArgs {
     keep_as: Option<String>,
 }
 
+#[derive(clap::Args, Debug)]
+struct WindowsProgramArgs {
+    /// The app id the program's scope and windows are named for.
+    #[arg(long)]
+    app_id: String,
+    /// The name the program is shown by.
+    #[arg(long)]
+    name: String,
+    /// Serve the program an X11 display of its keeper's.
+    #[arg(long)]
+    x11: bool,
+    /// The app keeper the program starts behind.
+    #[arg(long)]
+    keeper: PathBuf,
+    /// The keeper's private directory (`--dir` of the keeper).
+    #[arg(long)]
+    keep_in: PathBuf,
+    /// What the session names this launch, handed to the keeper as given (`--launch`).
+    #[arg(long)]
+    keep_as: String,
+    /// The sandbox's command line.
+    #[arg(last = true, required = true)]
+    command: Vec<std::ffi::OsString>,
+}
+
+/// Start a Windows program behind its keeper, and end as it ended.
+fn windows_program(args: &WindowsProgramArgs) -> ExitCode {
+    let keep = launcher::host::Keep {
+        keeper: args.keeper.clone(),
+        dir: args.keep_in.clone(),
+        launch: args.keep_as.clone(),
+    };
+    match launcher::host::start_kept(&args.app_id, &args.name, &args.command, args.x11, &keep) {
+        Ok(status) => {
+            if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
+                launcher::host::end_by(signal);
+            }
+            exit_code(status.code().unwrap_or(1))
+        }
+        Err(e) => {
+            eprintln!("tilo-launcher: {e}");
+            exit_code(e.to_exit_code())
+        }
+    }
+}
+
 /// Fold an `i32` exit code (from [`std::process::ExitStatus::code`] or
 /// [`launcher::run::RunError::to_exit_code`]) into the `u8` [`ExitCode`] takes.
 fn exit_code(code: i32) -> ExitCode {
@@ -417,6 +468,7 @@ fn dispatch_command(
             },
         ),
         Cmd::MachineApp(args) => machine_app(args),
+        Cmd::WindowsProgram(args) => windows_program(&args),
         Cmd::SandboxView(command) => sandbox_view(command),
         Cmd::Apps { json } => list_apps(json),
         Cmd::RuntimeResident { user: true, .. } => runtime_resident_user(),
@@ -1343,6 +1395,41 @@ mod host_launch_tests {
         assert_eq!(
             args.keeper.as_deref(),
             Some(Path::new("/usr/libexec/tilo-app-keeper"))
+        );
+    }
+
+    /// The session starts a Windows program as `tilo-launcher windows-program …`
+    /// (`tilo_session`'s Windows programs), the sandbox's command after `--`, flags and all.
+    #[test]
+    fn the_sessions_windows_program_launch_parses() {
+        let parsed = Cli::try_parse_from([
+            "tilo-launcher",
+            "windows-program",
+            "--app-id",
+            "so.tilo.windows.probe",
+            "--name",
+            "Probe",
+            "--keeper",
+            "/usr/libexec/tilo-app-keeper",
+            "--keep-in",
+            "/tmp/kept/1",
+            "--keep-as",
+            "{}",
+            "--",
+            "/usr/bin/bwrap",
+            "--unshare-all",
+            "--",
+            "/usr/bin/wine",
+        ])
+        .expect("the session's launch of a Windows program parses");
+        let Cmd::WindowsProgram(args) = parsed.cmd else {
+            panic!("a Windows program's launch is not windows-program");
+        };
+        assert_eq!(args.app_id, "so.tilo.windows.probe");
+        assert!(!args.x11);
+        assert_eq!(
+            args.command,
+            ["/usr/bin/bwrap", "--unshare-all", "--", "/usr/bin/wine"]
         );
     }
 }

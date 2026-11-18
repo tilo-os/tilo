@@ -166,6 +166,17 @@ the session answers with the Wayland socket its compositor bound and the
 render node it draws on, and refuses the launch while it has neither. The
 appliance's rail and SPICE presentations are given the same display.
 
+A capsule program stays open while the desktop restarts in place to apply an
+update. The service plans its sandbox for a display of its own, an app keeper's
+(`tilo-app-keeper`), and asks the session to start it as one of its own
+launches: `tilo-launcher windows-program` joins the launch's own scope, starts
+the keeper there and the sandbox as the keeper's child, with the descriptors
+the plan hands Bubblewrap passed down unchanged. Memory tiers, a force quit, a
+crash notice and a logout treat it as any other app. The desktop that follows
+the restart takes the keeper back, the program's windows return to their tabs,
+and its service lists the program open again and can quit it; a program that
+ended while no desktop was there is reported with its exit status.
+
 The entries a manager may address are read from capsule state and the
 appliance's published applications when it connects; it keeps that set until
 it ends. A VM installer transaction belongs to the workspace that imported its

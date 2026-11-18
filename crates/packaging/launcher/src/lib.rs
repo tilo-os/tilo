@@ -24,6 +24,8 @@ mod headless_console;
 #[cfg(target_os = "linux")]
 pub mod host;
 #[cfg(target_os = "linux")]
+pub mod inherit;
+#[cfg(target_os = "linux")]
 pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod landlock_shim;

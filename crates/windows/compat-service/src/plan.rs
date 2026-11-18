@@ -324,8 +324,9 @@ fn runtime_bind(host: &str, sandbox: &str) -> RuntimeBind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchDisplay {
     pub uid: u32,
-    /// The login's runtime directory (`XDG_RUNTIME_DIR`), which the display's
-    /// socket sits directly in.
+    /// The directory the display's socket sits directly in: the login's
+    /// runtime directory (`XDG_RUNTIME_DIR`), or the private directory of the
+    /// display a program is kept behind.
     pub runtime_dir: PathBuf,
     pub wayland_socket: PathBuf,
     pub render_node: PathBuf,
@@ -362,6 +363,55 @@ pub trait LaunchDisplays: Send + Sync + 'static {
     /// The display a program launched into `workspace_id` gets now, or why
     /// there is none.
     fn display_for(&self, workspace_id: &str) -> Result<LaunchDisplay, String>;
+
+    /// A display of its own for `program`, which stays open while the desktop restarts in place,
+    /// with the program behind it: `None` where programs are not kept, and the program then shows
+    /// on [`Self::display_for`]'s and ends with the desktop.
+    fn kept_display(
+        &self,
+        _program: &KeptProgram<'_>,
+    ) -> Option<Result<Box<dyn KeptDisplay>, String>> {
+        None
+    }
+
+    /// The programs started before the desktop last restarted in place, each taken once: they
+    /// were kept, and are open again (or ended while no desktop was there, and say how).
+    fn taken_back(&self) -> Vec<TakenBack> {
+        Vec::new()
+    }
+}
+
+/// A program a launch keeps open through a desktop restart.
+#[derive(Clone, Copy, Debug)]
+pub struct KeptProgram<'a> {
+    /// The app id its windows are shown under.
+    pub app_id: &'a str,
+    /// The name it is shown by.
+    pub display_name: &'a str,
+    /// Its entry in the manager's list: what a later desktop reopens.
+    pub entry_id: &'a str,
+    pub workspace_id: &'a str,
+}
+
+/// The display a kept program shows on, and what starts the program behind it.
+pub trait KeptDisplay: Send {
+    /// The display to plan the program's sandbox for.
+    fn display(&self) -> &LaunchDisplay;
+    /// Start `command` behind the display. A display dropped without starting anything is given
+    /// back.
+    fn start(
+        self: Box<Self>,
+        command: crate::SandboxCommand,
+    ) -> Result<Box<dyn crate::StartedProgram>, crate::ExecutionError>;
+}
+
+/// A kept program a service started before the desktop restarted, as the service after it finds
+/// it.
+pub struct TakenBack {
+    pub entry_id: String,
+    pub workspace_id: String,
+    pub display_name: String,
+    pub program: Box<dyn crate::StartedProgram>,
 }
 
 /// One display for every launch.

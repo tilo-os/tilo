@@ -14,16 +14,15 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use compat_catalogue::{ApplicationQuery, Catalogue, VmFallback};
 use compat_service::{
-    Assembly, CapsuleCommandPlan, CapsuleProgram, CapsuleStore, ExecutionError, ExecutionOutcome,
-    LaunchLease, LaunchResourceBroker, LazyVmDelegate, PROTOCOL_VERSION, ProgramKind,
-    ProtocolRequest, ResourceError, ResourceRequest, SandboxExecutor, SessionClient,
-    StartedProgram, SystemRuntimeRegistry,
+    Assembly, CapsuleCommandPlan, CapsuleProgram, CapsuleStore, ExecutionError, LaunchLease,
+    LaunchResourceBroker, LazyVmDelegate, PROTOCOL_VERSION, ProgramKind, ProtocolRequest,
+    ResourceError, ResourceRequest, SandboxCommand, SandboxExecutor, SessionClient,
+    SystemRuntimeRegistry,
 };
 use serde_json::{Value, json};
 use tilo_session::apps::Apps;
@@ -142,21 +141,20 @@ impl LaunchResourceBroker for NoResources {
     fn revoke(&self, _: &str) {}
 }
 
-/// Stands in for Bubblewrap and Wine: opens a window on the display the plan binds into the
-/// sandbox, and ends with status 7 once the test saw it.
-struct WindowOnPlannedDisplay {
+/// Stands in for Bubblewrap and Wine: starts [`probe_program`] with `dir`, on the display the plan
+/// binds into the sandbox (told it when `tell_display`; a keeper tells it its own), handing it a
+/// descriptor at the number Bubblewrap reads its seccomp filter from.
+struct Probe {
+    dir: PathBuf,
+    tell_display: bool,
     planned: Arc<Mutex<Option<PathBuf>>>,
-    seen: Arc<AtomicBool>,
 }
 
-/// The stand-in's program: it shows its window while the service waits for its end.
-struct ProbeWindow {
-    display: PathBuf,
-    seen: Arc<AtomicBool>,
-}
+/// What the probe finds at the descriptor it is handed.
+const HANDED_DOWN: &[u8] = b"handed down";
 
-impl SandboxExecutor for WindowOnPlannedDisplay {
-    fn start(&self, plan: &CapsuleCommandPlan) -> Result<Box<dyn StartedProgram>, ExecutionError> {
+impl SandboxExecutor for Probe {
+    fn command(&self, plan: &CapsuleCommandPlan) -> Result<SandboxCommand, ExecutionError> {
         let display = plan
             .bwrap_argv
             .windows(3)
@@ -164,37 +162,71 @@ impl SandboxExecutor for WindowOnPlannedDisplay {
             .map(|bind| PathBuf::from(&bind[1]))
             .expect("the plan binds a display");
         *self.planned.lock().unwrap() = Some(display.clone());
-        Ok(Box::new(ProbeWindow {
-            display,
-            seen: Arc::clone(&self.seen),
-        }))
+        let mut args = vec![format!("{PROBE_DIR}={}", self.dir.display())];
+        if self.tell_display {
+            args.push(format!("WAYLAND_DISPLAY={}", display.display()));
+        }
+        args.extend([
+            std::env::current_exe()
+                .expect("this test binary")
+                .to_string_lossy()
+                .into_owned(),
+            "--exact".to_owned(),
+            "windows_compat::probe_program".to_owned(),
+            "--nocapture".to_owned(),
+        ]);
+        let memfd = rustix::fs::memfd_create("probe", rustix::fs::MemfdFlags::CLOEXEC)
+            .map_err(|error| ExecutionError::Io(error.into()))?;
+        rustix::io::write(&memfd, HANDED_DOWN).map_err(|error| ExecutionError::Io(error.into()))?;
+        let above = rustix::io::fcntl_dupfd_cloexec(&memfd, 64)
+            .map_err(|error| ExecutionError::Io(error.into()))?;
+        let mut command = SandboxCommand::new("/usr/bin/env", args);
+        command
+            .inherited
+            .push((above, compat_service::SECCOMP_CHILD_FD));
+        Ok(command)
     }
 }
 
-impl StartedProgram for ProbeWindow {
-    #[allow(
-        clippy::panic_in_result_fn,
-        reason = "a stand-in that fails its step is the test's assertion"
-    )]
-    fn wait(&self) -> Result<ExecutionOutcome, ExecutionError> {
-        let mut window = crate::common::window::Client::on(&self.display, PROGRAM_WINDOW, "Probe");
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !self.seen.load(Ordering::Acquire) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the test saw no window"
-            );
-            window.exchange();
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        drop(window);
-        Ok(ExecutionOutcome {
-            success: false,
-            exit_code: Some(7),
-        })
-    }
+/// What makes this test binary the stand-in for a Windows program: the directory it reports in.
+const PROBE_DIR: &str = "TILO_TEST_WINDOWS_PROBE";
 
-    fn stop(&self) {}
+/// Not a test: a Windows program, as the stand-in for Bubblewrap starts it. It writes what it
+/// finds at the descriptor Bubblewrap reads its filter from to `handed`, its pid to `started`, and
+/// shows a window until a code appears in `exit`, then exits with it.
+#[test]
+#[expect(
+    clippy::exit,
+    reason = "a Windows program ends with its own status, which the test reads"
+)]
+fn probe_program() {
+    let Ok(dir) = std::env::var(PROBE_DIR) else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let handed = fs::read(format!(
+        "/proc/self/fd/{}",
+        compat_service::SECCOMP_CHILD_FD
+    ))
+    .unwrap_or_default();
+    fs::write(dir.join("handed"), handed).expect("what it was handed");
+    let mut started = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("started"))
+        .expect("the starts");
+    std::io::Write::write_all(&mut started, format!("{}\n", std::process::id()).as_bytes())
+        .expect("the start recorded");
+    let socket = std::env::var("WAYLAND_DISPLAY").expect("a display");
+    let mut window = crate::common::window::Client::on(Path::new(&socket), PROGRAM_WINDOW, "Probe");
+    loop {
+        window.exchange();
+        if let Ok(code) = fs::read_to_string(dir.join("exit")) {
+            let _ = fs::remove_file(dir.join("exit"));
+            std::process::exit(code.trim().parse().expect("an exit code"));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The catalogue routing `probe.exe` to Wine, and a capsule holding it, set up under the login's
@@ -261,17 +293,22 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
     let home = tilo_test_env::TestHome::new().expect("a home");
     let (catalogue, entry) = set_up_probe(home.data());
     let planned = Arc::new(Mutex::new(None));
-    let seen = Arc::new(AtomicBool::new(false));
+    let probe = home.home().join("probe");
+    fs::create_dir_all(&probe).unwrap();
     let assembly = Assembly::with({
         let planned = Arc::clone(&planned);
-        let seen = Arc::clone(&seen);
+        let dir = probe.clone();
         move |side| {
             compat_service::serve(
                 side,
                 catalogue,
                 SystemRuntimeRegistry::assuming_provider(),
                 NoResources,
-                WindowOnPlannedDisplay { planned, seen },
+                Probe {
+                    dir,
+                    tell_display: true,
+                    planned,
+                },
                 LazyVmDelegate::new(|| Err("no appliance is set up here".to_owned())),
             )
         }
@@ -314,9 +351,12 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
     fs::write(dir.join("entry"), &entry).unwrap();
     let mut manager = start_manager(&dir);
     launches.started(manager.id(), MANAGER, &workspace, true);
+    let mut seen = false;
     let answers = crate::common::wait_for(&mut session, "the manager's answers", |session| {
-        if crate::common::window::window_of(session.compositor(), PROGRAM_WINDOW).is_some() {
-            seen.store(true, Ordering::Release);
+        if crate::common::window::window_of(session.compositor(), PROGRAM_WINDOW).is_some() && !seen
+        {
+            seen = true;
+            fs::write(probe.join("exit"), "7").unwrap();
         }
         fs::read_to_string(dir.join("answers")).ok()
     });
@@ -341,8 +381,13 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
         "{answers}"
     );
     assert!(
-        seen.load(Ordering::Acquire),
+        seen,
         "the program's window was shown on the session's display"
+    );
+    assert_eq!(
+        fs::read(probe.join("handed")).unwrap(),
+        HANDED_DOWN,
+        "the program inherits what its sandbox is handed"
     );
     assert_eq!(planned.lock().unwrap().as_deref(), Some(display.as_path()));
     // The same launch connecting again is refused: each launch hands off once.
@@ -359,4 +404,337 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
     started.wait().expect("the stranger ends");
     let answers: Value = serde_json::from_str(&answers).expect("answers");
     assert!(answers["listed"]["refused"].is_string(), "{answers}");
+}
+
+/// What makes this test binary a manager that follows the steps in its directory.
+const STEPS_DIR: &str = "TILO_TEST_WINDOWS_STEPS";
+
+/// Not a test: a launcher of the Windows Apps manager that asks the service what `steps` in its
+/// directory says, one step a line (`list`, `launch`, `stop`, or `ended`: list until an end is
+/// told), and writes the answers, in order, to `answers`.
+#[test]
+fn manager_steps() {
+    let Ok(dir) = std::env::var(STEPS_DIR) else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let workspace = fs::read_to_string(dir.join("workspace")).expect("the workspace");
+    let entry_id = fs::read_to_string(dir.join("entry")).expect("the entry");
+    let mut client = connect(&workspace);
+    let list = ProtocolRequest::List {
+        version: PROTOCOL_VERSION,
+    };
+    let mut answers = Vec::new();
+    for step in fs::read_to_string(dir.join("steps"))
+        .expect("the steps")
+        .lines()
+    {
+        answers.push(match step {
+            "list" => ask(&mut client, &list),
+            "launch" => ask(
+                &mut client,
+                &ProtocolRequest::Launch {
+                    version: PROTOCOL_VERSION,
+                    entry_id: entry_id.clone(),
+                },
+            ),
+            "stop" => ask(
+                &mut client,
+                &ProtocolRequest::Stop {
+                    version: PROTOCOL_VERSION,
+                    entry_id: entry_id.clone(),
+                },
+            ),
+            "ended" => {
+                let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                loop {
+                    let answer = ask(&mut client, &list);
+                    if std::time::Instant::now() >= deadline
+                        || answer["ended"]
+                            .as_array()
+                            .is_none_or(|ended| !ended.is_empty())
+                    {
+                        break answer;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            other => panic!("no step {other}"),
+        });
+    }
+    fs::write(dir.join("answers"), Value::from(answers).to_string()).expect("the answers");
+}
+
+/// A session whose Windows programs are kept behind keepers, through restarts of the desktop.
+struct KeptRig {
+    home: tilo_test_env::TestHome,
+    state: PathBuf,
+    catalogue: Catalogue,
+    entry: String,
+    probe: PathBuf,
+    keeper: PathBuf,
+    root: PathBuf,
+}
+
+/// One desktop, until it ends.
+struct KeptDesktop {
+    session: tilo_session::Session,
+    apps: Rc<Apps>,
+    launches: Arc<Launches>,
+    ending: Rc<std::cell::Cell<tilo_app_launch::Teardown>>,
+    workspace: String,
+}
+
+impl KeptDesktop {
+    fn end(self, teardown: tilo_app_launch::Teardown) {
+        self.ending.set(teardown);
+        let Self { session, apps, .. } = self;
+        drop(session);
+        drop(apps);
+    }
+
+    /// Ask the service `steps` as the manager would, and its answers.
+    fn manage(&mut self, rig: &KeptRig, name: &str, steps: &[&str]) -> Vec<Value> {
+        let dir = rig.home.home().join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("workspace"), &self.workspace).unwrap();
+        fs::write(dir.join("entry"), &rig.entry).unwrap();
+        fs::write(dir.join("steps"), steps.join("\n")).unwrap();
+        let mut manager = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "windows_compat::manager_steps", "--nocapture"])
+            .env(STEPS_DIR, &dir)
+            .spawn_locked()
+            .expect("the manager's launcher starts");
+        self.launches
+            .started(manager.id(), MANAGER, &self.workspace, true);
+        let answers = crate::common::wait_for(&mut self.session, "the manager's answers", |_| {
+            fs::read_to_string(dir.join("answers")).ok()
+        });
+        manager.wait().expect("the launcher ends");
+        fs::remove_dir_all(&dir).unwrap();
+        serde_json::from_str::<Vec<Value>>(&answers).expect("answers")
+    }
+
+    /// Wait until the program's window is on the desktop.
+    fn shown(&mut self) {
+        crate::common::wait_for(&mut self.session, "the program's window", |session| {
+            crate::common::window::window_of(session.compositor(), PROGRAM_WINDOW)
+        });
+    }
+}
+
+impl KeptRig {
+    fn new() -> Self {
+        let mut home = tilo_test_env::TestHome::new().expect("a home");
+        let (catalogue, entry) = set_up_probe(home.data());
+        let state = crate::common::device_in(&mut home);
+        let probe = home.home().join("probe");
+        fs::create_dir_all(&probe).unwrap();
+        let keeper = home.home().join("keeper");
+        tilo_app_launch::kept::testing::keeper_program(&keeper, "kept_apps::keeper_process")
+            .unwrap();
+        // The launcher's `windows-program`: the keeper, started with the command it was handed.
+        tilo_app_launch::kept::testing::launcher_program(&home.home().join("tilo-launcher"), &[])
+            .unwrap();
+        let root = home.runtime().join("kept");
+        Self {
+            home,
+            state,
+            catalogue,
+            entry,
+            probe,
+            keeper,
+            root,
+        }
+    }
+
+    /// A desktop, taking up what the keepers hold `following` an in-place restart.
+    fn start(&self, following: bool) -> KeptDesktop {
+        let catalogue = self.catalogue.clone();
+        let dir = self.probe.clone();
+        let assembly = Assembly::with(move |mut side| {
+            // The manager is this test binary, not the stand-in launcher the programs start
+            // through.
+            side.launcher = std::env::current_exe().expect("this test binary");
+            compat_service::serve(
+                side,
+                catalogue,
+                SystemRuntimeRegistry::assuming_provider(),
+                NoResources,
+                Probe {
+                    dir,
+                    tell_display: false,
+                    planned: Arc::default(),
+                },
+                LazyVmDelegate::new(|| Err("no appliance is set up here".to_owned())),
+            )
+        });
+        let apps = Rc::new(Apps::with_launcher(
+            tilo_app_launch::SessionEnvironment::from_process(),
+            None,
+            Some(self.home.home().join("tilo-launcher")),
+        ));
+        let launches = Arc::new(Launches::default());
+        let ending = Rc::new(std::cell::Cell::new(tilo_app_launch::Teardown::Logout));
+        let asked = Rc::clone(&ending);
+        let mut session = crate::common::headless(Options {
+            collab: false,
+            launch: Some(Rc::clone(&apps)),
+            launches: Arc::clone(&launches),
+            state: Some(self.state.clone()),
+            app_socket: AppSocket::At(self.home.runtime().join("app_wire.sock")),
+            windows: assembly,
+            teardown: Box::new(move || asked.get()),
+            ..Options::default()
+        });
+        let display = self
+            .home
+            .runtime()
+            .join(session.compositor().listen().expect("the display binds"));
+        apps.set_displays(display, None, None);
+        apps.set_render_node(Some(PathBuf::from("/dev/dri/renderD128")));
+        let connector = session.compositor().client_connector();
+        apps.keep_behind(tilo_app_launch::kept::Keeping {
+            keeper: self.keeper.clone(),
+            root: self.root.clone(),
+            desktop: Arc::new(move |pid| connector.connect_for(pid)),
+        });
+        apps.take_up_kept(following);
+        let workspace = session
+            .handle()
+            .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
+            .expect("a workspace in front");
+        let socket = launcher::services::socket_for(launcher::services::COMPAT_SERVICE);
+        crate::common::wait_for(&mut session, "the compatibility service", |_| {
+            socket.exists().then_some(())
+        });
+        KeptDesktop {
+            session,
+            apps,
+            launches,
+            ending,
+            workspace,
+        }
+    }
+
+    /// The pids of the program's starts.
+    fn starts(&self) -> Vec<u32> {
+        fs::read_to_string(self.probe.join("started"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.parse().ok())
+            .collect()
+    }
+
+    /// End the program with `code`.
+    fn exit(&self, code: i32) {
+        fs::write(self.probe.join("exit"), code.to_string()).unwrap();
+    }
+}
+
+fn alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+        && !fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+        })
+}
+
+#[test]
+fn a_windows_program_stays_open_through_an_in_place_restart() {
+    let rig = KeptRig::new();
+    let mut first = rig.start(false);
+    let answers = first.manage(&rig, "first", &["launch", "list"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    assert_eq!(
+        answers[1]["applications"][0]["running"], true,
+        "{answers:?}"
+    );
+    first.shown();
+    let [pid] = rig.starts()[..] else {
+        panic!("one start: {:?}", rig.starts());
+    };
+    assert_eq!(
+        fs::read(rig.probe.join("handed")).unwrap(),
+        HANDED_DOWN,
+        "the program inherits what its sandbox is handed, through its keeper"
+    );
+
+    // The desktop restarts in place: the program goes on, and the next desktop shows it and its
+    // service lists it open; Quit ends it.
+    first.end(tilo_app_launch::Teardown::InPlaceRestart);
+    assert!(
+        alive(pid),
+        "the program outlives the desktop that started it"
+    );
+    let mut second = rig.start(true);
+    second.shown();
+    assert_eq!(rig.starts(), [pid], "the same program, not a new one");
+    let answers = second.manage(&rig, "second", &["list", "stop", "ended"]);
+    assert_eq!(
+        answers[0]["applications"][0]["running"], true,
+        "{answers:?}"
+    );
+    assert_eq!(answers[1]["result"], "stopped", "{answers:?}");
+    assert_eq!(answers[2]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
+    assert_eq!(
+        answers[2]["applications"][0]["running"], false,
+        "{answers:?}"
+    );
+    crate::common::wait_for(&mut second.session, "the program ends", |_| {
+        (!alive(pid)).then_some(())
+    });
+
+    // A program that ends while no desktop is there is reported to the next desktop with its code.
+    let answers = second.manage(&rig, "third", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    second.shown();
+    second.end(tilo_app_launch::Teardown::InPlaceRestart);
+    rig.exit(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let ended = || {
+        fs::read_dir(&rig.root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|dir| dir.path().join("ended").exists())
+    };
+    while !ended() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the program did not end: {:?} {:?}",
+            rig.starts(),
+            fs::read_dir(&rig.root).map(|dirs| dirs
+                .flatten()
+                .map(|dir| fs::read_dir(dir.path()).map(|files| files
+                    .flatten()
+                    .map(|file| file.file_name())
+                    .collect::<Vec<_>>()))
+                .collect::<Vec<_>>())
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mut third = rig.start(true);
+    let answers = third.manage(&rig, "fourth", &["ended"]);
+    assert_eq!(answers[0]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
+    assert_eq!(answers[0]["ended"][0]["exit_code"], 5, "{answers:?}");
+
+    // A logout ends a program and its keeper.
+    let answers = third.manage(&rig, "fifth", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    third.shown();
+    let pid = *rig.starts().last().unwrap();
+    third.end(tilo_app_launch::Teardown::Logout);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while alive(pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a logout leaves the program running"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        tilo_app_launch::kept::testing::described(&rig.root).is_empty(),
+        "no keeper is left"
+    );
 }

@@ -575,6 +575,12 @@ where
         })
     }
 
+    /// The programs started before the desktop restarted in place, as the caller found them;
+    /// each is handed out once.
+    pub(crate) fn taken_back(&self) -> Vec<crate::TakenBack> {
+        self.displays.taken_back()
+    }
+
     /// The display a program launched into `workspace_id` shows its windows
     /// on, as the caller gives it now.
     fn display_for(&self, workspace_id: &str) -> Result<LaunchDisplay, PlanError> {
@@ -708,7 +714,23 @@ where
             capabilities: &capabilities,
         })?;
         let started: Result<(CapsuleCommandPlan, Box<dyn StartedProgram>), ServiceError> = (|| {
-            let display = self.display_for(&input.workspace_id)?;
+            // A program is kept behind a display of its own where the caller keeps programs: it
+            // stays open while the desktop restarts in place.
+            let entry_id = crate::store::managed_program_id(&capsule.id, &program.id);
+            let kept = self
+                .displays
+                .kept_display(&crate::KeptProgram {
+                    app_id: &input.app_id,
+                    display_name: &program.display_name,
+                    entry_id: &entry_id,
+                    workspace_id: &input.workspace_id,
+                })
+                .transpose()
+                .map_err(PlanError::NoDisplay)?;
+            let display = match &kept {
+                Some(kept) => kept.display().clone(),
+                None => self.display_for(&input.workspace_id)?,
+            };
             let planner = SandboxPlanner::new(&self.store, &self.runtimes, &display)?;
             let plan = planner.plan(
                 &route,
@@ -718,7 +740,11 @@ where
                 &input.workspace_id,
                 &lease,
             )?;
-            let program = self.executor.start(&plan)?;
+            let command = self.executor.command(&plan)?;
+            let program = match kept {
+                Some(kept) => kept.start(command)?,
+                None => command.spawn()?,
+            };
             Ok((plan, program))
         })(
         );
@@ -1602,7 +1628,7 @@ mod tests {
 
     use tempfile::{NamedTempFile, TempDir};
 
-    use crate::{ExecutionOutcome, LaunchLease, ResourceError, SystemRuntimeRegistry};
+    use crate::{LaunchLease, ResourceError, SandboxCommand, SystemRuntimeRegistry};
 
     use super::*;
 
@@ -1619,11 +1645,8 @@ mod tests {
     struct Executor;
 
     impl SandboxExecutor for Executor {
-        fn start(&self, _: &CapsuleCommandPlan) -> Result<Box<dyn StartedProgram>, ExecutionError> {
-            Ok(Box::new(Ended(ExecutionOutcome {
-                success: true,
-                exit_code: Some(0),
-            })))
+        fn command(&self, _: &CapsuleCommandPlan) -> Result<SandboxCommand, ExecutionError> {
+            Ok(SandboxCommand::new("true", [""; 0]))
         }
     }
 
@@ -1899,15 +1922,9 @@ mod tests {
         struct Seen(Arc<Mutex<Vec<String>>>);
 
         impl SandboxExecutor for Seen {
-            fn start(
-                &self,
-                plan: &CapsuleCommandPlan,
-            ) -> Result<Box<dyn StartedProgram>, ExecutionError> {
+            fn command(&self, plan: &CapsuleCommandPlan) -> Result<SandboxCommand, ExecutionError> {
                 plan.bwrap_argv.clone_into(&mut self.0.lock().unwrap());
-                Ok(Box::new(Ended(ExecutionOutcome {
-                    success: true,
-                    exit_code: Some(0),
-                })))
+                Ok(SandboxCommand::new("true", [""; 0]))
             }
         }
 

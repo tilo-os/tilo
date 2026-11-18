@@ -1,9 +1,132 @@
 //! What becomes of a launch this session started: the windows the desktop gives a place, the
 //! launches those windows belong to, and how a launch that ended is read.
 
-use super::{Apps, Cause, Closed, Got, LaunchState, WidgetSurface, not_opened};
+use tilo_app_launch::{HeldLink, Planned};
+
+use super::{
+    ApiError, Apps, Cause, Closed, Got, LaunchState, Launching, WidgetSurface, not_opened,
+};
 
 impl Apps {
+    /// Start `planned` with the link `link` , which the launch holds until it ends, and write it
+    /// down as a launch of this session before the app can reach a service of it. A service asked
+    /// as nothing has no window to offer again. `instance` is the tab the shell held for its
+    /// window, when it held one. `timed` is the launch timing of the request that led here, which
+    /// an agent start of no person's ask begins for itself.
+    pub(super) fn spawn(
+        &self,
+        planned: &Planned,
+        asked: Option<&str>,
+        workspace: &str,
+        instance: Option<u64>,
+        link: Option<HeldLink>,
+        timed: Option<u64>,
+    ) -> Result<u64, ApiError> {
+        self.spawn_by(
+            planned,
+            asked,
+            workspace,
+            instance,
+            timed,
+            |spawner, write_down| spawner.start_with(planned, link, write_down, workspace, asked),
+        )
+    }
+
+    /// [`Self::spawn`], with `start` starting the launch on the spawner: what it starts is
+    /// written down by the function it is handed before the app can reach a service of it.
+    pub(super) fn spawn_by(
+        &self,
+        planned: &Planned,
+        asked: Option<&str>,
+        workspace: &str,
+        instance: Option<u64>,
+        timed: Option<u64>,
+        start: impl FnOnce(
+            &mut tilo_app_launch::Spawner,
+            &dyn Fn(u32),
+        ) -> Result<
+            (tilo_app_launch::Started, Option<HeldLink>),
+            tilo_app_launch::spawner::SpawnError,
+        >,
+    ) -> Result<u64, ApiError> {
+        // An app of a workspace this device is not admitted to yet would take part in nothing
+        // there, and would not join once the host admits the device: it is not started, and
+        // whoever asked is told why at once.
+        self.admitted(workspace)?;
+        let launches = self.state.borrow().launches.clone();
+        let mut state = self.state.borrow_mut();
+        let windowless = planned.env.contains_key(ui::window_link::WINDOWLESS_ENV);
+        // The launch's share in the launch-latency log runs from the request to the first presented
+        // frame: the launcher's and the app's in this log, the surface's in the compositor's. A
+        // launch with no window presents none.
+        let timed = (!windowless)
+            .then(|| timed.unwrap_or_else(|| tilo_startup_metrics::launch_requested(&planned.app)));
+        let started = start(&mut state.spawner, &|pid| {
+            if let Some(launches) = &launches {
+                // The launcher binds the session's documents store into a package's sandbox and
+                // into nothing else, so a package is the launch whose files are answered with paths
+                // in the store.
+                if windowless {
+                    launches.started_windowless(pid, &planned.app, workspace);
+                } else {
+                    launches.started(pid, &planned.app, workspace, !planned.kind.is_host());
+                }
+            }
+        });
+        let started = match started {
+            Ok(started) => started,
+            Err(error) => {
+                if let Some(timed) = timed {
+                    tilo_startup_metrics::launch_failed(timed);
+                }
+                tracing::warn!(app = %planned.app, %workspace, %error, "a launch did not start");
+                return Err(ApiError::Failed(error.to_string()));
+            }
+        };
+        let (started, link) = started;
+        if let Some(timed) = timed {
+            tilo_startup_metrics::launch_spawned(timed, started.pid);
+        }
+        if let Some(asked) = asked {
+            // This launch's ask replaces the last one of the same app in the same workspace, once
+            // that one ended: what a caller reads is how the app's latest launch went.
+            state.launched.retain(|_, launch| {
+                !(launch.app == planned.app
+                    && launch.workspace == workspace
+                    && matches!(launch.got, Got::Closed | Got::CouldNotOpen { .. }))
+            });
+            // A launch with no window to show (an action's run) is not one that could fail to open.
+            let got = if windowless {
+                Got::Windowless
+            } else {
+                Got::Arriving
+            };
+            state.launched.insert(
+                started.id,
+                Launching {
+                    asked: asked.to_owned(),
+                    app: planned.app.clone(),
+                    workspace: workspace.to_owned(),
+                    pid: Some(started.pid),
+                    instance,
+                    started: std::time::Instant::now(),
+                    got,
+                },
+            );
+        }
+        if let Some(link) = link {
+            state.held.insert(started.id, link);
+        }
+        drop(state);
+        tracing::info!(
+            app = %planned.app,
+            pid = started.pid,
+            "started {}",
+            planned.describe()
+        );
+        Ok(started.id)
+    }
+
     /// The apps that ended since the last pass: one whose window came leaves it behind and is
     /// gone; one that crashed gets a notice in the place it had, offering it again; and one that
     /// ended before any window of it appeared could not open, and says so with the app's own
@@ -12,6 +135,8 @@ impl Apps {
         self.mark_placed();
         let ended = self.state.borrow().spawner.events();
         for event in ended {
+            #[cfg(target_os = "linux")]
+            self.windows_program_ended(&event);
             #[cfg(target_os = "linux")]
             if self.outdated_ended(&event) {
                 continue;
