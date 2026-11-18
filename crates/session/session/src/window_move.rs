@@ -42,6 +42,24 @@ const CHECKPOINT: Duration = Duration::from_secs(3);
 /// How long the app started where the tab went may take to open a window there.
 const OPENING: Duration = Duration::from_secs(30);
 
+/// [`OPENING`] as a name the environment reads: milliseconds. A test that watches a move give up
+/// on a window that never opens waits this rather than the production half minute.
+pub const OPENING_ENV: &str = "TILO_WINDOW_MOVE_OPENING_MS";
+
+/// [`OPENING`], or the period the environment names.
+fn opening_period() -> Duration {
+    let Some(named) = std::env::var(OPENING_ENV).ok() else {
+        return OPENING;
+    };
+    match named.trim().parse::<u64>() {
+        Ok(millis) => Duration::from_millis(millis),
+        Err(error) => {
+            tracing::warn!(%error, "a move's opening period that is not milliseconds is not used");
+            OPENING
+        }
+    }
+}
+
 /// How long a window's app may take to say its record moved.
 const RETIRING: Duration = Duration::from_secs(3);
 
@@ -143,6 +161,9 @@ pub(crate) struct Moves {
     notes: RefCell<Vec<HandoffNote>>,
     continuing: Arc<Continuations>,
     tokens: Cell<u64>,
+    /// How long the app started where a tab went may take to open a window there
+    /// ([`opening_period`]).
+    opening: Duration,
 }
 
 impl Moves {
@@ -156,6 +177,7 @@ impl Moves {
             notes: RefCell::new(Vec::new()),
             continuing,
             tokens: Cell::new(0),
+            opening: opening_period(),
         }
     }
 
@@ -454,7 +476,7 @@ impl Moves {
         match landed(shared, crossing.tab, crossing.window) {
             Landed::Came if reopening => Self::done(shared, &crossing),
             Landed::Came => self.retire(shared, compositor, handoff, crossing),
-            Landed::Waiting if since.elapsed() < OPENING => {
+            Landed::Waiting if since.elapsed() < self.opening => {
                 self.waiting(crossing, Phase::Opening { since, reopening });
             }
             Landed::Waiting => {
@@ -1650,7 +1672,12 @@ mod tests {
     /// nothing opened, the record it left lives on, and the person is told why.
     #[test]
     fn a_move_whose_app_opens_no_window_puts_the_tab_back() {
+        // The move gives up on the window a moment from now, rather than after production's half
+        // minute: what the person is told and what the tab does are the same, sooner.
+        const GIVING_UP: Duration = Duration::from_millis(300);
         let _settled = ui::motion::testing::settled();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(OPENING_ENV, GIVING_UP.as_millis().to_string());
         let mut shell = Shell::new();
         let showing = shell.showing("first draft");
         shell.carry();
@@ -1658,7 +1685,7 @@ mod tests {
         // The app starts and runs, but never opens a window there.
         let said = wait_maybe(
             &mut shell.session,
-            OPENING.saturating_add(tilo_test_env::hang_bound()),
+            GIVING_UP.saturating_add(tilo_test_env::hang_bound()),
             |session| {
                 session
                     .notifications()
