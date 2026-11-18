@@ -707,7 +707,7 @@ type = "gui"
                 String::from_utf8(objects[&chunk_list_name(&BlobHash::of(&big))].clone()).unwrap();
             assert!(list_text.starts_with(&format!(
                 "{{\"format\":{},\"blob\":\"{}\",\"len\":10000,\"chunk_bytes\":1024,\"chunks\":[{{\"hash\":\"",
-                crate::CHUNK_LIST_FORMAT,
+                CHUNK_LIST_FORMAT,
                 BlobHash::of(&big)
             )));
         }
