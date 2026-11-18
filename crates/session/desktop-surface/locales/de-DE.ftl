@@ -508,6 +508,7 @@ workspace-settings-subject-foreign-device = Geräte, die nicht die eigenen sind
 workspace-settings-expiry-once = Einmal
 workspace-settings-expiry-session = Sitzung
 workspace-settings-expiry-until = Bis
+workspace-settings-expiry-until-at = Bis { $when }
 workspace-settings-expiry-always = Immer
 workspace-settings-granted-by-person = erteilt von { $id }
 workspace-settings-granted-by-you = von dir erteilt

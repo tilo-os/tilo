@@ -286,9 +286,40 @@ fn given_by_label(who: &MemberId, ws: &Workspace, local_user: &str) -> String {
     t_args(key, &[("id", member_name_or_short_id(ws, who).into())])
 }
 
-/// How long a grant lives, as the composer's lifetimes name it.
+/// How long a grant lives, in the words the tab and its composer use for it. A lifetime that ends
+/// at a time names it, as the composer's date chip shows the end the person picked.
+#[must_use]
 pub fn lifetime_label(lifetime: Lifetime) -> String {
+    match lifetime {
+        Lifetime::Until(at) => ends_at(at),
+        lifetime => lifetime_word(lifetime),
+    }
+}
+
+/// The word a lifetime kind is called in the composer: `Always`, `Until`, `Once`, `Session`.
+fn lifetime_word(lifetime: Lifetime) -> String {
     t(&format!("workspace-settings-expiry-{}", lifetime.key()))
+}
+
+/// A lifetime that ends at `at` (Unix milliseconds) says when, in the words the composer's date
+/// chip shows the end it picked.
+fn ends_at(at: u64) -> String {
+    use ui::format::Moment as _;
+    let day = i64::try_from(at)
+        .ok()
+        .and_then(|at| ui::format::Timestamp::from_millisecond(at).ok())
+        .and_then(|at| at.local());
+    day.map_or_else(
+        // Past the calendar's range there is no day to name, only the lifetime.
+        || lifetime_word(Lifetime::Until(at)),
+        |at| {
+            let fact = ui::format::day_fact(at.date(), Some(at.time()), ui::clock::today());
+            t_args(
+                "workspace-settings-expiry-until-at",
+                &[("when", fact.text.into())],
+            )
+        },
+    )
 }
 
 /// A subject the grant composer can target, and the subject axis the Permissions list groups by.
@@ -433,21 +464,6 @@ const FALLBACK_CHOICE: GrantChoice = GrantChoice {
 /// binds and by the filesystem alike.
 const WORKSPACE_FILES_PATH: &str = "/var/workspace";
 
-/// The lifetimes the composer offers, longest first: the ones every prompt offers that the
-/// workspace keeps. A one-use or session answer is the asking device's, never the workspace's;
-/// the person picks the day and time an `until` one ends.
-#[must_use]
-pub fn offered_lifetimes() -> Vec<Lifetime> {
-    Lifetime::offered(0)
-        .into_iter()
-        .rev()
-        .filter(|lifetime| lifetime.is_durable())
-        .collect()
-}
-
-/// The lifetime the composer starts on.
-pub const DEFAULT_LIFETIME: &str = "always";
-
 /// The in-flight grant the Permissions tab's composer is composing. Holds indices rather than
 /// resolved values so a subject leaving the workspace can't leave a dangling reference —
 /// [`grant_subjects`] is re-derived every frame and the index taken modulo its length.
@@ -508,12 +524,16 @@ pub fn grant_choices() -> Vec<(&'static str, String)> {
         .collect()
 }
 
-/// The composer's lifetimes as (key, label), in picker order.
+/// The composer's lifetimes as (key, label), in picker order: what every prompt offers that the
+/// workspace keeps, longest first. A one-use or session answer is the asking device's, never the
+/// workspace's; the person picks the day and time an `until` one ends.
 #[must_use]
 pub fn lifetime_choices() -> Vec<(&'static str, String)> {
-    offered_lifetimes()
+    Lifetime::offered(0)
         .into_iter()
-        .map(|lifetime| (lifetime.key(), lifetime_label(lifetime)))
+        .rev()
+        .filter(|lifetime| lifetime.is_durable())
+        .map(|lifetime| (lifetime.key(), lifetime_word(lifetime)))
         .collect()
 }
 
@@ -888,18 +908,21 @@ fn classify_grantee(grantee: &Grantee) -> GrantSubject {
 /// What the Permissions pane lists, grouped by subject kind, then subject,
 /// then id: every sandbox capability granted, and every grant but the
 /// role presets (the People tab is roles) and an agent's admission (the
-/// Agents tab), or it would be revocable from neither tab.
+/// Agents tab), or it would be revocable from neither tab. An end that has
+/// passed gives nothing, so it is not listed either.
 fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
+    let live = Some(tilo_clock::unix_now().saturating_mul(1000));
     let mut out: Vec<(GrantSubject, Listed<'_>)> = ws
         .sandbox
         .iter()
-        .filter(|cap| cap.effect == Effect::Grant)
+        .filter(|cap| cap.effect == Effect::Grant && cap.lifetime.is_live_at(live))
         .map(|cap| (classify_capability(cap), Listed::Sandbox(cap)))
         .collect();
     out.extend(
         ws.policy
             .grants
             .iter()
+            .filter(|grant| grant.lifetime.is_live_at(live))
             .filter(|grant| {
                 let preset =
                     grant.grantee.role_of().is_some() && grant.id.as_str().starts_with("role:");
@@ -1437,6 +1460,33 @@ mod permissions_tests {
         listed_permissions(ws, &NoAppDirectory, VIEWER)
     }
 
+    /// Tomorrow at `hour`:`minute`, in Unix milliseconds: the end the composer's date field picks.
+    fn tomorrow_at(hour: i8, minute: i8) -> u64 {
+        let day = ui::clock::today().tomorrow().expect("a tomorrow");
+        let time = ui::format::Time::new(hour, minute, 0, 0).expect("a time of day");
+        let at = ui::clock::instant_of(day.to_datetime(time)).expect("the end exists locally");
+        u64::try_from(at.as_millisecond()).expect("after the epoch")
+    }
+
+    #[test]
+    fn a_lifetime_that_ends_says_when_it_ends() {
+        assert_eq!(lifetime_label(Lifetime::UntilRevoked), "Always");
+        assert_eq!(
+            lifetime_label(Lifetime::Until(tomorrow_at(17, 30))),
+            "Until Tomorrow 5:30 PM",
+            "a timed grant shows its end in the composer's own date words"
+        );
+        let labels: Vec<String> = lifetime_choices()
+            .into_iter()
+            .map(|(_, label)| label)
+            .collect();
+        assert_eq!(
+            labels,
+            ["Always", "Until"],
+            "the composer's choice names the kind, and only a grant names its end"
+        );
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1575,12 +1625,12 @@ mod permissions_tests {
                     Access::Write,
                 )
                 .through("terminal")
-                .lasting(Lifetime::Until(u64::MAX)),
+                .lasting(Lifetime::Until(tomorrow_at(17, 30))),
             )
             .expect("owner grants");
             let row = &listed(&ws)[0];
             assert_eq!(row.allows, "Edit workspace files");
-            assert_eq!(row.expiry, "Until");
+            assert_eq!(row.expiry, "Until Tomorrow 5:30 PM");
             assert_eq!(
                 row.granted_by.as_deref(),
                 Some("granted by owner-user"),
@@ -1660,7 +1710,7 @@ mod permissions_tests {
             ["always", "until"],
             "only what the workspace keeps: never once or this session"
         );
-        assert_eq!(keys[0], DEFAULT_LIFETIME);
+        assert_eq!(keys[0], "always", "the composer starts on a lasting grant");
         let ws = ws_with_grants();
         // One Firefox does not hold yet, so the grant is not merged into a longer one.
         let permission = "microphone";

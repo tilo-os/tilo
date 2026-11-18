@@ -42,10 +42,8 @@ pub struct Composer {
     pub permissions: Vec<Choice>,
     pub how_long: String,
     /// How long it may last, by [`tilo_action_policy::Lifetime::key`]: `always`, and `until`, which
-    /// asks for the day and time it ends.
+    /// asks for the day and time it ends. The first is what a new permission starts with.
     pub expiries: Vec<Choice>,
-    /// The expiry a new permission starts with.
-    pub default_expiry: String,
     pub grant: String,
 }
 
@@ -99,8 +97,9 @@ pub(super) struct Draft {
 
 impl Draft {
     /// What the draft names among what `composer` offers now: a choice that
-    /// went away falls back to the first one there is.
-    fn resolved(&self, composer: &Composer) -> (Option<Choice>, Option<Choice>, String) {
+    /// went away falls back to the first one there is, the one the composer
+    /// starts on.
+    fn resolved(&self, composer: &Composer) -> (Option<Choice>, Option<Choice>, usize) {
         let pick = |chosen: &Option<String>, choices: &[Choice]| {
             chosen
                 .as_ref()
@@ -110,9 +109,14 @@ impl Draft {
         };
         let expiry = self
             .expiry
-            .clone()
-            .filter(|key| composer.expiries.iter().any(|choice| &choice.key == key))
-            .unwrap_or_else(|| composer.default_expiry.clone());
+            .as_ref()
+            .and_then(|key| {
+                composer
+                    .expiries
+                    .iter()
+                    .position(|choice| &choice.key == key)
+            })
+            .unwrap_or_default();
         (
             pick(&self.subject, &composer.subjects),
             pick(&self.permission, &composer.permissions),
@@ -190,11 +194,7 @@ fn composer(permissions: &Permissions, parts: &Parts) -> Element {
         ));
     }
     items.push(Box::new(pickers));
-    let selected = composer
-        .expiries
-        .iter()
-        .position(|choice| choice.key == expiry)
-        .unwrap_or_default();
+    let chosen = composer.expiries.get(expiry);
     let keys: Vec<String> = composer
         .expiries
         .iter()
@@ -209,7 +209,7 @@ fn composer(permissions: &Permissions, parts: &Parts) -> Element {
                 .iter()
                 .map(|choice| Segment::new(choice.label.clone()))
                 .collect(),
-            selected,
+            expiry,
         )
         .with_id("ws-grant-expiry")
         .with_accessible_name(composer.how_long.clone())
@@ -221,7 +221,7 @@ fn composer(permissions: &Permissions, parts: &Parts) -> Element {
             }
         }),
     ));
-    let until = (expiry == UNTIL).then(|| {
+    let until = chosen.is_some_and(|choice| choice.key == UNTIL).then(|| {
         let (day, time) = parts.local.get().draft.until;
         items.push(until_fields(day, time, parts));
         ends_at(day, time)
@@ -398,7 +398,6 @@ pub(super) fn sample() -> Permissions {
             ],
             how_long: "For how long".to_owned(),
             expiries: vec![choice("always", "Always"), choice("until", "Until")],
-            default_expiry: "always".to_owned(),
             grant: "Grant".to_owned(),
         },
         sections: vec![
@@ -408,7 +407,7 @@ pub(super) fn sample() -> Permissions {
                     "cap-1",
                     "Notes",
                     "Use the camera, given by you",
-                    "Until",
+                    "Until Tomorrow 5:30 PM",
                 )],
             },
             Holders {
@@ -417,7 +416,7 @@ pub(super) fn sample() -> Permissions {
                     "grant-2",
                     "Ada Lovelace-Byron",
                     "Create roles, given by you",
-                    "Until revoked",
+                    "Always",
                 )],
             },
         ],
