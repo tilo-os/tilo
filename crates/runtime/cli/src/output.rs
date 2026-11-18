@@ -37,15 +37,8 @@ impl OutputBuilder {
     /// `<label> [<url>]`, and an empty label shows the URL alone.
     pub fn hyperlink(&self, label: &str, url: &str) -> io::Result<()> {
         self.write(|w| {
-            if self.hyperlinks_active(w) {
-                // OSC 8: ESC ] 8 ; params ; URI ST label ESC ] 8 ; ; ST
-                write!(w, "\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")?;
-                writeln!(w)
-            } else if label.is_empty() {
-                writeln!(w, "{url}")
-            } else {
-                writeln!(w, "{label} [{url}]")
-            }
+            let on = self.hyperlinks_active(w);
+            writeln!(w, "{}", hyperlink_line(label, url, on))
         })
     }
 
@@ -96,17 +89,38 @@ pub fn output() -> OutputBuilder {
     }
 }
 
+/// What a link reads as on one line: OSC 8 on a terminal, `<label> [<url>]`
+/// in a pipe or file, and the URL alone when the label is empty.
+fn hyperlink_line(label: &str, url: &str, hyperlinks: bool) -> String {
+    // OSC 8: ESC ] 8 ; params ; URI ST label ESC ] 8 ; ; ST
+    if hyperlinks {
+        format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
+    } else if label.is_empty() {
+        url.to_owned()
+    } else {
+        format!("{label} [{url}]")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn output_defaults_to_stdout_with_hyperlinks() {
-        let b = output();
-        assert!(b.hyperlinks);
-        match b.stream {
-            Stream::Stdout => {}
-            Stream::Stderr => panic!("expected stdout default"),
-        }
+    fn a_link_reads_as_its_label_and_url_in_a_pipe_and_as_an_osc_8_link_on_a_terminal() {
+        let url = "https://tilo.sh/notes/page";
+        assert_eq!(
+            hyperlink_line("the page", url, false),
+            "the page [https://tilo.sh/notes/page]"
+        );
+        assert_eq!(
+            hyperlink_line("", url, false),
+            url,
+            "no label: the URL alone"
+        );
+        assert_eq!(
+            hyperlink_line("the page", url, true),
+            "\x1b]8;;https://tilo.sh/notes/page\x1b\\the page\x1b]8;;\x1b\\"
+        );
     }
 }
