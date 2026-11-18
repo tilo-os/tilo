@@ -211,6 +211,9 @@ pub(super) fn window_content(directory: &std::path::Path) -> tilo_content::Conte
 /// inspection tool drives it through the real runtime.
 pub struct HeadlessApp<A: ResourceApp> {
     harness: FrameHarness,
+    /// Where the window's documents are kept: another window of this profile
+    /// shares them ([`Self::open_window`]).
+    owner: ApplicationOwner,
     /// Whether the app is closed: its record written and its components closed, once.
     closed: bool,
     records: ResourceStore,
@@ -839,6 +842,38 @@ impl<A: ResourceApp> HeadlessApp<A> {
         capture: Option<(Capture, (u32, u32))>,
         configure: impl FnOnce(&mut ProcessContext),
     ) -> Result<Self, LaunchError> {
+        Self::open_beside(
+            WindowLaunch {
+                profile,
+                role,
+                author,
+                arguments,
+                file,
+                handoff,
+                capture,
+            },
+            None,
+            configure,
+        )
+    }
+
+    /// [`Self::open`] as a window beside `beside`, another window of the same
+    /// profile: both read and write the one store, as a person's windows in
+    /// one session do.
+    fn open_beside(
+        launch: WindowLaunch<'_>,
+        beside: Option<&ApplicationOwner>,
+        configure: impl FnOnce(&mut ProcessContext),
+    ) -> Result<Self, LaunchError> {
+        let WindowLaunch {
+            profile,
+            role,
+            author,
+            arguments,
+            file,
+            handoff,
+            capture,
+        } = launch;
         let mut configure = Some(configure);
         // A capture photographs the window at rest: a surface drawn for one
         // is the surface settled, not the frame of its arrival the moment the
@@ -858,6 +893,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 handoff,
                 capture,
             },
+            beside,
             &mut |context| {
                 if let Some(configure) = configure.take() {
                     configure(context);
@@ -868,6 +904,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         serve_kept::<A>(&mut harness, &opened.profile.settings(), author);
         Ok(Self {
             harness,
+            owner: opened.owner,
             closed: false,
             records: opened.records,
             awaited: Vec::new(),
@@ -1028,14 +1065,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 return Err(operation("a --data-dir profile has one window"));
             }
         };
-        Self::open(
-            profile,
-            self.role,
-            &self.author,
-            &[],
-            None,
-            None,
-            None,
+        Self::open_beside(
+            WindowLaunch {
+                profile,
+                role: self.role,
+                author: &self.author,
+                arguments: &[],
+                file: None,
+                handoff: None,
+                capture: None,
+            },
+            Some(&self.owner),
             |_| {},
         )
     }
@@ -2463,9 +2503,22 @@ struct Launch<'a> {
     capture: Option<(Capture, (u32, u32))>,
 }
 
+/// What a window opens on: its profile, the role and person opening it, and
+/// what the launch named and was handed.
+struct WindowLaunch<'a> {
+    profile: Profile,
+    role: Role,
+    author: &'a str,
+    arguments: &'a [String],
+    file: Option<OpenFile>,
+    handoff: Option<PlaybackHandoff>,
+    capture: Option<(Capture, (u32, u32))>,
+}
+
 /// A headless app [`open_app`] opened.
 struct Opened {
     harness: FrameHarness,
+    owner: ApplicationOwner,
     records: ResourceStore,
     checkout: DocumentCheckout,
     instance: u64,
@@ -2473,9 +2526,33 @@ struct Opened {
     permissions: SharedPermissions,
 }
 
-/// The application host `profile` opens in, and the instance its window
+/// The application owner `profile` opens in, and the instance its window
+/// takes: a window opened beside `beside`, another of the same profile,
+/// reads and writes its documents.
+fn opening_owner(
+    profile: &Profile,
+    author: MemberId,
+    permissions: &SharedPermissions,
+    beside: Option<&ApplicationOwner>,
+) -> Result<(ApplicationOwner, u64), LaunchError> {
+    let Some(beside) = beside else {
+        return opening_owner_of_profile(profile, author, permissions);
+    };
+    let owner = beside.beside(
+        author,
+        permissions.clone(),
+        tilo_actions::ActionContext::default(),
+    )?;
+    let instance = match profile {
+        Profile::Window(_, _, _, window) => *window,
+        _ => INSTANCE,
+    };
+    Ok((owner, instance))
+}
+
+/// The application owner `profile` opens in, and the instance its window
 /// takes.
-fn profile_host(
+fn opening_owner_of_profile(
     profile: &Profile,
     author: MemberId,
     permissions: &SharedPermissions,
@@ -2509,6 +2586,7 @@ fn profile_host(
 fn open_app(
     opening: &Opening,
     launch: Launch<'_>,
+    beside: Option<&ApplicationOwner>,
     configure: &mut dyn FnMut(&mut ProcessContext),
 ) -> Result<Opened, LaunchError> {
     strict_bindings();
@@ -2521,16 +2599,16 @@ fn open_app(
     let author = MemberId::person(person.clone());
     let permissions = role_permissions(&person, launch.role);
     let host_phase = tilo_resource::profiling::Phase::start("start.host");
-    let (mut host, instance) = profile_host(&profile, author, &permissions)?;
+    let (mut owner, instance) = opening_owner(&profile, author, &permissions, beside)?;
     host_phase.end();
     let definition = opening.definition;
     let prepare_phase = tilo_resource::profiling::Phase::start("start.prepare");
-    let records = host.resources_for(definition)?;
+    let records = owner.resources_for(definition)?;
     let named =
         (opening.launch_resource)(&LaunchInput::new(arguments, None).with_options(&options));
     let inputs = ComponentRunnerInputs::from_native_process();
     let mut prepared = match (&profile, named) {
-        (Profile::Window(..), None) => host.prepare_default(
+        (Profile::Window(..), None) => owner.prepare_default(
             definition,
             instance,
             DocumentCheckout::new(
@@ -2540,7 +2618,7 @@ fn open_app(
             None,
             inputs,
         )?,
-        (_, named) => prepare_on(&mut host, definition, instance, named, inputs)?,
+        (_, named) => prepare_on(&mut owner, definition, instance, named, inputs)?,
     };
     let checkout = prepared.context.record().clone();
     hold_workspace_keys(&prepared.context, profile.workspace())?;
@@ -2602,6 +2680,7 @@ fn open_app(
     }
     Ok(Opened {
         harness,
+        owner,
         records,
         checkout,
         instance,
@@ -2753,6 +2832,7 @@ fn report_surface(
                 handoff: None,
                 capture: None,
             },
+            None,
             &mut |_| {},
         )
     });

@@ -297,6 +297,12 @@ impl InstanceViewStore {
     pub(crate) fn workspace_id(&self) -> &str {
         &self.workspace_id
     }
+
+    /// The store the views are kept in: what another window of the same
+    /// profile keeps its own in.
+    pub(crate) fn durable_store(&self) -> Rc<dyn DurableStore> {
+        Rc::clone(&self.store)
+    }
     fn key(&self, instance: u64) -> StorageKey {
         StorageKey::view(&self.device_id, &self.workspace_id, instance)
     }
