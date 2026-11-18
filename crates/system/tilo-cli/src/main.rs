@@ -1099,15 +1099,17 @@ fn entered_workspace_note(name: &str) -> String {
 
 /// Which commands act in a workspace, so `-w` means something to them. `do` is
 /// not one: without `-w` it acts on this desktop, which is what a person
-/// typing it there means.
+/// typing it there means. Of the keys, only `mint` does: `create` without `-w`
+/// asks for a key reaching all the person's workspaces, which this computer
+/// approves itself, and `ls`, `revoke` and `export` concern the key in hand.
 fn acts_in_a_workspace(cmd: &Cmd) -> bool {
     matches!(
         cmd,
-        Cmd::Keys { .. }
-            | Cmd::Workspace {
-                cmd: hosted::WorkspaceCmd::People { .. } | hosted::WorkspaceCmd::Servers { .. },
-            }
-            | Cmd::Files { .. }
+        Cmd::Keys {
+            cmd: hosted::KeysCmd::Mint { .. },
+        } | Cmd::Workspace {
+            cmd: hosted::WorkspaceCmd::People { .. } | hosted::WorkspaceCmd::Servers { .. },
+        } | Cmd::Files { .. }
             | Cmd::Run { .. }
             | Cmd::Invocations { .. }
             | Cmd::Ls { .. }
@@ -1995,6 +1997,29 @@ mod tests {
             workspace_or_entered(&with(members(), Some("jane-doe"), None)).unwrap(),
             Some("jane-doe".to_owned()),
             "`-w` names another"
+        );
+        let create = Cmd::Keys {
+            cmd: hosted::KeysCmd::Create {
+                name: "Visa backend".into(),
+                expires_in: None,
+                no_browser_pages: false,
+            },
+        };
+        assert_eq!(
+            workspace_or_entered(&with(create, None, None)).unwrap(),
+            None,
+            "`keys create` without `-w` asks for a key reaching every workspace"
+        );
+        let mint = Cmd::Keys {
+            cmd: hosted::KeysCmd::Mint {
+                name: None,
+                expires_in: None,
+            },
+        };
+        assert_eq!(
+            workspace_or_entered(&with(mint, None, None)).unwrap(),
+            Some(ENTERED.to_owned()),
+            "`keys mint` makes a key for the workspace the device entered"
         );
         let act = Cmd::Do {
             action: "mute".into(),
