@@ -199,6 +199,7 @@ version = "0.1.0"
 dependencies = [
  "activity-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -622,6 +623,7 @@ version = "0.1.0"
 dependencies = [
  "api-tester-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -901,6 +903,7 @@ version = "0.1.0"
 dependencies = [
  "assistant-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1229,6 +1232,7 @@ version = "0.1.0"
 dependencies = [
  "backups-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1690,6 +1694,7 @@ version = "0.1.0"
 dependencies = [
  "browser-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1920,6 +1925,7 @@ version = "0.1.0"
 dependencies = [
  "calculator-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1988,6 +1994,7 @@ version = "0.1.0"
 dependencies = [
  "calendar-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2061,6 +2068,7 @@ version = "0.1.0"
 dependencies = [
  "camera-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -2582,6 +2590,7 @@ version = "0.1.0"
 dependencies = [
  "clocks-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3062,6 +3071,7 @@ version = "0.1.0"
 dependencies = [
  "console-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3155,6 +3165,7 @@ version = "0.1.0"
 dependencies = [
  "contacts-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3195,6 +3206,7 @@ version = "0.1.0"
 dependencies = [
  "containers-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3969,6 +3981,7 @@ version = "0.1.0"
 dependencies = [
  "db-client-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4219,6 +4232,7 @@ version = "0.1.0"
 dependencies = [
  "diffmerge-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4375,6 +4389,7 @@ version = "0.1.0"
 dependencies = [
  "disk-usage-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4408,6 +4423,7 @@ version = "0.1.0"
 dependencies = [
  "disks-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -5389,6 +5405,7 @@ version = "0.1.0"
 dependencies = [
  "file-explorer-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -5460,6 +5477,7 @@ version = "0.1.0"
 dependencies = [
  "firewall-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6222,6 +6240,7 @@ version = "0.1.0"
 dependencies = [
  "git-client-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7074,6 +7093,7 @@ version = "0.1.0"
 dependencies = [
  "hex-editor-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -9876,6 +9896,7 @@ version = "0.1.0"
 dependencies = [
  "logs-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -10067,6 +10088,7 @@ version = "0.1.0"
 dependencies = [
  "maps-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -10431,6 +10453,7 @@ version = "0.1.0"
 dependencies = [
  "monitor-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -12367,6 +12390,7 @@ version = "0.1.0"
 dependencies = [
  "passwords-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -13025,6 +13049,7 @@ version = "0.1.0"
 dependencies = [
  "poker-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -13406,6 +13431,7 @@ version = "0.1.0"
 dependencies = [
  "print-centre-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -13660,6 +13686,7 @@ version = "0.1.0"
 dependencies = [
  "publisher-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -14387,6 +14414,7 @@ version = "0.1.0"
 dependencies = [
  "remote-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15433,6 +15461,7 @@ version = "0.1.0"
 dependencies = [
  "scratchpad-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -17419,6 +17448,7 @@ version = "0.1.0"
 dependencies = [
  "tasks-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -19803,6 +19833,7 @@ dependencies = [
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -20830,6 +20861,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-resource",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -25119,6 +25151,7 @@ version = "0.1.0"
 dependencies = [
  "tilo-model-guest",
  "tube-model",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -28480,6 +28513,7 @@ dependencies = [
  "accounts",
  "activity",
  "activity-model",
+ "activity-model-wasm",
  "acto",
  "adblock",
  "addr",
@@ -28509,6 +28543,7 @@ dependencies = [
  "anyhow",
  "api-tester",
  "api-tester-model",
+ "api-tester-model-wasm",
  "app-catalogue",
  "app-cli",
  "app-fleet",
@@ -28530,6 +28565,7 @@ dependencies = [
  "asn1-rs-impl",
  "assistant",
  "assistant-model",
+ "assistant-model-wasm",
  "async-broadcast",
  "async-channel 1.9.0",
  "async-channel 2.5.0",
@@ -28555,6 +28591,7 @@ dependencies = [
  "backtrace",
  "backups",
  "backups-model",
+ "backups-model-wasm",
  "bao-tree",
  "base16ct 0.2.0",
  "base16ct 1.0.0",
@@ -28593,6 +28630,7 @@ dependencies = [
  "browser-continuity",
  "browser-continuity-core",
  "browser-model",
+ "browser-model-wasm",
  "brush-parser",
  "btoi",
  "buffa",
@@ -28613,11 +28651,15 @@ dependencies = [
  "cached_proc_macro_types",
  "calculator",
  "calculator-model",
+ "calculator-model-wasm",
  "calendar",
+ "calendar-model",
+ "calendar-model-wasm",
  "calloop",
  "calloop-wayland-source",
  "camera",
  "camera-model",
+ "camera-model-wasm",
  "canvas",
  "cap-fs-ext",
  "cap-primitives",
@@ -28657,6 +28699,7 @@ dependencies = [
  "cli-shim",
  "clocks",
  "clocks-model",
+ "clocks-model-wasm",
  "cloud-source",
  "cloud-source-dav",
  "cloud-source-dropbox",
@@ -28686,14 +28729,17 @@ dependencies = [
  "console",
  "console-control",
  "console-model",
+ "console-model-wasm",
  "const-crc32-nostd",
  "const-oid 0.10.2",
  "const-oid 0.9.6",
  "constant_time_eq",
  "contacts",
  "contacts-model",
+ "contacts-model-wasm",
  "containers",
  "containers-model",
+ "containers-model-wasm",
  "convert_case 0.10.0",
  "convert_case 0.12.0",
  "cookie-factory",
@@ -28757,6 +28803,7 @@ dependencies = [
  "davey",
  "db-client",
  "db-client-model",
+ "db-client-model-wasm",
  "delegate",
  "der 0.7.10",
  "der 0.8.1",
@@ -28775,6 +28822,7 @@ dependencies = [
  "diatomic-waker",
  "diffmerge",
  "diffmerge-model",
+ "diffmerge-model-wasm",
  "digest 0.10.7",
  "digest 0.11.3",
  "dirs",
@@ -28784,8 +28832,10 @@ dependencies = [
  "discord-worker",
  "disk-usage",
  "disk-usage-model",
+ "disk-usage-model-wasm",
  "disks",
  "disks-model",
+ "disks-model-wasm",
  "displaydoc",
  "dlib",
  "document-features",
@@ -28862,11 +28912,14 @@ dependencies = [
  "ff 0.14.0",
  "ffi-opaque",
  "file-explorer",
+ "file-explorer-model",
+ "file-explorer-model-wasm",
  "filedescriptor",
  "filetime",
  "find-msvc-tools",
  "firewall",
  "firewall-model",
+ "firewall-model-wasm",
  "flagset",
  "flatbuffers",
  "flate2",
@@ -28929,6 +28982,8 @@ dependencies = [
  "gimli 0.33.0",
  "gio-sys",
  "git-client",
+ "git-client-model",
+ "git-client-model-wasm",
  "git2",
  "gl_generator",
  "glib",
@@ -28987,6 +29042,7 @@ dependencies = [
  "hex",
  "hex-editor",
  "hex-editor-model",
+ "hex-editor-model-wasm",
  "hex-literal 0.3.4",
  "hex-literal 1.1.0",
  "hexane",
@@ -29164,6 +29220,7 @@ dependencies = [
  "log",
  "logs",
  "logs-model",
+ "logs-model-wasm",
  "lru 0.16.3",
  "lru 0.18.3",
  "lru-slab",
@@ -29174,6 +29231,8 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "maps",
+ "maps-model",
+ "maps-model-wasm",
  "markup5ever",
  "markup5ever_rcdom",
  "matchers",
@@ -29203,6 +29262,8 @@ dependencies = [
  "module-lattice",
  "moka",
  "monitor",
+ "monitor-model",
+ "monitor-model-wasm",
  "moq-net",
  "moq-pattern",
  "moxcms",
@@ -29297,6 +29358,8 @@ dependencies = [
  "parking_lot_core",
  "password-hash",
  "passwords",
+ "passwords-model",
+ "passwords-model-wasm",
  "paste",
  "pastey",
  "pathdiff",
@@ -29353,6 +29416,8 @@ dependencies = [
  "plist",
  "png",
  "poker",
+ "poker-model",
+ "poker-model-wasm",
  "polling",
  "pollster",
  "poly1305 0.8.0",
@@ -29382,6 +29447,8 @@ dependencies = [
  "primeorder 0.13.6",
  "primeorder 0.14.0",
  "print-centre",
+ "print-centre-model",
+ "print-centre-model-wasm",
  "priority-queue",
  "proc-macro-crate",
  "proc-macro-error-attr2",
@@ -29403,6 +29470,8 @@ dependencies = [
  "psl-types",
  "psm",
  "publisher",
+ "publisher-model",
+ "publisher-model-wasm",
  "pulldown-cmark",
  "pulley-interpreter",
  "pulley-macros",
@@ -29459,6 +29528,8 @@ dependencies = [
  "reloadable-core",
  "reloadable-state",
  "remote",
+ "remote-model",
+ "remote-model-wasm",
  "renderdoc-sys",
  "reqwest",
  "resolv-conf",
@@ -29533,6 +29604,8 @@ dependencies = [
  "scoped-tls",
  "scopeguard",
  "scratchpad",
+ "scratchpad-model",
+ "scratchpad-model-wasm",
  "scrypt 0.11.0",
  "scrypt 0.12.0",
  "sctk-adwaita",
@@ -29688,6 +29761,7 @@ dependencies = [
  "target-lexicon",
  "tasks",
  "tasks-model",
+ "tasks-model-wasm",
  "tempfile",
  "tendril",
  "termcolor",
@@ -29844,6 +29918,7 @@ dependencies = [
  "tilo-model-client",
  "tilo-model-engine",
  "tilo-model-gateway",
+ "tilo-model-guest",
  "tilo-moderation",
  "tilo-native-media",
  "tilo-nearby-service",
@@ -30031,6 +30106,7 @@ dependencies = [
  "ttf-parser",
  "tube",
  "tube-model",
+ "tube-model-wasm",
  "tungstenite",
  "twilight-http-ratelimiting",
  "two-face",
