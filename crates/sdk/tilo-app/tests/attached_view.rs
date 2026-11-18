@@ -279,6 +279,110 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    fn a_member_changes_through_the_view_only_what_its_grant_names;
+
+    phase a_member_who_may_edit_is_answered_in_every_form;
+    // The forms the phases below ask in, first for a member who may edit:
+    // each is carried out, so where one is refused below it is the grant
+    // that refuses it and not the way it was asked.
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        app.invoke(Tally::RENAME.with("visitors")).unwrap();
+        let mut view = attached(&app, writer());
+        let mut answers = asked(&mut view, "rename", &Tally::RENAME.with("guests"));
+        answers.extend(asked(&mut view, "bump", &Tally::BUMP.invoke()));
+        for (form, answer) in answers {
+            assert!(
+                answer.is_ok(),
+                "{form} is carried out for a member who may edit: {answer:?}"
+            );
+        }
+        assert_eq!(name(&view), "guests");
+        assert_eq!(count(&view), 5, "one for each form");
+        merge(&mut app, &mut view);
+        assert_eq!(app.state().name, "guests");
+        assert_eq!(app.state().count, 5);
+    }
+
+    phase an_agent_granted_read_is_refused_every_edit_and_changes_nothing;
+    // What a view lists to its member and what it carries out for it are
+    // decided apart. An agent that may only read asks for each edit in every
+    // form: each is refused, a confirmation turns no refusal into a yes, the
+    // tally is as it was and no change leaves the view.
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        app.invoke(Tally::RENAME.with("visitors")).unwrap();
+        let reader =
+            PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
+        let mut view = attached(&app, reader);
+        let mut answers = asked(&mut view, "rename", &Tally::RENAME.with("guests"));
+        answers.extend(asked(&mut view, "bump", &Tally::BUMP.invoke()));
+        all_refused(answers, "an agent that may only read");
+        assert_eq!(name(&view), "visitors");
+        assert_eq!(count(&view), 0);
+        assert!(
+            view.take_changes().unwrap().is_none(),
+            "no change leaves the view"
+        );
+        merge(&mut app, &mut view);
+        assert_eq!(app.state().name, "visitors");
+        assert_eq!(app.state().count, 0);
+    }
+
+    phase an_agent_granted_one_action_does_that_one_and_no_other;
+    {
+        use tilo_app::permissions::policy::Level;
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        app.invoke(Tally::RENAME.with("visitors")).unwrap();
+        let only_bump = PermissionContext::agent_granted(
+            AGENT,
+            &TreePath::root()
+                .app(TallyApp::ID)
+                .any(Level::Kind)
+                .resource("test.tally")
+                .action("bump"),
+            KindSet::READ_UNDOABLE,
+        );
+        let mut view = attached(&app, only_bump);
+        view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+        all_refused(
+            asked(&mut view, "rename", &Tally::RENAME.with("guests")),
+            "an agent granted bump alone",
+        );
+        assert_eq!(name(&view), "visitors");
+        assert_eq!(count(&view), 1, "the one action it was granted, once");
+        merge(&mut app, &mut view);
+        assert_eq!(app.state().name, "visitors");
+        assert_eq!(app.state().count, 1);
+    }
+
+    phase a_person_who_only_views_is_listed_no_edit_and_refused_every_one;
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        app.invoke(Tally::RENAME.with("visitors")).unwrap();
+        // The view's member as a person of the workspace who only views.
+        let viewer =
+            PermissionContext::member(&MemberId::person(AGENT), tilo_app::Role::Viewer);
+        let mut view = attached(&app, viewer);
+        assert!(
+            !view
+                .operations()
+                .iter()
+                .any(|operation| matches!(operation.address.action.as_str(), "rename" | "bump")),
+            "a person's view lists only what they may do"
+        );
+        let mut answers = asked(&mut view, "rename", &Tally::RENAME.with("guests"));
+        answers.extend(asked(&mut view, "bump", &Tally::BUMP.invoke()));
+        all_refused(answers, "a person who only views");
+        assert_eq!(name(&view), "visitors");
+        assert_eq!(count(&view), 0);
+        merge(&mut app, &mut view);
+        assert_eq!(app.state().name, "visitors");
+        assert_eq!(app.state().count, 0);
+    }
+}
+
+tilo_test_env::scenario! {
     fn an_attached_host_collects_only_its_own_landed_changes;
 
     phase a_change_that_cannot_be_collected_fails_and_goes_with_the_next_call;
@@ -600,6 +704,61 @@ fn merge(app: &mut TestApp<TallyApp>, view: &mut AttachedView) {
 fn count(view: &AttachedView) -> i64 {
     view.read(|doc| <Tally as tilo_resource::Resource>::read(doc).unwrap().count)
         .unwrap()
+}
+
+/// The tally's name as `view` holds it.
+fn name(view: &AttachedView) -> String {
+    view.read(|doc| <Tally as tilo_resource::Resource>::read(doc).unwrap().name)
+        .unwrap()
+}
+
+/// What the member is answered when it asks through `view` for `action`, the
+/// edit `typed` is: by its address, confirmed and not, by its typed
+/// reference, as a group of one and as an applied action.
+fn asked(
+    view: &mut AttachedView,
+    action: &str,
+    typed: &Invoke<Tally>,
+) -> Vec<(String, Result<(), tilo_actions::api::ApiError>)> {
+    let address = tilo_actions::ActionAddress::new("test.tally", action);
+    let group = Invoke::group([typed.clone()]);
+    let applied = Invoke::<Tally>::apply(&typed.build(0).unwrap()).unwrap();
+    vec![
+        (
+            format!("{action} by its address"),
+            view.invoke(&address, &typed.arguments, false).map(drop),
+        ),
+        (
+            format!("{action} by its address, confirmed"),
+            view.invoke(&address, &typed.arguments, true).map(drop),
+        ),
+        (
+            format!("{action} by its typed reference"),
+            view.invoke_typed(typed, true).map(drop),
+        ),
+        (
+            format!("{action} in a group"),
+            view.invoke_typed(&group, true).map(drop),
+        ),
+        (
+            format!("{action} as an applied action"),
+            view.invoke_typed(&applied, true).map(drop),
+        ),
+    ]
+}
+
+/// Every answer of `answers` is a refusal, and none an ask that a
+/// confirmation would turn into a yes.
+fn all_refused(answers: Vec<(String, Result<(), tilo_actions::api::ApiError>)>, who: &str) {
+    for (form, answer) in answers {
+        assert!(
+            !matches!(
+                answer,
+                Ok(()) | Err(tilo_actions::api::ApiError::ConfirmationRequired)
+            ),
+            "{form} is refused to {who}: {answer:?}"
+        );
+    }
 }
 
 /// A bench whose view sits whoever opens it down: the mistake the attached
