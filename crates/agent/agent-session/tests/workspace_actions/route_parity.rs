@@ -396,7 +396,7 @@ fn claimed_run() -> tilo_actions::ActionContext {
 }
 
 /// The runs the changes of `route` the page received are grouped under.
-fn runs_of(
+fn groups_of(
     page: &mut Browser,
     route: &DocumentRoute,
 ) -> Vec<(tilo_actions::WorkGroup, Option<tilo_actions::Actor>)> {
@@ -428,11 +428,16 @@ fn runs_of(
     groups
 }
 
-/// The acting key a live presence row stands for: the board names a member by the publisher that
-/// spoke, and a narration names the member it acted as, an agent's spelling its kind
-/// (`agent:<publisher>`).
+/// The acting key a live presence row stands for: the workspace member the
+/// presence names (an agent a server speaks for), else the publisher that
+/// spoke. A narration names the same member it acted as.
 fn agent_actor(member: &collab_types::presence::Shown) -> tilo_actions::Actor {
-    tilo_actions::Actor::Member(tilo_actions::MemberId::agent(member.publisher.clone()))
+    tilo_actions::Actor::Member(
+        member
+            .member
+            .clone()
+            .unwrap_or_else(|| tilo_actions::MemberId::agent(member.publisher.clone())),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -681,6 +686,10 @@ async fn both_routes_decide_every_callers_actions_alike() {
             if app == NOTES && by_host == Admitted::Runs && caller.agent_session().is_some() {
                 agents.push((
                     caller.agent_called().unwrap_or_default().to_owned(),
+                    caller
+                        .agent_session()
+                        .expect("the caller works in a session")
+                        .id,
                     caller.acting().by.clone(),
                 ));
             }
@@ -708,30 +717,34 @@ async fn both_routes_decide_every_callers_actions_alike() {
     assert!(
         ["Claude Code", "Visa backend", "Applicant 7", "Assistant"]
             .iter()
-            .all(|name| agents.iter().any(|(agent, _)| agent == name)),
+            .all(|name| agents.iter().any(|(agent, _, _)| agent == name)),
         "every agent and key made a note: {agents:?}"
     );
     // The notes are kept in parts beside the notebook, which the page's
     // window follows.
     browser.follow_chain(NOTES, notes::note_list::chain().chain_head().as_str());
     let deadline = tilo_test_env::hang_deadline();
-    let runs = loop {
-        let runs = runs_of(&mut browser, notes);
-        if agents
+    // A caller's work is found by the session the provider minted for it (the
+    // id the server gives its group) and, where the change names its invoker,
+    // by that actor too.
+    let found = |groups: &[(tilo_actions::WorkGroup, Option<tilo_actions::Actor>)],
+                 (_, id, by): &(String, String, tilo_actions::Actor)| {
+        groups
             .iter()
-            .all(|(_, by)| runs.iter().any(|(_, run_by)| run_by.as_ref() == Some(by)))
-            || Instant::now() >= deadline
-        {
-            break runs;
+            .any(|(group, actor)| &group.id == id || actor.as_ref() == Some(by))
+    };
+    let groups = loop {
+        let groups = groups_of(&mut browser, notes);
+        if agents.iter().all(|agent| found(&groups, agent)) || Instant::now() >= deadline {
+            break groups;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    for (name, by) in &agents {
-        let named: BTreeSet<_> = runs
+    for (name, id, by) in &agents {
+        let named: BTreeSet<_> = groups
             .iter()
-            .filter(|(_, run_by)| run_by.as_ref() == Some(by))
-            .map(|(run, _)| run)
-            .map(|run| (run.id.clone(), run.kind.clone()))
+            .filter(|(group, actor)| &group.id == id || actor.as_ref() == Some(by))
+            .map(|(group, _)| (group.id.clone(), group.kind.clone()))
             .collect();
         if named.len() != 1
             || named.iter().any(|(id, kind)| {
@@ -741,9 +754,9 @@ async fn both_routes_decide_every_callers_actions_alike() {
             differences.push(format!("{name}'s changes on the host: runs {named:?}"));
         }
     }
-    if runs
+    if groups
         .iter()
-        .any(|(run, _)| run.id == "agent-session:claimed")
+        .any(|(group, _)| group.id == "agent-session:claimed")
     {
         differences.push("the host took a run a client claimed".into());
     }
@@ -766,7 +779,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
             .iter()
             .map(|(_, work)| work.actor.by.clone())
             .collect();
-        let all = agents.iter().all(|(name, _)| {
+        let all = agents.iter().all(|(name, _, _)| {
             seen.get(name)
                 .is_some_and(|member| narrated.contains(&agent_actor(member)))
         });
@@ -775,7 +788,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    for (name, _) in &agents {
+    for (name, _, _) in &agents {
         match seen.get(name) {
             Some(member) if member.agent && narrated.contains(&agent_actor(member)) => {}
             other => differences.push(format!(
@@ -785,7 +798,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
     }
     if seen
         .keys()
-        .any(|label| !agents.iter().any(|(name, _)| name == label))
+        .any(|label| !agents.iter().any(|(name, _, _)| name == label))
     {
         differences.push(format!(
             "the host spoke for someone who ran nothing: {:?}",
