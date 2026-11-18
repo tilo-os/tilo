@@ -2303,7 +2303,9 @@ async fn work(
             0,
         );
     };
-    let server = match McpServer::for_turn(scope.provider.clone(), reply.caller.clone()) {
+    let server = match McpServer::for_turn(scope.provider.clone(), reply.caller.clone())
+        .map(|server| server.with_observation(steps::observed()))
+    {
         Ok(server) => server,
         Err(error) => return (Outcome::Failed(error.to_string()), 0),
     };
@@ -2534,6 +2536,7 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         **reply = self.scope.reply(turn);
         reply.taken().await;
         let server = McpServer::for_turn(self.scope.provider.clone(), reply.caller.clone())
+            .map(|server| server.with_observation(steps::observed()))
             .map_err(|error| error.to_string());
         drop(at);
         let server = server?;

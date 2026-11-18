@@ -169,13 +169,13 @@ async fn ended(mcp: &mut super::api::Mcp<'_>, path: &str, args: Value) -> Value 
     }
 }
 
-/// A key's grouped call on a server like tilo.sh: the workspace refuses
-/// the write of the part the group changes, and the call is answered failed,
+/// A key's grouped call on a server like tilo.sh: the workspace refuses the
+/// write of a person who only reads it, and the call is answered failed,
 /// saying why, never done.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_group_whose_write_is_refused_is_answered_failed() {
     use super::api::{ISSUER, Mcp};
-    use super::api_on_server::{api_on_server, approved_key, headers, json_of};
+    use super::api_on_server::{accept_invitation, api_on_server, approved_key, headers, json_of};
     let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -199,25 +199,53 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
     .await;
     assert_eq!(status, 201, "{made}");
     let workspace = made["id"].as_str().unwrap().to_owned();
-    let mut mcp = Mcp {
+    // A person who reads the workspace joins it: a key of theirs reaches it as
+    // them, and the workspace takes no write of theirs.
+    let (status, invited) = json_of(
+        api.dispatch(
+            &hyper::Method::POST,
+            &format!("/v1/workspaces/{workspace}/members/invitations"),
+            "",
+            &headers(&pairs),
+            json!({"role": "viewer"}).to_string().as_bytes(),
+        )
+        .await,
+    )
+    .await;
+    assert!((200..300).contains(&status), "{invited}");
+    let link = invited["link"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{invited}"))
+        .to_owned();
+    let (reader, _) = tilo_user_identity::UserIdentity::generate("Vic", 1);
+    let (reader_page, joined) = accept_invitation(&on_server, &link, &reader, "Vic").await;
+    assert_eq!(joined["role"], "viewer", "{joined}");
+    let reader_key = approved_key(&on_server, &reader, &reader_page, "Vic's backend").await;
+    // The tracker is open, started by the person who owns it.
+    let mut owner = Mcp {
         api: &api,
         path: format!("/w/{workspace}/mcp"),
         token: key,
         session: None,
     };
+    owner.initialize().await;
+    ended(&mut owner, "tasks#open", json!({})).await;
+    let mut mcp = Mcp {
+        api: &api,
+        path: format!("/w/{workspace}/mcp"),
+        token: reader_key,
+        session: None,
+    };
     mcp.initialize().await;
-    // The first issue starts the part the issues are kept in.
-    let first = ended(&mut mcp, "tasks#create", json!({"title": "First"})).await;
-    assert_eq!(
-        first["result"]["structuredContent"]["status"], "ok",
-        "{first}"
-    );
-    // Every later one is a change to that part, which this workspace does not
-    // grant the key's agent: the whole group is refused, and answered so.
+    // The group is a write of theirs: the workspace refuses it, and the call is
+    // answered so.
     let many = ended(
         &mut mcp,
-        "tasks#create-many",
-        json!({"issues": [{"title": "Second"}, {"title": "Third"}]}),
+        "tasks/Issues#group",
+        json!({"actions": [
+            {"action": "create", "args": {"title": "Second"}},
+            {"action": "create", "args": {"title": "Third"}},
+        ]}),
     )
     .await;
     let typed = &many["result"]["structuredContent"];
@@ -226,7 +254,7 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
         "a refused group is never done: {many}"
     );
     assert!(
-        many.to_string().contains("not granted"),
+        many.to_string().contains("permission"),
         "the refusal says why: {many}"
     );
 }
