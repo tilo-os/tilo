@@ -85,6 +85,9 @@ impl Ada {
         let (key, owner) = governor();
         let holder = test_holder(dir.path(), &key, &owner).await;
         let workspaces = holder.workspaces().clone();
+        // Her calendar server is this machine: the operator lets the server
+        // call its own network, which it is otherwise kept from.
+        workspaces.call_private_model_addresses(true);
         let actions = HolderActions::new();
         actions.attach(workspaces.clone());
         let device = key_of(&SigningKey::from_bytes(&rand::random()), "studio");

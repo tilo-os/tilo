@@ -701,7 +701,8 @@ impl Workspaces {
             read_only: true,
         };
         let (at, by) = (root.to_path_buf(), using.name);
-        let view = off_thread(move || add_with_item(&at, adding, &by)).await?;
+        let reach = self.inner.models.mail_reach();
+        let view = off_thread(move || add_with_item(&at, &reach, adding, &by)).await?;
         let naming = AssistantAccess {
             account: view.id.clone(),
             agent: kept.agent.clone(),

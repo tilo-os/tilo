@@ -91,7 +91,7 @@ type Failure = Box<dyn std::error::Error + Send + Sync>;
 /// The resolver of a client that was given its own lookup
 /// ([`crate::ClientBuilder::lookup`]): one lookup for a connection, and the
 /// addresses it answered are the ones dialled.
-struct Looked(Lookup);
+pub(crate) struct Looked(pub(crate) Lookup);
 
 impl reqwest::dns::Resolve for Looked {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
@@ -131,7 +131,7 @@ impl reqwest::dns::Resolve for Looked {
 
 /// What the client's own lookup said when it refused the name a request was
 /// for: nothing was sent.
-fn refused(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+pub(crate) fn refused(error: &(dyn std::error::Error + 'static)) -> Option<String> {
     let mut source = Some(error);
     while let Some(cause) = source {
         if let Some(refused) = cause.downcast_ref::<RefusedLookup>() {
