@@ -1259,3 +1259,134 @@ fn a_member_revokes_their_delegation_from_their_own_device() {
             .unwrap()
     );
 }
+
+/// The changes by which the device `writer` puts `form` straight into its row
+/// of the workspace's delegations, over whatever `peer` holds there: no verb
+/// of the workspace's is asked, as any writer of that document can.
+fn delegation_written_straight(
+    peer: &StatePeer,
+    writer: [u8; 32],
+    form: &collab_types::work_delegation::WorkDelegation,
+) -> Vec<Vec<u8>> {
+    let mut doc = peer.admitted_workspace().unwrap().clone();
+    doc.set_actor(peer.workspace_actor_for(&writer));
+    let heads = doc.get_heads();
+    let (_, rows) = doc
+        .get(ROOT, collab_types::work_delegation::WORK_DELEGATIONS_KEY)
+        .unwrap()
+        .expect("a workspace is founded with its delegations");
+    doc.put(&rows, form.row_key(), serde_json::to_string(form).unwrap())
+        .unwrap();
+    doc.commit();
+    doc.get_changes(&heads)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect()
+}
+
+/// `changes` to the workspace's document arriving at `holder` from `device`.
+fn take_workspace_changes(
+    holder: &mut StatePeer,
+    device: [u8; 32],
+    changes: Vec<Vec<u8>>,
+) -> Result<(), String> {
+    holder
+        .receive_from(
+            TransportOrigin::ServerDelta(device),
+            NeighbourMsg::SyncResp {
+                changes,
+                workspace: WORKSPACE.into(),
+            },
+            now(),
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// A member's withdrawal of their delegation stays. The delegation as it was
+/// first signed still verifies, and whoever writes the workspace's document
+/// can put that first form back into its row: no holder reads it live again,
+/// the server takes none of the member's work under it, and every holder
+/// still reads that it was withdrawn.
+#[test]
+fn a_withdrawn_delegation_stays_withdrawn_whoever_writes_its_first_form_back() {
+    let (mut peer, guest_key, guest) = workspace_with(Role::Editor);
+    let owner_key = SigningKey::from_bytes(&[2; 32]);
+    let (server_key, server) = named_server(&mut peer, &owner_key);
+    let guest_person = hex::encode(guest.user_public_key);
+    let first = delegating(
+        &guest_key,
+        guest.user_public_key,
+        server.device_public_key,
+        APP,
+    );
+
+    // The member delegates and then withdraws; a holder takes both in.
+    let mut holder = peer.clone();
+    for step in ["delegates", "withdraws"] {
+        let changes = workspace_changes(&mut peer, |copy| {
+            let written = if step == "delegates" {
+                copy.workspace_mut()
+                    .author_work_delegation(&first, &guest_key, now())
+            } else {
+                copy.workspace_mut().revoke_work_delegation(
+                    &server.device_public_key,
+                    &guest.user_public_key,
+                    &guest_key,
+                    now(),
+                )
+            };
+            assert_eq!(written, Ok(true), "the member {step}");
+        });
+        take_workspace_changes(&mut holder, guest.device_public_key, changes).unwrap();
+    }
+    let live = |holder: &StatePeer| {
+        holder
+            .workspace()
+            .work_delegation(&server.device_public_key, &guest.user_public_key, now())
+            .is_some()
+    };
+    assert!(!live(&holder), "the withdrawal stops the delegation");
+
+    // Each device that writes the workspace's document puts the first form
+    // straight back: the member's own, and the device of the workspace's
+    // owner, which governs it.
+    let invoker = the_servers_invoker(&guest_person, server.device_public_key);
+    let mut broken = Vec::new();
+    for (who, writer) in [
+        ("the member's own device", guest.device_public_key),
+        ("the owner's device", owner_key.verifying_key().to_bytes()),
+    ] {
+        let mut holder = holder.clone();
+        let changes = delegation_written_straight(&holder, writer, &first);
+        let taken = take_workspace_changes(&mut holder, writer, changes);
+        if live(&holder) {
+            broken.push(format!(
+                "written back by {who} ({taken:?}): the withdrawn delegation is read live again"
+            ));
+        }
+        let work = server_write(
+            &holder,
+            &server_key,
+            1,
+            "set after the withdrawal",
+            invoker.clone(),
+        );
+        if receive(&mut holder.clone(), &server, work).is_ok() {
+            broken.push(format!(
+                "written back by {who} ({taken:?}): the server takes the member's work again"
+            ));
+        }
+        let withdrawal_read = holder
+            .workspace()
+            .work_delegations()
+            .iter()
+            .any(|kept| kept.row_key() == first.row_key() && kept.revoked_at_ns.is_some());
+        if !withdrawal_read {
+            broken.push(format!(
+                "written back by {who} ({taken:?}): no holder reads the withdrawal any more"
+            ));
+        }
+    }
+    assert!(broken.is_empty(), "{broken:#?}");
+}
