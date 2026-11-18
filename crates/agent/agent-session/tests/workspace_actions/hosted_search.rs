@@ -23,7 +23,7 @@ struct Served {
     /// The workspaces made at the start with Ada's page on each, until a test sets one up.
     opened: Vec<(String, Browser)>,
     /// The server itself and what it keeps on its disk, kept until the test ends.
-    _alive: Box<dyn std::any::Any>,
+    alive: Box<dyn std::any::Any>,
     _state: tempfile::TempDir,
     actions: tilo_agent_session::workspace_actions::WorkspaceActions,
     workspaces: Workspaces,
@@ -174,7 +174,7 @@ impl Served {
         }
         Self {
             opened,
-            _alive: Box::new(served),
+            alive: Box::new(served),
             _state: state,
             actions,
             workspaces,
@@ -495,11 +495,28 @@ pub(super) async fn narrow_agent(
 
 /// Answer the turn `message` gives the agent in `workspace`, on the server, with `model`.
 async fn answered(served: &Served, workspace: &str, message: &Id, model: Model) {
+    answered_knowing(served, workspace, message, model, None).await;
+}
+
+/// [`answered`], by agents told that the devices `placed` holds are the server's own, where
+/// they are told any.
+async fn answered_knowing(
+    served: &Served,
+    workspace: &str,
+    message: &Id,
+    model: Model,
+    placed: Option<tilo_server::environment::EnvironmentRegistry>,
+) {
     let agents = HostAgents::new(
         served.workspaces.clone(),
         served.actions.clone(),
         Some(model),
     );
+    let agents = if let Some(placed) = placed {
+        agents.knowing_placed(placed)
+    } else {
+        agents
+    };
     let deadline = tilo_test_env::hang_deadline();
     let turn = loop {
         let turns = agents.turns(workspace).await.unwrap();

@@ -550,3 +550,7 @@ async fn what_a_read_by_an_agent_kept_elsewhere_leaves_for_the_members_to_see() 
     assert_eq!(seen, expected, "what was seen:\n{}", said.join("\n"));
     page.peer.close();
 }
+
+/// What a person's own assistant is told of their other workspaces.
+#[path = "hosted_across_list.rs"]
+mod list;

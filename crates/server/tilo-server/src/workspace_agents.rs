@@ -70,6 +70,7 @@ use tilo_actions::remote::person_events;
 use tilo_actions::remote::person_initiative;
 use turn_provider::TurnProvider;
 
+mod across;
 mod answers;
 mod asks;
 mod coding;
@@ -536,6 +537,9 @@ pub struct HostAgents {
     /// turn's open of Browser has its window placed there ([`turn_browser`]), and a turn has
     /// a field of its workspace's page filled there from its person's vault.
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
+    /// The devices this server placed itself for its workspaces' windows, where it was told
+    /// them: none of them is a device a read for a person acts as ([`across`]).
+    placed: Option<crate::environment::EnvironmentRegistry>,
 }
 
 impl HostAgents {
@@ -551,6 +555,7 @@ impl HostAgents {
             carriers: Arc::default(),
             initiative: None,
             browsers: None,
+            placed: None,
         };
         // What a person answers about a connection of theirs is carried out from the start.
         agents.carries(connections::WORD, connections::answers(&agents.workspaces));
@@ -558,6 +563,16 @@ impl HostAgents {
         agents.ask_in_conversations();
         agents.carry_sends();
         agents
+    }
+
+    /// These agents, told the devices this server placed itself for its workspaces' windows:
+    /// none of them is a device a person's assistant reads as in another workspace of
+    /// theirs. Agents told none cannot tell such a device from a person's own, and read in
+    /// no other workspace.
+    #[must_use]
+    pub fn knowing_placed(mut self, placed: crate::environment::EnvironmentRegistry) -> Self {
+        self.placed = Some(placed);
+        self
     }
 
     /// These agents, whose turns reach `initiative`: an agent reads its person's look-round and
@@ -1059,6 +1074,7 @@ impl HostAgents {
         };
         team::join(&self.workspaces, turn, &mut scope).await;
         skills::join(&self.workspaces, turn, &mut scope);
+        across::join(&self.workspaces, self.placed.as_ref(), turn, &mut scope).await;
         // What the turn's tools reach beside the workspace's resources, each a provider of the
         // turn's own ([`TurnProvider`]): what its person's vault lets it use by reference.
         // Beside that, the services its person connected, by this server's own entry for a turn.
