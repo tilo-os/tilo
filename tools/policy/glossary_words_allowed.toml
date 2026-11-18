@@ -825,3 +825,8 @@ paths = [
     "crates/system/tilo-auth/src/sibling/enrol.rs",
     "crates/system/tilo-auth/tests/peer_enrol.rs",
 ]
+
+[[allow]]
+reason = "A lane of a commit graph, as the stored history names it: a column a commit sits in, outside Tilo's vocabulary."
+words = ["lane"]
+paths = ["apps/git-client-model/src/model.rs"]

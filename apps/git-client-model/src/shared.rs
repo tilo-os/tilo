@@ -5,7 +5,7 @@
 //! window. The diff preferences are the person's (see [`crate::settings`]).
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, JsonSchema};
+use tilo_resource::{self, JsonSchema};
 
 use crate::model::{Branch, Commit, Remote, RepoModel, Stash, Tag};
 

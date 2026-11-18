@@ -5,7 +5,7 @@
 //! it for screenshots — and nothing here performs IO.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, JsonSchema};
+use tilo_resource::{self, JsonSchema};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum ChangeArea {

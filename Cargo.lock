@@ -5929,6 +5929,7 @@ dependencies = [
  "bounded-command",
  "futures-util",
  "git-client",
+ "git-client-model",
  "git2",
  "hex",
  "jiff",
@@ -5955,6 +5956,16 @@ dependencies = [
  "url",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "git-client-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "workspace-hack",
 ]
 
 [[package]]
