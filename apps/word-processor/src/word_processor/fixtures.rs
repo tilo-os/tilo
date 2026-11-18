@@ -1,7 +1,7 @@
 //! Direct edits on a `WordProcessor` without a widget, for tests that need a document in
 //! a given shape. Each builds the typed action the editor dispatches.
 
-use super::{BlockSpans, Caret, WordProcessor};
+use super::{Caret, WordProcessor};
 use automerge::AutoCommit;
 use tilo_doc::model::Region;
 use ui::text_edit::Edit;
@@ -75,10 +75,6 @@ impl WordProcessor {
                     .is_none_or(|b| b.kind != "cell")
             })
             .collect()
-    }
-
-    pub(crate) fn format_spans(&self, state: &AutoCommit) -> BlockSpans {
-        self.font_ranges(state)
     }
 
     pub(crate) fn insert_table(
