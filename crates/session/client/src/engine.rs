@@ -1174,7 +1174,8 @@ impl Engine {
     /// it only once it is handed to them.
     /// # Errors
     /// The workspace is not held here, a founding write finds the record held already, or the
-    /// workspace refused the write.
+    /// workspace refused the write: [`WriteRefusal::ChangeRefused`] names the document it refused,
+    /// the changes it carried and why, as a server's refusal of a change does.
     pub async fn write_resource(
         &self,
         workspace: WorkspaceId,
@@ -1182,7 +1183,7 @@ impl Engine {
         changes: &[u8],
         founding: bool,
         sealed: Option<&key_group::ContentKeys>,
-    ) -> Result<tilo_peer_state::owner::AppWrite, String> {
+    ) -> Result<tilo_peer_state::owner::AppWrite, tilo_peer_state::owner::WriteRefusal> {
         use tilo_broker_core::owner_service::OwnerService as _;
         let device = self.identity.device_cert.device_public_key;
         let now = tilo_clock::wall();
@@ -1241,19 +1242,25 @@ impl Engine {
             .write(workspace, draft, self.identity.signer.as_ref(), now)
             .await?
             .pop()
-            .ok_or("the write was not committed")?;
+            .ok_or_else(|| {
+                tilo_peer_state::owner::WriteRefusal::Refused("the write was not committed".into())
+            })?;
         self.schedule_publication(workspace);
         let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, own, .. } =
             committed.0.operation
         else {
-            return Err("a record's write is not a document write".to_owned());
+            return Err(tilo_peer_state::owner::WriteRefusal::Refused(
+                "the write is not a document write".to_owned(),
+            ));
         };
         Ok(tilo_peer_state::owner::AppWrite {
             peer: neighbour_wire::peer_handle(&device),
             app_id: app.to_owned(),
             cluster_id: workspace.to_string(),
             document_id: record.to_owned(),
-            author: author.ok_or("the write was not made")?,
+            author: author.ok_or_else(|| {
+                tilo_peer_state::owner::WriteRefusal::Refused("the write was not made".to_owned())
+            })?,
             replayed: false,
             envelope: *envelope,
             own,
@@ -1555,7 +1562,8 @@ impl Engine {
 
     /// The verdicts other devices recorded on this device's writes, with the workspace each was
     /// filed in, where waiting changes nothing: what the person hears once per verdict, because
-    /// their writes stop arriving.
+    /// their writes stop arriving. A verdict this device filed itself is not one of them: the
+    /// app or agent that made the change was told there, where the edit was made.
     #[must_use]
     pub fn lasting_refusals(&self) -> Vec<(String, neighbour_wire::WriteRefusal)> {
         let mine = self.identity.device_cert.device_public_key;
@@ -1566,7 +1574,9 @@ impl Engine {
                 self.owner
                     .write_refusals(workspace)
                     .into_iter()
-                    .filter(|refusal| refusal.author == mine && refusal.reason.permanent())
+                    .filter(|refusal| {
+                        refusal.author == mine && refusal.by != mine && refusal.reason.permanent()
+                    })
                     .map(move |refusal| (name.clone(), refusal))
             })
             .collect()
@@ -2079,7 +2089,11 @@ mod tests {
             Some(&keys),
         ));
         assert!(
-            refused.is_err_and(|error| error.contains("not admitted this device")),
+            matches!(
+                refused,
+                Err(tilo_peer_state::owner::WriteRefusal::Refused(ref reason))
+                    if reason.contains("not admitted this device")
+            ),
             "the copy writes nothing before it is admitted"
         );
     }

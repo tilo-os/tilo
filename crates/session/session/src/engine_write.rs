@@ -11,8 +11,10 @@ use std::task::{Context, Poll, Waker};
 
 use tilo_actions::remote::Pending;
 
-/// What a write came to: the write as the workspace took it, or why it took none.
-pub(crate) type Written = Result<tilo_peer_state::owner::AppWrite, String>;
+/// What a write came to: the write as the workspace took it, or why it took none — a change the
+/// workspace's rules refused named as a server's refusal of a change names it.
+pub(crate) type Written =
+    Result<tilo_peer_state::owner::AppWrite, tilo_peer_state::owner::WriteRefusal>;
 
 /// Work under way off the loop, answering `T` once it is done.
 pub(crate) struct Polled<T> {
@@ -32,7 +34,9 @@ impl Writing {
         write: impl Future<Output = Written> + tilo_rt::MaybeSend + 'static,
     ) -> Self {
         Self::new(wake, write, || {
-            Err("the write's task stopped before it answered".to_owned())
+            Err(tilo_peer_state::owner::WriteRefusal::Refused(
+                "the write's task stopped before it answered".to_owned(),
+            ))
         })
     }
 }
@@ -116,7 +120,9 @@ mod tests {
         let store = Arc::clone(&turn_back);
         let mut writing = Writing::write(wake, async move {
             store.wait();
-            Err("refused".to_owned())
+            Err(tilo_peer_state::owner::WriteRefusal::Refused(
+                "refused".to_owned(),
+            ))
         });
         assert!(writing.done().is_none(), "the write is still under way");
         turn_back.wait();
@@ -124,7 +130,10 @@ mod tests {
             .recv_timeout(Duration::from_secs(10))
             .expect("the loop is woken once the write is done");
         assert!(
-            matches!(writing.done(), Some(Err(why)) if why == "refused"),
+            matches!(
+                writing.done(),
+                Some(Err(tilo_peer_state::owner::WriteRefusal::Refused(why))) if why == "refused"
+            ),
             "the loop takes the write's answer"
         );
     }

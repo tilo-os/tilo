@@ -74,6 +74,102 @@ async fn a_look_that_read_before_an_answer_does_not_ask_the_message_again() {
     page.peer.close();
 }
 
+/// A person's app shows their agent at work by the agent's reply, where its work is kept, and
+/// stops it by naming that reply. Their stop ends the turn whatever began it: their own
+/// message, or a cause that asked for them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn_whatever_began_it() {
+    team!(root, browser, actions, workspaces, workspace, page, person);
+    let me = themselves(&root, &browser, &workspace);
+    let scout = MemberId::agent(SCOUT);
+
+    // A turn their own message began.
+    let first = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        (&root, &browser),
+        "plan the launch",
+    )
+    .await;
+    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
+    let _opens = Opens(Arc::clone(&hold));
+    let agents = worked(
+        &workspaces,
+        &actions,
+        waits(
+            vec![looks(), says("The launch is planned.")],
+            1,
+            &asked,
+            &hold,
+        ),
+    );
+    agents.look(&workspace).await.unwrap();
+    until("the turn reaches its second step", || {
+        asked.lock().unwrap().len() == 2
+    })
+    .await;
+    stop_agent(
+        &actions,
+        &workspace,
+        &me,
+        &chat::chat::reply_id(&first, &scout),
+    )
+    .await
+    .expect("the person stops their agent's work by the reply that shows it");
+    agents.look(&workspace).await.unwrap();
+    hold.open();
+    let reply = ended(&workspaces, &workspace, &first).await;
+    assert_eq!(
+        end_of(&reply),
+        Some(chat::agent_stream::AgentFinish::Cancelled),
+        "its reply says it was stopped: {:?}",
+        reply.work
+    );
+    assert_eq!(asked.lock().unwrap().len(), 2, "no step follows a stop");
+
+    // A turn a cause began for them: a reminder, asked by what acts for them.
+    let thread = chat::Chat::direct_id([MemberId::person(person.clone()), scout.clone()]);
+    let planner = themselves(&root, &browser, &workspace)
+        .delegated_to("planner")
+        .named("Planner");
+    ask_agent(&actions, &workspace, &planner, &thread, "call-1")
+        .await
+        .expect("what acts for the person asks their agent");
+    let second = chat::cause::message_id(&MemberId::person(person.clone()), "call-1");
+    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
+    let _opens_again = Opens(Arc::clone(&hold));
+    let agents = worked(
+        &workspaces,
+        &actions,
+        waits(vec![looks(), says("Mum is called.")], 1, &asked, &hold),
+    );
+    agents.look(&workspace).await.unwrap();
+    until("the reminder's turn reaches its second step", || {
+        asked.lock().unwrap().len() == 2
+    })
+    .await;
+    stop_agent(
+        &actions,
+        &workspace,
+        &me,
+        &chat::chat::reply_id(&second, &scout),
+    )
+    .await
+    .expect("the person stops the work a reminder began for them");
+    agents.look(&workspace).await.unwrap();
+    hold.open();
+    let reply = ended(&workspaces, &workspace, &second).await;
+    assert_eq!(
+        end_of(&reply),
+        Some(chat::agent_stream::AgentFinish::Cancelled),
+        "the reminder's reply says it was stopped: {:?}",
+        reply.work
+    );
+    assert_eq!(asked.lock().unwrap().len(), 2, "no step follows a stop");
+    page.peer.close();
+}
+
 /// She writes her next message while a look that read before her first answer enters its
 /// place. The message gets a turn of its own: one model call that begins with her words and is
 /// told the answer before them. Nothing of it goes into a second turn on her first message.

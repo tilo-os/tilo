@@ -14,6 +14,10 @@ pub enum AdmissionError {
     ResourceLimit,
     /// The input was refused by the workspace's rules.
     Rejected(String),
+    /// The workspace's rules refused a document change: the document it writes, the changes it
+    /// carries and why, as a server's refusal of a change names them. Its author's session is
+    /// told the same shape, and so is every device the change is sent to.
+    ChangeRefused(Box<crate::ChangeRefused>),
     /// This device could not decide the input: its isolated Automerge worker
     /// crashed, overran its deadline or never started. That says nothing about
     /// the input, so it is no refusal of a write and leaves no verdict.
@@ -38,6 +42,7 @@ impl std::fmt::Display for AdmissionError {
             }
             Self::ResourceLimit => f.write_str("exact admission index quota exceeded"),
             Self::Rejected(reason) | Self::Device(reason) => f.write_str(reason),
+            Self::ChangeRefused(refused) => f.write_str(&refused.reason),
         }
     }
 }

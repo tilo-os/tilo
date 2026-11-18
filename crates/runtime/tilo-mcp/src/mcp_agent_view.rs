@@ -82,6 +82,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let mut value =
             match Box::pin(self.do_one_value(&path, arguments.clone(), None, None)).await {
                 Ok(value) => answer_value(value),
+                // No window of the app answers on this connection (a server shows none): nothing
+                // has a view to read, and the calls that reach what the path names are said.
+                Err(why) if shows_no_window(&why) => return Err(no_view(&args.path).into()),
                 // An app that cannot show the item (a conversation it no longer holds, an item
                 // that is gone) still has a window: read that, and say which view the lines are.
                 Err(why) if anchor.is_some() => {
@@ -194,6 +197,23 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         reply.images = images;
         reply
     }
+}
+
+/// Whether `why` says the app offers no action that reads its window: no window of it answers
+/// on this connection.
+fn shows_no_window(why: &Failure) -> bool {
+    why.message.contains(" has no action")
+}
+
+/// What a caller is told where no window shows `path`: the calls that reach it all the same.
+fn no_view(path: &str) -> String {
+    let path = path.trim();
+    let named = json!({ "path": path });
+    format!(
+        "no window shows {path} on this connection, so there is no view to read: tilo_read \
+         {named} reads what it holds, tilo_ls {named} lists it, and tilo_link {named} is a \
+         link a person opens to see it"
+    )
 }
 
 /// What a finished call answered: the invocation's value.

@@ -37,6 +37,31 @@ pub(super) enum Authorized {
     Hold(crate::MissingPrerequisite),
 }
 
+/// Why [`StatePeer::authorize_document`] refuses a change.
+pub(super) enum AuthorizeRefusal {
+    /// The change is not its sender's own, or its author holds nothing here: the reason, in the
+    /// words the workspace keeps.
+    Denied(String),
+    /// The workspace's rules refuse it: what its author's session is told, typed as a server's
+    /// refusal of a change is.
+    Rules(collab_types::ReceiptRefusal),
+}
+
+impl std::fmt::Display for AuthorizeRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Denied(reason) => f.write_str(reason),
+            Self::Rules(refusal) => write!(f, "document change forbidden: {refusal}"),
+        }
+    }
+}
+
+impl From<AuthorizeRefusal> for String {
+    fn from(refusal: AuthorizeRefusal) -> Self {
+        refusal.to_string()
+    }
+}
+
 impl StatePeer {
     pub(super) fn has_governed_admission(&self, cert: &DeviceCert) -> bool {
         self.core.workspace_doc.as_ref().is_some_and(|doc| {
@@ -793,13 +818,15 @@ impl StatePeer {
         record: &str,
         envelope: &SignedOp,
         authorization_time: SystemTime,
-    ) -> Result<Authorized, String> {
+    ) -> Result<Authorized, AuthorizeRefusal> {
         if envelope.author.as_bytes() != source {
-            return Err("the change is not its sender's own".into());
+            return Err(AuthorizeRefusal::Denied(
+                "the change is not its sender's own".into(),
+            ));
         }
         let Some((member, history)) = self
             .written_as(app_id, record, envelope, authorization_time)
-            .map_err(|error| error.to_string())?
+            .map_err(|error| AuthorizeRefusal::Denied(error.to_string()))?
         else {
             return Ok(Authorized::Hold(crate::MissingPrerequisite::RemovalCut));
         };
@@ -862,7 +889,7 @@ impl StatePeer {
             Ok(collab_types::Receipt::Hold) => {
                 Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface))
             }
-            Err(refusal) => Err(format!("document change forbidden: {refusal}")),
+            Err(refusal) => Err(AuthorizeRefusal::Rules(refusal)),
         }
     }
 }

@@ -24,6 +24,8 @@ use std::{
 mod busy_workspace;
 #[path = "changes_read_tests.rs"]
 mod changes_read;
+#[path = "refused_change_tests.rs"]
+mod refused_change;
 #[path = "sealed_history_tests.rs"]
 mod sealed_history;
 #[path = "vouched_tests.rs"]

@@ -1924,6 +1924,71 @@ fn a_turn_asked_left_of_another_stands_at_its_click_narrowed() {
     );
 }
 
+/// A click just left of a turn, with less free area before it than a turn's least width: the new
+/// turn stands in the free spot nearest the click that is on the screen, and the camera stays,
+/// so the first turn stands where it stood.
+#[test]
+fn a_turn_asked_with_nothing_free_at_its_click_stands_in_view_and_nothing_pans() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let sent = |session: &mut Session, count: usize| {
+        until(session, "the ask sent", |session| {
+            session.settle_services();
+            session
+                .read("session:send-to")
+                .and_then(|read| read["sent"].as_array().map(|sent| sent.len() >= count))
+                .unwrap_or(false)
+        });
+    };
+    let steps = |session: &mut Session| {
+        for _ in 0..30 {
+            session.step(Duration::from_millis(16)).unwrap();
+        }
+    };
+    let turn = |session: &Session, question: &str| {
+        let needle = format!("chat.workspace.turns:{question}");
+        places(session)
+            .into_iter()
+            .find(|place| place.resource.contains(&needle))
+    };
+    point_and_say(&mut session, (x + w * 0.3, y + h * 0.2), "hi");
+    sent(&mut session, 1);
+    chat_holds(&session, CONVERSATION, "q32");
+    let first = wait_for(&mut session, "the first turn placed", |session| {
+        turn(session, "q32")
+    });
+    steps(&mut session);
+    let before = wait_for(&mut session, "the first turn on screen", |session| {
+        place_on_screen(session, &first)
+    });
+    // Closer to the turn than a turn's least width: nothing free at the click itself.
+    point_and_say(
+        &mut session,
+        (before.0 - 40.0, before.1 + 20.0),
+        "what time is it",
+    );
+    sent(&mut session, 2);
+    chat_holds(&session, CONVERSATION, "q33");
+    let second = wait_for(&mut session, "the second turn placed", |session| {
+        turn(session, "q33")
+    });
+    steps(&mut session);
+    let (sx, sy, sw, sh) = wait_for(&mut session, "the second turn on screen", |session| {
+        place_on_screen(session, &second)
+    });
+    assert!(
+        sx >= x - 1.0 && sy >= y - 1.0 && sx + sw <= x + w + 1.0 && sy + sh <= y + h + 1.0,
+        "the second turn stands whole on the screen ({x},{y} {w}x{h}): {sx},{sy} {sw}x{sh}"
+    );
+    let after = place_on_screen(&session, &first).expect("the first turn still on screen");
+    assert!(
+        (after.0 - before.0).abs() < 1.0 && (after.1 - before.1).abs() < 1.0,
+        "the camera stayed: the first turn stands where it stood ({before:?}): {after:?}"
+    );
+}
+
 /// The live order: one turn asked in a dragged rectangle, whose agent places a thing, then a second
 /// asked by a click elsewhere. The second turn's agent `place` stands what it shows beside the
 /// second turn: never above the first, and never at the canvas' origin as a place that names no

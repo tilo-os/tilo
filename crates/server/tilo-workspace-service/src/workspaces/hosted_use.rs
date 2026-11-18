@@ -491,7 +491,9 @@ impl Use {
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
             Self::Key(setting) => {
-                let kept = super::person_vault::key_from_item(root, &setting, by, purpose)?;
+                let reach = workspaces.model_reach();
+                let kept =
+                    super::person_vault::key_from_item(root, &setting, by, purpose, &reach).await?;
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
             Self::Call(call) => {

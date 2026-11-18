@@ -162,6 +162,123 @@ fn keyed_only_in(request: &test_http::Request, header: &str, value: &str) {
     );
 }
 
+/// A script that answers for Ada's provider, and that provider's id in her
+/// settings.
+fn scripted_for_ada(
+    workspaces: &Workspaces,
+    said: [&str; 3],
+) -> (std::sync::Arc<super::scripted::ScriptedProvider>, String) {
+    use super::scripted::{Reply as Said, ScriptedProvider};
+    let scripted = ScriptedProvider::answering(said.map(Said::text));
+    workspaces.answer_models_with(scripted.clone());
+    let root = workspaces.person_settings_root(&ADA);
+    let provider = crate::workspaces::person_settings::provider_config(&root)
+        .profiles
+        .first()
+        .map(|profile| profile.id.clone())
+        .unwrap();
+    (scripted, provider)
+}
+
+/// Ada's provider with its key in her vault, as her settings keep it.
+const HERS: (&str, &str) = (
+    "https://generativelanguage.googleapis.com/v1beta/openai",
+    "gemini-main",
+);
+
+/// One piece of work asks its model many times one after the other: its
+/// person's vault is opened for the first ask and not again while it is the
+/// file it was. Other work opens it for itself.
+#[tokio::test]
+async fn the_asks_of_one_piece_of_work_open_the_vault_once() {
+    let (_dir, server) = linked(("Google", OPENAI), HERS.0, HERS.1).await;
+    let workspaces = server.workspaces();
+    let (scripted, _) = scripted_for_ada(workspaces, ["one", "two", "three"]);
+
+    let model = workspaces.person_model(ADA, Interaction::Task);
+    model.linked().unwrap();
+    for _ in 0..3 {
+        model
+            .answer(&asking("Hello", Vec::new()), soon(), &mut |_| {})
+            .await
+            .unwrap();
+    }
+    let asked = scripted.asked();
+    assert_eq!(asked.len(), 3);
+    assert!(
+        asked.iter().all(|asked| asked.key.as_deref() == Some(KEY)),
+        "{asked:?}"
+    );
+    assert_eq!(
+        model.kept.opened(),
+        1,
+        "the vault is opened once for what the work is linked to and its three asks"
+    );
+
+    let other = workspaces.person_model(ADA, Interaction::Task);
+    other.linked().unwrap();
+    assert_eq!(other.kept.opened(), 1);
+}
+
+/// A key its person replaces or removes while work goes on is new, or gone,
+/// at the very next ask: the provider is asked with the new key, and is not
+/// asked at all once the key is removed.
+#[tokio::test]
+async fn a_key_replaced_or_removed_between_two_asks_is_not_used_by_the_next() {
+    use crate::workspaces::person_settings::{remove_key, set_key};
+    use tilo_actions::remote::person_models::SetKey;
+
+    let (_dir, server) = linked(("Google", OPENAI), HERS.0, HERS.1).await;
+    let workspaces = server.workspaces();
+    let (scripted, provider) = scripted_for_ada(workspaces, ["one", "two", "never"]);
+    let root = workspaces.person_settings_root(&ADA);
+
+    let model = workspaces.person_model(ADA, Interaction::Task);
+    model
+        .answer(&asking("Hello", Vec::new()), soon(), &mut |_| {})
+        .await
+        .unwrap();
+
+    set_key(
+        &root,
+        SetKey {
+            provider: provider.clone(),
+            key: "sk-ada-replaced".into(),
+        },
+    )
+    .unwrap();
+    model
+        .answer(&asking("Hello", Vec::new()), soon(), &mut |_| {})
+        .await
+        .unwrap();
+    let keys: Vec<Option<String>> = scripted
+        .asked()
+        .into_iter()
+        .map(|asked| asked.key)
+        .collect();
+    assert_eq!(
+        keys,
+        [Some(KEY.to_owned()), Some("sk-ada-replaced".to_owned())]
+    );
+
+    remove_key(&root, &provider).unwrap();
+    let refused = model
+        .answer(&asking("Hello", Vec::new()), soon(), &mut |_| {})
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        ModelRefusal::NoKey {
+            provider: "Google".into()
+        }
+    );
+    assert_eq!(
+        scripted.asked().len(),
+        2,
+        "a provider whose key was removed is not asked"
+    );
+}
+
 /// An OpenAI-compatible provider is asked with a bearer key at its chat
 /// completions, and what it streams arrives as it comes: the words, then the
 /// whole answer with its tokens and what they cost at the model's price.

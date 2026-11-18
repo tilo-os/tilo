@@ -61,7 +61,7 @@ impl Workspaces {
     /// What this host keeps and asks for its people's providers: https
     /// addresses on the internet, and its own network too where its
     /// operator lets it call there.
-    fn model_reach(&self) -> Reach {
+    pub(super) fn model_reach(&self) -> Reach {
         Reach {
             destinations: if self.inner.models.private_addresses() {
                 Destinations::Any
@@ -95,7 +95,7 @@ impl Workspaces {
             }
             person_models::SET_KEY => {
                 let setting: SetKey = argument(request, "a key to keep")?;
-                answer(&set_key(&root, setting))
+                answer(&take_key(&root, setting, &reach).await)
             }
             person_models::REMOVE_KEY => {
                 let provider = provider_argument(request)?;
@@ -188,6 +188,107 @@ fn add_preset(root: &Path, adding: &AddPreset) -> Result<ProviderView, String> {
     config.profiles.push(profile);
     save_provider_config(root, &config)?;
     Ok(view)
+}
+
+/// What a provider says of a key it is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Said {
+    /// It answered the request that carried the key.
+    Takes,
+    /// It turned the key away, or no request can carry the key.
+    Refuses,
+    /// Nothing there says of a key: the provider lists no models, or this
+    /// server does not call its address.
+    Nothing,
+    /// It could not be asked now: it did not answer, or answered neither
+    /// yes nor no.
+    NotNow,
+}
+
+/// Keep `setting`'s key for its provider: what [`person_models::SET_KEY`]
+/// and [`person_models::SET_KEY_FROM_ITEM`] do with the key they are handed.
+///
+/// A key kept already gives way only to one its provider takes. The
+/// provider is asked about the new key first ([`asked_about`]); a key it
+/// turns away, and one it cannot be asked about now, is not kept, and the
+/// kept one stays as it was. The refusal says which key is in use and
+/// carries neither. Where nothing at the provider says of a key the new one
+/// is kept as typed, since nothing else could ever replace a key there.
+///
+/// A first key is kept as typed: no key is lost by it, and the provider's
+/// list of models says of it next ([`refresh_models`]).
+pub(super) async fn take_key(
+    root: &Path,
+    setting: SetKey,
+    reach: &Reach,
+) -> Result<ProviderView, String> {
+    let profile = provider_config(root)
+        .profiles
+        .into_iter()
+        .find(|profile| profile.id == setting.provider)
+        .ok_or_else(not_kept)?;
+    let kept = credentials(root)?
+        .get(&key_id(&profile.id))
+        .map(|secret| secret.password)
+        .filter(|kept| !kept.is_empty());
+    // The kept key typed again replaces nothing and asks nobody. The two
+    // are compared by their hashes, which compare in constant time.
+    let replaces = !setting.key.trim().is_empty()
+        && kept.is_some_and(|kept| {
+            blake3::hash(kept.as_bytes()) != blake3::hash(setting.key.as_bytes())
+        });
+    if replaces {
+        let name = profile.display_label();
+        match asked_about(&profile, &setting.key, reach).await {
+            Said::Takes | Said::Nothing => {}
+            Said::Refuses => {
+                return Err(format!(
+                    "{name} did not accept this key. The key kept before is still in use."
+                ));
+            }
+            Said::NotNow => {
+                return Err(format!(
+                    "{name} could not be asked about this key now. The key kept before is still in use."
+                ));
+            }
+        }
+    }
+    set_key(root, setting)
+}
+
+/// Where `profile`'s provider is asked with a key so that its answer says of
+/// the key: its list of models, which the linking asks for too. `OpenRouter`
+/// lists its models to anyone, key or none, and says of a key at an address
+/// of its own.
+fn key_question(profile: &ProviderProfile) -> Option<String> {
+    let base = profile.endpoint.trim_end_matches('/');
+    if base == Preset::OPENROUTER.endpoint() {
+        return Some(format!("{base}/key"));
+    }
+    transform::models_url(profile)
+}
+
+/// What `profile`'s provider says of `key`, asked once at
+/// [`key_question`].
+async fn asked_about(profile: &ProviderProfile, key: &str, reach: &Reach) -> Said {
+    let Some(url) = key_question(profile) else {
+        return Said::Nothing;
+    };
+    let status = match asked(profile, &url, key, reach, false).await {
+        Ok((status, _)) => status,
+        Err(ListingProblem::KeyRefused) => return Said::Refuses,
+        Err(ListingProblem::Unreachable | ListingProblem::Unreadable) => return Said::NotNow,
+        Err(ListingProblem::NoKey | ListingProblem::NoList | ListingProblem::NotAllowed) => {
+            return Said::Nothing;
+        }
+    };
+    match status {
+        200..=299 => Said::Takes,
+        // Google answers 400 to a key it does not know.
+        400 | 401 | 403 => Said::Refuses,
+        404 | 405 => Said::Nothing,
+        _ => Said::NotNow,
+    }
 }
 
 /// Ask `provider` for its models with the key kept for it, and keep the
@@ -291,7 +392,28 @@ async fn listing(
 ) -> Result<Vec<ModelDescriptor>, ListingProblem> {
     let key = key.ok_or(ListingProblem::NoKey)?;
     let url = transform::models_url(profile).ok_or(ListingProblem::NoList)?;
-    let url = tilo_net::Url::parse(&url).map_err(|_| ListingProblem::NotAllowed)?;
+    let (status, body) = asked(profile, &url, key, reach, true).await?;
+    match status {
+        200..=299 => {}
+        401 | 403 => return Err(ListingProblem::KeyRefused),
+        404 | 405 => return Err(ListingProblem::NoList),
+        _ => return Err(ListingProblem::Unreadable),
+    }
+    transform::parse_models(&String::from_utf8_lossy(&body)).map_err(|_| ListingProblem::Unreadable)
+}
+
+/// What `profile`'s provider answers at `url` to a request that carries
+/// `key`: the answer's status, and with `read` the body of an answer that
+/// succeeded. Every request this file sends a provider is sent here, and the
+/// key goes into that request's own header and nowhere else.
+async fn asked(
+    profile: &ProviderProfile,
+    url: &str,
+    key: &str,
+    reach: &Reach,
+    read: bool,
+) -> Result<(u16, Vec<u8>), ListingProblem> {
+    let url = tilo_net::Url::parse(url).map_err(|_| ListingProblem::NotAllowed)?;
     if kept_location(&profile.endpoint, reach.destinations).is_err()
         || check_destination(&url, reach.destinations).is_err()
     {
@@ -322,13 +444,11 @@ async fn listing(
         .send()
         .await
         .map_err(|error| unreachable(&error.without_url()))?;
-    match response.status().as_u16() {
-        200..=299 => {}
-        401 | 403 => return Err(ListingProblem::KeyRefused),
-        404 | 405 => return Err(ListingProblem::NoList),
-        _ => return Err(ListingProblem::Unreadable),
-    }
+    let status = response.status().as_u16();
     let mut body = Vec::new();
+    if !read || !(200..=299).contains(&status) {
+        return Ok((status, body));
+    }
     while let Some(chunk) = response
         .chunk()
         .await
@@ -339,7 +459,7 @@ async fn listing(
         }
         body.extend_from_slice(&chunk);
     }
-    transform::parse_models(&String::from_utf8_lossy(&body)).map_err(|_| ListingProblem::Unreadable)
+    Ok((status, body))
 }
 
 fn add_model(root: &Path, adding: &AddModel) -> Result<ProviderView, String> {
@@ -711,6 +831,83 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// A provider is asked about a key where its answer says of the key: by
+    /// its list of models, and `OpenRouter`, which lists its models to
+    /// anyone, at the address where it says of a key. One that lists no
+    /// models has nothing that says of a key.
+    #[test]
+    fn a_key_is_asked_about_where_its_provider_says_of_one() {
+        assert_eq!(
+            key_question(&Preset::OPENROUTER.profile()).as_deref(),
+            Some("https://openrouter.ai/api/v1/key")
+        );
+        for preset in [Preset::OPENAI, Preset::ANTHROPIC, Preset::GEMINI] {
+            let profile = preset.profile();
+            assert_eq!(key_question(&profile), transform::models_url(&profile));
+            assert!(key_question(&profile).is_some(), "{}", preset.slug());
+        }
+        let mut listless = Preset::OPENAI.profile();
+        listless.models_path = Some(String::new());
+        assert_eq!(key_question(&listless), None);
+    }
+
+    /// What a provider answers to the request that carries a key says of
+    /// the key: yes, no, nothing at all, or not now. A key no request can
+    /// carry is one it never issued, and a provider this server does not
+    /// call is asked nothing.
+    #[tokio::test]
+    async fn a_providers_answer_says_of_the_key_it_was_shown() {
+        let root = temp_root();
+        let fake = Responder::handle(|request| {
+            let status = match request.header("authorization") {
+                Some("Bearer sk-fake-taken") => 200,
+                Some("Bearer sk-fake-malformed") => 400,
+                Some("Bearer sk-fake-unknown") => 401,
+                Some("Bearer sk-fake-forbidden") => 403,
+                Some("Bearer sk-fake-listless") => 404,
+                Some("Bearer sk-fake-busy") => 429,
+                Some("Bearer sk-fake-broken") => 500,
+                _ => return None,
+            };
+            Some(Reply::status(status))
+        });
+        let id = kept(
+            root.path(),
+            Protocol::OpenAiCompatible,
+            &format!("{}/v1", fake.url()),
+            Destinations::Any,
+        );
+        let profile = provider_config(root.path())
+            .profiles
+            .into_iter()
+            .find(|profile| profile.id == id)
+            .expect("the provider is kept");
+        for (key, said) in [
+            ("sk-fake-taken", Said::Takes),
+            ("sk-fake-malformed", Said::Refuses),
+            ("sk-fake-unknown", Said::Refuses),
+            ("sk-fake-forbidden", Said::Refuses),
+            ("sk-fake\u{1}carried-by-no-request", Said::Refuses),
+            ("sk-fake-listless", Said::Nothing),
+            ("sk-fake-busy", Said::NotNow),
+            ("sk-fake-broken", Said::NotNow),
+            ("sk-fake-given-no-answer", Said::NotNow),
+        ] {
+            assert_eq!(
+                asked_about(&profile, key, &any()).await,
+                said,
+                "{}",
+                key.escape_debug()
+            );
+        }
+        fake.drain_requests();
+        assert_eq!(
+            asked_about(&profile, "sk-fake-taken", &public()).await,
+            Said::Nothing
+        );
+        assert!(fake.drain_requests().is_empty());
     }
 
     /// A fresh list replaces the old one, except a model a choice names:

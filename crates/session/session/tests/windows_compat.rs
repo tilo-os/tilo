@@ -750,6 +750,12 @@ impl KeptRig {
 
     /// A desktop, taking up what the keepers hold `following` an in-place restart.
     fn start(&self, following: bool) -> KeptDesktop {
+        self.start_at(following, &self.state)
+    }
+
+    /// A desktop on the device keeping its state at `state`, taking up what the keepers hold
+    /// `following` an in-place restart.
+    fn start_at(&self, following: bool, state: &Path) -> KeptDesktop {
         let catalogue = self.catalogue.clone();
         let dir = self.probe.clone();
         let sound = self.sound.clone();
@@ -783,7 +789,7 @@ impl KeptRig {
             collab: false,
             launch: Some(Rc::clone(&apps)),
             launches: Arc::clone(&launches),
-            state: Some(self.state.clone()),
+            state: Some(state.to_path_buf()),
             app_socket: AppSocket::At(self.home.runtime().join("app_wire.sock")),
             windows: assembly,
             teardown: Box::new(move || asked.get()),
@@ -1134,5 +1140,222 @@ fn a_proton_program_shows_through_its_keepers_x11_display_and_stays_open() {
         "{answers:?}"
     );
     assert_eq!(answers[2]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
+    second.end(tilo_app_launch::Teardown::Logout);
+}
+
+/// The tab a Windows program's window took, and the class it showed under, once it mapped.
+fn window_tab(session: &mut tilo_session::Session) -> (u64, String) {
+    crate::common::wait_for(session, "the program's tab", |session| {
+        crate::layout::tabs(session)
+            .into_iter()
+            .find_map(|(tab, _)| {
+                let (tilo_desktop_model::TileContent::Foreign { app_id, .. }
+                | tilo_desktop_model::TileContent::LocalApp { app_id, .. }) =
+                    crate::layout::tile_of(session, tab)?
+                else {
+                    return None;
+                };
+                (app_id == PROGRAM_WINDOW).then_some((tab, app_id))
+            })
+    })
+}
+
+/// The entry `rig`'s window class was seen in `workspace`, as the session keeps it for the start
+/// after a reboot: the file the next session reads.
+fn kept_entry(rig: &KeptRig, workspace: &str) -> Option<String> {
+    let path = rig
+        .home
+        .data()
+        .join("tilo/windows-compat/window-identities.json");
+    let seen: Vec<Value> = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    seen.into_iter()
+        .find(|seen| seen["workspace"] == workspace && seen["window"] == PROGRAM_WINDOW)
+        .and_then(|seen| seen["entry"].as_str().map(str::to_owned))
+}
+
+#[test]
+fn a_saved_tab_reopens_its_windows_program_after_a_reboot() {
+    let rig = KeptRig::new();
+    // A desktop that starts the program for the first time: its window takes a tab.
+    let mut first = rig.start(false);
+    let answers = first.manage(&rig, "first", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    first.shown();
+    let (tab, class) = window_tab(&mut first.session);
+    assert_eq!(class, PROGRAM_WINDOW);
+    // What the session saw of the window is kept with the entry it belongs to: the tab it stood
+    // in opens the same program after a reboot.
+    let workspace = first.workspace.clone();
+    crate::common::wait_for(&mut first.session, "the window's class kept", |_| {
+        kept_entry(&rig, &workspace)
+    });
+    assert_eq!(
+        kept_entry(&rig, &workspace).as_deref(),
+        Some(rig.entry.as_str())
+    );
+    // The tab the window took is the workspace's, written for the next start.
+    crate::layout::until(&mut first.session, "the tab is written", |session| {
+        session.layout().borrow_mut().last_step().is_some()
+    });
+    // The person logs out: the program ends, and nothing of it stays behind.
+    first.end(tilo_app_launch::Teardown::Logout);
+
+    // A fresh start, not an in-place restart, finds the tab and opens its program again: the
+    // window takes the tab the person left it in.
+    let mut second = rig.start(false);
+    let reopened =
+        crate::common::wait_for(&mut second.session, "the program's window", |session| {
+            match crate::layout::tile_of(session, tab)? {
+                tilo_desktop_model::TileContent::Foreign { app_id, .. }
+                    if app_id == PROGRAM_WINDOW =>
+                {
+                    Some(app_id)
+                }
+                _ => None,
+            }
+        });
+    assert_eq!(reopened, PROGRAM_WINDOW);
+    assert_eq!(rig.starts().len(), 2, "the program started once more");
+    second.end(tilo_app_launch::Teardown::Logout);
+}
+
+#[test]
+fn a_saved_tab_whose_program_was_removed_says_so_and_starts_nothing() {
+    let rig = KeptRig::new();
+    let mut first = rig.start(false);
+    let answers = first.manage(&rig, "first", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    first.shown();
+    let (tab, _) = window_tab(&mut first.session);
+    crate::common::wait_for(&mut first.session, "the window's class kept", |_| {
+        kept_entry(&rig, &first.workspace)
+    });
+    // The tab the window took is the workspace's, written for the next start.
+    crate::layout::until(&mut first.session, "the tab is written", |session| {
+        session.layout().borrow_mut().last_step().is_some()
+    });
+    first.end(tilo_app_launch::Teardown::Logout);
+
+    // The program is removed from its capsule while the tab is closed.
+    let store = CapsuleStore::new(rig.home.data().join("tilo/windows-compat")).expect("a store");
+    let entry = store
+        .registered_programs()
+        .expect("the programs")
+        .into_iter()
+        .find(|entry| entry.entry_id == rig.entry)
+        .expect("the program's entry");
+    let mut capsule = store
+        .load(&entry.capsule_id)
+        .expect("the capsule")
+        .expect("the capsule");
+    capsule.programs.remove(&entry.program.id);
+    store.save(&capsule).expect("the capsule saved");
+
+    // The tab says the program is not installed, and nothing starts.
+    let mut second = rig.start(false);
+    let note = crate::common::wait_for(&mut second.session, "the tab's note", |session| {
+        match crate::layout::tile_of(session, tab)? {
+            tilo_desktop_model::TileContent::LocalApp { note, .. } if !note.is_empty() => {
+                Some(note)
+            }
+            _ => None,
+        }
+    });
+    assert!(note.contains("not installed"), "{note}");
+    assert_eq!(
+        rig.starts().len(),
+        1,
+        "nothing started for the removed program"
+    );
+    second.end(tilo_app_launch::Teardown::Logout);
+}
+
+/// A layout of two workspaces, the second holding a saved window of `app`.
+fn two_workspaces_with(app: &str) -> tilo_desktop_model::Layout {
+    use tilo_desktop_model::{
+        Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    };
+    let tab = Tab {
+        id: 100,
+        title: "Probe".into(),
+        tile: TileContent::LocalApp {
+            app_id: app.into(),
+            label: "Probe".into(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let mut main = Strip::new(StripId(1), "Main");
+    main.window_groups = vec![WindowGroup {
+        id: 1,
+        tabs: Vec::new(),
+        active_tab: 0,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    }];
+    let mut here = Workspace::new(WorkspaceId::from_u128(1), "Home");
+    here.strips = vec![main];
+    let mut away = Workspace::new(WorkspaceId::from_u128(2), "Away");
+    let mut strip = Strip::new(StripId(2), "Later");
+    strip.window_groups = vec![WindowGroup {
+        id: 10,
+        tabs: vec![tab],
+        active_tab: 100,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    }];
+    away.strips = vec![strip];
+    let mut tree = Layout {
+        active: here.id(),
+        workspaces: vec![here, away],
+        ..Layout::default()
+    };
+    tree.active_strip
+        .insert(WorkspaceId::from_u128(1), StripId(1));
+    tree.set_active_group(StripId(1), 1);
+    tree
+}
+
+#[test]
+fn a_saved_tab_of_another_workspace_starts_nothing() {
+    let mut rig = KeptRig::new();
+    // The program's window was seen in the workspace in front; the saved tab stands in the
+    // workspace behind, where the session never saw it.
+    let (device, workspaces) =
+        crate::layout::Device::with_layout(&mut rig.home, &two_workspaces_with(PROGRAM_WINDOW));
+    let seen = serde_json::json!([{
+        "workspace": workspaces[0].to_string(),
+        "window": PROGRAM_WINDOW,
+        "entry": rig.entry,
+    }]);
+    let path = rig
+        .home
+        .data()
+        .join("tilo/windows-compat/window-identities.json");
+    fs::create_dir_all(path.parent().expect("the directory")).unwrap();
+    fs::write(&path, seen.to_string()).unwrap();
+
+    let mut second = rig.start_at(false, &device.state);
+    let note = crate::common::wait_for(&mut second.session, "the tab's note", |session| {
+        crate::layout::tabs(session)
+            .into_iter()
+            .find_map(|(tab, _)| match crate::layout::tile_of(session, tab)? {
+                tilo_desktop_model::TileContent::LocalApp { app_id, note, .. }
+                    if app_id == PROGRAM_WINDOW && !note.is_empty() =>
+                {
+                    Some(note)
+                }
+                _ => None,
+            })
+    });
+    assert!(note.contains("not installed"), "{note}");
+    assert!(
+        rig.starts().is_empty(),
+        "nothing started in another workspace's place"
+    );
     second.end(tilo_app_launch::Teardown::Logout);
 }

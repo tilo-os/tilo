@@ -191,6 +191,7 @@ async fn found(
         .write_resource(workspace, (app, record), changes, true, sealed.as_ref())
         .await
         .map(|_| ())
+        .map_err(String::from)
 }
 
 /// Wait for one of `events` to tick: false once `until` passed, or when none of them can tick.

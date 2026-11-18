@@ -28,12 +28,12 @@ use windows_vm::{
 
 use crate::{
     AudioIsolatedRailLauncher, AudioIsolatedSpiceLauncher, BwrapExecutor, CapabilityAuthority,
-    CapsuleStore, CompatSessionHandle, LaunchDisplays, LaunchResourceBroker, LauncherAuthenticator,
-    LiveVmDelegate, ManagedCompatibility, PortalRailPortalAuthority, RAIL_PRESENTER,
-    RuntimeRegistry, SandboxExecutor, SharedSessionCapabilityBroker, ShippedCataloguePaths,
-    SystemResourceBroker, SystemRuntimeRegistry, TrustedLauncherRegistry, VmAvailability,
-    VmCandidatePublication, VmDelegate, VmInstallation, VmInstallerInput, VmInventory,
-    VmRouteRequest, VmSharedSessionTracker, VmUninstallation, load_shipped_catalogue,
+    CapsuleStore, CompatSessionHandle, EntryDirectory, LaunchDisplays, LaunchResourceBroker,
+    LauncherAuthenticator, LiveVmDelegate, ManagedCompatibility, PortalRailPortalAuthority,
+    RAIL_PRESENTER, Reopenings, RuntimeRegistry, SandboxExecutor, SharedSessionCapabilityBroker,
+    ShippedCataloguePaths, SystemResourceBroker, SystemRuntimeRegistry, TrustedLauncherRegistry,
+    VmAvailability, VmCandidatePublication, VmDelegate, VmInstallation, VmInstallerInput,
+    VmInventory, VmRouteRequest, VmSharedSessionTracker, VmUninstallation, load_shipped_catalogue,
     spawn_session_service,
 };
 
@@ -57,6 +57,11 @@ pub struct SessionSide {
     pub displays: Arc<dyn LaunchDisplays>,
     /// Where the capsules (each Windows program's private prefix) are kept.
     pub capsules: PathBuf,
+    /// The entries the service can open now, which the session reads as it reopens a
+    /// saved tab: `None` until the service read them.
+    pub entries: EntryDirectory,
+    /// What the session asks as itself: a saved tab's program, opened again.
+    pub reopenings: Reopenings,
 }
 
 /// How a session's service is put together: [`Assembly::system`] on a Tilo
@@ -146,6 +151,8 @@ where
         Arc::new(managed),
         side.sandboxes,
         authenticator,
+        side.entries,
+        side.reopenings,
     )
     .map_err(|error| error.to_string())
 }

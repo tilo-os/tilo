@@ -59,6 +59,7 @@ pub mod store;
 pub mod workspace;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
+pub use state::ChangeRefused;
 pub use state::mail_send_lease;
 /// The person's own documents between their devices, with no host in between.
 pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, device_resource, resource_owner};

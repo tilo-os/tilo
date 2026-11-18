@@ -121,6 +121,11 @@ enum Installed {
     /// Notes, and Sheets listed by a name of its own, as Files lists
     /// `file-explorer`.
     SheetsNamedSpreadsheets,
+    /// Notes, and the word processor for this agent to open: an app whose id holds a hyphen
+    /// and whose name is two words.
+    WithWriter,
+    /// Notes to open; the word processor named only, this agent may not open it.
+    WriterClosedToAgent,
     /// None at all.
     Nothing,
     /// It cannot be read.
@@ -546,6 +551,15 @@ impl Notes {
                 }
                 Installed::SheetsNamedSpreadsheets => {
                     vec![open(APP, "Notes"), open("so.tilo.sheets", "Spreadsheets")]
+                }
+                Installed::WithWriter => vec![
+                    open(APP, "Notes"),
+                    open("so.tilo.word-processor", "Word Processor"),
+                ],
+                Installed::WriterClosedToAgent => {
+                    let mut writer = open("so.tilo.word-processor", "Word Processor");
+                    writer.action = None;
+                    vec![open(APP, "Notes"), writer]
                 }
                 Installed::Nothing | Installed::Unreadable => Vec::new(),
             };
@@ -2885,59 +2899,15 @@ fn tilolang_kind(host: &Notes) -> Notes {
     live
 }
 
-/// A tool call that asks for typed answers, with `meta` merged into
-/// `so.tilo.mcp`: its `structuredContent`, and whether it is an error.
-async fn typed<H: ActionProvider + Send + Sync + 'static>(
-    server: &McpServer<H>,
-    name: &str,
-    arguments: Value,
-    meta: Value,
-) -> (Value, bool) {
-    let reply = server
-        .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":name,"arguments":arguments,
-                "_meta":{"so.tilo.mcp":{"structured":true,"invocation":meta}}}}))
-        .await
-        .unwrap();
-    let result = &reply["result"];
-    let structured = result["structuredContent"].clone();
-    assert!(
-        structured.is_object(),
-        "{name} answered no typed value: {reply}"
-    );
-    assert_eq!(
-        result["content"][0]["text"].as_str(),
-        Some(structured.to_string().as_str()),
-        "the text beside it is the same answer"
-    );
-    (structured, result["isError"].as_bool().unwrap_or_default())
-}
-
-/// The same, for a call that names no run.
-pub(super) async fn answer<H: ActionProvider + Send + Sync + 'static>(
-    server: &McpServer<H>,
-    name: &str,
-    arguments: Value,
-) -> (Value, bool) {
-    let reply = server
-        .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
-            "params":{"name":name,"arguments":arguments,
-                "_meta":{"so.tilo.mcp":{"structured":true}}}}))
-        .await
-        .unwrap();
-    let result = &reply["result"];
-    let structured = result["structuredContent"].clone();
-    assert!(
-        structured.is_object(),
-        "{name} answered no typed value: {reply}"
-    );
-    (structured, result["isError"].as_bool().unwrap_or_default())
-}
+pub(super) use typed_calls::answer;
+use typed_calls::typed;
 
 #[path = "mcp_agent_flux_tests.rs"]
 mod flux;
 #[path = "mcp_agent_level_tests.rs"]
 mod levels;
+#[path = "mcp_agent_names_tests.rs"]
+mod naming;
 #[path = "mcp_agent_narrowed_tests.rs"]
 mod narrowed;
 #[path = "mcp_agent_open_tests.rs"]
@@ -2948,6 +2918,8 @@ mod outside;
 mod runs;
 #[path = "mcp_status_tests.rs"]
 mod status;
+#[path = "mcp_agent_typed_calls_tests.rs"]
+mod typed_calls;
 #[path = "mcp_agent_view_tests.rs"]
 mod viewing;
 

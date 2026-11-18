@@ -947,25 +947,86 @@ impl WorkspaceLayout {
         height: u32,
         except: Option<GroupId>,
     ) -> CanvasPlace {
+        self.nearest_free(anchor, (width, height), except, None)
+            .unwrap_or_else(|| {
+                // Every candidate crowded something (cannot happen with a finite set: right of
+                // the rightmost is always free); go there.
+                let right = self
+                    .places
+                    .iter()
+                    .filter(|(id, _)| Some(**id) != except)
+                    .map(|(_, place)| place.occupied().right())
+                    .max()
+                    .unwrap_or(0);
+                let x = right.saturating_add(i64::from(CANVAS_GAP));
+                CanvasPlace::new(
+                    i32::try_from(x).unwrap_or(i32::MAX),
+                    anchor.1,
+                    width,
+                    height,
+                )
+            })
+    }
+
+    /// The free place nearest `anchor` that stands whole inside `seen` (the part of the canvas
+    /// the person sees), at least [`CANVAS_GAP`] from every placed group: `width` × `height`, or
+    /// shrunk to fit down to a window's least size, the largest first. Where something asked at a
+    /// point with no free area stands, so the camera does not pan away from what the person was
+    /// looking at. `None` when not even a window's least size is free in `seen`. Nothing placed
+    /// moves.
+    #[must_use]
+    pub fn free_place_in_view(
+        &self,
+        anchor: (i32, i32),
+        size: (u32, u32),
+        seen: CanvasPlace,
+    ) -> Option<CanvasPlace> {
+        shrinking(size).find_map(|size| self.nearest_free(anchor, size, None, Some(seen)))
+    }
+
+    /// The free place of `width` × `height` nearest `anchor`, clear of every placed group but
+    /// `except` and, given `within`, whole inside it. Deterministic: the same layout and
+    /// anchor give the same place on every device.
+    fn nearest_free(
+        &self,
+        anchor: (i32, i32),
+        (width, height): (u32, u32),
+        except: Option<GroupId>,
+        within: Option<CanvasPlace>,
+    ) -> Option<CanvasPlace> {
         let others: Vec<CanvasPlace> = self
             .places
             .iter()
             .filter(|(id, _)| Some(**id) != except)
             .map(|(_, place)| place.occupied())
             .collect();
-        let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds_on_canvas(o));
+        let inside = |place: &CanvasPlace| {
+            within.is_none_or(|within| {
+                place.x >= within.x
+                    && place.y >= within.y
+                    && place.right() <= within.right()
+                    && place.bottom() <= within.bottom()
+            })
+        };
+        let free = |place: &CanvasPlace| {
+            inside(place) && !others.iter().any(|o| place.crowds_on_canvas(o))
+        };
         let wanted = CanvasPlace::new(anchor.0, anchor.1, width, height);
         if free(&wanted) {
-            return wanted;
+            return Some(wanted);
         }
-        // Every free place nearest the anchor touches an obstacle's edge
-        // (or the anchor's own line): try each obstacle's four sides, on the
-        // anchor's line and flush with the obstacle's edges.
+        // Every free place nearest the anchor touches an obstacle's edge, the edge of `within`,
+        // or the anchor's own line: try each obstacle's four sides, on the anchor's line and
+        // flush with the obstacle's edges.
         let gap = i64::from(CANVAS_GAP);
         let row_gap = i64::from(CANVAS_ROW_GAP);
         let (w, h) = (i64::from(width), i64::from(height));
         let mut xs = vec![i64::from(anchor.0)];
         let mut ys = vec![i64::from(anchor.1)];
+        if let Some(within) = within {
+            xs.extend([i64::from(within.x), within.right().saturating_sub(w)]);
+            ys.extend([i64::from(within.y), within.bottom().saturating_sub(h)]);
+        }
         for o in &others {
             xs.extend([
                 o.right().saturating_add(gap),
@@ -996,15 +1057,7 @@ impl WorkspaceLayout {
                 }
             }
         }
-        best.map_or_else(
-            || {
-                // Every candidate crowded something (cannot happen with a
-                // finite set: right of the rightmost is always free); go there.
-                let right = others.iter().map(CanvasPlace::right).max().unwrap_or(0);
-                CanvasPlace::new(clamp(right.saturating_add(gap)), anchor.1, width, height)
-            },
-            |(_, place)| place,
-        )
+        best.map(|(_, place)| place)
     }
 
     /// How wide a window `height` tall stands with its top-left at `at` (a click) in the free

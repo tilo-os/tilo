@@ -19,10 +19,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         parts: bool,
         after: Option<String>,
     ) -> Result<Reply, Failure> {
-        let reads = self
-            .host()
-            .resource_reads()
-            .ok_or(tilo_actions::remote::RESOURCE_READS_UNAVAILABLE)?;
+        // A connection that reads none of them says the call that reads the same through its
+        // app: the caller is not left to find it.
+        let reads = self.host().resource_reads().ok_or_else(|| {
+            let named = serde_json::json!({
+                "path": app.rsplit('.').next().unwrap_or(app).to_lowercase()
+            });
+            format!(
+                "{}: read it through its app instead: tilo_ls {named} lists what the app \
+                 holds, each by the path tilo_read takes",
+                tilo_actions::remote::RESOURCE_READS_UNAVAILABLE
+            )
+        })?;
         let asks = [ResourceAsk {
             address: ResourceAddress {
                 app: app.to_owned(),

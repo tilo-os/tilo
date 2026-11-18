@@ -29,6 +29,7 @@ impl StatePeer {
     ) -> Result<ReceiveOutcome, String> {
         self.admit_local(app, record, envelope, now)
             .map(|report| report.summary)
+            .map_err(Into::into)
     }
 
     pub(super) fn admit_local(
@@ -37,7 +38,7 @@ impl StatePeer {
         record: &str,
         envelope: collab_types::SignedOp,
         now: SystemTime,
-    ) -> Result<AdmissionReport, String> {
+    ) -> Result<AdmissionReport, crate::NotAdmitted> {
         let source = *envelope.author.as_bytes();
         if self.document(app, record).is_none() {
             // A local publication is an authored change to a record the
@@ -80,7 +81,10 @@ impl StatePeer {
             false,
             false,
         )
-        .map_err(err)
+        .map_err(|error| match error {
+            AdmissionError::ChangeRefused(refused) => crate::NotAdmitted::ChangeRefused(refused),
+            other => crate::NotAdmitted::Refused(other.to_string()),
+        })
     }
 
     #[expect(
@@ -184,13 +188,29 @@ impl StatePeer {
         } else {
             now
         };
-        let (member, history) = match self.authorize_document(
-            &source,
-            &app_id,
-            &document_id,
-            &envelope,
-            authorization_time,
-        )? {
+        let (member, history) = match self
+            .authorize_document(
+                &source,
+                &app_id,
+                &document_id,
+                &envelope,
+                authorization_time,
+            )
+            .map_err(|refusal| match refusal {
+                super::authority::AuthorizeRefusal::Rules(refusal) => {
+                    AdmissionError::ChangeRefused(Box::new(crate::ChangeRefused::of(
+                        self.core.workspace.clone(),
+                        cluster_id.clone(),
+                        &app_id,
+                        &document_id,
+                        &envelope,
+                        &refusal,
+                    )))
+                }
+                other @ super::authority::AuthorizeRefusal::Denied(_) => {
+                    AdmissionError::Rejected(other.to_string())
+                }
+            })? {
             // A device its person removed writes nothing more: only what the
             // workspace had taken of it is history, and a write this device
             // makes now is never that.

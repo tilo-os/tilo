@@ -266,11 +266,12 @@ pub(super) fn starts_app(action: &str) -> bool {
 }
 
 /// Whether `name` names Files, every workspace's own folder: its name, the last part of its id,
-/// or its id.
+/// or its id, in any case and however its words are parted (`file_explorer`).
 pub(super) fn names_files(name: &str) -> bool {
+    let name = super::names::folded(name);
     ["files", "file-explorer", "so.tilo.file-explorer"]
         .iter()
-        .any(|files| name.eq_ignore_ascii_case(files))
+        .any(|files| name == super::names::folded(files))
 }
 
 /// Whether `action` with `arguments`, asked of the app `parsed` names, is one of Files' verbs on

@@ -226,12 +226,13 @@ impl Layout {
         }
         let (width, height, room) = turn_geometry(at, ask.size, ask.seen);
         // Asked by a click, the turn stands at the click, narrowed to the free area before the
-        // next place to its right as a thing found at a click is, rather than being put beside
-        // that place, past the edge of the screen, with the camera panning after it.
-        let width = if ask.size.is_none() {
-            self.width_at_click(at, width, height, ask.seen)
+        // next place to its right as a thing found at a click is; with no area free there, in the free
+        // spot nearest the click that the person sees, never past the edge of the screen with the
+        // camera panning after it.
+        let (at, width, height) = if ask.size.is_none() {
+            self.spot_at_click(at, width, height, ask.seen)
         } else {
-            width
+            (at, width, height)
         };
         // A step of the turn taken before the turn stood filled the room already.
         let room = room.filter(|_| !ask.room_taken);

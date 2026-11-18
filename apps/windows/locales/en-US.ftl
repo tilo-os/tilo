@@ -193,6 +193,13 @@ windows-app-status-uninstalling = Uninstalling
 windows-app-status-failed = Setup didn't finish
 windows-app-status-uninstalled = Uninstalled, data kept
 
+## What a program's end says, when it says anything: one that opened and closed needs no
+## sentence, and one that stopped by itself names the status to quote.
+
+windows-ended-with-error = { $app } stopped with an error (status { $status }).
+windows-ended-could-not-open = { $app } could not open: { $reason }
+windows-ended-stopped = { $app } stopped.
+
 windows-confidence-verified = Verified
 windows-confidence-community = Community tested
 windows-confidence-best-match = Best match

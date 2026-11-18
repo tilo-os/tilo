@@ -682,6 +682,9 @@ impl Inner {
                 }
                 true
             }
+            // A change the workspace's rules refuse is told to whoever wrote it (the write
+            // answered with the typed refusal) and filed where the person's activity reads it;
+            // here the copy stays where it is, so no speaker holds a change nobody else has.
             Err(error) => {
                 tracing::warn!(%error, %workspace, %app, %record, "the workspace took no write");
                 false

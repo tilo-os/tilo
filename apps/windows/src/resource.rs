@@ -122,6 +122,12 @@ const SCENARIOS: &[&str] = &[
     "detail",
     "vm-detail",
     "running",
+    "closed",
+    "ended-with-error",
+    "ended-overview",
+    "could-not-open",
+    "vm-running",
+    "long-name",
     "error",
     "error-compact",
     "confirm-delete",
@@ -165,7 +171,8 @@ impl ResourceApp for WindowsShell {
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario.unwrap_or("wide") {
             "detail" | "error-compact" | "vm-detail" | "confirm-delete" => (480, 800),
-            "running" | "error" | "pending-install" => (1000, 760),
+            "running" | "closed" | "ended-with-error" | "ended-overview" | "could-not-open"
+            | "vm-running" | "long-name" | "error" | "pending-install" => (1000, 760),
             _ => (1280, 800),
         }
     }

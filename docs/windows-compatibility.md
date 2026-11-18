@@ -184,6 +184,29 @@ the restart takes the keeper back, the program's windows return to their tabs,
 and its service lists the program open again and can quit it; a program that
 ended while no desktop was there is reported with its exit status.
 
+A Wine program shows on the Wayland socket the keeper binds. A Proton program
+shows on an X display of the keeper's own: UMU-Proton carries no Wayland driver,
+so it opens its window through Xwayland, and the keeper gives its sandbox that
+display's socket and authority file. Both stay open across an in-place restart;
+each is shut down with the desktop only when the login ends.
+
+A program shown from the Windows appliance does not stay open that way. Its RAIL
+or SPICE presentation is a process of the session's own, so it ends with the
+desktop that started it, and the desktop that follows neither shows it again nor
+lists it open. Each program shown that way also ends when the appliance itself
+restarts: the manager lists it closed once Windows is back.
+
+A saved tab reopens its program after a reboot or a logout too, not only after
+an in-place restart. The session keeps the window class each program showed
+under, with the entry it belongs to and the workspace whose tab it stood in,
+beside the capsules (`tilo/windows-compat/window-identities.json`). At the next
+start it asks the compatibility service, as the session itself rather than
+through a manager's handoff, to open that entry in the tab's workspace; the
+service allows it only for an entry it can open now and a workspace this session
+serves, and plans it exactly as a manager's launch. A program removed meanwhile
+leaves its tab saying the app is not installed, and a window class seen only in
+another workspace opens nothing there.
+
 The entries a manager may address are read from capsule state and the
 appliance's published applications when it connects; it keeps that set until
 it ends. A VM installer transaction belongs to the workspace that imported its

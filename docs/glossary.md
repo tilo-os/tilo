@@ -12,10 +12,12 @@ used in code.
   certified. Per workspace a device either holds the keys (reads and runs work) or only stores
   ciphertext. A device setting says which work it takes, from whom, and when (charging, energy
   mode, free resources).
-- **Server**: a device that serves workspaces for people other than its owner. It stores their
-  ciphertext, and holds a workspace's keys only where it was made a member. A server a workspace's
-  owner names to keep that workspace is made a member of it, and holds its keys. tilo.coffee runs
-  one.
+- **Server**: an always-on device with a large appetite. It holds its owner's workspaces and,
+  where its owner offers it, other people's. Per workspace it either stores ciphertext or holds
+  the keys and takes work, as the workspace's owners choose and its owner agrees. Holding a
+  workspace never makes it a member: it acts there for the workspace or for a member who
+  delegated work to it. tilo.sh's servers hold the keys and take work by default. A Raspberry Pi
+  at home and a data centre run the same OS.
 - **Agent**: a model-driven member. It does what members ask, in the workspace, like a person. A
   person adds it and picks the device it runs on. Claude Code connected over MCP is an agent.
 - **Agent session**: one context of one agent: a conversation with a Tilo agent, or one Claude

@@ -27,10 +27,11 @@ use wire_frame::{FrameError, Framing};
 use crate::programs::{EndsRead, Programs};
 use crate::service::published_vm_explanation;
 use crate::{
-    CapsuleStore, CompatibilityService, InstallOutcome, InstallationStatus, LaunchDisplays,
-    LaunchInput, LaunchResourceBroker, ManagedApplication, ManagedInstallation, PROTOCOL_VERSION,
-    ProgramKind, ProtocolError, ProtocolRequest, ProtocolResponse, RegisteredProgram, RouteKind,
-    RuntimeRegistry, SandboxExecutor, ServiceError, VmDelegate,
+    CapsuleStore, CompatibilityService, EntryDirectory, InstallOutcome, InstallationStatus,
+    LaunchDisplays, LaunchInput, LaunchResourceBroker, ManagedApplication, ManagedInstallation,
+    PROTOCOL_VERSION, ProgramKind, ProtocolError, ProtocolRequest, ProtocolResponse,
+    RegisteredProgram, Reopenings, RouteKind, RuntimeRegistry, SandboxExecutor, ServiceError,
+    VmDelegate,
 };
 
 use tilo_app_id::apps::WINDOWS as MANAGER_APP_ID;
@@ -433,6 +434,47 @@ where
         }
         Ok(receipt)
     }
+
+    /// Open `entry_id` again in `workspace_id`, for the session that kept the tab of
+    /// it. Checked as a manager's launch is: the entry must be one set up here now,
+    /// and the workspace one whose sandbox the session can grant the program.
+    fn reopen(
+        self: &Arc<Self>,
+        entry_id: &str,
+        workspace_id: &str,
+        authority: &dyn CapabilityAuthority,
+    ) -> Result<(), SessionError> {
+        if let Some(entry) = self.entries()?.into_iter().find(|entry| {
+            entry.entry_id == entry_id && entry.program.kind == ProgramKind::Application
+        }) {
+            let capabilities = authority
+                .capabilities_for(workspace_id, &entry.app_id)
+                .map_err(SessionError::Authority)?;
+            self.launch_entry(&entry, workspace_id, capabilities)?;
+            return Ok(());
+        }
+        if let Some(application) = self
+            .vm_inventory()
+            .applications
+            .into_iter()
+            .find(|application| application.entry_id == entry_id)
+        {
+            let capabilities = authority
+                .capabilities_for(workspace_id, &application.app_id)
+                .map_err(SessionError::Authority)?;
+            self.launch_published_vm(application, workspace_id, capabilities, None)?;
+            return Ok(());
+        }
+        Err(SessionError::UnknownEntry)
+    }
+
+    /// The entries a manager reading the service now may address, and the session
+    /// reads as it reopens a saved tab.
+    fn refresh_entries(&self, directory: &EntryDirectory) {
+        if let Ok(entries) = self.allowed_entries() {
+            directory.replace(entries);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -580,6 +622,8 @@ pub struct CompatSessionHandle {
     stop: Arc<AtomicBool>,
     listener: Option<JoinHandle<()>>,
     workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    /// What the session asks as itself: the worker answering it ends with the service.
+    reopenings: Reopenings,
 }
 
 impl Drop for CompatSessionHandle {
@@ -590,6 +634,7 @@ impl Drop for CompatSessionHandle {
             let _ = listener.join();
         }
         join_workers(&self.workers);
+        self.reopenings.stop();
         let _ = fs::remove_file(&self.path);
     }
 }
@@ -599,6 +644,8 @@ pub fn spawn_session_service<R, B, E, V>(
     managed: Arc<ManagedCompatibility<R, B, E, V>>,
     authority: Arc<dyn CapabilityAuthority>,
     authenticator: LauncherAuthenticator,
+    entries: EntryDirectory,
+    reopenings: Reopenings,
 ) -> Result<CompatSessionHandle, SessionError>
 where
     R: RuntimeRegistry + 'static,
@@ -614,12 +661,16 @@ where
         return Err(SessionError::AlreadyRunning);
     }
     let listener = tilo_files::native::private::bind_socket(&path)?;
+    // What the session reads as it reopens a saved tab, before it asks for one.
+    managed.refresh_entries(&entries);
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let workers = Arc::new(Mutex::new(Vec::new()));
     let thread_workers = Arc::clone(&workers);
     let active_workers = Arc::new(AtomicUsize::new(0));
     let thread_active_workers = Arc::clone(&active_workers);
+    let listener_managed = Arc::clone(&managed);
+    let listener_authority = Arc::clone(&authority);
     let listener_thread = std::thread::Builder::new()
         .name("tilo-win-accept".to_string())
         .spawn(move || {
@@ -644,8 +695,9 @@ where
                             drop(permit);
                             continue;
                         }
-                        let managed = Arc::clone(&managed);
-                        let authority = Arc::clone(&authority);
+                        let managed = Arc::clone(&listener_managed);
+                        let authority = Arc::clone(&listener_authority);
+                        let entries = entries.clone();
                         let authenticator = authenticator.clone();
                         let worker = std::thread::Builder::new()
                             .name("tilo-windows-compat-client".to_string())
@@ -657,6 +709,7 @@ where
                                         &managed,
                                         authority.as_ref(),
                                         &authenticator,
+                                        &entries,
                                     );
                                 }
                             });
@@ -671,11 +724,27 @@ where
                 }
             }
         })?;
+    // The session asking as itself: a saved tab's program, opened on the same route
+    // a manager's launch takes, and answered on the loop that asked.
+    {
+        let reopenings = reopenings.clone();
+        std::thread::Builder::new()
+            .name("tilo-win-saved".to_string())
+            .spawn(move || {
+                while let Some(ask) = reopenings.take() {
+                    let outcome = managed
+                        .reopen(&ask.entry_id, &ask.workspace_id, authority.as_ref())
+                        .map_err(|error| error.to_string());
+                    ask.answer.send(outcome);
+                }
+            })?;
+    }
     Ok(CompatSessionHandle {
         path,
         stop,
         listener: Some(listener_thread),
         workers,
+        reopenings,
     })
 }
 
@@ -741,6 +810,7 @@ fn serve_client<R, B, E, V>(
     managed: &Arc<ManagedCompatibility<R, B, E, V>>,
     authority: &dyn CapabilityAuthority,
     authenticator: &LauncherAuthenticator,
+    entries: &EntryDirectory,
 ) -> Result<(), SessionError>
 where
     R: RuntimeRegistry + 'static,
@@ -763,6 +833,7 @@ where
             }
             Err(error) => return Err(error),
         };
+        let changes_entries = changes_entries(&request);
         let response = handle_request(
             managed,
             authority,
@@ -773,8 +844,30 @@ where
             request,
             descriptor,
         );
+        if changes_entries && !matches!(response, ProtocolResponse::Error { .. }) {
+            managed.refresh_entries(entries);
+        }
         write_frame(&mut stream, &response, FRAMING)?;
     }
+}
+
+/// Whether `request` can change which entries the service can open: an installation,
+/// a removal of one, or the appliance publishing an application a manager may launch.
+fn changes_entries(request: &ProtocolRequest) -> bool {
+    matches!(
+        request,
+        ProtocolRequest::Install { .. }
+            | ProtocolRequest::InstallInVm { .. }
+            | ProtocolRequest::InstallInCapsule { .. }
+            | ProtocolRequest::PublishVmCandidate { .. }
+            | ProtocolRequest::RetryInstall { .. }
+            | ProtocolRequest::EscalateInstallToVm { .. }
+            | ProtocolRequest::RemoveLauncher { .. }
+            | ProtocolRequest::VendorUninstall { .. }
+            | ProtocolRequest::VendorUninstallVm { .. }
+            | ProtocolRequest::DeleteData { .. }
+            | ProtocolRequest::RefreshVmInstallation { .. }
+    )
 }
 
 fn validate_handoff(handoff: &SessionHandoff) -> Result<(), SessionError> {
@@ -1983,6 +2076,8 @@ mod tests {
                 Arc::clone(&managed),
                 Arc::new(IdleAuthority),
                 LauncherAuthenticator::new(exe, std::process::id(), Arc::new(IdleLaunchers)),
+                EntryDirectory::default(),
+                Reopenings::default(),
             )
             .unwrap()
         });

@@ -24,6 +24,7 @@ mod plan;
 mod programs;
 mod protocol;
 mod resources;
+mod saved;
 mod service;
 mod session;
 mod store;
@@ -52,6 +53,7 @@ pub use protocol::{
     ProtocolRequest, ProtocolResponse, ResolveRequest,
 };
 pub use resources::SystemResourceBroker;
+pub use saved::{EntryDirectory, ReopenAnswer, ReopenAsk, Reopenings};
 pub use service::{
     AccessSummary, CompatibilityService, ExplainStatus, InstallOutcome, InstallReceipt,
     LaunchInput, LaunchReceipt, Launched, MatchReason, RouteKind, ServiceError, VmAvailability,

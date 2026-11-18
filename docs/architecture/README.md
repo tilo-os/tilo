@@ -20,8 +20,11 @@ grants and history name members, never devices. In each workspace a device is
 either a *key holder* (holds the keys, reads, writes and can do work) or a
 *store* (keeps and forwards the encrypted data and can read none of it), and
 each device decides how much it offers: storage, sync, running actions,
-search, agents. A "host" is a device with a large appetite, not a different
-kind of node.
+search, agents. A server is a device with a large appetite, not a different
+kind of node: per workspace it stores ciphertext or holds the keys and takes
+work, and it acts for a member only under that member's delegation. A
+workspace held by one person's PC is complete; servers add reachability,
+copies and compute, never a requirement.
 
 **Devices sync over iroh, end to end encrypted.** Devices reach the other
 devices of a workspace directly or through any device that stores it. Content

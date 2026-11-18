@@ -52,6 +52,34 @@ person's device.
 One device can be a key holder in some workspaces and a store for others.
 The two roles add up: a workspace can have any number of each.
 
+**The role is chosen per workspace.** A member's own devices hold the keys of
+the workspaces they are in. A server's role in a workspace is chosen by the
+workspace's owners, and the server's owner agrees by offering it. A server of
+tilo.sh holds the keys and takes work by default, because most people have no
+device that is always on, and anyone may want more compute than their devices
+have; a person who only wants their data kept and reachable makes it a store.
+A person's own home server holds the keys of their workspaces by default, like
+their laptop.
+
+**Work in a workspace is the workspace's or a member's.** Workspace work is
+what any key holder may do for everyone: applying actions placed on it,
+answering search, a bot's schedule, an automation's steps within its grants.
+A member's work acts with that member's authority beyond the workspace: an
+agent using their mail or their signed-in Browser, an outbox entry that needs
+their password. A key holder takes workspace work. It takes a member's work
+only if it is that member's own device, or that member delegated the work to
+it. So a server in a shared workspace answers everyone's search, but sends
+mail only for the person who asked it to, and the other members' secrets
+never reach it.
+
+**Peer-to-peer comes first.** A workspace held by one person's PC is complete:
+they invite someone, the invited device reaches the PC over iroh, and the two
+work together with no server anywhere. Servers add reachability, copies and
+compute; nothing needs one. Placement and leases are kept in the workspace's
+own state, so a group of desktops, phones and servers that come and go shares
+work by the same rules, and a device that goes away hands its work to the next
+eligible one.
+
 **Each device decides how much it wants to do.** A server may want to store
 and sync every resource and file of every workspace it holds. A home server
 or workstation may also take its person's work: run actions on their behalf,
@@ -77,23 +105,29 @@ the lease is free. What the work got to is workspace state too: a bot's
 schedule keeps the fire time it answered, so whichever key holder holds the
 lease carries on from it and a time missed while none ran is caught up once.
 
-A host is not a different kind of node. "Workspace hosting" is a device with
-a large appetite, usually always on. Anyone can run it, with the same
-software and the same protocol as every other device.
+A server is not a different kind of node. It is a device with a large
+appetite, usually always on, with the same software and the same protocol as
+every other device. One server OS serves a Raspberry Pi at home and a data
+centre holding thousands of people's workspaces; they differ only in what they
+offer (storage, compute, machines) and, where a server holds several people's
+workspaces, in keeping each workspace's work in its own sandbox.
 
 **The hosts that hold a workspace.** A workspace lives on the devices that
 hold it. Its governor (the host whose root owns it) holds it first; its
 governance names every other host holding it beside the governor, each by
 an address that host signed. Being named there is what lets a host in
 everywhere the workspace is held: its device holds the workspace, and its
-person may reach the hosts that do. Another host of the governor's own person
-is also admitted as one of the owner's devices; a host of another person, a
-hosted server such as tilo.sh, is named and nothing more, so the workspace's
-members and roles stay as they were. Such a host writes one thing into the
-workspace: the redemption of an invitation it answers. Every receiver checks
-that its device was among the workspace's signed holders where it wrote the
-redemption, and checks the invitation itself; anything else it writes is
-refused. Adding people otherwise and changing roles stays with the owner's
+person may reach the hosts that do. Another server of the governor's own person
+is also admitted as one of the owner's devices. A server of another person,
+such as tilo.sh, never becomes a member, so the workspace's members and roles
+stay as they were; it holds the workspace as a store or as a key holder, as
+chosen above. Of its own accord it writes one thing into the workspace: the
+redemption of an invitation it answers. Every receiver checks that its device
+was among the workspace's signed holders where it wrote the redemption, and
+checks the invitation itself. As a key holder it also writes the work it
+takes: workspace work placed on it, and a member's work under that member's
+delegation, each signed so that history names the actor it acted for and the
+server it ran on. Anything else it writes is refused. Adding people otherwise and changing roles stays with the owner's
 and administrators' devices. Whom a workspace is held by is the
 owner's decision and the keeper's: a device of the governor's person, or of
 the person the workspace is kept for, asks its governor to have another host
