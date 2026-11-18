@@ -675,3 +675,7 @@ mod turn_pages;
 /// The same server, person and assistant, signing a mail account in from its address alone.
 #[path = "hosted_mail_connect.rs"]
 mod mail_connect;
+
+/// A person's first message, sent the moment their app says it is ready.
+#[path = "hosted_first_message.rs"]
+mod first_message;
