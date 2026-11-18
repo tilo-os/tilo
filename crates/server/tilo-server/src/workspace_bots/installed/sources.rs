@@ -178,13 +178,15 @@ fn entries(at: &str, text: &str, now_ms: i64) -> Result<Vec<Found>, String> {
 }
 
 impl Outside {
-    /// The client every look goes out through, made at the first one.
+    /// The client every look goes out through, made at the first one. It dials
+    /// every address itself: a proxy this server's environment names would
+    /// resolve a name behind the lookup the fetch judges.
     fn client(&mut self) -> Result<tilo_net::Client, (String, Failure)> {
         if let Some(client) = &self.client {
             return Ok(client.clone());
         }
-        let client =
-            tilo_web_search::client().map_err(|error| (error.to_string(), Failure::Passing))?;
+        let client = tilo_web_search::direct_client()
+            .map_err(|error| (error.to_string(), Failure::Passing))?;
         self.client = Some(client.clone());
         Ok(client)
     }
@@ -505,5 +507,85 @@ impl BotRunner {
             }
         }
         firings
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use test_http::{Reply, Responder};
+
+    use super::*;
+
+    /// A look at a source goes to the source itself: a proxy this server's
+    /// environment names is sent nothing of it. Such a proxy would resolve a
+    /// name itself, behind the lookup the fetch's client judges, and so reach
+    /// what that lookup refuses.
+    #[tokio::test]
+    async fn a_look_at_a_source_sends_nothing_to_a_proxy_the_environment_names() {
+        if !tilo_test_env::in_own_process_here(
+            module_path!(),
+            "a_look_at_a_source_sends_nothing_to_a_proxy_the_environment_names",
+        ) {
+            return;
+        }
+        let proxy = Responder::handle(|_| {
+            Some(
+                Reply::status(200)
+                    .header("Content-Type", "text/plain")
+                    .body("the proxy's answer"),
+            )
+        });
+        let source = Responder::handle(|_| {
+            Some(
+                Reply::status(200)
+                    .header("Content-Type", "text/plain")
+                    .body("the source's own words"),
+            )
+        });
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        for name in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            environment.set(name, proxy.url());
+        }
+        // Nothing exempts an address from that proxy, and nothing has a name of it ignored.
+        for name in ["NO_PROXY", "no_proxy", "REQUEST_METHOD"] {
+            environment.remove(name);
+        }
+
+        let mut outside = Outside {
+            client: None,
+            fixtures: true,
+        };
+        let read = outside
+            .look(
+                source_change::WEB_PAGE,
+                &format!("{}/page", source.url()),
+                0,
+            )
+            .await;
+
+        let sent = proxy.drain_requests();
+        assert!(
+            sent.is_empty(),
+            "the proxy the environment names was sent {} request(s) of a look",
+            sent.len()
+        );
+        match read {
+            Ok(Read::Text { text, .. }) => {
+                assert!(text.contains("the source's own words"), "{text}");
+            }
+            Ok(Read::Entries(_)) => panic!("a page was read as a feed"),
+            Err((why, _)) => panic!("the look failed: {why}"),
+        }
+        assert!(
+            !source.drain_requests().is_empty(),
+            "the source itself was asked"
+        );
     }
 }

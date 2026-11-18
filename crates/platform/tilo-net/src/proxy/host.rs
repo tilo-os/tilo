@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::future::Future;
 use std::hash::Hash;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -206,68 +206,9 @@ const METHODS: &[&str] = &[
     "SEARCH",
 ];
 
-/// Whether `address` is on the public internet: not loopback, private
-/// (RFC 1918, unique-local), link-local, CGNAT, multicast, unspecified,
-/// documentation or otherwise reserved, also when an IPv6 address embeds
-/// one of those IPv4 addresses (mapped, NAT64, 6to4).
-#[must_use]
-pub fn is_public(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(address) => public_v4(address),
-        IpAddr::V6(address) => public_v6(address),
-    }
-}
-
-fn public_v4(address: Ipv4Addr) -> bool {
-    let [a, b, c, _] = address.octets();
-    let reserved = a == 0
-        || a == 10
-        || a == 127
-        || (a == 100 && (64..128).contains(&b))
-        || (a == 169 && b == 254)
-        || (a == 172 && (16..32).contains(&b))
-        || (a == 192 && b == 168)
-        || (a == 192 && b == 0 && (c == 0 || c == 2))
-        || (a == 198 && (b == 18 || b == 19))
-        || (a == 198 && b == 51 && c == 100)
-        || (a == 203 && b == 0 && c == 113)
-        || a >= 224;
-    !reserved
-}
-
-fn public_v6(address: Ipv6Addr) -> bool {
-    if let Some(v4) = address.to_ipv4_mapped() {
-        return public_v4(v4);
-    }
-    let [s0, s1, s2, s3, s4, s5, s6, s7] = address.segments();
-    let embedded = |high: u16, low: u16| {
-        let [a, b] = high.to_be_bytes();
-        let [c, d] = low.to_be_bytes();
-        Ipv4Addr::new(a, b, c, d)
-    };
-    // NAT64 (64:ff9b::/96, 64:ff9b:1::/48) reaches the IPv4 address it ends in.
-    if s0 == 0x64 && s1 == 0xff9b {
-        return public_v4(embedded(s6, s7));
-    }
-    // 6to4 (2002::/16) reaches the IPv4 address after its prefix.
-    if s0 == 0x2002 {
-        return public_v4(embedded(s1, s2));
-    }
-    let reserved =
-        // ::, ::1 and the deprecated IPv4-compatible addresses.
-        (s0 == 0 && s1 == 0 && s2 == 0 && s3 == 0 && s4 == 0 && s5 == 0)
-        // Discard-only.
-        || (s0 == 0x0100 && s1 == 0 && s2 == 0 && s3 == 0)
-        // Teredo, which embeds an obscured IPv4 address, and documentation.
-        || (s0 == 0x2001 && (s1 == 0 || s1 == 0x0db8))
-        // Unique-local, link-local, site-local and multicast.
-        || (s0 & 0xfe00) == 0xfc00
-        || (s0 & 0xffc0) == 0xfe80
-        || (s0 & 0xffc0) == 0xfec0
-        || (s0 & 0xff00) == 0xff00;
-    // Only global unicast (2000::/3) is routed on the internet.
-    !reserved && (s0 & 0xe000) == 0x2000
-}
+/// Whether `address` is on the public internet: the one judge every caller
+/// asks, [`crate::address::is_public`].
+pub use crate::address::is_public;
 
 #[derive(Debug)]
 struct BlockedAddress {
@@ -1570,6 +1511,8 @@ mod tests {
                 "198.18.0.1",
                 "224.0.0.1",
                 "255.255.255.255",
+                // The one address Azure answers its own machines on.
+                "168.63.129.16",
                 "::",
                 "::1",
                 "::ffff:127.0.0.1",
@@ -1582,6 +1525,11 @@ mod tests {
                 "ff02::1",
                 "2001:db8::1",
                 "2001::1",
+                // Blocks that carry or stand for an IPv4 address in another way:
+                // not public, whatever address is inside.
+                "2002:101:101::",
+                "64:ff9b:1::101:101",
+                "2001:1::1",
             ] {
                 assert!(
                     !is_public(address.parse().unwrap()),

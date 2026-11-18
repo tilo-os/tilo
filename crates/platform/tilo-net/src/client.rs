@@ -43,6 +43,8 @@ pub(crate) struct Config {
     pub(crate) tls: Option<rustls::ClientConfig>,
     #[cfg(not(target_family = "wasm"))]
     pub(crate) lookup: Option<Looking>,
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) direct: bool,
 }
 
 /// Resolves a name to its addresses: what a [`Client`] built with
@@ -272,6 +274,16 @@ impl ClientBuilder {
     #[cfg(not(target_family = "wasm"))]
     pub fn lookup(mut self, lookup: Lookup) -> Self {
         self.config.lookup = Some(Looking(lookup));
+        self
+    }
+
+    /// Dial every address itself: take no proxy from the environment. A proxy
+    /// resolves the names sent through it by a lookup of its own, behind the
+    /// one [`Self::lookup`] judges. A caller no sandbox stands around, which
+    /// must reach only what its own lookup answered, dials directly.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn direct(mut self) -> Self {
+        self.config.direct = true;
         self
     }
 

@@ -467,3 +467,96 @@ async fn extra_trust_takes_a_ca_or_an_exact_self_signed_certificate_and_nothing_
     assert!(fetched(&plain, self_signed).await.is_err());
     assert!(fetched(&plain, chained).await.is_err());
 }
+
+/// A client that dials directly sends nothing to a proxy its environment
+/// names, by any of the names one goes by: its request goes where its own
+/// lookup answered. A client built without `direct()` sends the same request
+/// to that proxy and never asks its lookup, so whoever judges addresses in
+/// the lookup has to dial directly.
+#[tokio::test]
+async fn a_direct_client_sends_nothing_to_a_proxy_its_environment_names() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    if !tilo_test_env::in_own_process_here(
+        module_path!(),
+        "a_direct_client_sends_nothing_to_a_proxy_its_environment_names",
+    ) {
+        return;
+    }
+    let proxy = Responder::handle(|_| Some(Reply::status(200).body("the proxy's answer")));
+    let page = Responder::handle(|_| Some(Reply::status(200).body("the page")));
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    for name in [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        environment.set(name, proxy.url());
+    }
+    // Nothing exempts an address from that proxy, and nothing has a name of it ignored.
+    for name in ["NO_PROXY", "no_proxy", "REQUEST_METHOD"] {
+        environment.remove(name);
+    }
+    let asked = Arc::new(AtomicUsize::new(0));
+    let looking = |asked: &Arc<AtomicUsize>| -> tilo_net::Lookup {
+        let asked = Arc::clone(asked);
+        Arc::new(
+            move |_name: String| -> std::pin::Pin<
+                Box<dyn Future<Output = std::io::Result<Vec<std::net::IpAddr>>> + Send>,
+            > {
+                asked.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(vec![std::net::IpAddr::from([127, 0, 0, 1])]) })
+            },
+        )
+    };
+    // A name no resolver knows: only the client's own lookup says where it is.
+    let address = format!(
+        "http://a-name-only-the-lookup-knows.invalid:{}/page",
+        page.port()
+    );
+
+    let through = Client::builder().lookup(looking(&asked)).build().unwrap();
+    let answer = through
+        .get(address.as_str())
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(
+        answer, "the proxy's answer",
+        "without `direct()` the environment's proxy is taken: the test sees what it tests"
+    );
+    assert_eq!(proxy.drain_requests().len(), 1);
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        0,
+        "a proxy resolves the name itself: the client's lookup is never asked"
+    );
+    assert!(page.drain_requests().is_empty());
+
+    let direct = Client::builder()
+        .direct()
+        .lookup(looking(&asked))
+        .build()
+        .unwrap();
+    let answer = direct.get(address.as_str()).send().await;
+    let sent = proxy.drain_requests();
+    assert!(
+        sent.is_empty(),
+        "a direct client sent the proxy its environment names {} request(s)",
+        sent.len()
+    );
+    assert_eq!(answer.unwrap().text().await.unwrap(), "the page");
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "the address dialled is the one the client's own lookup answered"
+    );
+    assert_eq!(page.drain_requests().len(), 1);
+}

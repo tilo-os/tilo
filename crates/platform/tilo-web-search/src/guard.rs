@@ -7,7 +7,7 @@
 //! says, [`check_address`] what a name resolved to.
 
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 
 use url::{Host, Url};
 
@@ -81,68 +81,16 @@ pub fn check_url(url: &Url) -> Result<(), Refusal> {
 /// # Errors
 ///
 /// [`Refusal::Local`] for loopback, private, link-local, shared, reserved,
-/// documentation, multicast and unspecified addresses, IPv4 ones embedded in
-/// IPv6 included.
+/// documentation, multicast and unspecified addresses, the address a cloud
+/// answers its own machines on, and every IPv6 address that carries or stands
+/// for an IPv4 one that is not judged as itself.
 pub fn check_address(ip: IpAddr) -> Result<(), Refusal> {
-    let public = match ip {
-        IpAddr::V4(v4) => public_v4(v4),
-        IpAddr::V6(v6) => public_v6(v6),
-    };
-    if public {
+    // tilo-net's one judge, which the fetch proxy asks too: no list is kept here.
+    if tilo_net::address::is_public(ip) {
         Ok(())
     } else {
         Err(Refusal::Local(ip.to_string()))
     }
-}
-
-fn public_v4(ip: Ipv4Addr) -> bool {
-    let [a, b, c, _] = ip.octets();
-    !(ip.is_unspecified()
-        || ip.is_loopback()
-        || ip.is_private()
-        || ip.is_link_local()
-        || ip.is_broadcast()
-        || ip.is_documentation()
-        || ip.is_multicast()
-        || a == 0
-        // Shared address space (carrier-grade NAT), 100.64.0.0/10.
-        || (a == 100 && (64..128).contains(&b))
-        // IETF protocol assignments, 192.0.0.0/24.
-        || (a == 192 && b == 0 && c == 0)
-        // Benchmarking, 198.18.0.0/15.
-        || (a == 198 && (b == 18 || b == 19))
-        // Reserved, 240.0.0.0/4.
-        || a >= 240)
-}
-
-fn public_v6(ip: Ipv6Addr) -> bool {
-    if let Some(v4) = ip.to_ipv4_mapped() {
-        return public_v4(v4);
-    }
-    let segments = ip.segments();
-    let [first, second, ..] = segments;
-    // NAT64 (64:ff9b::/96) carries an IPv4 address in its last 32 bits.
-    if first == 0x0064
-        && second == 0xff9b
-        && segments
-            .get(2..6)
-            .is_some_and(|s| s.iter().all(|&x| x == 0))
-    {
-        let [.., a, b, c, d] = ip.octets();
-        return public_v4(Ipv4Addr::new(a, b, c, d));
-    }
-    !(ip.is_unspecified()
-        || ip.is_loopback()
-        || ip.is_multicast()
-        // Unique local, fc00::/7.
-        || (first & 0xfe00) == 0xfc00
-        // Link-local, fe80::/10, and the old site-local, fec0::/10.
-        || (first & 0xffc0) == 0xfe80
-        || (first & 0xffc0) == 0xfec0
-        // Documentation, 2001:db8::/32.
-        || (first == 0x2001 && second == 0x0db8)
-        // The deprecated IPv4-compatible ::/96.
-        || segments.get(..6).is_some_and(|s| s.iter().all(|&x| x == 0)))
 }
 
 /// The system's resolver, as the lookup a client dials by.
@@ -238,5 +186,72 @@ mod tests {
             check("https://user:pw@example.org/"),
             Err(Refusal::Credentials)
         );
+    }
+
+    /// Every form of an address of this machine or its network is refused, in IPv6 as in
+    /// IPv4: loopback, link-local, unique local, the unspecified address, an IPv4 address
+    /// written inside an IPv6 one in each way one can be, and the addresses a cloud answers
+    /// its own machines on. What is let through is named, all of it at once.
+    #[test]
+    fn every_form_of_an_own_address_is_refused_in_ipv6_too() {
+        let own = [
+            // The unspecified address and loopback.
+            "http://[::]/",
+            "http://[::1]/",
+            "http://0.0.0.0/",
+            // Link-local, unique local and the old site-local.
+            "http://[fe80::1]/",
+            "http://[febf::1]/",
+            "http://[fc00::1]/",
+            "http://[fdff:ffff::1]/",
+            "http://[fec0::1]/",
+            // What a cloud answers its own machines on.
+            "http://169.254.169.254/latest/meta-data/",
+            "http://169.254.170.2/",
+            "http://[fd00:ec2::254]/",
+            "http://[fe80::a9fe:a9fe]/",
+            "http://100.100.100.200/",
+            "http://168.63.129.16/",
+            // An IPv4 address written inside an IPv6 one: mapped, compatible, translated
+            // (both prefixes), 6to4 and Teredo.
+            "http://[::ffff:127.0.0.1]/",
+            "http://[::ffff:169.254.169.254]/",
+            "http://[::ffff:10.0.0.7]/",
+            "http://[::127.0.0.1]/",
+            "http://[::10.0.0.7]/",
+            "http://[64:ff9b::7f00:1]/",
+            "http://[64:ff9b::a9fe:a9fe]/",
+            "http://[64:ff9b:1::7f00:1]/",
+            "http://[64:ff9b:1::a9fe:a9fe]/",
+            "http://[2002:7f00:1::]/",
+            "http://[2002:a9fe:a9fe::1]/",
+            "http://[2002:a00:7::1]/",
+            "http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/",
+            "http://[2001::1]/",
+            // Where no page is: discard-only, documentation, multicast.
+            "http://[100::1]/",
+            "http://[2001:db8::1]/",
+            "http://[ff02::1]/",
+        ];
+        let let_through: Vec<&str> = own
+            .into_iter()
+            .filter(|address| check(address).is_ok())
+            .collect();
+        assert!(
+            let_through.is_empty(),
+            "addresses of this machine or its network that are let through: {let_through:#?}"
+        );
+        // The public web still passes in both families, also where an IPv6 address
+        // translates a public IPv4 one.
+        for public in [
+            "https://[2606:4700::1111]/",
+            "https://[2a00:1450:4001:81b::200e]/",
+            "https://[2001:4860:4860::8888]/",
+            "https://[64:ff9b::5db8:d822]/",
+            "https://93.184.216.34/",
+            "https://168.63.129.17/",
+        ] {
+            assert_eq!(check(public), Ok(()), "{public}");
+        }
     }
 }
