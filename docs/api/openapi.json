@@ -377,6 +377,67 @@
         }
       }
     },
+    "/v1/workspaces/{workspace}/name": {
+      "put": {
+        "operationId": "renameWorkspace",
+        "summary": "Name the workspace, for every list and device of it; its owners and moderators may",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Name the workspace, for every list and device of it; its owners and moderators may",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Workspace"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceName"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspaces/{workspace}": {
       "delete": {
         "operationId": "deleteWorkspace",
@@ -1963,6 +2024,136 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/NewName"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/members/{person}/role": {
+      "put": {
+        "operationId": "setMemberRole",
+        "summary": "Move a member, by their user public key, to another role, as far as yours allows",
+        "tags": [
+          "Members"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "person",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Move a member, by their user public key, to another role, as far as yours allows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Members"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberRole"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/members/{person}": {
+      "delete": {
+        "operationId": "removeMember",
+        "summary": "Remove a member, by their user public key, and every device of theirs",
+        "tags": [
+          "Members"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "person",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Remove a member, by their user public key, and every device of theirs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Members"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
               }
             }
           }
@@ -4061,6 +4252,32 @@
           "name"
         ],
         "description": "How the key's person goes by in the workspace from now on."
+      },
+      "WorkspaceName": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "1 to 80 characters."
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": "What the workspace is called from now on, by every list and device of it."
+      },
+      "MemberRole": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "description": "`viewer`, `commenter`, `editor`, `moderator`, `administrator` or\n`owner`; never more than yours to give."
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "description": "Where a member of the workspace is held from now on."
       },
       "Program": {
         "type": "object",
