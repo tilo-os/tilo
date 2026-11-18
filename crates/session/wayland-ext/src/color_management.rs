@@ -1083,6 +1083,8 @@ fn tell_ready(manager: &ColorManagerState, obj: WpImageDescriptionV1, identity_l
             return;
         }
     }
+    #[cfg(not(feature = "test-support"))]
+    let _ = manager;
     let () = obj.ready(identity_lo);
 }
 
