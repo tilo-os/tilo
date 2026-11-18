@@ -14,12 +14,18 @@ on:
     paths:
       - "os/Containerfile.ci-fast"
       - "os/Containerfile.ci-control"
+      - "os/scripts/clean-dnf-layer-state.sh"
+      - "os/scripts/finalize-rpmdb.sh"
+      - "os/scripts/pin-directory-times.py"
       - ".forgejo/workflows/build-ci-fast-images.yml"
   push:
     branches: [main]
     paths:
       - "os/Containerfile.ci-fast"
       - "os/Containerfile.ci-control"
+      - "os/scripts/clean-dnf-layer-state.sh"
+      - "os/scripts/finalize-rpmdb.sh"
+      - "os/scripts/pin-directory-times.py"
       - ".forgejo/workflows/build-ci-fast-images.yml"
   workflow_dispatch:
 
@@ -45,6 +51,9 @@ jobs:
             os/Containerfile.ci-fast
             os/Containerfile.ci-control
             os/dev/assert-native-arch.sh
+            os/scripts/clean-dnf-layer-state.sh
+            os/scripts/finalize-rpmdb.sh
+            os/scripts/pin-directory-times.py
             .forgejo/actions/setup-buildx
           sparse-checkout-cone-mode: false
 
@@ -76,9 +85,20 @@ jobs:
           fast="registry.tilo.so/tilo/ci-fast:$tag"
           control="registry.tilo.so/tilo/ci-control:$tag"
           printf 'CI_FAST_REF=%s\nCI_CONTROL_REF=%s\n' "$fast" "$control" >> "$GITHUB_ENV"
-          # Neither recipe copies from its context; never send the checkout.
+          # The fast recipe copies the scripts that clean up after and pin the
+          # package transactions; the control recipe copies none. Send those and
+          # nothing else of the checkout.
           context=$(mktemp -d)
           trap 'rm -rf -- "$context"' EXIT
+          mkdir -p "$context/os/scripts"
+          cp os/scripts/clean-dnf-layer-state.sh os/scripts/finalize-rpmdb.sh \
+             os/scripts/pin-directory-times.py "$context/os/scripts/"
+          # The build's date: rpm takes the install times it records from
+          # SOURCE_DATE_EPOCH (and checks the packages' signatures against the real
+          # clock, so a mirror's newest update installs), so the commit's time dates
+          # what the build writes, as in the t check (tools/ci/publish/source-date.sh).
+          epoch=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH="$epoch"
           cache=()
           # The runner's compiler cache (infra docs/ci-caching.md).
           if [[ -n ${ACTIONS_CACHE_URL:-} && -n ${ACTIONS_RUNTIME_TOKEN:-} ]]; then
@@ -87,6 +107,7 @@ jobs:
           fi
           docker buildx build --pull --load --progress=plain --provenance=false \
             --platform linux/amd64 "${cache[@]}" \
+            --build-arg "TILO_BUILD_EPOCH=$epoch" \
             --cache-from type=gha,scope=ci-fast-x86_64 \
             --cache-to type=gha,scope=ci-fast-x86_64,mode=max,ignore-error=true \
             --file os/Containerfile.ci-fast --tag "$fast" "$context"
