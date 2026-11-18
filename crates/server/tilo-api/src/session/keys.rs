@@ -18,8 +18,7 @@ use crate::server::Connection;
 use collab_types::workspace_grant::WorkspaceGrant;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
-    RemoteActionTarget,
+    ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 
 /// Listing the workspace's grants.

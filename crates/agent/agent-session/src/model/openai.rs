@@ -18,7 +18,7 @@ use tilo_model_gateway::host_backend::{CompletionClient, ProviderProtocol};
 use tilo_model_gateway::openai::Target as ApiTarget;
 
 use super::turns::{Attempt, PlanTurns, record_usage};
-use super::{ApiKey, GatewayTurns, MakeTurns};
+use super::{ApiKey, GatewayTurns, MakeTurns, ScriptedTurns};
 
 /// The model Tilo Cloud meters when `cloud:` names no other.
 pub const CLOUD_MODEL: &str = "gpt-4.1-mini-2025-04-14";
@@ -227,7 +227,8 @@ impl PlanTurns for EndpointTurns {
 pub enum ModelChoice {
     /// The provider selected in Settings, through `tilo-model-gateway`.
     Settings,
-    /// No model: a host whose agents are given no task to work on (a test's).
+    /// A scripted model: it plays the tool calls a task writes out and calls
+    /// no network ([`ScriptedTurns`]).
     Scripted,
     /// A model behind an OpenAI-compatible endpoint at a base URL.
     OpenAi {
@@ -317,12 +318,12 @@ impl ModelChoice {
     }
 
     /// What carries a conversation's turns on this model, holding its credential: the gateway
-    /// for the Settings provider, the trusted host's own client for an endpoint it was given.
-    /// `None` for a choice no model answers (scripted, or Settings with no provider chosen).
+    /// for the Settings provider, the trusted host's own client for an endpoint it was given,
+    /// the script for [`Self::Scripted`]. `None` for Settings with no provider chosen.
     #[must_use]
     pub fn turns(&self) -> Option<Box<dyn PlanTurns>> {
         match self {
-            Self::Scripted => None,
+            Self::Scripted => Some(Box::new(ScriptedTurns)),
             Self::OpenAi { .. } | Self::Anthropic { .. } => self
                 .endpoint_turns()
                 .map(|turns| Box::new(turns) as Box<dyn PlanTurns>),
@@ -401,7 +402,7 @@ impl ModelChoice {
     pub fn describe(&self) -> String {
         match self {
             Self::Settings => "the Settings provider".into(),
-            Self::Scripted => "no model".into(),
+            Self::Scripted => "a scripted model".into(),
             Self::OpenAi {
                 base_url,
                 model,

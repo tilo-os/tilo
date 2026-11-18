@@ -8,7 +8,9 @@
 //! (an app asking to be remembered until revoked gets no more) and holds
 //! only in the workspace it was given in: after a restart or from
 //! another workspace the person is asked again. Each grant is published
-//! so the person sees what is remembered and may forget it.
+//! so the person sees what is remembered and may forget it, and it stands
+//! only while the app may still use what it shares: taking back the app's
+//! screen or input answer forgets it too ([`crate::Portal::end_captures`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -93,6 +95,14 @@ impl Grants {
         let mut grants = self.grants.lock_recover();
         let before = grants.len();
         grants.retain(|grant| grant.id != id);
+        before != grants.len()
+    }
+
+    /// Forget every grant `ended` says no longer stands; whether any was.
+    pub fn forget_ended(&self, ended: impl Fn(&Grant) -> bool) -> bool {
+        let mut grants = self.grants.lock_recover();
+        let before = grants.len();
+        grants.retain(|grant| !ended(grant));
         before != grants.len()
     }
 

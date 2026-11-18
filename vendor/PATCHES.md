@@ -968,15 +968,3 @@ the compositor gives it, then a redraw is asked for as for a toplevel.
 gives, so a panel that fits its content resizes in place. A
 compositor without the layer shell reports the window as uncreatable instead
 of opening a toplevel somewhere else.
-
-## getrandom's custom backend beside the `wasm_js` feature
-
-A WebAssembly module for a host that is not a page names getrandom's `custom`
-backend (`--cfg getrandom_backend="custom"`), which `src/backends.rs` selects
-before the `wasm_js` feature's. Cargo enables `wasm_js` for wasm targets in
-this repository whichever backend the cfg names, and 0.4.3's error text still
-names the `wasm_js` backend's own constant under a cfg that asks about the
-feature alone, so the module failed to compile. `vendor/getrandom` adds
-`not(getrandom_backend = "custom")` to that arm; a page's build, where the
-feature's backend is the one selected, compiles it as before. See
-`vendor/getrandom/TILO-PATCH.md`. Remove it once upstream releases the fix.

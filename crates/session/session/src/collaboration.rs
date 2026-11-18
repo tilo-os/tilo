@@ -133,56 +133,62 @@ impl Session {
     fn say_agents_here(&self, sync: &crate::sync::Client) {
         use ui::step::lines;
         let present = self.shared.agent_sessions.here();
-        let runs: Vec<(String, String, ShellPresence)> = self.shared.handle.read(|tree| {
-            present
-                .into_iter()
-                .map(|present| {
-                    let (line, focus) = match &present.doing {
-                        // The window of the app it acts in, and what that window is called: the
-                        // note, the sheet, the meeting. What it does is said on that record, as
-                        // the window's own activity cards say it.
-                        Some(doing) => {
-                            let window = doing.app.as_deref().and_then(|app| {
-                                app_window(tree, &self.shared.notes, &present.workspace, app)
-                            });
-                            let step = tilo_actions::Step::new(
-                                doing.step.unwrap_or(tilo_actions::StepKind::Work),
-                                window.as_ref().map(|(_, title)| title.as_str()),
-                            )
-                            .in_app(doing.app.as_deref());
-                            (Some(lines::step(&step)), window.map(|(record, _)| record))
-                        }
-                        // At work on a turn before its first step; idle, it says nothing, and its
-                        // face shows it is here and not at work.
-                        None => (
-                            present.working.then(|| {
-                                lines::step(&tilo_actions::Step::new(
-                                    tilo_actions::StepKind::Work,
-                                    None,
-                                ))
-                            }),
+        let sessions: Vec<(String, String, String, ShellPresence)> =
+            self.shared.handle.read(|tree| {
+                present
+                    .into_iter()
+                    .map(|present| {
+                        let (line, focus) = match &present.doing {
+                            // The window of the app it acts in, and what that window is called: the
+                            // note, the sheet, the meeting. What it does is said on that record, as
+                            // the window's own activity cards say it.
+                            Some(doing) => {
+                                let window = doing.app.as_deref().and_then(|app| {
+                                    app_window(tree, &self.shared.notes, &present.workspace, app)
+                                });
+                                let step = tilo_actions::Step::new(
+                                    doing.step.unwrap_or(tilo_actions::StepKind::Work),
+                                    window.as_ref().map(|(_, title)| title.as_str()),
+                                )
+                                .in_app(doing.app.as_deref());
+                                (Some(lines::step(&step)), window.map(|(record, _)| record))
+                            }
+                            // At work on a turn before its first step; idle, it says nothing, and its
+                            // face shows it is here and not at work.
+                            None => (
+                                present.working.then(|| {
+                                    lines::step(&tilo_actions::Step::new(
+                                        tilo_actions::StepKind::Work,
+                                        None,
+                                    ))
+                                }),
+                                None,
+                            ),
+                        };
+                        // The colour the agent wears wherever it shows: its member's, the same for each
+                        // of its sessions — the one rule and the one key every surface asks.
+                        let (r, g, b) = ui::presence::member_color(
+                            &ui::permissions::MemberId::agent(&present.agent),
+                        );
+                        let face = tilo_session_client::presence::view(
+                            0,
+                            ui::time::unix_now_ms(),
+                            &present.name,
+                            [r, g, b],
+                            line,
+                            focus.as_ref(),
                             None,
-                        ),
-                    };
-                    // The colour the agent wears wherever it shows: its member's, the same for each
-                    // of its sessions — the one rule and the one key every surface asks.
-                    let (r, g, b) = ui::presence::member_color(&ui::permissions::MemberId::agent(
-                        &present.agent,
-                    ));
-                    let face = tilo_session_client::presence::view(
-                        0,
-                        ui::time::unix_now_ms(),
-                        &present.name,
-                        [r, g, b],
-                        line,
-                        focus.as_ref(),
-                        None,
-                    );
-                    (present.workspace, present.session.0, face)
-                })
-                .collect()
-        });
-        sync.speak_for(&runs);
+                        );
+                        (
+                            present.workspace,
+                            present.session.0,
+                            present.agent.clone(),
+                            face,
+                        )
+                    })
+                    .collect()
+            });
+        sync.speak_for(&sessions);
     }
 }
 

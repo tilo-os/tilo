@@ -436,21 +436,24 @@ impl Presence {
         })
     }
 
-    /// Speak for `runs`, the agents this device executes, each as `(workspace, run, face)`: each
-    /// is here in its workspace as a member of its own, listed beside everyone else and said to
-    /// everyone there sealed as every presence is. A run said before and missing now leaves.
-    /// Whether who is here changed.
-    pub fn speak_for(&self, runs: &[(String, String, ShellPresence)]) -> bool {
+    /// Speak for `sessions`, the agents this device executes, each as
+    /// `(workspace, session, member, face)`: each is here in its workspace as a member of its own,
+    /// the workspace member `member` names, listed beside everyone else and said to everyone there
+    /// sealed as every presence is. A session said before and missing now leaves. Whether who is
+    /// here changed.
+    pub fn speak_for(&self, sessions: &[(String, String, String, ShellPresence)]) -> bool {
         let changed: Vec<String> = {
             let mut present = self.present.borrow_mut();
             present
                 .workspaces
                 .iter_mut()
                 .filter_map(|held| {
-                    let here: Vec<(String, ShellPresence)> = runs
+                    let here: Vec<(String, String, ShellPresence)> = sessions
                         .iter()
-                        .filter(|(workspace, _, _)| *workspace == held.id)
-                        .map(|(_, run, face)| (run.clone(), face.clone()))
+                        .filter(|(workspace, _, _, _)| *workspace == held.id)
+                        .map(|(_, session, member, face)| {
+                            (session.clone(), member.clone(), face.clone())
+                        })
                         .collect();
                     held.board.speak_for(&here).then(|| held.id.clone())
                 })

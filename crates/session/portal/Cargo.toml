@@ -73,6 +73,8 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 pipewire = ["dep:pipewire"]
 
 [dev-dependencies]
+# The portal names a manifest can declare, which the backend's table must use.
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 image = { workspace = true, features = ["png"] }
 tempfile.workspace = true
 # Serving the store as a filesystem, to read back what a chooser handed out.

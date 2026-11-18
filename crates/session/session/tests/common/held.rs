@@ -137,12 +137,12 @@ pub fn workspace_held_here(state: &Path, workspace: &str, cert: &DeviceCert, key
     }
 }
 
-/// Place `workspace` on the workspace service this device's state keeps under `state`, called
-/// `name`, as a workspace this device's person made there: the store the session's own service
-/// opens when it starts, holding a workspace this device's person is the owner of. What the
-/// session's asks of the workspace's governance — an invitation into it above all — are answered
-/// from.
-pub fn workspace_placed_on_own_service(
+/// Found `workspace` under `name` on the workspace service this device's state keeps under `state`,
+/// as a session founds a workspace the person makes here: the service holds it, this device's
+/// person is its owner, and this device's own copy of it is enrolled in the owner store the session
+/// opens. What the session asks of the workspace's governance — an invitation into it above all —
+/// is answered by that service from then on.
+pub fn workspace_founded_on_own_service(
     state: &Path,
     workspace: &str,
     name: &str,
@@ -150,6 +150,11 @@ pub fn workspace_placed_on_own_service(
     key: &SigningKey,
 ) {
     let root = state.join("tilo").join("workspace-service");
+    let workspace_id = WorkspaceId::parse(workspace).expect("a workspace id");
+    let owner = owner::open_file(
+        &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
+    )
+    .expect("an owner for this device's workspace");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -183,10 +188,26 @@ pub fn workspace_placed_on_own_service(
         )
         .await
         .expect("this device's own workspace service opens");
-        service
+        let invitation = service
             .place_own_workspace(workspace, name, cert)
             .await
             .expect("this device's service places the workspace");
+        let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
+            tilo_peer_state::join_transport::WorkspaceJoinClient::local(
+                service.join_service(),
+                cert.device_public_key,
+            ),
+            tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key.clone()),
+            workspace_id,
+            None,
+            invitation,
+            owner.clone(),
+        )
+        .await
+        .expect("this device's service admits it");
+        owner
+            .install(&enrollment, SystemTime::now())
+            .expect("the founding installs here");
         drop(service);
         endpoint.close().await;
     });

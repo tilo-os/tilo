@@ -352,7 +352,9 @@ name=${src#/dev/mapper/}
 # so in its uuid (CRYPT-LUKS2-<volume>-<name>; LUKS1 says CRYPT-LUKS1).
 uuid=""
 for dm in /sys/block/dm-*; do
-  [ "$(cat "$dm/dm/name" 2>/dev/null)" = "$name" ] && uuid=$(cat "$dm/dm/uuid" 2>/dev/null)
+  if [ "$(cat "$dm/dm/name" 2>/dev/null)" = "$name" ]; then
+    uuid=$(cat "$dm/dm/uuid" 2>/dev/null)
+  fi
 done
 case "$uuid" in
   CRYPT-LUKS2-*) ;;
@@ -389,7 +391,9 @@ refuse 'the store volume is LUKS2 and mounts' '
 set -eu
 uuid=""
 for dm in /sys/block/dm-*; do
-  [ "$(cat "$dm/dm/name" 2>/dev/null)" = tilo-store ] && uuid=$(cat "$dm/dm/uuid" 2>/dev/null)
+  if [ "$(cat "$dm/dm/name" 2>/dev/null)" = tilo-store ]; then
+    uuid=$(cat "$dm/dm/uuid" 2>/dev/null)
+  fi
 done
 case "$uuid" in
   CRYPT-LUKS2-*) ;;

@@ -327,29 +327,12 @@ impl App {
         traversal
     }
 
-    /// Called on event-loop teardown so a `kill` right after the last
-    /// keystroke still finds it on disk.
+    /// Save what the window holds as it goes, suspends or gives its place: a `kill` right after
+    /// the last keystroke still finds it on disk.
     #[cfg(feature = "native")]
     fn autosave_flush(&mut self) {
-        if let Some(set) = self.persistence.records.as_mut() {
-            if let Err(error) = set.flush(&mut self.state.doc) {
-                tracing::error!(%error, "record persistence failed");
-            }
-            if let (Some(saver), Some(workspace)) = (
-                self.persistence.autosave.as_mut(),
-                self.persistence.workspace_index.as_mut(),
-            ) {
-                let index = workspace.document_mut();
-                index.commit();
-                saver.request(index);
-                saver.flush();
-            }
-            return;
-        }
-        if let Some(saver) = self.persistence.autosave.as_mut() {
-            self.state.doc.commit();
-            saver.request(&self.state.doc);
-            saver.flush();
+        for error in self.checkpoint_before_close() {
+            tracing::error!(%error, "could not save the window's state");
         }
     }
 

@@ -215,6 +215,15 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
 
+    // The member it is, is the agent the workspace names it by, which its face and the work it
+    // narrates are both drawn as: never its agent session's own id.
+    assert_eq!(
+        view.member_id(),
+        Some(tilo_action_policy::MemberId::agent(
+            tilo_actions::remote::device_agent_id(&root.verifying_key().to_bytes(), "Claude Code")
+        )),
+    );
+
     // It was seen applying the action and done, in that order.
     assert_eq!(
         phases.first(),

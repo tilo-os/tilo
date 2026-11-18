@@ -29,8 +29,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use ui::a11y::Action as A11yAction;
 
 use crate::common::held::{
-    WORKSPACE, certified, hosted_session, this_computer, workspace_held_here,
-    workspace_placed_on_own_service,
+    WORKSPACE, certified, hosted_session, this_computer, workspace_founded_on_own_service,
 };
 use crate::common::{HEIGHT, WIDTH};
 
@@ -238,11 +237,10 @@ struct Hosted {
 fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
     let (identity, key, cert) = this_computer(home.env());
     let state = tempfile::tempdir().expect("a state directory");
-    // The workspace is this computer's own: its copy is held here, and the device's own workspace
-    // service keeps it too, as a workspace the person made there. The session asks that service
-    // for the invitations into it, as it does for every workspace it founds itself.
-    workspace_held_here(state.path(), WORKSPACE, &cert, &key);
-    workspace_placed_on_own_service(state.path(), WORKSPACE, "Shell", &cert, &key);
+    // The workspace is this computer's own: it is founded on the device's own workspace service,
+    // as the session founds every workspace the person makes here, and this device holds it as a
+    // member. The session asks that service for the invitations into it.
+    workspace_founded_on_own_service(state.path(), WORKSPACE, "Shell", &cert, &key);
     let mut session = hosted_session(state.path(), &cert.user_public_key);
     settle(&mut session);
 

@@ -1112,7 +1112,10 @@ impl Apps {
         });
         if let Err(error) = started {
             tracing::warn!(%error, %app, "a window an app asked for did not start");
-            self.release_tab(Some(tab));
+            // The tab keeps the place the launch held for it and says why the window did not come,
+            // with the button that asks for it again: a tab that vanished left the person with
+            // nothing to see and nothing to do.
+            self.could_not_open(Some(tab), app, &error.to_string());
         }
     }
 
@@ -1161,9 +1164,10 @@ impl Apps {
             return false;
         };
         let app = launch.app();
-        if !desktop.with_policy(|policy| policy.hold(app, anchor, (background, floated), reveal)) {
-            return false;
-        }
+        // The launch is planned before the shell is asked for its tab: the shell makes the tab on
+        // a pass of its own, and an ask from another thread has that pass take the plan
+        // ([`Self::start_planned`]) before this call queues it. A tab whose plan is not there yet
+        // goes, and no window comes.
         self.plan_window(WindowAsk {
             launch: launch.clone(),
             reveal: reveal.map(str::to_owned),
@@ -1171,6 +1175,10 @@ impl Apps {
             workspace: None,
             tool_context: None,
         });
+        if !desktop.with_policy(|policy| policy.hold(app, anchor, (background, floated), reveal)) {
+            self.give_up_planned(app);
+            return false;
+        }
         true
     }
 
@@ -1203,6 +1211,19 @@ impl Apps {
         };
         let app = launch.app();
         let elsewhere = workspace.is_workspace() && self.active_workspace().id != workspace.id;
+        let tool_context = self.state.borrow().tool_context.clone();
+        // The launch is planned before the shell is asked for its tab: the shell makes the tab on
+        // a pass of its own, and an open asked from another thread — the person's, which arrives
+        // on the session's control thread — has that pass take the plan ([`Self::start_planned`])
+        // before this call queues it. A tab whose plan is not there yet goes, and no window comes.
+        let ask = WindowAsk {
+            launch: launch.clone(),
+            reveal: reveal.map(str::to_owned),
+            new_window,
+            workspace: elsewhere.then(|| workspace.id.clone()),
+            tool_context,
+        };
+        self.plan_window(ask);
         let held = desktop.with_policy(|policy| {
             match new_window
                 .then(|| policy.anchor_for(app))
@@ -1214,17 +1235,17 @@ impl Apps {
             }
         });
         if !held {
+            self.give_up_planned(app);
             return Err(ApiError::Failed(format!("the shell took no open of {app}")));
         }
-        let tool_context = self.state.borrow().tool_context.clone();
-        self.plan_window(WindowAsk {
-            launch: launch.clone(),
-            reveal: reveal.map(str::to_owned),
-            new_window,
-            workspace: elsewhere.then(|| workspace.id.clone()),
-            tool_context,
-        });
         Ok(true)
+    }
+
+    /// Take back the plan `app`'s last launch queued, the shell having taken no open for it.
+    fn give_up_planned(&self, app: &str) {
+        if let Some(queued) = self.state.borrow_mut().planned.get_mut(app) {
+            queued.pop_back();
+        }
     }
 
     /// What the person asked for in `tab` did not happen, `why` says why: the tab keeps its place

@@ -73,8 +73,8 @@ async fn subscription_refusal(
     )
 }
 
-/// Where `peer`'s calls in `workspace_id` are held: by this server's workspace
-/// authority when it governs the workspace, else by the workspace it carries (a
+/// Where `peer`'s calls in `workspace_id` are held: by this server's own
+/// governance when it made the workspace, else by the workspace it carries (a
 /// person's own workspace, synced across their devices through this host).
 /// None unless they subscribed to it.
 async fn call_host(
@@ -85,19 +85,22 @@ async fn call_host(
     if !subscribed.contains(&workspace_id) {
         return None;
     }
-    let authority = session
+    let ws = session
         .workspaces
         .lock()
         .await
         .get(&workspace_id)
-        .cloned()?
-        .lock()
-        .await
-        .workspace_authority
-        .clone();
+        .cloned()?;
+    let (authority, governs_here) = {
+        let runtime = ws.lock().await;
+        (runtime.workspace_authority.clone(), runtime.governs_here)
+    };
+    drop(ws);
     match authority {
-        Some(authority) => Some((authority.workspaces()?, authority.workspace().to_owned())),
-        None => Some((
+        Some(authority) if governs_here => {
+            Some((authority.workspaces()?, authority.workspace().to_owned()))
+        }
+        _ => Some((
             session.carried_calls.as_ref()?.upgrade()?,
             crate::workspaces::carried_call_workspace(workspace_id),
         )),

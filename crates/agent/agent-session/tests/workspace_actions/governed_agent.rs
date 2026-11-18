@@ -28,7 +28,7 @@ use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
     Browser, Device, DeviceCapabilities, DocumentRoute, SHEETS, enrol, request, sheet_names, start,
 };
-use crate::harness::written_out::{doing, task};
+use crate::harness::script::{doing, task};
 use tilo_server_protocol::WorkspaceId;
 
 /// The laptop: a root holder answering every agent request with the

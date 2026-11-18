@@ -26,13 +26,11 @@
 )]
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::InvokeArgument;
-use tilo_agent_session::model::PlanTurns;
 use tilo_agent_session::{ApiKey, ModelChoice, Replica, ReplicaActor, Seed};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::certify::PendingConfirmation;
@@ -49,7 +47,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::harness::hosted::{Hosted, Laptop, Options, Unlisted};
 use crate::harness::page::Page as Browser;
-use crate::harness::written_out::{WrittenOut, call, doing, doing_args, task};
+use crate::harness::script::{call, doing, doing_args, task};
 use crate::support::{Device, WORKSPACE, enrol, workspace};
 use tilo_actions::MemberId;
 
@@ -101,16 +99,14 @@ fn content_in(text: &str) -> String {
     format!("tilo.content:{}", reference.trim_end_matches('.'))
 }
 
-/// The server, offering every app the tests drive, its agents working with [`WrittenOut`].
+/// The server, offering every app the tests drive, its agents playing the task
+/// each is given.
 async fn start(root: &SigningKey, home: &Device, state: &Path) -> Hosted {
     crate::harness::hosted::start(
         root,
         home,
         state,
-        Options::working_with(
-            crate::common::catalogue,
-            Arc::new(|| Some(Box::new(WrittenOut) as Box<dyn PlanTurns>)),
-        ),
+        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
     )
     .await
 }

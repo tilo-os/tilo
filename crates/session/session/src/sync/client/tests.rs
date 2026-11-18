@@ -599,6 +599,7 @@ tilo_test_env::scenario! {
             },
             payload: Payload::Arrived,
             on_behalf: None,
+            member: None,
         };
         sync.heard_presence(WORKSPACE, device(3), &foreign);
         assert_eq!(
@@ -619,6 +620,7 @@ tilo_test_env::scenario! {
             },
             payload: Payload::Arrived,
             on_behalf: None,
+            member: None,
         };
         sync.heard_presence(WORKSPACE, device(1), &notes);
         assert!(
@@ -1059,7 +1061,7 @@ tilo_test_env::scenario! {
         sync.follow_workspaces(&showing, Some(topic(WORKSPACE)));
         let host = device(0x40);
         sync.set_workspace_host(WORKSPACE, Some(*host.as_bytes()));
-        let run = Presence::desktop(WORKSPACE, Payload::Arrived).spoken_for("run-1");
+        let run = Presence::desktop(WORKSPACE, Payload::Arrived).spoken_for("run-1", "claude-code");
         sync.heard_presence(WORKSPACE, host, &run);
         assert_eq!(sync.members(WORKSPACE).len(), 1, "the run is here");
 
@@ -1626,7 +1628,7 @@ tilo_test_env::scenario! {
             Some(&resource_of("so.tilo.notes")),
             None,
         );
-        sync.speak_for(&[(WORKSPACE.to_owned(), run.to_owned(), face)]);
+        sync.speak_for(&[(WORKSPACE.to_owned(), run.to_owned(), "claude-code".to_owned(), face)]);
 
         // Where it works is news the first time the surface looks, and stays put after.
         let mut tree = shell(WORKSPACE);

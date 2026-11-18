@@ -71,13 +71,16 @@ pub struct RuntimeImage {
 }
 
 impl RuntimeImage {
+    /// Wine is a program loader: it lays out each Windows program's sections itself and then
+    /// makes them executable, which a 32-bit program (every NSIS installer) always needs, and
+    /// Windows programs generate code of their own (.NET, scripting engines). Under the
+    /// write-xor-execute baseline Wine's `mprotect` to executable was refused and setup ended
+    /// before showing anything, so a Wine capsule takes the profile for programs that make code.
     fn seccomp_profile(&self) -> Option<SeccompProfile> {
         if self.needs_nested_runtime {
             None
-        } else if self.translated {
-            Some(SeccompProfile::TiloJit)
         } else {
-            Some(SeccompProfile::TiloDefault)
+            Some(SeccompProfile::TiloJit)
         }
     }
 
@@ -1334,8 +1337,7 @@ mod tests {
                             .unwrap();
                         let expected_filter = match (host, layer) {
                             (_, Layer::Proton) => None,
-                            ("aarch64", _) => Some(SeccompProfile::TiloJit),
-                            _ => Some(SeccompProfile::TiloDefault),
+                            _ => Some(SeccompProfile::TiloJit),
                         };
                         assert_eq!(command.seccomp_profile, expected_filter);
                         assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));

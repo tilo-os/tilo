@@ -13,8 +13,7 @@ use super::{Reach, Session};
 use crate::server::ServerError;
 use serde_json::{Map, Value};
 use tilo_actions::remote::{
-    ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark,
-    person_models, settle_with,
+    Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark, person_models, settle_with,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_clock::time::Duration;

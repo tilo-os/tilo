@@ -279,9 +279,18 @@ impl PeerRegistrar {
         if cert.device_public_key != device.verifying_key().to_bytes() {
             bail!("this device's key is not the one its certificate names");
         }
-        let store = DeviceFleetStore::at(identity_dir(session_uid)?, paths);
+        let identity_id = hex::encode(cert.user_public_key);
+        // The person's devices as this machine's own store lists them: on a
+        // personal device their account's identity directory holds the fleet,
+        // and on a server the identity root its enrollment wrote it into. No
+        // session has to be running for this machine to know who to ask.
+        let store = identity_dir(session_uid)
+            .ok()
+            .map(|directory| DeviceFleetStore::at(directory, paths.clone()))
+            .filter(|store| store.fleet_file(&identity_id).exists())
+            .unwrap_or_else(|| DeviceFleetStore::of_device(paths, &identity_id));
         let fleet = store
-            .load(&hex::encode(cert.user_public_key))
+            .load(&identity_id)
             .map_err(|error| anyhow!("your devices: {error}"))?;
         let devices: Vec<[u8; 32]> = fleet
             .personal_devices(&cert.user_public_key, tilo_clock::unix_now_ns())
