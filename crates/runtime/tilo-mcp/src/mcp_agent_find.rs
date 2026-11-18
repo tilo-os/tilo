@@ -66,14 +66,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// `path` as the address the tools list the resource at, when it is
-    /// written as the reference a person types (`#12`): what the workspace's
-    /// search finds for it, named by the path `tilo_ls` writes. Any other path
-    /// is itself.
+    /// written as the reference a person types (`#12`), or ends in the number
+    /// a listing shows an item by (`tasks/Issues/1`, the `#1` a person reads):
+    /// what the workspace's search finds for it, named by the path `tilo_ls`
+    /// writes. Any other path is itself.
     pub(super) async fn expand_reference(&self, path: &str) -> Result<String, Failure> {
-        let Some((reference, after)) = split_reference(path) else {
-            return Ok(path.to_owned());
+        let (reference, after, numbered) = match split_reference(path) {
+            Some((reference, after)) => (reference.to_owned(), after.to_owned(), false),
+            None => match path.trim().rsplit_once('/') {
+                Some((_, last)) if last.chars().all(|character| character.is_ascii_digit()) => {
+                    (format!("#{last}"), String::new(), true)
+                }
+                _ => return Ok(path.to_owned()),
+            },
         };
-        let found = self.searched(reference, &Within::default()).await?;
+        let found = self.searched(&reference, &Within::default()).await?;
         let (_, running) = self.providers().await?;
         let mut levels = Levels::new();
         for hit in &found {
@@ -86,6 +93,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             {
                 return Ok(format!("{path}{after}"));
             }
+        }
+        // A number that names nothing is not an address of its own: the path
+        // stands, and the read it is of says what it finds.
+        if numbered {
+            return Ok(path.to_owned());
         }
         Err(format!(
             "no resource of the workspace reads as {reference}; tilo_ls lists the apps and what \

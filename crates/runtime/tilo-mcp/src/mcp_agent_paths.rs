@@ -52,11 +52,13 @@ fn shared_start(a: &str, b: &str) -> usize {
 
 /// The app a name beginning with a kind names (`tasks.tracker` is the Tasks
 /// app's tracker), when the name is one kind and no app: a kind is the app's
-/// own name and one more word, where a package's id is a domain and its
-/// names.
+/// own name and one more word, and an item's kind names its collection after
+/// that (`tasks.issues.issues`, `tasks.issues.links`), where a package's id is
+/// a domain and its names.
 pub(super) fn kind_address(name: &str) -> Option<&str> {
     let (app, kind) = name.split_once('.')?;
-    (!app.is_empty() && !kind.is_empty() && !kind.contains('.')).then_some(app)
+    (!app.is_empty() && !kind.is_empty() && !kind.starts_with('.') && !kind.ends_with('.'))
+        .then_some(app)
 }
 
 impl Node {
@@ -128,6 +130,32 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 reference.insert("record".into(), json!(kept));
             }
             arguments.insert(param.name.to_string(), Value::Object(reference));
+        }
+        // A value written as the label a person reads is the value the app
+        // takes, whatever its case or spacing (`In review` for `in-review`,
+        // a status or a choice of a kind of thing alike).
+        for param in &descriptor.params {
+            let Some(given) = arguments
+                .get(param.name.as_ref())
+                .and_then(Value::as_str)
+                .map(plain)
+            else {
+                continue;
+            };
+            let choice = param
+                .choices
+                .iter()
+                .find(|choice| plain(choice) == given)
+                .map(|choice| Value::String(choice.to_string()))
+                .or_else(|| {
+                    forms(param.schema.as_deref()?)
+                        .into_iter()
+                        .find(|(name, _)| plain(name) == given)
+                        .map(|(_, value)| value)
+                });
+            if let Some(choice) = choice {
+                arguments.insert(param.name.to_string(), choice);
+            }
         }
         Ok(arguments)
     }
@@ -290,4 +318,45 @@ fn push_char(parts: &mut [String], action: &mut String, in_action: bool, charact
     } else if let Some(part) = parts.last_mut() {
         part.push(character);
     }
+}
+
+/// `text` as a value is compared to a parameter's choices: its letters alone,
+/// in one case, so `In review`, `In Review` and `in-review` are one value.
+fn plain(text: &str) -> String {
+    text.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|character| character.to_ascii_lowercase())
+        .collect()
+}
+
+/// The values a parameter's schema offers as alternatives, each as the name a
+/// person reads it by and the value the app takes (`{"title": "In review",
+/// "const": "in-review"}`, or a one-field object with the constant).
+fn forms(schema: &Value) -> Vec<(String, Value)> {
+    let Some(alternatives) = schema
+        .get("anyOf")
+        .or_else(|| schema.get("oneOf"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let mut forms = Vec::new();
+    for alternative in alternatives {
+        let Some(fields) = alternative.as_object() else {
+            continue;
+        };
+        let constant = fields.get("const").cloned().or_else(|| {
+            let only = fields.get("required")?.as_array()?.first()?.as_str()?;
+            fields.get("properties")?.get(only)?.get("const").cloned()
+        });
+        let name = fields
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| constant.as_ref().and_then(Value::as_str).map(str::to_owned));
+        if let (Some(name), Some(constant)) = (name, constant) {
+            forms.push((name, constant));
+        }
+    }
+    forms
 }

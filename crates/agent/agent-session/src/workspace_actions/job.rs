@@ -53,6 +53,14 @@ pub(super) enum Job {
         link: tilo_actions::remote::ContentLinkAsk,
         done: Completer<Result<tilo_actions::remote::ContentLink, ActionCallError>>,
     },
+    /// One document of a workspace, read as its caller may read it
+    /// ([`tilo_actions::remote::ResourceReads`]).
+    ReadDocument {
+        workspace_id: WorkspaceId,
+        caller: Caller,
+        address: tilo_actions::remote::ResourceAddress,
+        done: Completer<Result<tilo_actions::remote::ResourceCopy, ActionCallError>>,
+    },
     /// A search of what a workspace holds.
     Search {
         workspace_id: WorkspaceId,
@@ -112,6 +120,7 @@ impl Job {
             Self::Content { .. } => "content",
             Self::ContentGet { .. } => "content-get",
             Self::ContentLink { .. } => "content-link",
+            Self::ReadDocument { .. } => "read-document",
             Self::Search { .. } => "search",
             Self::Changes { .. } => "changes",
             Self::Invocations { .. } => "invocations",
@@ -130,6 +139,7 @@ impl Job {
             | Self::Content { workspace_id, .. }
             | Self::ContentGet { workspace_id, .. }
             | Self::ContentLink { workspace_id, .. }
+            | Self::ReadDocument { workspace_id, .. }
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
             | Self::Invocations { workspace_id, .. }
@@ -151,6 +161,7 @@ impl Job {
             Self::Search { .. }
             | Self::Changes { .. }
             | Self::Invocations { .. }
+            | Self::ReadDocument { .. }
             | Self::Changed { .. } => Keys::Workspace,
             Self::Feedback { .. }
             | Self::Invoke { .. }

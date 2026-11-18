@@ -127,7 +127,7 @@ struct ReadArgs {
     /// A record read (`record:<app>:<id>`) joins the record's chain of parts.
     #[serde(default)]
     parts: bool,
-    /// A record read waits for the next write past this revision.
+    /// A document read waits for the next write past this revision.
     after: Option<String>,
 }
 
@@ -176,7 +176,7 @@ enum Done {
         path: String,
         descriptor: Box<ActionDescriptor>,
         app: String,
-        /// Where it ran: the record whose link a change answers.
+        /// Where it ran: the document whose link a change answers.
         provider: String,
         /// The nearest resource holding the one it ran on (or that one) that offers the history
         /// `undo` of its record, where what it changed is taken back.
@@ -328,9 +328,24 @@ fn read_arguments(
             .any(|param| param.name.as_ref() == name)
     };
     if let Some(node) = resolved.node.as_ref().filter(|node| node.id != owner)
-        && has("item")
+        && let Some(param) = reader
+            .params
+            .iter()
+            .find(|param| param.name.as_ref() == "item")
     {
-        arguments.insert("item".into(), node.key.clone().into());
+        // A read that names an item by a reference takes the resource's own
+        // fields; one that names it by its key takes the key the listing prints.
+        arguments.insert(
+            "item".into(),
+            match param.ty {
+                tilo_actions::ParamType::Object => json!({
+                    "id": node.id,
+                    "kind": node.kind,
+                    "label": node.label,
+                }),
+                _ => Value::String(node.key.clone()),
+            },
+        );
     }
     if let Some(cursor) = app_cursor {
         if has("cursor") {
@@ -615,9 +630,9 @@ fn cannot_be_read_now(page: &tilo_actions::remote::CataloguePage) -> bool {
 }
 
 impl Resolved {
-    /// Where a change of the target is taken back: its record's own history, on the nearest
+    /// Where a change of the target is taken back: its document's own history, on the nearest
     /// resource that holds the target (or the target itself) and offers `undo`; for an app
-    /// named itself (a record whose root is the app's), where its root actions offer it.
+    /// named itself (a document whose root is the app's), where its root actions offer it.
     fn history(&self) -> Option<String> {
         let offers = |node: &&Node| {
             node.actions
@@ -1407,9 +1422,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // A path written as what a person types to name a resource (`#12`) is
         // read as the address the tools list it at before the call resolves
         // it, so an agent going on from a prompt's words reaches the resource.
-        if let Some(path) = args.get("path").and_then(Value::as_str).map(str::to_owned)
-            && split_reference(&path).is_some()
-        {
+        if let Some(path) = args.get("path").and_then(Value::as_str).map(str::to_owned) {
             match self.expand_reference(&path).await {
                 Ok(expanded) => {
                     if let Some(fields) = args.as_object_mut() {
@@ -1894,11 +1907,24 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 return Ok(Some((ancestor.id.clone(), found)));
             }
         }
-        // The app's root resources: a notebook reads its pages.
+        // The app's root resources: a notebook reads its pages. A read that
+        // names no item answers a document whole, and a resource inside it is
+        // that read's to answer: a listing that takes no item would answer
+        // every item with the whole document.
+        let reading_item = |found: &ActionDescriptor| {
+            resolved.node.is_none()
+                || found
+                    .params
+                    .iter()
+                    .any(|param| param.name.as_ref() == "item")
+        };
         let root = self.level(&resolved.provider, "", levels).await?;
         for node in &root.children {
             let level = self.level(&resolved.provider, &node.id, levels).await?;
-            if let Some(found) = reads_action(&level.own).or_else(|| reads_action(&node.actions)) {
+            if let Some(found) = reads_action(&level.own)
+                .or_else(|| reads_action(&node.actions))
+                .filter(|found| reading_item(found))
+            {
                 return Ok(Some((node.id.clone(), found)));
             }
         }

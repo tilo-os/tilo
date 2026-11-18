@@ -499,12 +499,19 @@ impl WorkspaceActions {
                     result,
                 })
             }
+            // One document, read as every reader of it is answered: the same answer a person's
+            // device gives, from what the service itself holds.
+            RemoteActionMessage::ResourceRead {
+                correlation, read, ..
+            } => {
+                let reads: Arc<dyn tilo_actions::remote::ResourceReads> = Arc::new(self.clone());
+                reads.answer_read(caller, correlation, read)
+            }
             RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::ResourceRead { .. }
             | RemoteActionMessage::ResourceReading { .. }
             | RemoteActionMessage::RetiredResourceRequest
             | RemoteActionMessage::RetiredResourceResponse
@@ -1634,6 +1641,12 @@ impl Worker {
                     workspace_id,
                     caller,
                 } => self.arrived(workspace_id, &caller),
+                Job::ReadDocument {
+                    workspace_id,
+                    caller,
+                    address,
+                    done,
+                } => done.complete(self.document_read(workspace_id, &caller, &address)),
                 Job::Search {
                     workspace_id,
                     caller,

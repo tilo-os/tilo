@@ -411,6 +411,13 @@ impl ActionProvider for WorkspaceActionProvider {
             .map(|answer| answer.map(|_| ()))
     }
 
+    /// One document of the workspace, read as every reader of it is answered: the same read a
+    /// person's device answers, from what the workspace's service holds.
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        let reads: Arc<dyn tilo_actions::remote::ResourceReads> = Arc::new(self.actions.clone());
+        Some(reads)
+    }
+
     /// The workspace's own search, asked as whoever calls it: what an agent's `find` answers
     /// with on this server.
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {

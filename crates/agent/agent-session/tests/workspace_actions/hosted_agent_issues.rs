@@ -298,7 +298,11 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
     let (acted, failed) = tool(
         &server,
         "tilo_do",
-        json!({"path": format!("{shown}#comment"), "args": {"text": "Read off the listing."}}),
+        json!({
+            "path": format!("{shown}#comment"),
+            "args": {"text": "Read off the listing."},
+            "wait_ms": 30_000,
+        }),
     )
     .await;
     assert!(
@@ -322,7 +326,7 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
     let (acted, failed) = tool(
         &server,
         "tilo_do",
-        json!({"path": "#1#comment", "args": {"text": "On it."}}),
+        json!({"path": "#1#comment", "args": {"text": "On it."}, "wait_ms": 30_000}),
     )
     .await;
     assert!(
@@ -346,7 +350,11 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
     let (acted, failed) = tool(
         &server,
         "tilo_do",
-        json!({"path": format!("{found}#comment"), "args": {"text": "Found by the search."}}),
+        json!({
+            "path": format!("{found}#comment"),
+            "args": {"text": "Found by the search."},
+            "wait_ms": 30_000,
+        }),
     )
     .await;
     assert!(
@@ -355,8 +363,8 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
     );
     // An address that names nothing says which address works instead.
     for wrong in [
-        format!("{collection}/1"),
-        "tasks.issues/issues/1".to_owned(),
+        format!("{collection}/no such issue"),
+        "tasks.issues/issues/no-such-issue".to_owned(),
     ] {
         let (said, failed) = tool(&server, "tilo_read", json!({"path": wrong})).await;
         assert!(failed, "{wrong} names no issue: {said}");
@@ -368,7 +376,7 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
     let (wrong, _) = tool(
         &server,
         "tilo_read",
-        json!({"path": format!("{collection}/1")}),
+        json!({"path": format!("{collection}/no such issue")}),
     )
     .await;
     assert!(
@@ -394,6 +402,7 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
         json!({
             "path": format!("{path}#link-note"),
             "args": {"issue": issue.as_str(), "note": note},
+            "wait_ms": 30_000,
         }),
     )
     .await;
@@ -408,17 +417,70 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
         linked_issue.issues.get(&issue).map(|now| &now.links)
     );
 
+    // A document by the id its address carries is read through the read API
+    // the same way, answered by the workspace's own service.
+    let (copy, failed) = tool(
+        &server,
+        "tilo_read",
+        json!({"path": format!("record:{TASKS}:{part}")}),
+    )
+    .await;
+    assert!(
+        !failed && copy.contains("Plan the launch"),
+        "the document the issues are kept in reads: {copy}"
+    );
+    // `*` is every field a listing knows, as a caller with no screen writes it.
+    let (all, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({"path": "tasks/Issues#read", "args": {"fields": ["*"]}}),
+    )
+    .await;
+    assert!(!failed, "a read of every field answers: {all}");
+    assert!(all.contains("Plan the launch"), "{all}");
+    // The number a listing shows an issue by is an address of its own.
+    let (numbered, failed) = tool(
+        &server,
+        "tilo_ls",
+        json!({"path": format!("{collection}/1")}),
+    )
+    .await;
+    assert!(
+        !failed && numbered.contains("Plan the launch"),
+        "the issue's number is an address: {numbered}"
+    );
+    // A status written as a person reads it is the status the app takes.
+    let (placed, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({
+            "path": format!("{path}#place"),
+            "args": {"issue": issue.as_str(), "status": "In review"},
+            "wait_ms": 30_000,
+        }),
+    )
+    .await;
+    assert!(!failed, "a status written as it is read is taken: {placed}");
+
     let (commented, failed) = tool(
         &server,
         "tilo_do",
-        json!({"path": format!("{path}#comment"), "args": {"text": "On it: the plan is drafted."}}),
+        json!({
+            "path": format!("{path}#comment"),
+            "args": {"text": "On it: the plan is drafted."},
+            "wait_ms": 30_000,
+        }),
     )
     .await;
     assert!(!failed, "the agent comments: {commented}");
     let (moved, failed) = tool(
         &server,
         "tilo_do",
-        json!({"path": format!("{path}#place"), "args": {"status": "in-review"}}),
+        json!({
+            "path": format!("{path}#place"),
+            "args": {"status": "in-review"},
+            "wait_ms": 30_000,
+        }),
     )
     .await;
     assert!(!failed, "the agent moves the issue: {moved}");

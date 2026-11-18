@@ -31,12 +31,12 @@ use key_group::VaultKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::StatePeer;
-use tilo_workspace_service::workspaces::{
-    DeviceKeyGroups, DeviceKeys, GroupKeys, GroupKeysAnswerFuture, KeySink, Workspaces,
-};
 use tilo_workspace_keys::{
     GovernancePark, GovernancePump, GovernanceTransport, InboundGovernance, KeyDir, KeyDirectory,
     KeyProvider, KeysConfig, NoSealChecks, SharedKeys, WorkspaceKeys,
+};
+use tilo_workspace_service::workspaces::{
+    DeviceKeyGroups, DeviceKeys, GroupKeys, GroupKeysAnswerFuture, KeySink, Workspaces,
 };
 use tokio::task::JoinHandle;
 

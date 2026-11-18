@@ -28,7 +28,10 @@
 //! same catalogue a listing reads, so a caller acts on a hit by the path it lists: the note, not
 //! the notebook it is in.
 
-use tilo_actions::remote::{ChangePage, Found, Within};
+use std::sync::Arc;
+use std::time::Duration;
+
+use tilo_actions::remote::{ChangePage, Found, Pending, RemoteActionMessage, Within, pending};
 use ui::history_source::feed::DocumentKey;
 use ui::search::index_publication::{IndexEntry, IndexWeight};
 
@@ -39,9 +42,10 @@ use super::{
     ActionCallError, ActionKind, Answer, Caller, CatalogueQuery, CatalogueRow, DocumentRoute,
     Needs, TreePath, Worker, WorkspaceId, record_provider,
 };
+use super::{Job, WorkspaceActions};
 use crate::workspace_documents::Reading;
 
-/// The most records one search answers with.
+/// The most things one search answers with.
 const MOST_FOUND: usize = 20;
 
 /// The most rows of one app's listing read to name the resource a search found in it.
@@ -108,7 +112,7 @@ fn item_node(route: &DocumentRoute, resource: &str) -> Option<TreePath> {
 }
 
 impl Worker {
-    /// What `needle` finds among the records of `workspace_id`, best first, as `caller` lists
+    /// What `needle` finds among the documents of `workspace_id`, best first, as `caller` lists
     /// them.
     pub(super) fn search(
         &mut self,
@@ -267,7 +271,7 @@ impl Worker {
         })
     }
 
-    /// What a search ranks for `person` of the records at `routes` the replica holds, each as
+    /// What a search ranks for `person` of the documents at `routes` the replica holds, each as
     /// far as its caller may read it: every resource their apps tell search about, with what it
     /// says, and each record whose app tells it nothing, whole. Beside each document, the entry
     /// it was made of, or `None` for one ranked whole.
@@ -539,6 +543,47 @@ impl Worker {
         })
     }
 
+    /// What the document `address` names holds, as `caller` may read it now: one document of
+    /// the workspace, as every reader of it is answered
+    /// ([`tilo_actions::remote::ResourceReads`]), decided by the same rules a listing and a read
+    /// of an app's resource are ([`Self::readable`]). `Absent` for one the workspace has never
+    /// written: the service holds its documents, so one it holds none of is not on its way.
+    pub(super) fn document_read(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+        if !self.admits_member(workspace_id, caller) {
+            return Err(ActionCallError::NotPermitted);
+        }
+        let state = self.refresh(workspace_id, Needs::Workspace)?;
+        let Some(cluster_id) = state.workspace.clone() else {
+            return Ok(tilo_actions::remote::ResourceCopy::Absent);
+        };
+        let route = DocumentRoute {
+            app_id: address.app.clone(),
+            cluster_id,
+            document: address.record.clone(),
+        };
+        let who = self.bounded(caller);
+        if self.readable(workspace_id, who.as_ref(), &route).is_none() {
+            return Err(ActionCallError::Refused {
+                reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
+            });
+        }
+        match state
+            .engine
+            .record(&route.cluster_id, &route.app_id, &route.document)
+        {
+            Ok(Some(bytes)) => Ok(tilo_actions::remote::ResourceCopy::Document(bytes)),
+            Ok(None) => Ok(tilo_actions::remote::ResourceCopy::Absent),
+            Err(error) => Err(ActionCallError::Unavailable {
+                reason: error.to_string(),
+            }),
+        }
+    }
+
     /// The changes to what `workspace_id` holds after `after`, for `caller`: the person whose
     /// device this service is on reads every change of the workspace, and anyone else it admits
     /// reads the changes of what the workspace lets them read now, an agent held to the rules
@@ -607,5 +652,64 @@ impl Worker {
             changes,
             cursor: page.cursor,
         })
+    }
+}
+
+/// How long a read of one document waits on the service's thread for its answer.
+const DOCUMENT_READ_WAIT: Duration = Duration::from_secs(30);
+
+impl tilo_actions::remote::ResourceReads for WorkspaceActions {
+    /// What the document `address` names holds, as `caller` may read it now: asked of the
+    /// service's own thread, which is where the workspace's documents are held, and waited for
+    /// here.
+    fn read(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::ResourceAddress,
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+        let Some(workspace_id) = caller.workspace().and_then(WorkspaceId::parse) else {
+            return Err(ActionCallError::NotPermitted);
+        };
+        let (done, answer) = pending();
+        if self
+            .submit(Job::ReadDocument {
+                workspace_id,
+                caller: caller.clone(),
+                address: address.clone(),
+                done,
+            })
+            .is_err()
+        {
+            return Err(ActionCallError::Unavailable {
+                reason: "the workspace's service is not running".into(),
+            });
+        }
+        match answer.wait_timeout(DOCUMENT_READ_WAIT) {
+            Ok(Some(result)) => result,
+            _ => Err(ActionCallError::Unavailable {
+                reason: "the workspace's service did not answer the read in time".into(),
+            }),
+        }
+    }
+
+    /// Every write to a document wakes a reader waiting past it
+    /// ([`tilo_actions::remote::ResourceWake`]): the service holds it, and the read past a
+    /// revision is answered again once the write lands.
+    fn watch(
+        &self,
+        _: &Caller,
+        _: &tilo_actions::remote::ResourceAddress,
+        _: &tilo_actions::remote::ResourceWake,
+    ) -> Result<(), ActionCallError> {
+        Ok(())
+    }
+
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> Pending<RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
     }
 }
