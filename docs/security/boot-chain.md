@@ -47,8 +47,9 @@ is judged for a machine nobody sits at.
 
 Its release is these checks, in order: `image-host` builds the image with the
 generation `generation-host` read from the server's own series, `seal-host`
-installs it once, which rewrites the UKI's placeholder composefs digest to the
-one the install computes (bootc#2334, as for the desktop), `sign-host-boot`
+rewrites the UKI's placeholder composefs digest to the one `bootc install`
+computes from the image's layers (bootc#2334; the resealing bootc a sealed dev
+image is sealed with, `tools/ci/seal-dev-image.sh`), `sign-host-boot`
 signs the UKIs with the release EFI key and the generation's PCR 11 prediction
 with the PCR authority, `apply-host-boot` verifies those signatures against the
 pinned keys and adds them under `/boot`, and `sign-host` and `publish-host` sign

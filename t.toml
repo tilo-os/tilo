@@ -6489,16 +6489,17 @@ isolation = "vm"
 timeout_secs = 1800
 default = false
 
-# The image sealed: installed onto a scratch disk as a server installs it, which closes the
-# composefs digest its UKI carries (os/dev/build-image.sh), and what its boot signing signs
-# prepared beside it (host-seal.sh seal). Everything after signs, boots or publishes this image.
+# The image sealed: its UKI's composefs digest the one `bootc install` computes from its layers,
+# by the resealing bootc a sealed dev image takes it from (tools/ci/seal-dev-image.sh), and what
+# its boot signing signs prepared beside it (host-seal.sh seal). Everything after signs, boots or
+# publishes this image.
 [[check]]
 name = "seal-host"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
+# dnf installs from Fedora's mirrors and the resealing bootc comes from registry.tilo.so, or is
+# built from Fedora's: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/host-seal.sh seal /target/publish/host /target/publish/host-sealed"
-needs = ["image-host", "tilo-vm-binary-x86_64"]
-env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+needs = ["image-host"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/host-sealed/**"]
