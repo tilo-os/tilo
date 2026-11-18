@@ -1581,7 +1581,7 @@ impl Session {
                 sync: sync.is_some(),
                 engine: engine.clone(),
                 services: Rc::clone(&services),
-                site: crate::platform::directory::community_site,
+                listed: Rc::default(),
             }),
             Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>,
             Rc::clone(&directory_store),

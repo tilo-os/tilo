@@ -600,14 +600,14 @@ impl DeviceLists {
     fn invitations(&self, workspace: Option<&str>) -> Result<Started, ApiError> {
         let engine = self.engine()?;
         let workspace_id = self.workspace_id(workspace)?;
-        if let Some(asked) = engine.ask_own_service(
-            workspace_id,
-            tilo_workspace_service::workspaces::INVITATIONS,
-            serde_json::Map::new(),
-        ) {
-            return Ok(answered_by_service(asked, Ok));
-        }
-        Err(held_elsewhere())
+        let asked = engine
+            .ask_holder(
+                workspace_id,
+                tilo_workspace_service::workspaces::INVITATIONS,
+                serde_json::Map::new(),
+            )
+            .ok_or_else(no_holder)?;
+        Ok(answered_by_service(asked, Ok))
     }
 
     /// Cancel one of them, from the device that issued it: the link admits nobody from now on.
@@ -620,14 +620,14 @@ impl DeviceLists {
         let workspace_id = self.workspace_id(workspace)?;
         let mut arguments = serde_json::Map::new();
         arguments.insert("invite".to_owned(), invite.into());
-        if let Some(asked) = engine.ask_own_service(
-            workspace_id,
-            tilo_workspace_service::workspaces::CANCEL_INVITATION,
-            arguments,
-        ) {
-            return Ok(answered_by_service(asked, Ok));
-        }
-        Err(held_elsewhere())
+        let asked = engine
+            .ask_holder(
+                workspace_id,
+                tilo_workspace_service::workspaces::CANCEL_INVITATION,
+                arguments,
+            )
+            .ok_or_else(no_holder)?;
+        Ok(answered_by_service(asked, Ok))
     }
 
     /// Hand out a link into a workspace, made by this device's own person: the invitation the shell
@@ -695,31 +695,31 @@ impl DeviceLists {
         if let Some(recipient) = recipient {
             arguments.insert("recipient".to_owned(), hex::encode(recipient).into());
         }
-        if let Some(asked) = engine.ask_own_service(
-            workspace_id,
-            tilo_action_policy::roles::governance::INVITE,
-            arguments,
-        ) {
-            let role = role.key();
-            return Ok(answered_by_service(asked, move |issued| {
-                let signed = issued
-                    .get("invitation")
-                    .and_then(Value::as_str)
-                    .map(hex::decode)
-                    .transpose()
-                    .map_err(|_| "the workspace service sent an invalid invitation".to_owned())?
-                    .ok_or("the workspace service answered no invitation")?;
-                let link = tilo_peer_state::join::encode_invitation_text(&signed);
-                Ok(serde_json::json!({
-                    "invite": issued.get("invite"),
-                    "link": link,
-                    "role": role,
-                    "administrator": makes_administrator,
-                    "expires_at_ns": issued.get("expires_at_ns"),
-                }))
-            }));
-        }
-        Err(held_elsewhere())
+        let asked = engine
+            .ask_holder(
+                workspace_id,
+                tilo_action_policy::roles::governance::INVITE,
+                arguments,
+            )
+            .ok_or_else(no_holder)?;
+        let role = role.key();
+        Ok(answered_by_service(asked, move |issued| {
+            let signed = issued
+                .get("invitation")
+                .and_then(Value::as_str)
+                .map(hex::decode)
+                .transpose()
+                .map_err(|_| "the workspace's holder sent an invalid invitation".to_owned())?
+                .ok_or("the workspace's holder answered no invitation")?;
+            let link = tilo_peer_state::join::encode_invitation_text(&signed);
+            Ok(serde_json::json!({
+                "invite": issued.get("invite"),
+                "link": link,
+                "role": role,
+                "administrator": makes_administrator,
+                "expires_at_ns": issued.get("expires_at_ns"),
+            }))
+        }))
     }
 
     /// What an invitation verb answers, when `effect` is one of them: the links that still work,
@@ -755,10 +755,10 @@ impl DeviceLists {
     }
 }
 
-/// What an invitation verb answers for a workspace this device's own workspace service does not
-/// hold: its invitations are made, listed and taken back where it is held.
-fn held_elsewhere() -> ApiError {
-    ApiError::Failed("only the workspace's holder issues its invitations".to_owned())
+/// What an invitation verb answers when this device reaches none of the workspace's holders: its
+/// invitations are made, listed and taken back only there.
+fn no_holder() -> ApiError {
+    ApiError::Failed("this device reaches no holder of the workspace".to_owned())
 }
 
 impl DeviceLists {

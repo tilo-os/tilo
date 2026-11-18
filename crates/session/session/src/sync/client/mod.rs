@@ -1218,7 +1218,7 @@ impl Host for Hosting {
 
     fn workspace_host(&self, workspace: &str) -> Option<[u8; 32]> {
         let engine = self.local.engine.as_ref()?;
-        engine.host_of(tilo_desktop_model::WorkspaceId::parse(workspace)?)
+        engine.holder_of(tilo_desktop_model::WorkspaceId::parse(workspace)?)
     }
 
     fn joined(&self, workspace: &str) {

@@ -214,6 +214,9 @@ pub struct Engine {
     /// The layout's workspaces being founded now: a pass that comes while one is signed founds it
     /// no second time.
     founding: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
+    /// Ticks whenever a founding ends, founded or not: what an ask of a workspace being founded
+    /// waits on ([`Self::ask_holder`]).
+    founded: tokio::sync::watch::Sender<u64>,
     /// What lands here from the workspaces' other devices: what a read waiting for a record it
     /// holds none of wakes on.
     arrivals: Arc<crate::arrivals::Arrivals>,
@@ -277,13 +280,13 @@ pub struct Delegation {
     pub revocable: bool,
 }
 
-/// What this device's own workspace service answers an ask, once it has.
+/// What a workspace's holder answers an ask of its governance, once it has.
 pub type ServiceAnswer =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
 
-/// What this device asks its own workspace service, once it is open: founding a workspace this
-/// device made there, and asking a workspace held there one of its governance actions as this
-/// device, a member of it.
+/// What this device asks of the workspace services, once its own is open: founding a workspace
+/// this device made there, and asking a workspace one of its governance actions as this device,
+/// a member of it, of whichever service holds it.
 pub trait Founder: Send + Sync {
     /// Found `workspace` under `name`, answered once this device holds it.
     fn found(
@@ -292,8 +295,9 @@ pub trait Founder: Send + Sync {
         name: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
 
-    /// Ask `workspace`'s governance action `action` with `arguments`, when the service holds
-    /// `workspace`; `None` when it does not.
+    /// Ask `workspace`'s governance action `action` with `arguments` of its holder: this
+    /// device's own service when it holds `workspace`, else the holder its enrollment names, on
+    /// the device action service. `None` when this device reaches no holder of it.
     fn ask(
         &self,
         workspace: WorkspaceId,
@@ -503,6 +507,7 @@ impl Engine {
             link: std::sync::Mutex::new(None),
             unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             founding: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            founded: tokio::sync::watch::Sender::new(0),
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
             handed,
             group_keys: std::sync::Mutex::default(),
@@ -1134,9 +1139,9 @@ impl Engine {
     /// Whether `workspace` is held on this device, by its own workspace service: everything the
     /// workspace retains is here, and no other device replays any of it.
     #[must_use]
-    pub fn hosts_itself(&self, workspace: &str) -> bool {
+    pub fn is_holder(&self, workspace: &str) -> bool {
         WorkspaceId::parse(workspace).is_some_and(|workspace| {
-            self.host_of(workspace) == Some(self.identity.device_cert.device_public_key)
+            self.holder_of(workspace) == Some(self.identity.device_cert.device_public_key)
         })
     }
 
@@ -1651,19 +1656,19 @@ impl Engine {
         &self.owner
     }
 
-    /// Where `workspace` 's host is reached and the device its enrollment pins: the address its
+    /// Where `workspace`'s holder is reached and the device its enrollment pins: the address its
     /// live session is dialled at.
     #[cfg(target_os = "linux")]
-    pub fn workspace_host(
+    pub fn holder_address(
         &self,
         workspace: WorkspaceId,
     ) -> Option<([u8; 32], iroh_base::EndpointAddr)> {
         self.owner.host_addr(workspace)
     }
 
-    /// The device hosting `workspace`: the one whose workspace service orders its commits,
+    /// The device holding `workspace`: the one whose workspace service orders its commits,
     /// which is where the person's other devices enter it.
-    pub fn host_of(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {
+    pub fn holder_of(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {
         self.owner
             .with_current(workspace, |view| {
                 let host = view.workspace_host();
@@ -1821,6 +1826,8 @@ impl Engine {
         }
         self.found_here(workspace, name).await;
         self.founding.lock_recover().remove(&workspace);
+        self.founded
+            .send_modify(|ended| *ended = ended.wrapping_add(1));
     }
 
     /// [`Self::found`] once nothing else founds `workspace`.
@@ -1860,16 +1867,36 @@ impl Engine {
         let _ = self.founder.set(founder);
     }
 
-    /// Ask `workspace`'s governance action `action` with `arguments` of this device's own
-    /// workspace service, when it holds `workspace`.
+    /// Ask `workspace`'s governance action `action` with `arguments` of its holder, as this
+    /// device ([`Founder::ask`]). A workspace this device is founding now is asked once the
+    /// founding ended: until then it has no holder.
     #[must_use]
-    pub fn ask_own_service(
-        &self,
+    pub fn ask_holder(
+        self: &Arc<Self>,
         workspace: WorkspaceId,
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer> {
-        self.founder.get()?.ask(workspace, action, arguments)
+        let mut ended = self.founded.subscribe();
+        if !self.founding.lock_recover().contains(&workspace) {
+            return self.founder.get()?.ask(workspace, action, arguments);
+        }
+        let (engine, action) = (Arc::clone(self), action.to_owned());
+        Some(Box::pin(async move {
+            while engine.founding.lock_recover().contains(&workspace) {
+                if ended.changed().await.is_err() {
+                    break;
+                }
+            }
+            match engine
+                .founder
+                .get()
+                .and_then(|founder| founder.ask(workspace, &action, arguments))
+            {
+                Some(asked) => asked.await,
+                None => Err("this device reaches no holder of the workspace".to_owned()),
+            }
+        }))
     }
 
     /// Whether this device holds a link into a workspace that still admits someone: a person who

@@ -598,7 +598,7 @@ impl Personal {
         self.hosts = engine
             .workspaces()
             .into_iter()
-            .filter_map(|workspace| Some((workspace, engine.host_of(workspace)?)))
+            .filter_map(|workspace| Some((workspace, engine.holder_of(workspace)?)))
             .collect();
     }
 

@@ -530,11 +530,22 @@ fn files_link(
 /// Wait for `opening`, this device's own workspace service opening, and tell the peer actor once
 /// it is open: whether it opened.
 async fn own_service_opened(
-    opening: impl std::future::Future<Output = Result<impl Sized, String>>,
+    opening: impl std::future::Future<
+        Output = Result<
+            Arc<tilo_network_actor::own_service::workspace_service::WorkspaceService>,
+            String,
+        >,
+    >,
     actor: &tokio::sync::mpsc::Sender<NetCmd>,
+    device: Option<&DeviceActions>,
 ) -> bool {
     match opening.await {
-        Ok(_) => {
+        Ok(service) => {
+            // The session's action service answers the service's ALPN, so the governance of the
+            // workspaces the service holds is asked there.
+            if let Some(device) = device {
+                device.govern_with(service.workspaces().device_actions());
+            }
             let _ = actor.send(NetCmd::OwnServiceReady).await;
             true
         }
@@ -543,6 +554,24 @@ async fn own_service_opened(
             false
         }
     }
+}
+
+/// Start this device's action service on `endpoint`, serve it there, and hand it to the session
+/// through `actions`: what the session installs answers, and an app's own-device actions and the
+/// asks of workspaces held elsewhere leave through it.
+fn serve_device_actions(
+    identity: &DeviceIdentity,
+    endpoint: &iroh::Endpoint,
+    engine: Option<&Arc<Engine>>,
+    served: &mut tilo_network_actor::own_service::Protocols,
+    actions: &std::sync::OnceLock<DeviceActions>,
+) {
+    let device = DeviceActions::start(identity, endpoint.clone(), engine.cloned());
+    served.push((
+        tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
+        Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.action_service()),
+    ));
+    let _ = actions.set(device);
 }
 
 /// Bind this device's endpoint, serve the peer actor and its app wire on it, and say where the
@@ -604,16 +633,8 @@ async fn listening(
         served.extend(files_link(&endpoint, &reachability));
     }
     let _ = bound.endpoint.set(endpoint.clone());
-    if let Some(device) =
-        identity.map(|identity| DeviceActions::start(identity, endpoint.clone(), engine.cloned()))
-    {
-        served.push((
-            tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
-            Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.action_service()),
-        ));
-        // The session takes it from here: what it installs answers, and an app's own-device actions
-        // leave through it.
-        let _ = actions.set(device);
+    if let Some(identity) = identity {
+        serve_device_actions(identity, &endpoint, engine, &mut served, &actions);
     }
     // This device's own workspace service answers here: the workspaces it founds are held there,
     // and their other devices and members join, sync and act with it on its own ALPNs. A device
@@ -637,7 +658,7 @@ async fn listening(
     let mut opened = false;
     if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
         let opening = super::own_service::open(service, identity, engine, endpoint.clone());
-        opened = own_service_opened(Box::pin(opening), &actor).await;
+        opened = own_service_opened(Box::pin(opening), &actor, actions.get()).await;
     }
     let founding_link = link.clone();
     let (events, carrying, attending) = heard(
@@ -660,6 +681,7 @@ async fn listening(
             engine: Arc::downgrade(engine),
             network: Some((actor.clone(), events.clone())),
             link: founding_link,
+            actions: actions.get().map(DeviceActions::action_service),
         }));
     }
     if ready.send(Ok((publisher, addr, reachability))).is_err() {

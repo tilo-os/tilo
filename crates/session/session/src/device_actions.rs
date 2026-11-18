@@ -99,6 +99,12 @@ impl DeviceActions {
         self.0.dispatch.install(provider);
     }
 
+    /// Answer the governance actions of the workspaces this device holds through `governance`
+    /// from now on: its own workspace service's, which this action service answers in place of.
+    pub(crate) fn govern_with(&self, governance: Arc<dyn ActionProvider + Send + Sync>) {
+        *self.0.dispatch.0.governance.lock_recover() = Some(governance);
+    }
+
     /// Hold this machine awake through `power` , the holds its idle timer reads, while another of
     /// the person's devices uses it: requests from there renew a suspend-only lease, so the machine
     /// does not fall asleep mid-task while the screen still blanks, the session still locks, and
@@ -268,6 +274,8 @@ struct DeviceDispatch(Arc<DispatchInner>);
 struct DispatchInner {
     /// What answers a request that arrived here.
     provider: Mutex<Option<Arc<dyn ActionProvider + Send + Sync>>>,
+    /// What answers a member's ask of the governance of a workspace this device holds.
+    governance: Mutex<Option<Arc<dyn ActionProvider + Send + Sync>>>,
     /// The person this device belongs to: what arrives from another of their devices is them using
     /// this one.
     user: [u8; 32],
@@ -281,6 +289,7 @@ impl DeviceDispatch {
     fn for_user(user: [u8; 32]) -> Self {
         Self(Arc::new(DispatchInner {
             provider: Mutex::default(),
+            governance: Mutex::default(),
             user,
             power: Mutex::default(),
             remote_use: Mutex::default(),
@@ -354,6 +363,13 @@ impl ActionProvider for DeviceDispatch {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         self.note_remote_use(caller);
+        if request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER {
+            let governance = self.0.governance.lock_recover().clone();
+            return match governance {
+                Some(governance) => governance.invoke(caller, request),
+                None => Pending::ready(Err(ActionCallError::UnknownAction)),
+            };
+        }
         match self.provider() {
             Ok(provider) => provider.invoke(caller, request),
             Err(error) => Pending::ready(Err(error)),
@@ -361,7 +377,11 @@ impl ActionProvider for DeviceDispatch {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        self.provider().ok()?.observe(caller, id)
+        let governance = self.0.governance.lock_recover().clone();
+        self.provider()
+            .ok()
+            .and_then(|provider| provider.observe(caller, id))
+            .or_else(|| governance?.observe(caller, id))
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
