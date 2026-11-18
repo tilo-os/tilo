@@ -1223,13 +1223,31 @@ fn mark_refused(action: &mut tilo_actions::ActionSpec, by: Option<policy::Refuse
 
 /// Offer a carrier the actor may take any of `resource`'s own actions with. A generic edit or a
 /// group is offered under the least of the edits it carries and decided per invocation, so its
-/// least need refusing it says nothing of the edits it can make. Only edits count: a read of the
-/// resource is no edit of it.
+/// least need refusing it says nothing of the edits it can make. It is also offered to whoever
+/// may take any edit here (a grant of one action): each value it carries is still decided when
+/// it is invoked. Only edits count: a read of the resource is no edit of it.
 fn offer_carriers(
     resource: &tilo_actions::ResourceSpec,
     allowed: &mut [Permitted],
     permits: &mut impl FnMut(&tilo_actions::ActionSpec, &tilo_actions::ActionNeed) -> Permitted,
 ) {
+    let any_change = resource
+        .actions
+        .iter()
+        .zip(allowed.iter())
+        .any(|(action, allowed)| {
+            allowed.is_ok()
+                && !action.carries_actions()
+                && action.contract.need().kind != tilo_actions::ActionKind::Read
+        });
+    if any_change {
+        for (action, allowed) in resource.actions.iter().zip(allowed.iter_mut()) {
+            if action.carries_actions() {
+                *allowed = Ok(());
+            }
+        }
+        return;
+    }
     let carried: Vec<tilo_actions::ActionNeed> = resource
         .actions
         .iter()
