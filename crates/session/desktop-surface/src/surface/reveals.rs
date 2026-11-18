@@ -100,7 +100,8 @@ impl DesktopHandle {
     pub fn tab_of_app(&self, app_id: &str) -> Option<TabId> {
         self.read(|tree| {
             let shows = |tab: &tilo_desktop_model::Tab| {
-                matches!(&tab.tile, tilo_desktop_model::TileContent::LocalApp { app_id: id, .. } if id == app_id)
+                !tilo_desktop_model::apps::shows_a_view(tab)
+                    && matches!(&tab.tile, tilo_desktop_model::TileContent::LocalApp { app_id: id, .. } if id == app_id)
             };
             if let Some(active) = navigation::active_route(tree)
                 && super::find_tab(tree, active.strip, active.tab).is_some_and(|(_, tab)| shows(tab))

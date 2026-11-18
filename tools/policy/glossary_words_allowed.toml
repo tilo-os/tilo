@@ -268,6 +268,11 @@ paths = [
 ]
 
 [[allow]]
+reason = "A test that opens Chat on the canvas names the conversation the way the session publishes it, `chat.workspace/channels/<id>`, as `canvas_point.rs` beside it does."
+words = ["channel"]
+paths = ["crates/session/session/tests/canvas_turn_open.rs"]
+
+[[allow]]
 reason = "The room speakers are calibrated in."
 words = ["room"]
 paths = [

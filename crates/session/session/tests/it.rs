@@ -61,6 +61,8 @@ mod canvas_ask;
 mod canvas_chrome;
 #[path = "canvas_point.rs"]
 mod canvas_point;
+#[path = "canvas_turn_open.rs"]
+mod canvas_turn_open;
 #[path = "chat_2x2.rs"]
 mod chat_2x2;
 #[path = "chat_view.rs"]
