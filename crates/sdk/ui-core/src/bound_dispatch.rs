@@ -5338,7 +5338,7 @@ mod owned_restore_tests;
 pub(crate) fn merge_remote_owned_document(
     store: &ResourceStore,
     checkout: &DocumentCheckout,
-    mutation: &collab_types::DocumentMutation,
+    mut incoming: crate::collaboration::Incoming<'_>,
 ) -> Result<crate::history_mode::routes::MergedRemote, crate::history_mode::routes::RemoteApplyError>
 {
     use crate::history_mode::routes::{MergedRemote, RemoteApplyError};
@@ -5366,7 +5366,7 @@ pub(crate) fn merge_remote_owned_document(
             let mut candidate = doc.clone();
             let before = doc.base_heads();
             let changed =
-                crate::history_mode::routes::merge_committed_into_copy(&mut candidate, mutation)?;
+                crate::history_mode::routes::merge_committed(&mut candidate, incoming.reborrow())?;
             identity
                 .validate(&candidate)
                 .map_err(RemoteApplyError::InvalidMutation)?;
@@ -5392,7 +5392,7 @@ pub(crate) fn merge_remote_owned_document(
                 state.statuses.clear();
                 state.generation = Some(next);
             }
-            if let collab_types::DocumentMutation::Incremental(bytes) = mutation {
+            if let crate::collaboration::Incoming::Changes(bytes) = incoming {
                 // A change whose history this replica lacks waits for it, but
                 // this route delivered it, so it is never sent back.
                 observed.extend(crate::state::changes_beyond(doc, bytes));

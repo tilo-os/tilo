@@ -169,7 +169,7 @@ impl PersonalDocument {
                     })
             }
             CollabEvent::CommittedDocument { route, read } if *route == self.route => {
-                read.take_into(&mut self.doc, load).unwrap_or(0)
+                usize::from(read.take_into(&mut self.doc).unwrap_or(false))
             }
             _ => return None,
         };

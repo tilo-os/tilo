@@ -237,9 +237,20 @@ impl DocumentReplica {
     /// error when `data` is not a valid Automerge snapshot or cannot be merged into this
     /// document.
     pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
+        let load = tilo_resource::profiling::Phase::start("committed.load");
         let mut incoming = AutoCommit::load(data)?;
+        load.end();
+        self.merge_loaded(&mut incoming)
+    }
+
+    /// Merge a whole document another thread loaded ([`ApplyIncoming::take_loaded`]) and
+    /// retain its observed frontier.
+    pub fn merge_loaded(
+        &mut self,
+        loaded: &mut AutoCommit,
+    ) -> Result<(), automerge::AutomergeError> {
         let before = self.doc.get_heads();
-        self.doc.merge_incoming(&mut incoming)?;
+        self.doc.take_loaded(loaded)?;
         self.outbound.observe_changes_after(&mut self.doc, &before);
         Ok(())
     }
@@ -502,7 +513,9 @@ impl State {
     /// undo and outbound frontiers with the merged graph. Returns an error when `data` is
     /// not a valid Automerge snapshot or cannot be merged into this document.
     pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
+        let load = tilo_resource::profiling::Phase::start("committed.load");
         let mut incoming = AutoCommit::load(data)?;
+        load.end();
         let before = self.doc.get_heads();
         self.doc.merge_incoming(&mut incoming)?;
         self.undo.rebase(&mut self.doc);

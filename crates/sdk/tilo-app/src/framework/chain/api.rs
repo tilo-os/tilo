@@ -74,13 +74,18 @@ impl ResourceApi for ChainState {
                 resources: Vec::new(),
             });
         }
+        // A write the window's person asks through the API is their step, as
+        // one their own surface asks is: Undo takes it back.
         match (self.part().decode)(action)? {
             part::Decoded::Group(group) => {
                 let created = match self
                     .apply_group_now(&group, invoker)
                     .map_err(|error| error.to_string())?
                 {
-                    Write::Done(_, created) => created,
+                    Write::Done(written, created) => {
+                        self.wrote(invoker, written, true);
+                        created
+                    }
                     Write::Arriving => return Err(arriving(self)),
                 };
                 Ok(answering(None, &created))
@@ -91,7 +96,10 @@ impl ResourceApi for ChainState {
                     .apply_now(&*action, invoker)
                     .map_err(|error| error.to_string())?
                 {
-                    Write::Done(_, created) => created,
+                    Write::Done(written, created) => {
+                        self.wrote(invoker, written, (self.part().is_step)(&*action));
+                        created
+                    }
                     Write::Arriving => return Err(arriving(self)),
                 };
                 Ok(answering(self.answered.borrow_mut().take(), &created))

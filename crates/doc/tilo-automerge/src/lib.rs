@@ -25,7 +25,7 @@ pub use read::ReadTyped;
 pub use write::WriteTyped;
 
 use automerge::sync::{self, SyncDoc};
-use automerge::{AutoCommit, AutomergeError, Change, ChangeHash};
+use automerge::{AutoCommit, AutomergeError, Change, ChangeHash, ReadDoc as _};
 
 /// The ways changes reach an [`AutoCommit`], each dropping the patch events
 /// it logs unless the document has a diff cursor armed.
@@ -61,6 +61,17 @@ pub trait ApplyIncoming {
 
     fn merge_incoming(&mut self, other: &mut AutoCommit)
     -> Result<Vec<ChangeHash>, AutomergeError>;
+
+    /// Take in `loaded`, a whole document another thread loaded, with work
+    /// proportional to what it adds: a document that holds nothing yet
+    /// becomes it (under its own actor and author, leaving `loaded` empty),
+    /// and one that holds some of it gains only the changes it lacks. Whether
+    /// the document gained anything.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::merge_incoming`].
+    fn take_loaded(&mut self, loaded: &mut AutoCommit) -> Result<bool, AutomergeError>;
 
     fn receive_incoming_sync(
         &mut self,
@@ -115,6 +126,25 @@ impl ApplyIncoming for AutoCommit {
         let merged = self.merge(other);
         discard_unread_patches(self);
         merged
+    }
+
+    fn take_loaded(&mut self, loaded: &mut AutoCommit) -> Result<bool, AutomergeError> {
+        let theirs = loaded.get_heads();
+        // Closes an open transaction first, as every other apply path does.
+        if self.get_missing_deps(&theirs).is_empty() {
+            return Ok(false);
+        }
+        if self.is_empty() && self.text_encoding() == loaded.text_encoding() {
+            // Nothing to merge with: rebuilding every change into this
+            // document would cost what loading it did.
+            let mut adopted = std::mem::take(loaded);
+            adopted.set_actor(self.get_actor().clone());
+            adopted.set_author(self.get_author().cloned());
+            *self = adopted;
+            return Ok(true);
+        }
+        self.merge_incoming(loaded)?;
+        Ok(true)
     }
 
     fn receive_incoming_sync(
@@ -265,5 +295,47 @@ mod tests {
             doc.integrate_all();
             assert!(doc.get(ROOT, "late").unwrap().is_some());
         }
+    }
+
+    #[test]
+    fn a_loaded_document_is_taken_in_with_work_for_what_it_adds() {
+        let mut workspace = remote_with(40);
+        let bytes = workspace.save();
+
+        // A document holding nothing becomes the loaded one, under its own actor.
+        let mut empty = AutoCommit::new();
+        let actor = empty.get_actor().clone();
+        assert!(
+            empty
+                .take_loaded(&mut AutoCommit::load(&bytes).unwrap())
+                .unwrap()
+        );
+        assert_eq!(empty.get_heads(), workspace.get_heads());
+        assert_eq!(empty.get_actor(), &actor);
+
+        // One that holds all of it gains nothing.
+        let mut same = workspace.fork();
+        assert!(
+            !same
+                .take_loaded(&mut AutoCommit::load(&bytes).unwrap())
+                .unwrap()
+        );
+
+        // One that holds part of it, and a change of its own, keeps both.
+        let mut owner = workspace.fork();
+        owner.put(ROOT, "mine", 1).unwrap();
+        owner.commit();
+        workspace.put(ROOT, "theirs", 2).unwrap();
+        workspace.commit();
+        let actor = owner.get_actor().clone();
+        assert!(
+            owner
+                .take_loaded(&mut AutoCommit::load(&workspace.save()).unwrap())
+                .unwrap()
+        );
+        assert!(owner.get(ROOT, "mine").unwrap().is_some());
+        assert!(owner.get(ROOT, "theirs").unwrap().is_some());
+        assert_eq!(owner.get_actor(), &actor);
+        assert!(owner.get_missing_deps(&workspace.get_heads()).is_empty());
     }
 }

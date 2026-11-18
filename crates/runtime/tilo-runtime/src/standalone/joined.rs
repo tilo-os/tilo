@@ -20,7 +20,9 @@ use tilo_peer_state::owner::{
     NativeWorkspaceOwner,
     session::{Connect, Holder, Input, Link, Linked, Reach, Scope, hold},
 };
-use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
+use tilo_peer_state::owner_commit::{
+    CommitFuture, LocalDocumentFuture, OwnerCommitRequest, OwnerCommitService,
+};
 use tilo_workspace_service::apps::{
     collab_broker::FanoutState,
     collab_core::BrokerChannels,
@@ -783,31 +785,43 @@ impl OwnerCommitService for Joined {
         request: OwnerCommitRequest,
         resource_type: Option<String>,
     ) -> CommitFuture {
+        let committed = self.commit_local_document(request, resource_type);
+        Box::pin(async move { Ok(committed.await?.1) })
+    }
+
+    /// A write committed here is answered as the owner took it: this device's
+    /// local writers sign before the owner's turn, and one whose sequence a
+    /// later write took is signed again above the document's own. Only the
+    /// resulting committed request, with the receipt that binds it, says what
+    /// the owner did.
+    fn commit_local_document(
+        &self,
+        request: OwnerCommitRequest,
+        resource_type: Option<String>,
+    ) -> LocalDocumentFuture {
         let workspace = WorkspaceId::parse(&request.workspace);
         if workspace.is_some_and(|workspace| self.refused.contains(&workspace)) {
             return Box::pin(std::future::ready(Err(
                 "the desktop session's workspace is read only in the runtime".into(),
             )));
         }
+        let this = self.this.clone();
         if let Some(workspace) = workspace.filter(|workspace| self.hosted_here(*workspace)) {
-            let Some(this) = self.this.upgrade() else {
-                return Box::pin(std::future::ready(Err(
-                    "the joined workspaces closed".into()
-                )));
-            };
-            return Box::pin(
-                async move { this.commit_hosted(workspace, request, resource_type).await },
-            );
+            return Box::pin(async move {
+                let Some(this) = this.upgrade() else {
+                    return Err("the joined workspaces closed".to_string());
+                };
+                // The server keeps the write as it was signed: its receipt
+                // binds exactly this request.
+                let receipt = this
+                    .commit_hosted(workspace, request.clone(), resource_type)
+                    .await?;
+                Ok((request, receipt))
+            });
         }
-        // Drafted again past its record's floor when this device's local writers signed out of
-        // the order the owner takes them, for this device's ownership to sign.
-        let (owner, signer, this) = (
-            self.owner.clone(),
-            Arc::clone(&self.identity.signer),
-            self.this.clone(),
-        );
+        let (owner, signer) = (self.owner.clone(), Arc::clone(&self.identity.signer));
         Box::pin(async move {
-            let (_, receipt) = owner
+            let (committed, receipt) = owner
                 .commit_local_document(request, signer.as_ref(), SystemTime::now())
                 .await?;
             if let Some(workspace) = workspace
@@ -815,7 +829,7 @@ impl OwnerCommitService for Joined {
             {
                 this.wake(workspace);
             }
-            Ok(receipt)
+            Ok((committed, receipt))
         })
     }
 
