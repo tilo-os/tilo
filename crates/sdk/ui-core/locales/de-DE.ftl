@@ -250,10 +250,6 @@ history-sync-unreadable = Die geteilte Fassung dieses Eintrags konnte hier nicht
 history-sync-remote-waiting = Änderungen anderer kommen an, sobald deine Bearbeitung abgeschlossen ist.
 history-sync-owner-closed = Die Verbindung des Dokuments wurde geschlossen. Verbinde dich neu, um Änderungen anderer zu empfangen.
 
-# File history in the History host.
-
-    Die Datei wird erneut geprüft
-
 close-title = Dokument schließen
 close-unsaved = Änderungen vor dem Schließen speichern?
 close-save-failed = Änderungen konnten nicht gespeichert werden

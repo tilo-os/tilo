@@ -247,10 +247,6 @@ history-sync-unreadable = This record's shared copy couldn't be read here. Your 
 history-sync-remote-waiting = Changes from others arrive when your edit finishes.
 history-sync-owner-closed = The document's connection closed. Reconnect to receive changes from others.
 
-# File history in the History host.
-
-    Checking the file again
-
 close-title = Close document
 close-unsaved = Save your changes before closing?
 close-save-failed = Could not save changes
