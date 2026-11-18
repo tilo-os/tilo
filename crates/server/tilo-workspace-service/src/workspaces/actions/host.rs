@@ -429,7 +429,7 @@ impl Workspaces {
     ) -> Vec<CatalogueRow> {
         let now = tilo_clock::unix_now_ns();
         let person = device.user_public_key == self.inner.host.cert.user_public_key;
-        let grants = if agents::is_the_person(caller, device) {
+        let grants = if agents::is_the_person(caller, device, workspace_id) {
             None
         } else {
             Some(self.agent_grants(workspace_id, caller).await)

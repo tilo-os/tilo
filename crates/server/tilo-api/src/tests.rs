@@ -974,10 +974,11 @@ async fn only_a_key_reaching_all_workspaces_lasts_and_only_the_key_flow_makes_on
     let server = server();
     let now = tilo_clock::unix_now_ms();
 
-    // A key for one workspace is no server key and stays bounded.
+    // A key for one workspace is the person's own, a server key, and stays
+    // bounded.
     let studio = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
     let (_, asked) = ask_for_key(&server, &json!({"name": "Jane", "workspace": studio})).await;
-    assert!(!asked.server_key);
+    assert!(asked.server_key);
     assert!(asked.expires_ms.unwrap() <= now + 90 * DAY_MS);
     for body in [
         json!({"name": "Jane", "workspace": studio, "expires_in": 100 * 24 * 60 * 60}),

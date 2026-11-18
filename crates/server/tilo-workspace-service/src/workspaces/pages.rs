@@ -453,6 +453,7 @@ impl Workspaces {
     ) -> Result<WorkspacesReply, CollaborationError> {
         let name = valid_name(name)?;
         let person = hex::encode(device.user_public_key);
+        let own_key = device.capabilities.own_key_in(workspace);
         let state = self.workspace(workspace).await?;
         let mut workspace = state.lock().await;
         let at = system_time(now);
@@ -464,7 +465,7 @@ impl Workspaces {
                 Ok(member) => {
                     !member.acting.delegated() && member.person_id() == Some(person.as_str())
                 }
-                Err(_) => device.capabilities.server_key && device.capabilities.agent.is_some(),
+                Err(_) => own_key,
             };
         let names_themself = theirs
             && workspace

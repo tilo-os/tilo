@@ -1091,14 +1091,16 @@ tilo_test_env::scenario! {
             Err(DeviceCertError::Expired)
         );
 
-        // Only a grant reaching all workspaces is a server key, and a grant
-        // without the marker (an agent's, through consent) still expires.
+        // A key the person made for one workspace is theirs too and lasts
+        // the same; a server key reaches somewhere, and a grant without the
+        // marker (an agent's, through consent) still expires.
         let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let mut one = chosen.clone();
+        one.capabilities = DeviceCapabilities::own_key_grant(AgentScope::Workspace([7; 16]));
+        one.expires_at_ns = None;
+        sign_device_cert(&mut one, &root).unwrap();
+        verify_device_cert_at(&one, 1_000 + 5 * MAX_AGENT_GRANT_LIFETIME_NS).unwrap();
         for capabilities in [
-            DeviceCapabilities {
-                server_key: true,
-                ..DeviceCapabilities::agent_grant(AgentScope::Workspace([7; 16]))
-            },
             DeviceCapabilities {
                 agent: None,
                 ..DeviceCapabilities::server_key_grant()
@@ -1192,18 +1194,25 @@ fn a_server_key_mints_keys_that_expire_and_end_with_it() {
         minted.capabilities.agent,
         Some(AgentScope::Workspace([7; 16]))
     );
-    assert!(!minted.capabilities.server_key);
+    // A key the person made mints keys of theirs.
+    assert!(minted.capabilities.server_key);
     let mut forever = mint(3_000);
     forever.expires_at_ns = None;
-    let mut longer = mint(2_001 + MAX_AGENT_GRANT_LIFETIME_NS);
-    for mut refused in [forever, longer.clone()] {
+    let longer = mint(2_001 + MAX_AGENT_GRANT_LIFETIME_NS);
+    // Nor does it lose the marker its issuer gave it.
+    let mut unmarked = mint(3_000);
+    unmarked.capabilities.server_key = false;
+    for (case, mut refused) in [
+        ("forever", forever),
+        ("longer", longer),
+        ("unmarked", unmarked),
+    ] {
         assert_eq!(
             sign_device_cert(&mut refused, &key),
-            Err(DeviceCertError::InvalidAgentGrant)
+            Err(DeviceCertError::InvalidIssuer),
+            "{case}"
         );
     }
-    longer.capabilities.server_key = true;
-    assert!(sign_device_cert(&mut longer, &key).is_err());
 
     let mut entry = crate::RevocationEntry {
         user_public_key: server.user_public_key,

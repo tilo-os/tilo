@@ -1247,12 +1247,16 @@ fn mint_key(
             crate::APPROVE_AGAIN,
         )
     })?;
-    let browser_pages = cert.capabilities.browser_pages;
+    // A key the person made mints keys of theirs, as its certificate says.
+    let (server_key, browser_pages) = (
+        cert.capabilities.server_key,
+        cert.capabilities.browser_pages,
+    );
     GrantKey::new(
         minted_key,
         cert,
         AgentScope::Workspace(id),
-        false,
+        server_key,
         browser_pages,
         now_ns,
     )

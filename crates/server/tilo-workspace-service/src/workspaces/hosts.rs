@@ -509,8 +509,10 @@ impl Workspaces {
     /// holder answers it alike.
     pub(super) fn chooses_servers(governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
         let person = caller.user_public_key;
-        let speaks_for_person =
-            caller.capabilities.agent.is_none() || caller.capabilities.server_key;
+        let speaks_for_person = caller.capabilities.agent.is_none()
+            || caller
+                .capabilities
+                .own_key_in(governed.peer().workspace_id());
         speaks_for_person
             && (person == governed.peer().owner()
                 || governed

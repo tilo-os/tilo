@@ -112,12 +112,10 @@ pub async fn sign_in_answer(
         (Some(key), Some(scope), expires) if expires.is_some() || ask.server_key => {
             let scope = AgentScope::parse(&scope)
                 .ok_or_else(|| js_error("a grant's scope is `all` or a workspace id"))?;
-            let capabilities = match (ask.server_key, scope) {
-                (false, scope) => DeviceCapabilities::agent_grant(scope),
-                (true, AgentScope::AllWorkspaces) => DeviceCapabilities::server_key_grant(),
-                (true, AgentScope::Workspace(_)) => {
-                    return Err(js_error("a server key reaches all your workspaces"));
-                }
+            let capabilities = if ask.server_key {
+                DeviceCapabilities::own_key_grant(scope)
+            } else {
+                DeviceCapabilities::agent_grant(scope)
             };
             let cert = issue_agent_grant(
                 &root,

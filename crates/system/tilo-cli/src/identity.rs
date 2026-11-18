@@ -243,10 +243,10 @@ pub fn asked(location: &str) -> Result<Asked> {
 }
 
 /// The proof and the grant certificate `person` answers `asked` with, as
-/// the page posts them back: `pending`, `proof` and `grant`. A key for all of
-/// the person's workspaces is a server key; one for a single workspace is an
-/// agent's grant for that workspace, as their Tilo certifies it on its sign-in
-/// card: narrower than what this computer approves already.
+/// the page posts them back: `pending`, `proof` and `grant`. A key the person
+/// makes is a server key, theirs, for all their workspaces or one; an agent's
+/// grant for one workspace is certified as their Tilo certifies it on its
+/// sign-in card: narrower than what this computer approves already.
 ///
 /// # Errors
 /// A scope that is neither `all` nor a workspace id, a key for one workspace
@@ -259,12 +259,7 @@ pub fn answer(person: &Person, asked: &Asked) -> Result<Vec<(&'static str, Strin
         )
     })?;
     let capabilities = match scope {
-        tilo_user_identity::AgentScope::AllWorkspaces if asked.server_key => {
-            DeviceCapabilities::server_key_grant()
-        }
-        tilo_user_identity::AgentScope::Workspace(_) if asked.server_key => {
-            bail!("a server key reaches all your workspaces")
-        }
+        scope if asked.server_key => DeviceCapabilities::own_key_grant(scope),
         scope => {
             if asked.expires_at_ns.is_none() {
                 bail!(
@@ -499,11 +494,15 @@ mod tests {
             .with_browser_pages(true)
         );
         assert_eq!(grant.expires_at_ns, Some(until_ms * 1_000_000));
-        // A server key reaches all workspaces, never one; a key for one lasts until a time.
+        // A key the person makes for one workspace is theirs, as one for all
+        // of them is; an agent's for one lasts until a time.
         let narrowed =
             asked(&location.replace("grant_scope=all", &format!("grant_scope={workspace}")))
                 .unwrap();
-        assert!(answer(&person, &narrowed).is_err());
+        let form = answer(&person, &narrowed).unwrap();
+        let own: DeviceCert = decoded(&form[2].1);
+        tilo_user_identity::verify_device_cert(&own).unwrap();
+        assert!(own.capabilities.server_key);
         let endless = asked(
             &location
                 .replace("&grant_kind=server_key", "")

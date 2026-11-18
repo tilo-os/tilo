@@ -49,12 +49,20 @@ pub(crate) struct Operation<'a> {
 }
 
 /// Whether `caller`, on the device `certificate` certifies, is that device's
-/// person: acting themselves, or through a key they made for their own
-/// programs.
-pub(crate) fn is_the_person(caller: &Caller, certificate: &DeviceCert) -> bool {
+/// person in `workspace` (the account where `None`): acting themselves, or
+/// through a key they made for their own programs that reaches it. A key of
+/// theirs for one workspace is them there and nowhere else.
+pub(crate) fn is_the_person(
+    caller: &Caller,
+    certificate: &DeviceCert,
+    workspace: Option<WorkspaceId>,
+) -> bool {
+    let reaches = match workspace {
+        Some(workspace) => certificate.capabilities.own_key_in(&workspace.to_string()),
+        None => certificate.capabilities.own_key_in("all"),
+    };
     caller.acting().is_person()
-        || (certificate.capabilities.server_key
-            && caller.device_public_key() == Some(&certificate.device_public_key))
+        || (reaches && caller.device_public_key() == Some(&certificate.device_public_key))
 }
 
 /// Whether `caller` acts for the person of its device: that person, or an
@@ -214,7 +222,7 @@ impl Workspaces {
         operation: &Operation<'_>,
         arguments: &serde_json::Map<String, Value>,
     ) -> Result<(), ActionCallError> {
-        if is_the_person(caller, certificate) {
+        if is_the_person(caller, certificate, workspace_id) {
             return Ok(());
         }
         let Some(agent) = caller.acting().agent_id() else {
@@ -398,9 +406,6 @@ impl Workspaces {
         caller: &Caller,
         request: &WorkspacesRequest,
     ) -> Result<(), String> {
-        if is_the_person(caller, device) {
-            return Ok(());
-        }
         // The request is its name, with its fields under it: what the person
         // reads of it is its text, and the people it names by their key.
         let asked = serde_json::to_value(request).unwrap_or_default();
@@ -414,6 +419,14 @@ impl Workspaces {
             Value::String(name) => (name.as_str(), Value::Null),
             _ => ("", Value::Null),
         };
+        let workspace_id = fields
+            .get("workspace")
+            .or_else(|| fields.pointer("/grant/workspace"))
+            .and_then(Value::as_str)
+            .and_then(WorkspaceId::parse);
+        if is_the_person(caller, device, workspace_id) {
+            return Ok(());
+        }
         let Some(&(_, own, action)) = PAGE_ACTIONS.iter().find(|(page, ..)| *page == name) else {
             return Err(format!("an agent does not ask for {name} here"));
         };
@@ -423,11 +436,6 @@ impl Workspaces {
             .await
             .map_err(|refused| refused.to_string())?;
         let operation = operation_of(own, action);
-        let workspace_id = fields
-            .get("workspace")
-            .or_else(|| fields.pointer("/grant/workspace"))
-            .and_then(Value::as_str)
-            .and_then(WorkspaceId::parse);
         let arguments = fields
             .as_object()
             .into_iter()

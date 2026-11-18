@@ -99,9 +99,9 @@ fn scope_of(workspace: Option<&str>) -> Result<AgentScope, &'static str> {
     }
 }
 
-/// The grant a key reaching `scope` asks for at `now`: a server key, lasting
-/// until revoked or `expires_in` seconds, for all workspaces; a bounded one,
-/// for at most [`crate::grant_key::GRANT_LIFETIME`], for one.
+/// The grant a key reaching `scope` asks for at `now`: a server key, the
+/// person's own, lasting until revoked or `expires_in` seconds for all
+/// workspaces, and at most [`crate::grant_key::GRANT_LIFETIME`] for one.
 fn key_grant(
     scope: AgentScope,
     expires_in: Option<u64>,
@@ -120,7 +120,10 @@ fn key_grant(
             browser_pages,
         });
     }
-    let bounded = crate::GrantAsk::bounded(scope, now);
+    let bounded = crate::GrantAsk {
+        server_key: true,
+        ..crate::GrantAsk::bounded(scope, now)
+    };
     match (chosen, bounded.expires_ms) {
         (Some(chosen), Some(most)) if chosen > most => Err(
             "a key reaching one workspace lasts at most 89 days (`expires_in` 7689600); \

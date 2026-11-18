@@ -294,11 +294,12 @@ pub struct DeviceCapabilities {
     /// takes it.
     pub stand_in: bool,
 
-    /// The agent's grant is a server key the person created for their own
-    /// backend, reaching all their workspaces: it lasts until they revoke it,
-    /// or until an expiry they chose (see [`MAX_AGENT_GRANT_LIFETIME_NS`]).
-    /// Only an all-workspaces grant is one; the grant an agent gets through
-    /// a person's consent never is. The marker is part of the signed
+    /// The agent's grant is a key the person made for their own programs, a
+    /// server key: one reaching all their workspaces, one reaching one of
+    /// them, or one such a key minted. It acts as the person wherever it
+    /// reaches, and lasts until they revoke it, or until an expiry they chose
+    /// (see [`MAX_AGENT_GRANT_LIFETIME_NS`]). The grant an agent gets through
+    /// a person's consent never is one. The marker is part of the signed
     /// encoding, so a certificate cannot gain or lose it.
     pub server_key: bool,
 
@@ -602,9 +603,17 @@ impl DeviceCapabilities {
     /// [`Self::server_key`]).
     #[must_use]
     pub const fn server_key_grant() -> Self {
+        Self::own_key_grant(AgentScope::AllWorkspaces)
+    }
+
+    /// The capabilities of a key a person made for their own programs,
+    /// reaching `scope`: a server key ([`Self::server_key`]), which acts as
+    /// the person there.
+    #[must_use]
+    pub const fn own_key_grant(scope: AgentScope) -> Self {
         Self {
             server_key: true,
-            ..Self::agent_grant(AgentScope::AllWorkspaces)
+            ..Self::agent_grant(scope)
         }
     }
 
@@ -617,13 +626,20 @@ impl DeviceCapabilities {
         self
     }
 
+    /// Whether these are a key the person made for their own programs
+    /// ([`Self::server_key`]) that reaches the workspace `workspace` (its
+    /// UUID, or `all` for the account): where it acts as the person.
+    #[must_use]
+    pub fn own_key_in(&self, workspace: &str) -> bool {
+        self.server_key && self.agent.is_some_and(|scope| scope.reaches(workspace))
+    }
+
     /// Whether these are an agent's grant's capabilities that hold: the
-    /// scope, and no other flag but being a server key that reaches all
-    /// workspaces. `true` for every certificate that is neither a grant's nor
-    /// a server key's.
+    /// scope, and no other flag but being a server key. `true` for every
+    /// certificate that is neither a grant's nor a server key's.
     #[must_use]
     pub const fn agent_grant_holds(&self) -> bool {
-        if self.server_key && !matches!(self.agent, Some(AgentScope::AllWorkspaces)) {
+        if self.server_key && self.agent.is_none() {
             return false;
         }
         self.agent.is_none()
@@ -1168,7 +1184,9 @@ fn check_issued(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
 /// Whether a grant `cert` that the grant `issuer` minted stays within it.
 /// The issuer reaches all of its person's workspaces, is root-signed and was
 /// valid when it minted. `cert` is an agent's grant for one workspace and
-/// nothing else, and ends no later than the issuer; it always expires, even
+/// nothing else, a server key exactly when its issuer is one (a key the
+/// person made mints keys of theirs), and ends no later than the issuer nor
+/// [`MAX_AGENT_GRANT_LIFETIME_NS`] after it was minted; it always expires, even
 /// when its issuer is a server key that does not. Its key is neither the
 /// issuer's nor the root's. A grant can only narrow what it was given, and
 /// the chain is never longer than one step.
@@ -1178,13 +1196,18 @@ fn check_minted(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
             .expires_at_ns
             .is_none_or(|expiry| cert.issued_at_ns < expiry);
     let ends_within = cert.expires_at_ns.is_some_and(|minted| {
-        minted > cert.issued_at_ns && issuer.expires_at_ns.is_none_or(|parent| minted <= parent)
+        minted > cert.issued_at_ns
+            && minted.saturating_sub(cert.issued_at_ns) <= MAX_AGENT_GRANT_LIFETIME_NS
+            && issuer.expires_at_ns.is_none_or(|parent| minted <= parent)
     });
     let one_workspace = match cert.capabilities.agent {
         Some(scope @ AgentScope::Workspace(_)) => {
             cert.capabilities
-                == DeviceCapabilities::agent_grant(scope)
-                    .with_browser_pages(cert.capabilities.browser_pages)
+                == DeviceCapabilities {
+                    server_key: issuer.capabilities.server_key,
+                    ..DeviceCapabilities::agent_grant(scope)
+                        .with_browser_pages(cert.capabilities.browser_pages)
+                }
         }
         _ => false,
     };
@@ -1254,7 +1277,8 @@ pub fn prepare_stand_in_cert(
 /// The unsigned certificate the all-workspaces grant `issuer` signs to make
 /// `key` a grant reaching only `workspace`, from `issued_at_ns` until
 /// `expires_at_ns`, which may be no later than the issuer's own expiry nor
-/// [`MAX_AGENT_GRANT_LIFETIME_NS`] after `issued_at_ns`.
+/// [`MAX_AGENT_GRANT_LIFETIME_NS`] after `issued_at_ns`. It is a server key
+/// when the issuer is one.
 /// Sign it with [`sign_device_cert`] and the issuer's key.
 #[must_use]
 pub fn prepare_minted_grant(
@@ -1269,8 +1293,11 @@ pub fn prepare_minted_grant(
         user_public_key: issuer.user_public_key,
         device_public_key: key,
         device_label: label.to_owned(),
-        capabilities: DeviceCapabilities::agent_grant(AgentScope::Workspace(workspace))
-            .with_browser_pages(issuer.capabilities.browser_pages),
+        capabilities: DeviceCapabilities {
+            server_key: issuer.capabilities.server_key,
+            ..DeviceCapabilities::agent_grant(AgentScope::Workspace(workspace))
+                .with_browser_pages(issuer.capabilities.browser_pages)
+        },
         issued_at_ns,
         expires_at_ns: Some(expires_at_ns),
         signature: [0; 64],

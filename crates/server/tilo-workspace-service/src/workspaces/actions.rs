@@ -1127,7 +1127,7 @@ type Governed = Arc<AsyncMutex<GovernedWorkspace>>;
 /// account. An agent the person connected through consent does not.
 fn reaches_every_workspace(caller: &Caller, certificate: &DeviceCert) -> bool {
     certificate.capabilities.agent == Some(tilo_user_identity::AgentScope::AllWorkspaces)
-        && agents::is_the_person(caller, certificate)
+        && agents::is_the_person(caller, certificate, None)
         && caller.user_public_key() == Some(&certificate.user_public_key)
 }
 
@@ -1240,7 +1240,7 @@ impl Workspaces {
                 .await;
             if let Some((governed, device)) = self.governed_by(workspace_id, caller).await {
                 // What an agent's grants here refuse it is not offered to it.
-                let person = agents::is_the_person(caller, &device);
+                let person = agents::is_the_person(caller, &device, Some(workspace_id));
                 let grants = if person {
                     None
                 } else {
