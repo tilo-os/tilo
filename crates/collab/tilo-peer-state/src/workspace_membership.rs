@@ -271,10 +271,7 @@ pub enum WorkspaceMembershipCommand {
     /// key holder. It keeps the commands after it at their encoded positions,
     /// still reads where workspaces hold it, and is refused.
     #[serde(rename = "AddAgent")]
-    RefusedAddAgent {
-        agent: String,
-        preset: AgentPreset,
-    },
+    RefusedAddAgent { agent: String, preset: AgentPreset },
     /// Retired with admission by preset, as [`Self::RefusedAddAgent`].
     #[serde(rename = "RemoveAgent")]
     RefusedRemoveAgent { agent: String },

@@ -73,8 +73,13 @@ pub(super) fn apply(app: &mut App, action: &actions::Action) {
 pub(super) fn arrive(app: &mut App, action: &actions::Action) {
     let parts = app.chain_parts::<NoteList>();
     let mut action = action.clone();
-    crate::note_list::prepare(std::slice::from_mut(&mut action), &app.state(), &parts, None)
-        .unwrap();
+    crate::note_list::prepare(
+        std::slice::from_mut(&mut action),
+        &app.state(),
+        &parts,
+        None,
+    )
+    .unwrap();
     let index = ui::framework::placed::<NoteList>(&action, &parts);
     app.replica_arrives(&crate::note_list::chain().part(index), |doc| {
         tilo_actions::apply_local_by(doc, &action, actions::encode(&action), Some(b"peer"))
