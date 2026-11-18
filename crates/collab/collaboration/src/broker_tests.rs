@@ -115,6 +115,27 @@ use runtime_collab::wire::{
 };
 use tokio::io::AsyncWriteExt as _;
 
+/// A real change writing `text`, as a window's direct edit names itself, and
+/// the claims its op carries: a device that opens a sealed op reads each
+/// change against its claim, and refuses bytes that are no change.
+fn claimed_change(text: &str) -> (Vec<u8>, Vec<collab_types::ChangeClaim>) {
+    use automerge::transaction::Transactable as _;
+    let message = tilo_actions::FrameworkChange::Native.change_message();
+    let mut doc = automerge::AutoCommit::new();
+    doc.put(automerge::ROOT, "text", text).unwrap();
+    doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message.clone()));
+    let bytes = doc.save_after(&[]);
+    let claims = collab_types::claim::parse_changes(&bytes)
+        .unwrap()
+        .iter()
+        .map(|change| {
+            collab_types::ChangeClaim::of_change(change.hash().0, Some(&message), Vec::new())
+                .unwrap()
+        })
+        .collect();
+    (bytes, claims)
+}
+
 /// Changes the fake broker hands a reader holding `from`.
 #[derive(Clone)]
 pub struct FixtureChanges {
@@ -3008,7 +3029,8 @@ fn a_slow_identity_service_never_holds_up_incoming_ops() {
     let group =
         key_group::KeyGroup::create(channel, key_group::MemberKey::generate("device").unwrap())
             .unwrap();
-    let frame = collab_types::DocumentMutation::Incremental(b"remote change".to_vec())
+    let (change, claims) = claimed_change("remote change");
+    let frame = collab_types::DocumentMutation::Incremental(change)
         .encode()
         .unwrap();
     let (metadata, ciphertext) = group
@@ -3027,7 +3049,8 @@ fn a_slow_identity_service_never_holds_up_incoming_ops() {
         crate::time::SystemTime::UNIX_EPOCH,
         1,
         metadata,
-    );
+    )
+    .with_claims(claims);
     let broker = FakeBroker {
         captures: Arc::new(std::sync::Mutex::new(Captures {
             op_stream_delay: Some(ARRIVES),
@@ -4995,7 +5018,8 @@ tilo_test_env::scenario! {
             bob_key,
         )
         .unwrap();
-        let plaintext = DocumentMutation::Incremental(b"secret change".to_vec())
+        let (secret_change, claims) = claimed_change("secret change");
+        let plaintext = DocumentMutation::Incremental(secret_change.clone())
             .encode()
             .unwrap();
         // The action commit a sealed part carries rides inside what only
@@ -5038,6 +5062,7 @@ tilo_test_env::scenario! {
                 1,
                 metadata,
             )
+            .with_claims(claims.clone())
         };
         let op = build(ciphertext.clone(), artifact, metadata);
         let endpoint = group_route_keys(bob);
@@ -5053,7 +5078,7 @@ tilo_test_env::scenario! {
             .unwrap();
             assert!(matches!(
                 signed.event.document_mutation(),
-                Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
+                Some(Ok(DocumentMutation::Incremental(data))) if data.as_slice() == secret_change.as_slice()
             ));
             assert_eq!(
                 signed.commit,
@@ -5143,7 +5168,7 @@ tilo_test_env::scenario! {
         .event;
         assert!(matches!(
             event.document_mutation(),
-            Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
+            Some(Ok(DocumentMutation::Incremental(data))) if data.as_slice() == secret_change.as_slice()
         ));
     }
 
@@ -5192,13 +5217,15 @@ tilo_test_env::scenario! {
             key_group::MemberKey::generate("alice").unwrap(),
         )
         .unwrap();
+        let changes: Vec<_> = (1..=20_u64)
+            .map(|seq| claimed_change(&format!("change {seq}")))
+            .collect();
         let history: Vec<Vec<u8>> = (1..=20_u64)
-            .map(|seq| {
-                let frame = collab_types::DocumentMutation::Incremental(
-                    format!("change {seq}").into_bytes(),
-                )
-                .encode()
-                .unwrap();
+            .zip(&changes)
+            .map(|(seq, (change, claims))| {
+                let frame = collab_types::DocumentMutation::Incremental(change.clone())
+                    .encode()
+                    .unwrap();
                 let (metadata, ciphertext) = alice
                     .seal_content(
                         artifact,
@@ -5215,7 +5242,8 @@ tilo_test_env::scenario! {
                     crate::time::SystemTime::UNIX_EPOCH,
                     seq,
                     metadata,
-                );
+                )
+                .with_claims(claims.clone());
                 postcard::to_stdvec(&op).unwrap()
             })
             .collect();
@@ -5275,12 +5303,11 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(ops.len(), 20);
         assert_eq!(oldest_seq, Some(1));
-        for (index, payload) in payloads.iter().enumerate() {
+        assert_eq!(payloads.len(), changes.len());
+        for (payload, (change, _)) in payloads.iter().zip(&changes) {
             assert_eq!(
                 collab_types::DocumentMutation::decode(payload.as_deref().unwrap()).unwrap(),
-                collab_types::DocumentMutation::Incremental(
-                    format!("change {}", index + 1).into_bytes()
-                )
+                collab_types::DocumentMutation::Incremental(change.clone())
             );
         }
     }
