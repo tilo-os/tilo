@@ -1387,3 +1387,7 @@ mod turn_ends;
 /// A reply grows while its model writes it.
 #[path = "hosted_reply_grows.rs"]
 mod reply_grows;
+
+/// A model call its provider refuses for a moment is asked again, with the turn's work kept.
+#[path = "hosted_turn_asks_again.rs"]
+mod asks_again;

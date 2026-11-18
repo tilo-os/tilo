@@ -72,6 +72,7 @@ use turn_provider::TurnProvider;
 
 mod across;
 mod answers;
+mod asking;
 mod asks;
 mod calendars;
 mod carried;
@@ -2157,7 +2158,7 @@ async fn work(
             0,
         );
     };
-    let turns = Arc::new(Mutex::new(turns));
+    let turns = Arc::new(Mutex::new(asking::again(turns, going.stop_flag())));
     let mut server = match McpServer::for_turn(scope.provider.clone(), reply.caller.clone()) {
         Ok(server) => server,
         Err(error) => return (Outcome::Failed(error.to_string()), 0),
@@ -2207,7 +2208,7 @@ async fn work(
         let response = match ask_model(&turns, request, format!("{key}:{round}"), reply).await {
             Ok(response) => response,
             Err(_) if going.stopped() => return (Outcome::Cancelled, cost),
-            Err(why) => return (Outcome::Failed(why), cost),
+            Err(why) => return (Outcome::Failed(asking::left_off(&why, &messages)), cost),
         };
         cost = cost.saturating_add(response.cost_micros);
         let calls = match calls_of(&response) {
