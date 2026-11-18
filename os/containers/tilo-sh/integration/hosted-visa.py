@@ -77,7 +77,7 @@ import urllib.request
 from pathlib import Path
 
 from approver import Person
-from tilo import AsyncTilo, ProtocolError, Refused, Run
+from tilo import AsyncTilo, Invocation, ProtocolError, Refused
 
 API_URL, SERVER_KEY, OUT, FORM_URL = sys.argv[1:5]
 
@@ -172,7 +172,7 @@ async def outcome(call: object) -> object:
     """What a page action answered: its result, or the run it waits in,
     followed to its end (a held submission is answered when the person does)."""
     answer = await call
-    if isinstance(answer, Run):
+    if isinstance(answer, Invocation):
         return await answer.result()
     return answer
 
@@ -747,10 +747,10 @@ async def fill_phase(report: dict[str, object]) -> int:
         asked = paired.begin("allow", "browser-allowed")
         began = time.perf_counter()
         started = await page.do("submit-page", element=submit)
-        if isinstance(started, Run):
+        if isinstance(started, Invocation):
             # The agent following it reads where it stands while it waits,
             # not only that nothing answered yet.
-            report["while_waiting"] = await started.endpoint.status(started.run_id)
+            report["while_waiting"] = await started.endpoint.status(started.invocation_id)
             released = await started.result()
         else:
             released = started

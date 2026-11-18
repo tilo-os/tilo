@@ -731,7 +731,10 @@ fn checked_personal_projection(
             serde_json::json!({
                 "id": identity_id,
                 "display_name": "My Tilo identity",
-                "resource_path": resource_path,
+                // The registry the runtime reads names an identity's file
+                // `record_path`, and refuses a field it does not know: one
+                // written another way holds identities it cannot start from.
+                "record_path": resource_path,
                 "user_public_key": user
             }),
         );
