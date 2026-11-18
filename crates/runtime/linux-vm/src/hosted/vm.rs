@@ -10,10 +10,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use libvirt_domain::DomainState;
 use linux_vm_protocol::files::{FILES_PORT_BASE, FileShare};
 use linux_vm_protocol::link::AgentLink;
 use linux_vm_protocol::{AGENT_PORT, GuestMessage, HostMessage, client};
-use libvirt_domain::DomainState;
 use thiserror::Error;
 
 use super::files::Served;
@@ -1140,7 +1140,11 @@ mod tests {
             read_only: true,
             ..share
         };
-        let argv = files_serve_argv(Path::new("/usr/libexec/tilo/tilo-linux-vm"), &read_only, &[]);
+        let argv = files_serve_argv(
+            Path::new("/usr/libexec/tilo/tilo-linux-vm"),
+            &read_only,
+            &[],
+        );
         let crate::virtiofs::Confinement {
             ro, rw, program, ..
         } = crate::virtiofs::parse_confined(&argv[2..]).unwrap();

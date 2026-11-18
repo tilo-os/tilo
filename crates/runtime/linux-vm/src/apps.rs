@@ -240,10 +240,7 @@ mod tests {
             assert!(entry.contains("StartupWMClass=vm.linux.code\n"));
             let parsed =
                 desktop_entry::entry::parse(&entry, "x", Path::new("/x.desktop"), &[]).unwrap();
-            assert_eq!(
-                parsed.startup_wm_class.as_deref(),
-                Some("vm.linux.code")
-            );
+            assert_eq!(parsed.startup_wm_class.as_deref(), Some("vm.linux.code"));
         }
         {
             let dir = tempfile::tempdir().unwrap();

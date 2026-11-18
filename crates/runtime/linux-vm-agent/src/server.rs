@@ -144,10 +144,7 @@ impl Agent {
         #[cfg(target_os = "linux")]
         {
             let connect = |port| {
-                linux_vm_protocol::vsock::VsockStream::connect(
-                    linux_vm_protocol::HOST_CID,
-                    port,
-                )
+                linux_vm_protocol::vsock::VsockStream::connect(linux_vm_protocol::HOST_CID, port)
             };
             let (paths, failures) =
                 self.files
@@ -360,9 +357,7 @@ impl Agent {
         let stdio = || match request.stdio {
             linux_vm_protocol::Stdio::Relay => Stdio::piped(),
             // Attached to its terminal by the caller.
-            linux_vm_protocol::Stdio::Null | linux_vm_protocol::Stdio::Terminal(_) => {
-                Stdio::null()
-            }
+            linux_vm_protocol::Stdio::Null | linux_vm_protocol::Stdio::Terminal(_) => Stdio::null(),
         };
         command.stdin(stdio()).stdout(stdio()).stderr(stdio());
         (command, spec.note)

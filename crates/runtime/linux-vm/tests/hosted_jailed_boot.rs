@@ -40,15 +40,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use linux_vm_protocol::client::{self, LaunchIo};
-use linux_vm_protocol::link::AgentLink;
-use linux_vm_protocol::{AGENT_PORT, Display, Launch, Stdio, TerminalSize};
 use linux_vm::hosted::control::VmRequest;
 use linux_vm::hosted::firecracker::Machine;
 use linux_vm::hosted::jail::{Helper, Jail};
 use linux_vm::hosted::service::{Service, ServiceConfig};
 use linux_vm::hosted::size::VmSize;
 use linux_vm::hosted::vm::{Settings, system_clock};
+use linux_vm_protocol::client::{self, LaunchIo};
+use linux_vm_protocol::link::AgentLink;
+use linux_vm_protocol::{AGENT_PORT, Display, Launch, Stdio, TerminalSize};
 
 fn env_path(name: &str) -> PathBuf {
     let path = std::env::var_os(name).map(PathBuf::from);

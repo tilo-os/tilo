@@ -11,10 +11,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use libvirt_domain::{Connection, DomainState, Virsh, VirshError, vsock_cid};
 use linux_vm_protocol::client;
 use linux_vm_protocol::link::AgentLink;
 use linux_vm_protocol::{AGENT_PORT, GuestMessage, GuestShare, HostMessage};
-use libvirt_domain::{Connection, DomainState, Virsh, VirshError, vsock_cid};
 use thiserror::Error;
 
 use crate::config::VmConfig;
@@ -214,8 +214,7 @@ impl Supervisor {
                 path: path.clone(),
                 read_only: false,
             };
-            if linux_vm_protocol::share_path_allowed(path)
-                && !self.session_shares.contains(&share)
+            if linux_vm_protocol::share_path_allowed(path) && !self.session_shares.contains(&share)
             {
                 self.session_shares.push(share);
             }
@@ -651,9 +650,7 @@ fn wait_for_socket(socket: &Path, daemon: &mut Child) -> bool {
 /// What the session is told of the VM's window forwarder: a service's launch, which the session
 /// shows and never ends; the VM, not one of its apps.
 #[cfg(target_os = "linux")]
-fn forwarder_launch(
-    guest: linux_vm_protocol::GuestOs,
-) -> tilo_app_keeper::registry::KeptLaunch {
+fn forwarder_launch(guest: linux_vm_protocol::GuestOs) -> tilo_app_keeper::registry::KeptLaunch {
     tilo_app_keeper::registry::KeptLaunch {
         version: tilo_app_keeper::registry::LAUNCH_VERSION,
         app: format!("vm.{}", guest.as_str()),
