@@ -17,7 +17,7 @@ struct Row {
     title: String,
     summary: String,
     favorite: bool,
-    published: ui::tilo_actions::ResourceSpec,
+    published: ui::framework::LiveRow,
 }
 
 impl Row {
@@ -27,7 +27,7 @@ impl Row {
             title: item.title.clone(),
             summary: summary(item),
             favorite: is_favorite(item),
-            published: crate::actions::item_row(item).into_resource(),
+            published: crate::actions::item_row(item),
         }
     }
 }

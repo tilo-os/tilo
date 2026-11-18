@@ -490,7 +490,7 @@ fn review(core: &Core) -> Element {
                 .icon(crate::search::icon(item.kind))
                 .secondary(finding.reasons())
                 .disclosure();
-            let published = crate::actions::item_row(item).into_resource();
+            let published = crate::actions::item_row(item);
             Some(
                 Box::new(match crate::actions::item_binding(&published, "open") {
                     Some(open) => row.on_action(open),
