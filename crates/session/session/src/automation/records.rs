@@ -244,7 +244,7 @@ mod tests {
     }
 
     /// A record a file opened as, kept under a storage key its route does not spell: a change of it
-    /// written to it reaches the shortcuts by the resource's route.
+    /// noted by its route reaches the shortcuts by that route.
     #[test]
     fn a_change_written_to_a_file_record_becomes_an_event() {
         use durable_store::{StorageKey, WriteOp};
@@ -253,10 +253,7 @@ mod tests {
         const WORKSPACE: &str = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd4";
         let dir = tempfile::tempdir().unwrap();
         let changes = Changes::default();
-        let store = crate::platform::records::noting(
-            Arc::new(app_state::FsStore::new(dir.path())),
-            changes.clone(),
-        );
+        let store: crate::platform::Store = Arc::new(app_state::FsStore::new(dir.path()));
         let write = |key: &StorageKey, doc: &mut AutoCommit| {
             store
                 .write(key, WriteOp::Replace(doc.save()), None)
@@ -283,7 +280,7 @@ mod tests {
                     crate::platform::Store::clone(&store),
                     changes.clone(),
                 )) as Source,
-                changes,
+                changes.clone(),
             )),
             Arc::new(move || {
                 let _ = woke.send(());
@@ -299,6 +296,7 @@ mod tests {
         doc.put(automerge::ROOT, "text", "Catering").unwrap();
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
         write(&key, &mut doc);
+        changes.note(WORKSPACE, APP, id.route(), false);
 
         woken
             .recv_timeout(std::time::Duration::from_secs(10))

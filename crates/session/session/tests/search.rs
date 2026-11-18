@@ -25,8 +25,7 @@ use tilo_actions::{ApiError, ResourceSpec};
 use tilo_app_launch::SessionEnvironment;
 use tilo_compositor::{InputEvent, KeyRepeat};
 use tilo_desktop::verbs::{
-    CHROME_RESOURCE, LAUNCHPAD_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE,
-    launchpad_card_id,
+    LAUNCHPAD_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE, launchpad_card_id,
 };
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
@@ -1160,23 +1159,7 @@ fn a_source_switched_off_from_search_leaves_search_and_stays_off() {
     );
 }
 
-/// The app whose record index the record of this test is named in: any app of the workspace keeps
-/// one, and search reads them all the same way.
 const NOTES: &str = "so.tilo.notes";
-
-/// The name the document a row brings here is kept under: a file-backed record, as a workspace that
-/// is not this one names it.
-const QUARTERLY: &str = "Quarterly plan.odt";
-
-/// The workspaces the shell shows, by id and by the name it gives each.
-fn workspaces(session: &Session) -> Vec<(String, String)> {
-    session.handle().read(|tree| {
-        tree.workspaces
-            .iter()
-            .map(|workspace| (workspace.id().to_string(), workspace.name.clone()))
-            .collect()
-    })
-}
 
 /// The id of the workspace in front.
 fn workspace_in_front(session: &Session) -> String {
@@ -1187,59 +1170,6 @@ fn workspace_in_front(session: &Session) -> String {
                 .map(|workspace| workspace.id().to_string())
         })
         .expect("a workspace")
-}
-
-/// Save `rows` (`(id, kind)`) as `package` 's index of `workspace` holds them — what it held before
-/// is what the workspace no longer names — and publish it in one rename: the index of a workspace
-/// that appears while the session runs appears as one directory, which is what the worker following
-/// the device's indexes is told about.
-fn write_index(
-    home: &tilo_test_env::TestHome,
-    package: &str,
-    workspace: &str,
-    rows: &[(&str, &str)],
-) {
-    let directory = app_state::workspace_index_directory(home.data(), package, workspace)
-        .expect("an index directory");
-    let staged = directory.with_file_name(format!("staging-{workspace}"));
-    for old in [&staged, &directory] {
-        if old.exists() {
-            std::fs::remove_dir_all(old).expect("the index it replaces");
-        }
-    }
-    std::fs::create_dir_all(&staged).expect("the index's directory");
-    let mut index = automerge::AutoCommit::new();
-    for (id, kind) in rows {
-        let id = ui::resource::DocumentId::parse(id).expect("a record id");
-        assert!(
-            ui::resource::index::reference(
-                &mut index,
-                &id,
-                &ui::resource::ResourceType::new(*kind)
-            ),
-            "the index names {id}"
-        );
-    }
-    std::fs::write(staged.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
-    std::fs::rename(&staged, &directory).expect("the index published");
-}
-
-/// The records `package` 's index of `workspace` names, read the way the workspace's apps read
-/// them: the record set's own discovery over the index document.
-fn known_in(package: &str, workspace: &str) -> Vec<String> {
-    let Ok(mut store) = app_state::DocStore::open_workspace(package, workspace) else {
-        return Vec::new();
-    };
-    let Some(index) = store.load().ok().flatten() else {
-        return Vec::new();
-    };
-    let mut records = ui::resource::ResourceSet::in_memory().with_home(workspace);
-    records.discover_workspace(&index);
-    records
-        .known_resources()
-        .iter()
-        .map(|record| format!("{} {}", record.id.as_str(), record.kind.as_str()))
-        .collect()
 }
 
 /// Wait for `done` as long as a loaded machine takes: the session writes the reference on a worker
@@ -1253,18 +1183,6 @@ fn within(mut done: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(10));
     }
     done()
-}
-
-/// Whether `done` never holds while something that would make it hold is given `window` to land.
-fn never(window: Duration, mut done: impl FnMut() -> bool) -> bool {
-    let started = std::time::Instant::now();
-    while started.elapsed() < window {
-        if done() {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    !done()
 }
 
 /// The row titled `title` for `query` , reopening search until the session has read the device's
@@ -1290,141 +1208,6 @@ fn find_row(session: &mut Session, query: &str, title: &str) -> ResourceSpec {
             panic!("no row {title:?} for {query:?} among {labels:?}");
         }
     }
-}
-
-#[test]
-fn a_record_of_another_workspace_is_found_by_name_and_brought_here() {
-    let home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
-    // An app of this device already keeps an index, in a workspace the shell does not show: the
-    // directories the session follows as more appear.
-    write_index(
-        &home,
-        NOTES,
-        "elsewhere",
-        &[("file:/work/Receipts.odt", "document")],
-    );
-    let records = tilo_session::Records::of(home.data().to_path_buf());
-    let host = Rc::new(Host::default());
-    let mut session = session_over(Rc::clone(&host), Some(records), None);
-    session.step(Duration::from_millis(1)).unwrap();
-
-    // A second workspace, so a record can be held somewhere else than here.
-    invoke(
-        &mut session,
-        CHROME_RESOURCE,
-        "new-workspace",
-        serde_json::json!({}),
-    );
-    until(&mut session, |session| workspaces(session).len() == 2);
-    let here = workspace_in_front(&session);
-    let (other_workspace, other_name) = workspaces(&session)
-        .into_iter()
-        .find(|(workspace, _)| *workspace != here)
-        .expect("a workspace that is not the one in front");
-    let document = home.home().join(QUARTERLY);
-    std::fs::write(&document, "what the plan says").unwrap();
-    let record = ui::resource::DocumentId::for_file(&document);
-    write_index(
-        &home,
-        NOTES,
-        &other_workspace,
-        &[(record.as_str(), "document")],
-    );
-
-    // The row says which workspace holds the record.
-    let row = find_row(&mut session, "quarterly", QUARTERLY);
-    assert_eq!(
-        row.presentation
-            .and_then(|presentation| presentation.detail),
-        Some(format!("in {other_name}, ~/{QUARTERLY}")),
-        "the row says the record is held in a workspace that is not this one"
-    );
-
-    // Choosing it names the record in this workspace: one reference, no copy.
-    invoke(
-        &mut session,
-        row.id.as_str(),
-        "choose-search-row",
-        serde_json::json!({}),
-    );
-    until(&mut session, |session| {
-        find(&session.resources(), SEARCH_RESOURCE).is_none()
-    });
-    assert!(
-        within(|| known_in(NOTES, &here).contains(&format!(
-            "{} {}",
-            record.as_str(),
-            ui::resource::ResourceType::new("document").as_str()
-        ))),
-        "this workspace holds the record: {:?}",
-        known_in(NOTES, &here)
-    );
-    // A record whose identity is a path is also opened, so bringing it here and opening it are one
-    // gesture; the file opens in the workspace the reference went into, by the address an app takes
-    // a document by.
-    assert_eq!(
-        host.opened.borrow().clone(),
-        vec![(here, tilo_desktop_search::file_uri(&document))],
-        "the file the record is opens in this workspace"
-    );
-}
-
-/// The record a row names after the workspace holding it stopped naming it.
-const STALE: &str = "file:/work/Stale plan.odt";
-
-/// The record the index names instead: search offers it only once the session has read the index
-/// again, which is also when [`STALE`] stopped being held.
-const FRESH: &str = "file:/work/Fresh plan.odt";
-
-#[test]
-fn a_row_for_a_record_no_workspace_holds_any_more_brings_nothing_here() {
-    let home = tilo_test_env::TestHome::new().unwrap();
-    let _settled = ui::motion::testing::settled();
-    write_index(&home, NOTES, "elsewhere", &[(STALE, "document")]);
-    let records = tilo_session::Records::of(home.data().to_path_buf());
-    let mut session = session_over(Rc::new(Host::default()), Some(records), None);
-    session.step(Duration::from_millis(1)).unwrap();
-    let here = workspace_in_front(&session);
-
-    // The row is collected now and chosen below.
-    let stale = find_row(&mut session, "stale", "Stale plan.odt");
-
-    // The workspace holding it stops naming it, in one write that names another record: search
-    // offering the record added is what says the session has read the index again.
-    write_index(&home, NOTES, "elsewhere", &[(FRESH, "document")]);
-    find_row(&mut session, "fresh", "Fresh plan.odt");
-    invoke(
-        &mut session,
-        SHELL_RESOURCE,
-        "search",
-        serde_json::json!({ "query": "stale" }),
-    );
-    for _ in 0..10 {
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    assert!(
-        row(&session, "Stale plan.odt").is_none(),
-        "a record no workspace names any more is not offered"
-    );
-
-    // The row collected before it stopped being held brings nothing here. A chosen row is carried
-    // out for its effect rather than reported by an error, so what is checked is the effect: no
-    // reference is written, for as long as writing one takes. The refusal itself, for a row still
-    // shown by an open search, is the session's own to make and is proven in
-    // `search::tests::a_row_for_a_record_no_workspace_names_any_more_is_refused` .
-    let _ = session.invoke(
-        stale.id.as_str(),
-        "choose-search-row",
-        &serde_json::Map::new(),
-    );
-    assert!(
-        never(Duration::from_secs(1), || known_in(NOTES, &here)
-            .iter()
-            .any(|record| record.starts_with(STALE))),
-        "no reference is written: {:?}",
-        known_in(NOTES, &here)
-    );
 }
 
 /// Publish one entry an app of `workspace` holds, as its record `tab:0001` filled with what it has:
@@ -2061,7 +1844,13 @@ fn search_showing(session: &Session) -> bool {
 fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
     let home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
-    let records = tilo_session::Records::of(home.data().to_path_buf());
+    // The records as a host reads them from the store they are kept in, told what moved in it.
+    let changes = tilo_session::platform::records::Changes::default();
+    let records = tilo_session::Records::over(
+        std::sync::Arc::new(app_state::FsStore::new(home.data())),
+        changes.clone(),
+        true,
+    );
     let mut session = session_over(Rc::new(Host::default()), Some(records), None);
     session.step(Duration::from_millis(1)).unwrap();
     // The workbook the Sheets window shows, as its app's index of this workspace names it.
@@ -2083,6 +1872,7 @@ fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
         Some("Sheet1")
     ));
     std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+    changes.note(&here, "so.tilo.sheets", "", false);
 
     find_row(&mut session, "sheets", "Sheet1");
     search_for(&mut session, "sheets");

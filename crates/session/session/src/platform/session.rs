@@ -735,6 +735,10 @@ impl Session {
                 &changes,
                 Some(peer_documents),
             );
+            // Search finds the records the workspaces hold, and brings one here, through them.
+            if let Some(found) = &options.search.records {
+                found.read_from(engine, records.clone(), options.person.clone());
+            }
         }
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
