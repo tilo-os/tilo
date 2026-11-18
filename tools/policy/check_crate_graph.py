@@ -28,9 +28,9 @@ the tilolang host's own program, which ``tilo`` starts and does not link.
 
 ``tilo-agent-session`` drives a workspace's apps on a server, and its
 ``api-on-server`` example is the program a server serves them with. Its whole
-graph, an example's dev-dependencies included, stays clear of the compositor
-and the keyboard stack: either one compiled in is a Wayland server and
-libxkbcommon that no server has.
+graph, an example's dev-dependencies included, stays clear of the compositor,
+the keyboard stack and the media stack: any of them compiled in is a device
+driver, a Wayland server or a codec stack that no server has.
 
 Each graph is resolved the way a build of the crate alone resolves it
 (``cargo tree -p``), for both Linux architectures and for
@@ -110,10 +110,28 @@ BOUNDARIES = (
     Boundary(
         package="tilo-agent-session",
         manifest="crates/agent/agent-session/Cargo.toml",
-        forbidden=frozenset({"smithay", "tilo-app-keeper", "xkbcommon"}),
+        forbidden=frozenset(
+            {
+                "gbm",
+                "gstreamer",
+                "gstreamer-app",
+                "gstreamer-base",
+                "gstreamer-video",
+                "input",
+                "libseat",
+                "libspa",
+                "miracast",
+                "pipewire",
+                "pixman",
+                "smithay",
+                "tilo-app-keeper",
+                "udev",
+                "xkbcommon",
+            }
+        ),
         why=(
-            "it drives apps on a server, which has no desktop: the compositor and the "
-            "keyboard stack are a device's"
+            "it drives apps on a server, which has no desktop: the compositor, the "
+            "keyboard stack and the media stack are a device's"
         ),
         edges=("normal", "dev"),
     ),
