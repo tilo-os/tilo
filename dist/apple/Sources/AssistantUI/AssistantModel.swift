@@ -127,6 +127,10 @@ public final class AssistantModel {
     /// Where Copy in a piece's menu puts the words: the system's pasteboard. A test hands it one
     /// of its own.
     @ObservationIgnored public var pasteboard = NSPasteboard.general
+    #else
+    /// Where Copy in a piece's menu puts the words: the system's pasteboard. Whoever checks Copy
+    /// hands it one of its own.
+    @ObservationIgnored public var pasteboard = UIPasteboard.general
     #endif
     /// A piece the conversation should bring into view.
     public var shownItem: Item.ID?

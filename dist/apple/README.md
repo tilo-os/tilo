@@ -696,7 +696,9 @@ simulator that shows no window. The Mac's picture tool is signed before it is st
 works on. The script's head names the simulator, the kind of iPhone and the text size it is
 set to, and its other ways: `said` writes down what every screen of the iPhone says of itself
 to someone who cannot see it, `secret` types into the protected field and looks at the window
-as the app leaves the front, `typing` takes the whole screen with the keyboard up, and
+as the app leaves the front, `typing` takes the whole screen with the keyboard up, `place`
+shows a chat for the first time in each way the app does and checks that it rests at its end
+and that each message is read out where a held finger reaches it (a line FAULT fails it), and
 `keyboard` brings the keyboard up, puts it away and sends a message, light and dark: it says
 what a drag on the conversation does to the keyboard, what the window draws behind the
 keyboard's upper corners, what Up, Down and Escape of an attached keyboard do in the field

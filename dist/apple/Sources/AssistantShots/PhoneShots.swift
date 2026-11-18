@@ -34,6 +34,14 @@ final class ShotsScene: UIResponder, UIWindowSceneDelegate {
                 await PhoneShots.keyboard(in: window, dark: way == "--keyboard-dark")
             } else if asked.contains("--typing") {
                 await PhoneShots.typing(in: window)
+            } else if asked.contains("--place") {
+                // A showing's name is its way, then `-long` for a chat longer than the screen, then `-dark`.
+                var first = asked.first { $0.hasPrefix("--first=") }.map { String($0.dropFirst(8)) } ?? "chat"
+                let dark = first.hasSuffix("-dark")
+                if dark { first.removeLast(5) }
+                let long = first.hasSuffix("-long")
+                if long { first.removeLast(5) }
+                await PhoneShots.place(in: window, first: first, long: long, dark: dark)
             } else if asked.contains("--said") {
                 await PhoneShots.say(in: window)
                 exit(0)
