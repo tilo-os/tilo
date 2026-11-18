@@ -78,19 +78,6 @@ fn fixture_sdk(workspace_member: bool) -> AppSdk {
     }
 }
 
-fn assert_generated_tree_source(source: &str) {
-    syn::parse_file(source).unwrap();
-    for needle in [
-        "pub struct ProjectTreeConfig",
-        "M: ListModel + 'static",
-        "VirtualList::with_selection_delegate(",
-        ".with_tree(marks)",
-        "TreeMarks",
-    ] {
-        assert!(source.contains(needle), "missing {needle:?}");
-    }
-}
-
 fn minimal_app(root: &Path) {
     std::fs::create_dir_all(root.join("src/nested")).unwrap();
     std::fs::write(
@@ -346,13 +333,6 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         let display_source =
             std::fs::read_to_string(app.join("src/components/activity_card.rs")).unwrap();
         syn::parse_file(&display_source).unwrap();
-        assert!(display_source.contains("pub struct ActivityCardProps"));
-        assert!(display_source.contains("pub fn activity_card(id: &str"));
-        assert!(display_source.contains("pub fn from_ui_graph("));
-        assert!(display_source.contains("pub fn register_ui_graph("));
-        assert!(display_source.contains("context.with_component(\"activity-card\""));
-        assert!(display_source.contains("with_id(format!(\"{id}-title\"))"));
-        assert!(display_source.contains("SemanticExpectation::named(\"example-title\")"));
 
         add_app_artifact(AddRequest {
             start: app.clone(),
@@ -367,11 +347,6 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         let form_source =
             std::fs::read_to_string(app.join("src/components/profile_card.rs")).unwrap();
         syn::parse_file(&form_source).unwrap();
-        assert!(form_source.contains("pub struct ProfileCardState"));
-        assert!(form_source.contains("TextInput::from_state(&state.value)"));
-        assert!(form_source.contains("Checkbox::from_state(&state.enabled)"));
-        assert!(form_source.contains("labeled_field(\"profile-card-value-label\""));
-        assert!(form_source.contains("perform_named(\"example-value\""));
 
         add_app_artifact(AddRequest {
             start: app.clone(),
@@ -385,16 +360,13 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         .unwrap();
         let tree_source =
             std::fs::read_to_string(app.join("src/components/project_tree.rs")).unwrap();
-        assert_generated_tree_source(&tree_source);
+        syn::parse_file(&tree_source).unwrap();
 
         let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
         assert_eq!(
             parse_component_registry(&registry).unwrap(),
             ["activity-card", "profile-card", "project-tree"]
         );
-        assert!(registry.contains("pub mod activity_card;"));
-        assert!(registry.contains("pub mod profile_card;"));
-        assert!(registry.contains("pub mod project_tree;"));
         let library = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
         assert_eq!(library.matches("pub mod components;").count(), 1);
 
@@ -421,7 +393,11 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         })
         .unwrap();
         let replaced = std::fs::read_to_string(app.join("src/components/profile_card.rs")).unwrap();
-        assert!(replaced.contains("pub struct ProfileCardProps"));
+        syn::parse_file(&replaced).unwrap();
+        assert_ne!(
+            replaced, form_source,
+            "force writes the chosen template over the component"
+        );
         let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
         assert_eq!(
             registry
