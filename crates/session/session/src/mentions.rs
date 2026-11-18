@@ -606,12 +606,26 @@ impl Mentions {
     }
 }
 
-/// What the session calls a member in a notice: as search and the send box name them, from the
-/// one list of who is in a workspace.
-pub(crate) fn member_names(search: Rc<crate::search::SessionSearch>) -> Names {
+/// What the session calls a member in a notice: an agent by the name its workspace's list of
+/// agents gives it, whether it is here or not; anyone else by the name the workspace's members go
+/// by here.
+pub(crate) fn member_names(
+    shell: tilo_desktop_surface::DesktopHandle,
+    place_here: Rc<dyn Fn(&mut tilo_desktop_model::Layout)>,
+    search: Rc<crate::search::SessionSearch>,
+) -> Names {
     Rc::new(move |who: &ui::MemberId| {
-        search
-            .member_name(who)
+        who.agent_id()
+            .and_then(|agent| search.agent_name(agent))
+            .or_else(|| {
+                let mut tree = shell.read(Clone::clone);
+                place_here(&mut tree);
+                tree.workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.members.iter())
+                    .find(|member| member.id == *who)
+                    .map(|member| member.name.clone())
+            })
             .filter(|name| ui::presence::shown_name(name).is_some())
             .unwrap_or_else(|| ui::presence::unnamed_label(who))
     })

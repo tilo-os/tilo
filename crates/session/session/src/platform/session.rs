@@ -1549,7 +1549,11 @@ impl Session {
                     Rc::new(Held::over(Arc::clone(engine), changes.clone())) as Rc<_>
                 }),
                 notices: Some(crate::notifications::RoleNotices::of(&notifications)),
-                name: crate::mentions::member_names(Rc::clone(&search)),
+                name: crate::mentions::member_names(
+                    handle.clone(),
+                    Rc::clone(&place_here),
+                    Rc::clone(&search),
+                ),
                 shown: {
                     let shell = handle.clone();
                     Rc::new(move |app: &str, item: &str| shell.shows_item(app, item))
