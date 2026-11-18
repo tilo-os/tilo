@@ -238,6 +238,29 @@ fn diff_lists<'a>(
         }
     } else {
         changed = true;
+        // An item came or went: the items before and after it are the same
+        // nodes in both, so only what lies between is told apart by hashing.
+        let start = last
+            .iter()
+            .zip(next)
+            .take_while(|(before, after)| before.ptr_eq(after))
+            .count();
+        let (last_rest, next_rest) = (
+            last.get(start..).unwrap_or_default(),
+            next.get(start..).unwrap_or_default(),
+        );
+        let end = last_rest
+            .iter()
+            .rev()
+            .zip(next_rest.iter().rev())
+            .take_while(|(before, after)| before.ptr_eq(after))
+            .count();
+        let last = last_rest
+            .get(..last_rest.len().saturating_sub(end))
+            .unwrap_or_default();
+        let next = next_rest
+            .get(..next_rest.len().saturating_sub(end))
+            .unwrap_or_default();
         let kept: std::collections::HashSet<*const ()> =
             next.iter().map(SharedResource::addr).collect();
         let had: std::collections::HashSet<*const ()> =
