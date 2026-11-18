@@ -748,11 +748,20 @@ encrypted_layout() {
   ENC_BOOT_UUID="$(sudo -n blkid -s UUID -o value "$ENC_BOOT_PART")"
   [ -n "$ENC_BOOT_UUID" ] || die "could not read the encrypted install's /boot UUID"
   root_dev="/dev/mapper/$mapper"
-  ESP_AT="$MNT/boot/efi"
-  # /boot is a partition of its own on the installer's layout, not the ESP.
-  BOOT_IS_ESP=no
-  [ -d "$ESP_AT" ] || die "the encrypted install has no $ESP_AT"
-  msg "2/4 mounted $root_dev -> $MNT, $esp_dev -> $ESP_AT, $ENC_BOOT_PART -> $MNT/boot"
+  # /boot is the ESP on this layout. An unsealed image boots split
+  # kernel/initrd entries, and systemd-boot reads those from the ESP (or an
+  # XBOOTLDR partition Tilo does not define), not from a plain Linux /boot.
+  # The installer's separate /boot partition stays unused: a sealed image is
+  # the only layout that gives it a job.
+  sudo -n umount "$MNT/boot/efi" || die "could not unmount the prepared $MNT/boot/efi"
+  sudo -n umount "$MNT/boot" || die "could not unmount the prepared $MNT/boot"
+  sudo -n mount "$esp_dev" "$MNT/boot" || die "could not mount the ESP at $MNT/boot"
+  ESP_AT="$MNT/boot"
+  ENC_BOOT_UUID="$(sudo -n blkid -s UUID -o value "$esp_dev")"
+  [ -n "$ENC_BOOT_UUID" ] || die "could not read the encrypted install's ESP UUID"
+  # /boot is the ESP here, as on a plain composefs install.
+  BOOT_IS_ESP=yes
+  msg "2/4 mounted $root_dev -> $MNT, $esp_dev -> $ESP_AT"
 }
 
 if [ "$ENCRYPT" = 1 ]; then
