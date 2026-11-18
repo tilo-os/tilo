@@ -95,11 +95,9 @@ mod tests {
         for (category, hit) in Category::ALL.iter().copied().zip(hits) {
             assert_eq!(hit.action_id, crate::effects::pane_row_id(category));
             assert_eq!(crate::effects::pane_of_row(&hit.action_id), Some(category));
-            let row = crate::effects::row(&app, &hit.action_id)
-                .expect("the anchor names a row")
-                .into_resource();
+            let row = crate::effects::row(&app, &hit.action_id).expect("the anchor names a row");
             let open = row
-                .actions
+                .operations()
                 .iter()
                 .find(|spec| spec.id == "open-pane")
                 .expect("the row opens its pane");

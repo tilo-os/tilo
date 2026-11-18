@@ -638,10 +638,13 @@ mod tests {
         let row = rows
             .into_iter()
             .find(|row| row.id() == "settings.display-output:eDP-1")
-            .expect("the actual connected output is published")
-            .into_resource();
+            .expect("the actual connected output is published");
         let mut compared = 0;
-        for spec in row.actions.iter().filter(|spec| !spec.params().is_empty()) {
+        for spec in row
+            .operations()
+            .iter()
+            .filter(|spec| !spec.params().is_empty())
+        {
             let mut args = serde_json::Map::new();
             for param in spec.params() {
                 let value = param.choices.first().map_or_else(
@@ -727,7 +730,7 @@ mod tests {
             .unwrap();
         let mut compared = 0;
         for row in resource_rows {
-            for spec in row.into_resource().actions {
+            for spec in row.operations() {
                 if spec.operation_type.as_deref() != Some(super::OPERATION)
                     || !spec.params().is_empty()
                 {
