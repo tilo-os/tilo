@@ -34,6 +34,7 @@ import WebKit
 ///                                                    "link" with that provider as its preset types the new key
 ///   {"do": "link-another"}   {"do": "not-now"}        as "Link another provider" there, and as Not now under the step
 ///   {"do": "event", "name": "…", "when": "…", "instruction": "…"}   something that comes at a time
+///   {"do": "task", "title": "…"}                      as the plus of the Tasks panel gives the assistant a task
 ///   {"do": "stop"}                                    stop the answer that is being written
 ///   {"do": "saw", "item": "…"}                        as opening a piece from its notification does
 ///   {"do": "press", "item": "…", "offer": "…"}        as a press on a button under a piece's notice
@@ -231,6 +232,11 @@ final class AssistantDrive {
         } else {
             once("keyStep", ["is": "away"])
         }
+        // The Tasks panel's list: each task by its name, where it is listed and the line under it.
+        once("tasks", .array(model.tasks.map { task in
+            ["title": .string(task.title), "state": .string(String(describing: task.state)),
+             "note": task.note.map(JSON.string) ?? .null]
+        }))
         once("comes", .array(model.automations.map { coming in
             ["title": .string(coming.title), "when": .string(coming.summary), "on": .bool(coming.isOn),
              "next": coming.next.map { .number($0.timeIntervalSince1970) } ?? .null]
@@ -368,6 +374,17 @@ final class AssistantDrive {
                 AssistantDrive.say(["setUp": false, "why": .string(why)])
             } catch {
                 AssistantDrive.say(["setUp": false, "why": "unreachable"])
+            }
+        case "task":
+            // As the plus of the Tasks panel: what was typed is given to the assistant as a task.
+            guard let title = step["title"]?.string else { AssistantDrive.say(["error": "task takes title"]); return }
+            do {
+                try await source.addTask(title)
+                AssistantDrive.say(["taskAdded": true])
+            } catch SourceProblem.refused(let why) {
+                AssistantDrive.say(["taskAdded": false, "why": .string(why)])
+            } catch {
+                AssistantDrive.say(["taskAdded": false, "why": "unreachable"])
             }
         case "add-device", "stop-pairing":
             // The person's own press under what Tilo asked: whoever drives this program is its person.

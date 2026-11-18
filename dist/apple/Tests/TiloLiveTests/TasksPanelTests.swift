@@ -57,6 +57,7 @@ final class TasksPanelTests: XCTestCase {
     ///   `window.trackerless`  a server that keeps no tracker: it knows no such ask
     ///   `window.fails`        how many of the next reads her server fails at
     ///   `window.pageMost`     the most rows it answers in one page
+    ///   `window.refuses`      the sentence it refuses a new issue with
     private static let page = #"""
     <!doctype html><html data-arrival="load"><title>Tilo</title><span id="status"></span><div id="semantics"></div>
     <script>
@@ -98,7 +99,8 @@ final class TasksPanelTests: XCTestCase {
             return done({told: newer(), newest: Math.max(0, ...window.told.map(one => one.seq))});
           }
           if (target.provider !== TRACKER || resource !== ISSUES) noSuch();
-          window.asks.push(action + ' ' + JSON.stringify(action === 'read' ? argument?.where ?? null : argument ?? null));
+          window.asks.push(action === 'read' ? 'read ' + JSON.stringify(argument?.where ?? null)
+            : action + ' ' + argument?.title + ' for ' + argument?.assignee);
           if (window.trackerless) noSuch();
           if (action === 'read') {
             if (window.fails > 0) {
@@ -114,6 +116,7 @@ final class TasksPanelTests: XCTestCase {
             return done({kind: 'tasks.issues', issues: rows, ...(from + most < all.length ? {nextCursor: String(from + most)} : {})});
           }
           if (action === 'create') {
+            if (window.refuses) return {invocation: 'i', state: 'failed', error: {code: 'invalid_argument', message: window.refuses}};
             // Tasks keeps who gave it: the person whose device asked.
             window.issues.push(window.issue('i-new-' + window.issues.length, argument.title, 'todo', {assignee: argument.assignee ?? null}));
             return done(null);
@@ -293,6 +296,48 @@ final class TasksPanelTests: XCTestCase {
         let asked = try await trackerAsks()
         XCTAssertEqual(asked.count, 2)
         XCTAssertEqual(lists, [[]], "nothing was listed, and nothing was said to be")
+    }
+
+    // MARK: The plus
+
+    func testWhatIsTypedUnderThePlusIsGivenToTheAssistantAsAnIssueOfHersAndStandsInTheList() async throws {
+        try await start()
+        try await enter()
+        try await until("her server was asked for the tasks") { (try? await self.trackerAsks().count) == 1 }
+        try await source.addTask("  Plan the offsite \n")
+        // Tasks' own action, as the person: the issue is given to her assistant, and the list is read again.
+        let asked = try await trackerAsks()
+        XCTAssertEqual(asked.dropFirst().first, "create Plan the offsite for agent:assistant")
+        try await until("the task is up next") { self.shown(.upNext) == ["Plan the offsite"] }
+        // Nothing typed is no task, and her server is asked for nothing.
+        try await source.addTask("  \n ")
+        let after = try await trackerAsks()
+        XCTAssertEqual(after.filter { $0.hasPrefix("create") }.count, 1)
+    }
+
+    func testATaskHerServerDoesNotTakeIsRefusedInItsOwnWordsAndNothingIsListed() async throws {
+        try await start()
+        try await enter("window.refuses = 'A title holds 240 characters at most'")
+        try await until("her server was asked for the tasks") { (try? await self.trackerAsks().count) == 1 }
+        do {
+            try await source.addTask("Plan the offsite")
+            XCTFail("a task her server refused was taken")
+        } catch let problem as SourceProblem {
+            XCTAssertEqual(problem, .refused("A title holds 240 characters at most"))
+        }
+        XCTAssertEqual(lists, [[]])
+    }
+
+    func testWhereHerServerKeepsNoTrackerThePlusSaysSoInASentence() async throws {
+        try await start()
+        try await enter("window.trackerless = true")
+        try await until("her server was asked for the tasks") { (try? await self.trackerAsks().count) == 1 }
+        do {
+            try await source.addTask("Plan the offsite")
+            XCTFail("a task was taken where nothing keeps one")
+        } catch let problem as SourceProblem {
+            XCTAssertEqual(problem, .refused("Tilo keeps no tasks for your assistant in this workspace yet"))
+        }
     }
 }
 #endif
