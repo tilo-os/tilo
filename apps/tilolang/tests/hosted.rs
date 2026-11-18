@@ -45,6 +45,9 @@ use crate::settle::{self, Woken};
 #[path = "hosted/chunks.rs"]
 mod chunks;
 
+#[path = "hosted/facts.rs"]
+mod facts;
+
 #[path = "hosted/cost.rs"]
 mod cost;
 
@@ -115,6 +118,8 @@ const TODAY: &str = "so.tilo.lang.today";
 const SIGNED: &str = "so.tilo.lang.signed";
 /// The page whose one box edits a field and runs no action of its own.
 const FIELDBOX: &str = "so.tilo.lang.fieldbox";
+/// The shelf whose rows open a type the app gives a view of, and one it does not.
+const OPENBY: &str = "so.tilo.lang.openby";
 /// The shelf, whose window its own view composes of the toolkit's components.
 const HANDMADE: &str = "so.tilo.lang.handmade";
 const VIEWPORT: (u32, u32) = (1280, 800);
