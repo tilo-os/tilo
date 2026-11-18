@@ -752,6 +752,7 @@ paths = [
     "os/dev/hardware_profile.py",
     "os/dev/README.md",
     "os/tests/containerfile_sources.sh",
+    "os/tests/installer_offline_target_test.py",
     "os/tests/no_openssl_runtime.sh",
     "os/tests/rpm_snapshot_invariants.sh",
     "crates/system/board-successor/src/profile.rs",
