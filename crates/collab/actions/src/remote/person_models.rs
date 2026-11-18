@@ -60,6 +60,10 @@ pub const SET_ASSIGNMENT: &str = "set-assignment";
 /// Choose one model for several kinds of work together
 /// ([`SetAssignments`]), answering the providers as a [`ModelProviders`].
 pub const SET_ASSIGNMENTS: &str = "set-assignments";
+/// Choose how hard a provider's models think ([`SetReasoning`]), answering
+/// the provider as a [`ProviderView`]. With no level the provider's own
+/// default holds again, and it is told nothing.
+pub const SET_REASONING: &str = "set-reasoning";
 
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
@@ -104,6 +108,11 @@ pub struct ProviderView {
     /// The model this provider's agent runs when nothing else is chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    /// How hard this provider's models are asked to think, where the person
+    /// chose a level ([`SET_REASONING`]). Absent, the provider is told
+    /// nothing and its own default holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
 
 /// The providers the workspace's host keeps, and what runs where.
@@ -253,6 +262,17 @@ pub struct SetAssignments {
     pub model: Option<String>,
 }
 
+/// How hard a provider's models think: `none`, `minimal`, `low`, `medium`,
+/// `high` or `xhigh`, of which a provider takes the ones its models know.
+/// With no level, the provider's own default holds again.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetReasoning {
+    pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -285,6 +305,7 @@ mod tests {
                 label: "GPT".into(),
             }],
             default_model: None,
+            reasoning: None,
         };
         let json = serde_json::to_string(&view).unwrap();
         assert!(!json.contains("sk-live-secret"));
@@ -326,6 +347,28 @@ mod tests {
             serde_json::from_value::<ListedModels>(json).unwrap(),
             refused
         );
+    }
+
+    /// A thinking level is chosen for a provider by name and taken back by
+    /// naming none; a provider's view says a level only where one is chosen.
+    #[test]
+    fn a_thinking_level_is_chosen_or_left_to_the_provider() {
+        let choosing: SetReasoning =
+            serde_json::from_value(serde_json::json!({"provider": "gemini", "effort": "low"}))
+                .unwrap();
+        assert_eq!(choosing.effort.as_deref(), Some("low"));
+        let leaving: SetReasoning =
+            serde_json::from_value(serde_json::json!({"provider": "gemini"})).unwrap();
+        assert_eq!(leaving.effort, None);
+
+        let plain = serde_json::to_value(ProviderView::default()).unwrap();
+        assert!(plain.get("reasoning").is_none(), "{plain}");
+        let chosen = serde_json::to_value(ProviderView {
+            reasoning: Some("low".into()),
+            ..ProviderView::default()
+        })
+        .unwrap();
+        assert_eq!(chosen["reasoning"], "low");
     }
 
     /// The main thread's two kinds are chosen in one request.
