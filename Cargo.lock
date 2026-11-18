@@ -5151,6 +5151,7 @@ dependencies = [
  "cloud-source",
  "ed25519-dalek 3.0.0",
  "file-explorer",
+ "file-explorer-model",
  "fs-protocol",
  "fuser",
  "hex",
@@ -5197,6 +5198,17 @@ dependencies = [
  "wire-frame",
  "workspace-hack",
  "zip",
+]
+
+[[package]]
+name = "file-explorer-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
+ "workspace-hack",
 ]
 
 [[package]]

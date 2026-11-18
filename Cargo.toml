@@ -140,6 +140,7 @@ members = [
     "apps/ebook",
     "apps/feeds",
     "apps/file-explorer",
+    "apps/file-explorer-model",
     "apps/firewall",
     "apps/firewall-model",
     "apps/git-client",

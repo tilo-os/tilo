@@ -75,7 +75,7 @@ pub mod places;
 #[cfg(feature = "desktop")]
 pub mod places_sidebar;
 #[cfg(feature = "desktop")]
-pub mod recent;
+pub use file_explorer_model::recent;
 #[cfg(feature = "desktop")]
 pub mod remote_accounts;
 #[cfg(feature = "desktop")]
