@@ -1542,16 +1542,23 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let parsed = parse_path(path)?;
         // How a program writes what this lists: the listing is the one a program reads, and a
         // path names what it lists the same way, so the path is resolved by it too.
+        let forms_timed = super::timing_start();
         let forms = self.program_forms().await.unwrap_or_default();
+        super::timing_done("ls.forms", forms_timed);
+        let resolving = super::timing_start();
         let resolved =
             if names_files(&parsed.app) && parsed.segments.is_empty() && parsed.action.is_none() {
                 self.files_resolved(&parsed, &forms).await?
             } else {
                 match self.resolve_with(&parsed, Some(&forms)).await? {
                     Ok(resolved) => resolved,
-                    Err(note) => return Ok(Reply::ok(note)),
+                    Err(note) => {
+                        super::timing_done("ls.resolve", resolving);
+                        return Ok(Reply::ok(note));
+                    }
                 }
             };
+        super::timing_done("ls.resolve", resolving);
         self.acted_in(&resolved.provider, &resolved.app_id);
         let called = |action: &ActionDescriptor| forms.called(action, &resolved.app_id);
         if let Some(action) = &parsed.action {
@@ -1599,14 +1606,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     .map(|level| (level, skip)),
                 _ => None,
             };
-            let (level, skipped, from_start) = match resumed {
-                Some((level, skip)) => (level, skip, false),
-                None => (
-                    self.level_reaching(&resolved.provider, &node.id, level, end)
-                        .await?,
-                    offset,
-                    true,
-                ),
+            let (level, skipped, from_start) = if let Some((level, skip)) = resumed {
+                (level, skip, false)
+            } else {
+                let reading = super::timing_start();
+                let level = self
+                    .level_reaching(&resolved.provider, &node.id, level, end)
+                    .await?;
+                super::timing_done("ls.level", reading);
+                (level, offset, true)
             };
             first = offset.saturating_sub(skipped);
             let related: Vec<Node> = resolved

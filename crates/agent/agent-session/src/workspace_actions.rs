@@ -191,6 +191,12 @@ struct SearchActivity {
     files_warmed: std::sync::atomic::AtomicU64,
     /// Permission reads made for a find's caller while it waited.
     permissions: std::sync::atomic::AtomicU64,
+    /// Requests served while the index was reading a document: what says the reading happens
+    /// beside the serving, not on the thread the requests arrive on, where a write's landing
+    /// held every request of the service's share for the seconds a notebook takes to read.
+    beside_reading: std::sync::atomic::AtomicU64,
+    /// Documents the index's thread is reading now.
+    reading: std::sync::atomic::AtomicU64,
 }
 
 /// The host's page actions over every record of its workspaces.
@@ -259,6 +265,20 @@ impl WorkspaceActions {
     #[must_use]
     pub fn search_documents_warmed(&self) -> u64 {
         self.shared.search.warmed.load(Ordering::Relaxed)
+    }
+
+    /// How many requests were served while the index was reading a document: a document read
+    /// for search never holds the thread a request waits on.
+    #[must_use]
+    pub fn search_served_beside_reading(&self) -> u64 {
+        self.shared.search.beside_reading.load(Ordering::Relaxed)
+    }
+
+    /// How many documents the index is reading now: none once the index holds every document
+    /// the workspace's writes have landed.
+    #[must_use]
+    pub fn search_documents_reading(&self) -> u64 {
+        self.shared.search.reading.load(Ordering::Relaxed)
     }
 
     /// How many of the workspace's folder documents a find read while it waited: none once the
@@ -1207,9 +1227,14 @@ struct Worker {
     save_grace: Duration,
     /// Writes served since the pace was last measured with the full grace.
     save_probes: u32,
-    /// Whether documents search keeps no entries for wait for the next pass that reads them:
-    /// what the thread builds while no request waits on it ([`Worker::warm_entries`]).
+    /// Whether documents search keeps no entries for wait for the index's own thread to read
+    /// them, or a workspace's folder for the pass over it this thread takes
+    /// ([`Worker::warm_entries`], [`Worker::warm_files`]).
     warming: bool,
+    /// The thread that reads documents for the search index, off this one: a document of a
+    /// notebook of a hundred notes costs seconds to read for search, and every request of this
+    /// share's workspaces waited for it while it was read here.
+    warm: index::Warm,
     /// Each workspace's tree as the last request served on it left it, by
     /// workspace and tree name ([`tree_put::KeptTree`]): the next takes in
     /// only what changed since.
@@ -1349,16 +1374,18 @@ impl Worker {
             save_grace: publish::SAVE_GRACE,
             save_probes: 0,
             warming: false,
+            warm: index::Warm::start(),
         }
     }
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
         loop {
-            // A document whose write landed since the last pass is read for the index here,
-            // between requests, and the folder's chunks likewise: a find answers from the
-            // indexes, never by opening every one while the person waits.
+            // What the index's own thread read since the last pass is taken here, and the
+            // next documents asked for; the folder's chunks are read here, between requests.
+            // A find answers from the indexes, never by opening every one while the person
+            // waits, and no request waits on a document read.
             if self.warming {
-                let entries = self.warm_entries(index::WARM_SLICE);
+                let entries = self.warm_entries();
                 let files = self.warm_files(index::WARM_SLICE);
                 self.warming = !(entries && files);
             }
@@ -1371,10 +1398,10 @@ impl Worker {
             .flatten()
             .min();
             let next = match due {
-                // With documents still to read for the index, the thread never waits: it takes
-                // a request that is queued, else reads the next, so the index is ready as soon
-                // as the workspace is.
-                _ if self.warming => jobs.recv_timeout(Duration::ZERO),
+                // With documents still to read for the index, the thread looks for what was
+                // read and for the requests that came: a request queued is taken at once, and
+                // the index is ready as soon as the workspace is.
+                _ if self.warming => jobs.recv_timeout(index::WARM_POLL),
                 Some(until) => jobs.recv_timeout(until.saturating_duration_since(Instant::now())),
                 None => jobs
                     .recv()
@@ -1417,6 +1444,12 @@ impl Worker {
         if matches!(job, Job::Joined(_)) {
             self.timed(queued, job);
             return;
+        }
+        if self.warm.in_flight() {
+            self.shared
+                .search
+                .beside_reading
+                .fetch_add(1, Ordering::Relaxed);
         }
         if let Some(workspace_id) = job.workspace() {
             let keys = self.keys(&job);

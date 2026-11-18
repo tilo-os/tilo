@@ -97,6 +97,12 @@ pub(crate) struct WorkspaceDocuments {
     /// What search finds in each record, as its app reads it: the entries it
     /// publishes to the search index, one per resource of the record.
     entries: Read<Arc<[IndexEntry]>>,
+    /// The documents search keeps no entries for because they could not be read, by the
+    /// landings they stood at when it gave up: a landing reads them again.
+    unreadable: HashMap<DocumentRoute, u64>,
+    /// How many writes landed in each document: what says whether what the index read of it
+    /// is still what the workspace holds, without reading it again.
+    moved: HashMap<DocumentRoute, u64>,
     /// The plain text of each record the planner searches, and of open records
     /// ([`Self::open_text`]).
     texts: HashMap<DocumentRoute, (Stamp, Arc<str>)>,
@@ -116,6 +122,8 @@ impl WorkspaceDocuments {
             landings: 0,
             titles: HashMap::new(),
             entries: HashMap::new(),
+            unreadable: HashMap::new(),
+            moved: HashMap::new(),
             texts: HashMap::new(),
             messages: HashMap::new(),
             counts: HashMap::new(),
@@ -130,6 +138,39 @@ impl WorkspaceDocuments {
         // What search answers with is read again from the document as it stands now: the write
         // landed, so the entries kept at the old revision describe a document that is gone.
         self.entries.remove(route);
+        // A document the index could not read is read again now that it moved.
+        self.unreadable.remove(route);
+        *self.moved.entry(route.clone()).or_insert(0) =
+            self.moved.get(route).copied().unwrap_or(0).wrapping_add(1);
+    }
+
+    /// The document at `route` search could not read for now: asked for again once a write
+    /// lands in it, never in a pass that would ask the same thing for ever.
+    pub(crate) fn unreadable(&mut self, route: &DocumentRoute) {
+        self.unreadable.insert(route.clone(), self.landings);
+    }
+
+    /// What search finds in the document at `route`, read off the serving thread by the
+    /// index's own: kept at the revision it was read from, and given back to the app's next
+    /// read of it without opening the document again.
+    pub(crate) fn keep_entries(
+        &mut self,
+        route: &DocumentRoute,
+        revision: [u8; 32],
+        entries: Arc<[IndexEntry]>,
+    ) {
+        self.entries.insert(route.clone(), (revision, entries));
+    }
+
+    /// How many writes have landed in the document at `route`: the index reads it again when
+    /// that moved since it read it.
+    pub(crate) fn moved(&self, route: &DocumentRoute) -> u64 {
+        self.moved.get(route).copied().unwrap_or(0)
+    }
+
+    /// The replica the workspace's documents are read from, for the index's own thread.
+    pub(crate) fn engine(&self) -> Arc<Engine> {
+        Arc::clone(&self.engine)
     }
 
     /// The workspace's id.
@@ -155,19 +196,29 @@ impl WorkspaceDocuments {
             .map(|(_, entries)| Arc::clone(entries))
     }
 
-    /// Up to `limit` of the workspace's documents search keeps no entries for: the warm pass
-    /// reads them when nothing else is asked of this thread, so a query never has to.
+    /// Up to `limit` of the workspace's documents search keeps no entries for: the warm thread
+    /// reads them, so a query never has to.
     pub(crate) fn unindexed(&self, limit: usize) -> Vec<DocumentRoute> {
         self.routes()
             .into_iter()
-            .filter(|route| !self.indexed(route))
+            .filter(|route| self.indexes(route))
             .take(limit)
             .collect()
     }
 
     /// Whether any of the workspace's documents waits to be read for the index.
     pub(crate) fn has_unindexed(&self) -> bool {
-        self.routes().into_iter().any(|route| !self.indexed(&route))
+        self.routes().into_iter().any(|route| self.indexes(&route))
+    }
+
+    /// Whether the document at `route` still wants entries: it has none, and the index has not
+    /// given up on it since it last moved.
+    fn indexes(&self, route: &DocumentRoute) -> bool {
+        !self.indexed(route)
+            && self
+                .unreadable
+                .get(route)
+                .is_none_or(|gave_up| *gave_up != self.landings)
     }
 
     /// The records of the workspace not held open.

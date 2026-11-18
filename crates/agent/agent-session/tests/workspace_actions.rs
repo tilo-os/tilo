@@ -168,6 +168,10 @@ mod throughput;
 mod workspace_find;
 
 #[cfg(test)]
+#[path = "workspace_actions/search_beside_requests.rs"]
+mod search_beside_requests;
+
+#[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]
 mod workspace_per_customer;
 

@@ -61,6 +61,7 @@ mod replica;
 mod serve;
 
 pub(crate) use picture::shrink_picture;
+pub(crate) use process::Process;
 pub use process::{pool_size, prestart, set_affinity};
 pub use proto::ProbeReport;
 pub(crate) use read::{ConfinedRead, ConfinedTitles, ConfinedViews};

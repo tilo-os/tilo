@@ -32,7 +32,10 @@ mod providers;
 mod put;
 #[path = "mcp_step.rs"]
 mod step;
+#[path = "mcp_timing.rs"]
+mod timing;
 use step::batch_invocation;
+pub(crate) use timing::{timing_done, timing_done_saying, timing_start};
 #[path = "mcp_turns.rs"]
 mod turns;
 
@@ -1419,8 +1422,26 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         Ok(answer)
     }
-    /// One catalogue page from the action host, as this bridge's caller.
+    /// One catalogue page from the action provider, as this bridge's caller: the timing line
+    /// names what was asked, so a slow listing says which request it waited for.
     async fn ask(&self, query: CatalogueQuery) -> Result<CataloguePage, BridgeError> {
+        let timed = timing_start();
+        let what = timed.map(|_| {
+            format!(
+                "provider={} parent={} rows={}",
+                query.provider.as_deref().unwrap_or("-"),
+                query.parent_resource.as_deref().unwrap_or("-"),
+                query.max_results
+            )
+        });
+        let asked = self.ask_untimed(query).await;
+        if let (Some(started), Some(what)) = (timed, what.as_deref()) {
+            timing_done_saying("ask.catalogue", started, what);
+        }
+        asked
+    }
+
+    async fn ask_untimed(&self, query: CatalogueQuery) -> Result<CataloguePage, BridgeError> {
         // The whole catalogue's rows and the workspace's own are assembled
         // synchronously by the broker. Who publishes is cheap, and an app's
         // directory answers later on the broker's own set: asking either
@@ -2725,23 +2746,6 @@ const OPENED_NO_ACTION: &str = "the app offers no open action taking a path, so 
 /// than told the run is still pending after 30.
 const DEFAULT_WAIT_MS: u64 = 5_000;
 const MAX_WAIT_MS: u64 = 60_000;
-/// A clock read for timing one phase of a call, when the `tilo_mcp::timing`
-/// target is at debug: off, it reads no clock and costs one disabled check.
-pub(crate) fn timing_start() -> Option<std::time::Instant> {
-    tracing::enabled!(target: "tilo_mcp::timing", tracing::Level::DEBUG)
-        .then(std::time::Instant::now)
-}
-/// Time the phase `step`, begun at `started` ([`timing_start`]), in
-/// microseconds: `TIMING <step> <µs>` says where a slow call waited.
-pub(crate) fn timing_done(step: &'static str, started: Option<std::time::Instant>) {
-    if let Some(started) = started {
-        tracing::debug!(
-            target: "tilo_mcp::timing",
-            "TIMING {step} {}",
-            started.elapsed().as_micros()
-        );
-    }
-}
 /// Actions one `calls` batch runs. A document's edits and its save fit;
 /// more than this is several turns.
 const MAX_CALLS: usize = 32;
