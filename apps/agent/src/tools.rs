@@ -109,30 +109,6 @@ pub fn invoke_independent(input: &Value) -> bool {
     input.get(INVOKE_STANDALONE).and_then(Value::as_bool) == Some(true)
 }
 
-/// Validate a whole plan-mode batch before any discovery or control dispatch.
-/// A terminal plan must be alone: accepting the first plan in a mixed batch
-/// would silently discard calls and change the model's declared order.
-pub fn validate_plan_calls(calls: &[ToolCall]) -> Result<(), String> {
-    let mut ids = BTreeSet::new();
-    for call in calls {
-        call.validate().map_err(|error| error.to_string())?;
-        if !ids.insert(&call.id) {
-            return Err("duplicate tool call id".into());
-        }
-        validate_discovery_input(&call.name, &call.input)?;
-        if !matches!(
-            call.name.as_str(),
-            LIST_APPLICATIONS | LIST_OPERATIONS | DESCRIBE_OPERATION | PLAN
-        ) {
-            return Err(format!("There is no planning tool called {}.", call.name));
-        }
-    }
-    if calls.len() > 1 && calls.iter().any(|call| call.name == PLAN) {
-        return Err("plan must be the only tool call in its turn".into());
-    }
-    Ok(())
-}
-
 /// How many operations one listing returns.
 ///
 /// A cap on a **reply**, not on reach: a listing cut short says so and says

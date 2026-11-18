@@ -30,33 +30,10 @@ use crate::tools::{self, Revealed};
 
 pub use agent_provider_config::protocol::ToolCall;
 
-#[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
-enum ActionTurn {
-    Tools {
-        /// The assistant turn to replay, in the provider's own dialect.
-        assistant: Value,
-        calls: Vec<ToolCall>,
-    },
-    Plan {
-        /// The assistant turn and the call's id, to answer a refused plan.
-        assistant: Value,
-        id: String,
-        input: Value,
-    },
-}
-
 /// The two wire dialects of the action-discovery tool loop. Both run the
 /// same conversation with the same bounds: read-only discovery tools, then
 /// exactly one `plan` call, alone in its turn, as the final answer.
 #[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Dialect {
     /// Anthropic Messages: `system` key, `input_schema` tools, `tool_use`
@@ -68,39 +45,11 @@ enum Dialect {
 }
 
 #[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
 impl Dialect {
     fn of(protocol: agent_provider_config::ProviderProtocol) -> Self {
         match protocol {
             agent_provider_config::ProviderProtocol::Anthropic => Self::Anthropic,
             agent_provider_config::ProviderProtocol::OpenAiCompatible => Self::OpenAi,
-        }
-    }
-
-    fn first_messages(self, first: &FirstTurn) -> Vec<Value> {
-        match self {
-            Self::Anthropic => vec![first.message(self)],
-            Self::OpenAi => vec![
-                serde_json::json!({ "role": "system", "content": ACTION_SYSTEM }),
-                first.message(self),
-            ],
-        }
-    }
-
-    fn body(self, selection: &ProviderSelection, messages: &[Value], most_steps: usize) -> Value {
-        match self {
-            Self::Anthropic => action_request_body_for(selection, messages, most_steps),
-            Self::OpenAi => openai_action_request_body(selection, messages, most_steps),
-        }
-    }
-
-    fn parse(self, body: &str) -> Result<ActionTurn, String> {
-        match self {
-            Self::Anthropic => parse_action_turn(body),
-            Self::OpenAi => parse_openai_action_turn(body),
         }
     }
 
@@ -116,11 +65,6 @@ impl Dialect {
     }
 }
 
-/// The system prompt of the action-discovery conversation.
-/// Constant, like the tools, so the provider's prompt cache keeps it.
-#[cfg(test)]
-const ACTION_SYSTEM: &str = "Drive Tilo exclusively through the resource/action tools. The request lists the operations published right now with their parameters: when one of them does what is asked, call `plan` with it straight away. Use the listing tools only for what that list leaves out, and `describe_operation` only when an operation's arguments are unclear from its signature. Preserve every argument's declared JSON type. Never invent an operation id or parameter.";
-
 /// Which path reached the decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Route {
@@ -135,8 +79,6 @@ pub enum Fallback {
     NoKey,
     /// Switched off for this run (`--no-model`).
     Disabled,
-    /// Transport, HTTP status, a refusal, or an unreadable body.
-    Failed(String),
 }
 
 /// Selects the gateway-held profile, then answers instructions.
@@ -493,10 +435,6 @@ impl FirstTurn {
 }
 
 #[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
 fn fold_anthropic_results(messages: &mut Vec<Value>) {
     let start = messages
         .iter()
@@ -506,56 +444,9 @@ fn fold_anthropic_results(messages: &mut Vec<Value>) {
     messages.push(serde_json::json!({ "role": "user", "content": results }));
 }
 
-#[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
-fn action_request_body_for(
-    selection: &ProviderSelection,
-    messages: &[Value],
-    most_steps: usize,
-) -> Value {
-    serde_json::json!({
-        "model": selection.model.id,
-        "max_tokens": selection.model.output_tokens(),
-        "system": ACTION_SYSTEM,
-        "tools": tools::definitions(most_steps),
-        "messages": messages,
-    })
-}
-
-/// The `OpenAI` Chat Completions request for one discovery turn. The tool
-/// definitions are the same ones the Anthropic dialect sends, re-enveloped;
-/// `tool_choice: "required"` keeps the model inside the tool conversation
-/// (an answer that neither discovers nor plans is an error in both dialects).
-/// No `reasoning_effort` is chosen here: the gateway applies the profile's.
-#[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
-fn openai_action_request_body(
-    selection: &ProviderSelection,
-    messages: &[Value],
-    most_steps: usize,
-) -> Value {
-    serde_json::json!({
-        "model": selection.model.id,
-        "max_completion_tokens": selection.model.output_tokens(),
-        "messages": messages,
-        "tools": openai_tools(&tools::definitions(most_steps)),
-        "tool_choice": "required",
-    })
-}
-
 /// `{name, description, input_schema}` → `{type: "function", function:
 /// {name, description, parameters}}`.
 #[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
 fn openai_tools(definitions: &Value) -> Value {
     definitions
         .as_array()
@@ -577,22 +468,8 @@ fn openai_tools(definitions: &Value) -> Value {
         .collect()
 }
 
-#[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
-fn parse_action_turn(body: &str) -> Result<ActionTurn, String> {
-    let (assistant, calls) = anthropic_calls(body)?;
-    settle_turn(assistant, calls)
-}
-
 /// The assistant turn (to replay) and its tool calls, in call order.
 #[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
 fn anthropic_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
     let root: Value = serde_json::from_str(body)
         .map_err(|error| format!("unreadable action response: {error}"))?;
@@ -637,22 +514,8 @@ fn anthropic_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
     ))
 }
 
-#[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
-fn parse_openai_action_turn(body: &str) -> Result<ActionTurn, String> {
-    let (assistant, calls) = openai_calls(body)?;
-    settle_turn(assistant, calls)
-}
-
 /// The assistant turn (to replay) and its tool calls, in call order.
 #[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
 fn openai_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
     let root: Value = serde_json::from_str(body)
         .map_err(|error| format!("unreadable action response: {error}"))?;
@@ -727,32 +590,6 @@ fn openai_calls(body: &str) -> Result<(Value, Vec<ToolCall>), String> {
         );
     }
     Ok((assistant, calls))
-}
-
-/// The rule shared by both dialects: `plan` is the final answer and must be
-/// the only call of its turn; otherwise the turn must call discovery tools.
-#[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
-fn settle_turn(assistant: Value, calls: Vec<ToolCall>) -> Result<ActionTurn, String> {
-    tools::validate_plan_calls(&calls)?;
-    if calls.iter().any(|call| call.name == tools::PLAN) {
-        let mut calls = calls.into_iter();
-        let (Some(call), None) = (calls.next(), calls.next()) else {
-            return Err("plan must be the only tool call in its turn".into());
-        };
-        return Ok(ActionTurn::Plan {
-            assistant,
-            id: call.id,
-            input: call.input,
-        });
-    }
-    if calls.is_empty() {
-        return Err("the model neither discovered actions nor submitted a plan".into());
-    }
-    Ok(ActionTurn::Tools { assistant, calls })
 }
 
 /// The first user turn of an action decision: the operations published
@@ -1598,10 +1435,6 @@ struct LegacyConversation {
 }
 
 #[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the legacy provider-dialect codec a scripted test fixture carries"
-)]
 impl LegacyConversation {
     pub fn new(
         protocol: agent_provider_config::ProviderProtocol,

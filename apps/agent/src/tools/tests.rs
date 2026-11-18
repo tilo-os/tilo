@@ -530,14 +530,6 @@ tilo_test_env::scenario! {
             extra_content: None,
         };
         assert!(
-            validate_plan_calls(&[
-                call("a", LIST_APPLICATIONS, json!({})),
-                call("b", PLAN, json!({}))
-            ])
-            .is_err()
-        );
-        assert!(validate_plan_calls(&[call("a", PLAN, json!({}))]).is_ok());
-        assert!(
             validate_loop_calls(&[
                 call("a", LIST_APPLICATIONS, json!({})),
                 call("a", LIST_OPERATIONS, json!({}))
