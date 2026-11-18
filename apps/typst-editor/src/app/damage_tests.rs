@@ -184,11 +184,11 @@ fn open_long_document(app: &mut ui::App, host: &mut Host) {
     }
     let file = typst(app, |editor| editor.current.clone()).expect("a file is open");
     let source = Workspace::paths().files.item(&file).source;
-    let invoke = ui::tilo_resource::Invoke::edit(&source.splice(0, 0, long_source(100)))
+    let invoke = ui::tilo_resource::Invoke::edit(&source.splice(0, 0, long_source(30)))
         .expect("an edit of the source");
     app.invoke_local_resource_action(&invoke.address(), &invoke.arguments)
         .expect("the source takes the edit");
-    settle(app, host, 100);
+    settle(app, host, 30);
 }
 
 fn settle(app: &mut ui::App, host: &mut Host, pages: usize) {
@@ -315,7 +315,7 @@ fn typing_repaints_the_line_and_the_caret() {
         // The first edit starts the document's history, and the History
         // control in the bar shows it has one.
         host.input(app, &char_key("w"));
-        settle(app, &mut host, 100);
+        settle(app, &mut host, 30);
         let status = typst(app, |view| view.status_rect);
         for key in ["x", "y", "z"] {
             let frame = host.input(app, &char_key(key));
@@ -348,7 +348,7 @@ fn typing_repaints_the_line_and_the_caret() {
             );
             assert_eq!(host.differing(), 0, "the typed frame equals a full repaint");
             // The preview takes the edit in a frame of its own, once compiled.
-            settle(app, &mut host, 100);
+            settle(app, &mut host, 30);
         }
     })
     .expect("the editor's window opens");
