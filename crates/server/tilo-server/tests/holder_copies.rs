@@ -8,7 +8,7 @@ use tilo_server::Envelope;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Hosted, TestUser, host_in, host_on, receives, session_to};
+use crate::common::{Hosted, TestUser, receives, serve_in, serve_on, session_to};
 
 /// Where `holder` says `workspace`'s copies stand, once `done` holds of it.
 async fn copies_once(
@@ -60,7 +60,7 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
     ];
     let mut holders = Vec::new();
     for (device, work) in devices.iter().zip(&settings) {
-        holders.push(Some(host_on(&alice, device, work.clone()).await));
+        holders.push(Some(serve_on(&alice, device, work.clone()).await));
     }
     let made_on = holders[0].as_ref().unwrap().host.workspaces().clone();
     let workspace = made_on.create("Notes").await.unwrap();
@@ -153,7 +153,7 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
         );
     }
 
-    holders[2] = Some(host_in(&alice, &server, settings[2].clone(), state).await);
+    holders[2] = Some(serve_in(&alice, &server, settings[2].clone(), state).await);
     let on_server = session_to(&alice, &tablet, holders[2].as_ref().unwrap()).await;
     on_server
         .send(Envelope::Subscribe {
@@ -174,4 +174,64 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
     for holder in holders.into_iter().flatten() {
         holder.stop().await;
     }
+}
+
+/// The server a workspace was made on is one of its holders from the start,
+/// named by its own signed address like any other: another person's server
+/// that holds the workspace beside it reads it among the holders, and takes
+/// in what it decides after the hand-over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes each holder after the assertions"
+)]
+async fn the_server_a_workspace_was_made_on_is_named_among_its_holders() {
+    let site = TestUser::fresh("Site");
+    let made_on_server = site.enrol("server", DeviceCapabilities::member());
+    let other = TestUser::fresh("Other");
+    let other_server = other.enrol("server", DeviceCapabilities::member());
+    let made_on = serve_on(&site, &made_on_server, WorkSetting::own_person()).await;
+    let workspaces = made_on.host.workspaces().clone();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    let mut takes = WorkSetting::own_person();
+    takes.from =
+        tilo_server_protocol::WorkFrom::Workspaces([workspace.workspace_id].into_iter().collect());
+    let holder = serve_on(&other, &other_server, takes).await;
+    workspaces
+        .attach_server(
+            &workspace.workspace,
+            other_server.device_pubkey(),
+            holder.host.node_addr(),
+        )
+        .await
+        .unwrap();
+    let named = holder
+        .host
+        .workspaces()
+        .hosts(&workspace.workspace)
+        .await
+        .unwrap();
+    assert!(
+        named
+            .iter()
+            .any(|hint| hint.host.device_public_key == made_on_server.device_pubkey()),
+        "the holder reads the server the workspace was made on among its holders"
+    );
+    let wanted = CopyPolicy {
+        key_holders: 2,
+        stores: 0,
+    };
+    workspaces
+        .choose_copies(&workspace.workspace, Some(wanted))
+        .await
+        .unwrap();
+    copies_once(
+        &holder,
+        &workspace.workspace,
+        "the holder takes in what the server it was made on decides",
+        |status| status.chosen && status.policy == wanted,
+    )
+    .await;
+    holder.stop().await;
+    made_on.stop().await;
 }

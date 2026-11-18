@@ -22,7 +22,7 @@ use tilo_server::workspaces::WorkspaceMachines as _;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Hosted, TestUser, device_endpoint, host_on};
+use crate::common::{Hosted, TestUser, device_endpoint, serve_on};
 
 /// The VM host the placer names.
 const VM_HOST: &str = "tilo-vm-host-0";
@@ -86,7 +86,7 @@ async fn fleet() -> Fleet {
     let operator = TestUser::fresh("operator");
     let shell = operator.enrol("host", DeviceCapabilities::primary());
     let vm_host = operator.enrol(VM_HOST, DeviceCapabilities::member());
-    let hosted = host_on(&operator, &shell, WorkSetting::own_person()).await;
+    let hosted = serve_on(&operator, &shell, WorkSetting::own_person()).await;
     let dir = tempfile::tempdir().unwrap();
     let asked = Asked::default();
 

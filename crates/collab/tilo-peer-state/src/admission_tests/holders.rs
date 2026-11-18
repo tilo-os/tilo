@@ -321,3 +321,89 @@ fn a_holder_that_is_no_member_admits_a_members_devices() {
         .unwrap_err();
     assert!(refused.contains("not a member"), "{refused}");
 }
+
+/// A holder that is no member says where its own copy stands, and every
+/// receiver takes the row in; it writes no other holder's row.
+#[test]
+fn a_holder_that_is_no_member_says_where_its_own_copy_stands() {
+    let (mut peer, authority_key, _, _, now) = seeded();
+    let workspace = peer.workspace_id().to_owned();
+    let (holder_key, holder) = device_of(91, 92, "Holder");
+    let hint = tilo_workspace_join::sign_transport_hint(
+        "iroh",
+        "an address",
+        holder.clone(),
+        [3; 32],
+        &holder_key,
+    )
+    .unwrap();
+    let unnamed = peer.clone();
+    assert!(
+        peer.governance_mut()
+            .author_keeping_device(&hint, &authority_key, now)
+            .unwrap()
+    );
+    let held = crate::HeldCopy {
+        catching_up_from: [[7; 32]].into_iter().collect(),
+        ..Default::default()
+    };
+    let heads = peer.admitted_workspace().unwrap().clone().get_heads();
+    let changes_since = |doc: &automerge::AutoCommit| -> Vec<Vec<u8>> {
+        doc.clone()
+            .get_changes(&heads)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect()
+    };
+    let mut copy = peer.clone();
+    assert!(
+        copy.workspace_mut()
+            .report_copy(&holder, &held, now)
+            .unwrap()
+    );
+    let own = changes_since(copy.admitted_workspace().unwrap());
+    let from_holder = |receiver: &mut StatePeer, changes: Vec<Vec<u8>>| {
+        receiver.receive_from(
+            TransportOrigin::ServerDelta(holder.device_public_key),
+            NeighbourMsg::SyncResp {
+                changes,
+                workspace: workspace.clone(),
+            },
+            now,
+        )
+    };
+    let mut before_named = unnamed;
+    assert!(
+        before_named
+            .workspace_mut()
+            .report_copy(&holder, &held, now)
+            .is_err(),
+        "a device the workspace does not name writes no row"
+    );
+    assert!(from_holder(&mut before_named, own.clone()).is_err());
+
+    let mut receiver = peer.clone();
+    from_holder(&mut receiver, own).unwrap();
+    assert!(
+        receiver
+            .workspace()
+            .copies()
+            .holders
+            .iter()
+            .any(|copy| copy.device == holder.device_public_key),
+        "every receiver reads where the holder's copy stands"
+    );
+
+    // Another device's row, written under the holder's key, is refused.
+    let mut forged = peer.clone();
+    let mut doc = forged.admitted_workspace().unwrap().clone();
+    doc.set_actor(automerge::ActorId::from(holder.device_public_key.to_vec()));
+    let rows = doc
+        .put_object(ROOT, crate::HELD_COPIES_KEY, automerge::ObjType::Map)
+        .unwrap();
+    doc.put(&rows, hex::encode([7_u8; 32]).as_str(), "{}")
+        .unwrap();
+    doc.commit();
+    let other = changes_since(&doc);
+    assert!(from_holder(&mut forged, other).is_err());
+}

@@ -14,7 +14,7 @@ use tilo_server::workspaces::Offer;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{TestUser, host_on};
+use crate::common::{TestUser, serve_on};
 
 /// The document's entry id of the device `device`.
 fn entry(device: &crate::common::TestDevice) -> Id {
@@ -29,8 +29,8 @@ async fn a_server_holds_and_releases_the_workspaces_its_entry_names() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
-    let server = host_on(&alice, &nas, WorkSetting::own_person()).await;
+    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
     let workspaces = governor.host.workspaces();
     let admin = admin_workspace_id(&alice.user_pk);
     workspaces
@@ -126,7 +126,7 @@ async fn a_server_holds_and_releases_the_workspaces_its_entry_names() {
 async fn a_server_offers_what_its_entry_says() {
     let alice = TestUser::fresh("Alice");
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let server = host_on(&alice, &nas, WorkSetting::own_person()).await;
+    let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
     let policy = tempfile::tempdir().unwrap();
     let policy_request = policy.path().join("update-policy.request");
     let workspaces = server.host.workspaces();
@@ -170,7 +170,7 @@ async fn a_server_offers_what_its_entry_says() {
 async fn a_retired_server_lets_go_of_everything() {
     let alice = TestUser::fresh("Alice");
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let server = host_on(&alice, &nas, WorkSetting::own_person()).await;
+    let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
     let policy = tempfile::tempdir().unwrap();
     let policy_request = policy.path().join("update-policy.request");
     let workspaces = server.host.workspaces();

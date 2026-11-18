@@ -90,6 +90,9 @@ pub struct HeldCopy {
     /// The holders it cannot reach, each since when (ns since the epoch, on
     /// this holder's clock).
     pub unreachable: BTreeMap<[u8; 32], u64>,
+    /// How many blobs of the content the workspace's files name
+    /// it does not keep yet.
+    pub content_missing: u32,
 }
 
 /// A [`HeldCopy`] as the workspace keeps it: devices by their hex keys.
@@ -97,6 +100,7 @@ pub struct HeldCopy {
 struct StoredCopy {
     catching_up_from: Vec<String>,
     unreachable: BTreeMap<String, u64>,
+    content_missing: u32,
 }
 
 impl From<&HeldCopy> for StoredCopy {
@@ -108,6 +112,7 @@ impl From<&HeldCopy> for StoredCopy {
                 .iter()
                 .map(|(device, since)| (hex::encode(device), *since))
                 .collect(),
+            content_missing: held.content_missing,
         }
     }
 }
@@ -126,6 +131,7 @@ impl StoredCopy {
                 .iter()
                 .filter_map(|(device, since)| Some((device_of(device)?, *since)))
                 .collect(),
+            content_missing: self.content_missing,
         }
     }
 }
@@ -152,6 +158,12 @@ pub enum Missing {
         /// The holder that cannot reach it.
         #[serde(serialize_with = "hex_key")]
         seen_by: [u8; 32],
+    },
+    /// Content the workspace's files name that it does not keep yet: the
+    /// blobs of files, which it asks the other holders for.
+    Content {
+        /// How many blobs it lacks.
+        blobs: u32,
     },
 }
 
@@ -335,6 +347,14 @@ impl PeerWorkspace<'_> {
 
         let mut shortfall = Vec::new();
         for (device, row) in &rows {
+            if row.content_missing > 0 {
+                shortfall.push(Shortfall::Holder {
+                    device: *device,
+                    missing: Missing::Content {
+                        blobs: row.content_missing,
+                    },
+                });
+            }
             for from in &row.catching_up_from {
                 shortfall.push(Shortfall::Holder {
                     device: *device,
@@ -398,8 +418,10 @@ impl PeerWorkspaceMut<'_> {
     ///
     /// # Errors
     ///
-    /// `device` is not the exact current certificate of a device that may
-    /// change this workspace, or the row cannot be written.
+    /// `device` is neither the exact current certificate of a device that
+    /// may change this workspace nor one of its holders, as its signed
+    /// address names it, or the row cannot be written. A holder that is no
+    /// member writes this row of its own and nothing else.
     pub fn report_copy(
         mut self,
         device: &tilo_user_identity::DeviceCert,
@@ -415,7 +437,14 @@ impl PeerWorkspaceMut<'_> {
         if held_rows(workspace).get(&device.device_public_key) == Some(held) {
             return Ok(false);
         }
-        self.check_writer(device, now)?;
+        if self
+            .peer
+            .holder_certificate(&device.device_public_key)
+            .as_ref()
+            != Some(device)
+        {
+            self.check_writer(device, now)?;
+        }
         let json =
             serde_json::to_string(&StoredCopy::from(held)).map_err(|error| error.to_string())?;
 

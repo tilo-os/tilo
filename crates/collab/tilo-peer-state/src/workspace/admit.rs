@@ -30,7 +30,8 @@ pub enum SenderAccess {
     /// The sender is a device of `person`, who is no member, named among the
     /// workspace's holders by its own signed address: a server of another
     /// person keeping the workspace. It writes the redemptions of
-    /// invitations it answers and nothing else ([`holder_redemptions`]).
+    /// invitations it answers and its own copy's row, and nothing else
+    /// ([`holder_writes`]).
     Holder { person: [u8; 32] },
 }
 
@@ -207,7 +208,7 @@ pub fn admit_workspace_changes(
     changes: &[Vec<u8>],
 ) -> Result<AdmittedWorkspace, AdmissionFailure> {
     if matches!(input.source.access, SenderAccess::Holder { .. }) {
-        return holder_redemptions(&input, changes);
+        return holder_writes(&input, changes);
     }
     let governs = input.source.governs(input.owner);
     let writes = governs || may_write(input.before, input.workspace, &input.source, input.now_ns)?;
@@ -268,16 +269,20 @@ pub fn admit_workspace_changes(
     }
 }
 
-/// What a holder that is no member may write: the redemptions of
+/// What a holder that is no member may write: the row saying where its own
+/// copy stands ([`crate::state::HELD_COPIES_KEY`]), and the redemptions of
 /// invitations, each admitting the person its signed invitation names
 /// ([`super::membership::admit_operations`]), and the device rows of a
 /// member's further device or key, which any key holder writes in
 /// ([`super::membership::admit_operations`] checks the row's person is a
-/// member's), and nothing else. Whether the sender is a holder is read where
-/// the batch was written (its dependencies), from the signed holder entries
-/// there, so every receiver decides it alike whenever the batch reaches it.
-/// Adding people otherwise, and every change of a role, stays a member's.
-fn holder_redemptions(
+/// member's); nothing else. Each is a rule every device computes alike: the
+/// row is about the holder itself, and a redemption or device row carries
+/// what decides it. Whether the sender is a holder is read where the batch
+/// was written (its dependencies), from the signed holder entries there, so
+/// every receiver decides it alike whenever the batch reaches it. Adding
+/// people otherwise, every change of a role, windows and layout stay a
+/// member's.
+fn holder_writes(
     input: &WorkspaceAdmission<'_>,
     changes: &[Vec<u8>],
 ) -> Result<AdmittedWorkspace, AdmissionFailure> {
@@ -296,6 +301,14 @@ fn holder_redemptions(
     };
     let pruned = super::base::pruned(Some(before), replaced);
     let candidate = super::candidate(Some(pruned.as_ref().unwrap_or(before)), &changes)?;
+    if only_own_copy_row(before, &candidate, input.source.key) {
+        let media = checked(input, &candidate, false)?;
+        return Ok(AdmittedWorkspace {
+            candidate,
+            media,
+            rebased: false,
+        });
+    }
     let held = crate::members::ops(before);
     let only_admissions = crate::members::ops(&candidate)
         .iter()
@@ -327,6 +340,38 @@ fn holder_redemptions(
         media,
         rebased: false,
     })
+}
+
+/// Whether all `after` changes of `before` is the row of `own` (a device
+/// key, hex) among the held copies, and the map holding the rows when
+/// `before` had none.
+fn only_own_copy_row(before: &AutoCommit, after: &AutoCommit, own: &str) -> bool {
+    use automerge::patches::PatchAction;
+    use automerge::{ObjType, Prop, ReadDoc as _, Value};
+    let rows = crate::state::HELD_COPIES_KEY;
+    let had_rows = before.get(automerge::ROOT, rows).ok().flatten().is_some();
+    let from = before.clone().get_heads();
+    let mut after = after.clone();
+    let to = after.get_heads();
+    let patches = after.diff(&from, &to);
+    !patches.is_empty()
+        && patches
+            .iter()
+            .all(|patch| match (patch.path.as_slice(), &patch.action) {
+                (
+                    [],
+                    PatchAction::PutMap {
+                        key,
+                        value: (Value::Object(ObjType::Map), _),
+                        conflict: false,
+                    },
+                ) => key == rows && !had_rows,
+                (
+                    [(_, Prop::Map(map))],
+                    PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key },
+                ) => map == rows && key == own,
+                _ => false,
+            })
 }
 
 fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure {

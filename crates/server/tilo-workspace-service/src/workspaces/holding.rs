@@ -422,13 +422,24 @@ async fn report_copy(workspaces: Weak<super::WorkspacesInner>, workspace: String
     // Said once at the start, also by a holder no other holder is named
     // beside.
     links.touch();
+    let mut before = std::collections::BTreeMap::new();
     loop {
         links.changed().await;
         let Some(inner) = workspaces.upgrade() else {
             return;
         };
         let this = Workspaces { inner };
-        let held = held_copy(&links.now());
+        // A holder this copy turned current with holds what this device
+        // asked the workspace for and nobody answered: it is asked again now.
+        let now = links.now();
+        if now
+            .iter()
+            .any(|(device, link)| *link == Link::Current && before.get(device) != Some(link))
+        {
+            drop(this.inner.reached.send(workspace.clone()));
+        }
+        before = now;
+        let held = held_copy(&links);
         let cert = this.governor().clone();
         let reported = this
             .author_own_workspace_state(&workspace, &cert, |peer| {
@@ -444,10 +455,16 @@ async fn report_copy(workspaces: Weak<super::WorkspacesInner>, workspace: String
     }
 }
 
-/// Where this device's copy stands, as its sessions to the other holders do.
-fn held_copy(links: &std::collections::BTreeMap<[u8; 32], Link>) -> tilo_peer_state::HeldCopy {
-    let mut held = tilo_peer_state::HeldCopy::default();
-    for (device, link) in links {
+/// Where this device's copy stands, as its sessions to the other holders
+/// do, with the holders it holds changes back from for lack of history and
+/// the content it lacks.
+fn held_copy(links: &Links) -> tilo_peer_state::HeldCopy {
+    let mut held = tilo_peer_state::HeldCopy {
+        catching_up_from: links.held_from(),
+        content_missing: links.content_missing(),
+        ..tilo_peer_state::HeldCopy::default()
+    };
+    for (device, link) in &links.now() {
         match link {
             Link::Reaching | Link::CatchingUp => {
                 held.catching_up_from.insert(*device);
@@ -462,6 +479,38 @@ fn held_copy(links: &std::collections::BTreeMap<[u8; 32], Link>) -> tilo_peer_st
 }
 
 impl Workspaces {
+    /// History of `workspace` arrived from another holder: the changes held
+    /// back for lack of it are tried again, against what the server keeps.
+    pub(crate) fn history_arrived(&self, workspace: &str) {
+        let this = self.clone();
+        let workspace = workspace.to_owned();
+        tokio::spawn(async move {
+            let Ok(governed) = this.workspace(&workspace).await else {
+                return;
+            };
+            if governed.lock().await.holders.held.is_empty() {
+                return;
+            }
+            this.replay(&workspace).await;
+        });
+    }
+
+    /// Each workspace whose copy here turned current with another of its
+    /// holders: what it lacks of the content its files name, the holder
+    /// may keep. A slow receiver may lag; it then asks for all it lacks.
+    #[must_use]
+    pub fn holders_reached(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.inner.reached.subscribe()
+    }
+
+    /// `workspace`'s copy here lacks `blobs` of the content its files
+    /// name: every holder reads it in the workspace's copy status.
+    pub async fn lacks_content(&self, workspace: &str, blobs: u32) {
+        if let Ok(governed) = self.workspace(workspace).await {
+            governed.lock().await.holders.links().lacks_content(blobs);
+        }
+    }
+
     /// Where `workspace`'s copies stand: what it wants, each holder, and
     /// which of them is short of what.
     ///
@@ -507,4 +556,39 @@ pub(super) struct Holders {
     /// Whether the workspace's governance has named this device among its
     /// holders: once it has, naming it no more lets the workspace go here.
     named: bool,
+    /// Changes of the workspace another holder sent that build on history
+    /// this device lacks, by that holder: taken in once the history is.
+    held: Vec<([u8; 32], NeighbourMsg)>,
+}
+
+/// The most changes held back for history at once: the oldest goes first,
+/// and the next catch-up from its holder brings it again.
+const MOST_HELD: usize = 256;
+
+impl Holders {
+    /// Hold `message` of the holder `from` back until the history it builds
+    /// on arrives.
+    pub(super) fn hold(&mut self, from: [u8; 32], message: NeighbourMsg) {
+        if self.held.len() >= MOST_HELD {
+            self.held.remove(0);
+        }
+        self.held.push((from, message));
+        self.say_held();
+    }
+
+    /// The changes held back, taken to be tried again.
+    pub(super) fn take_held(&mut self) -> Vec<([u8; 32], NeighbourMsg)> {
+        std::mem::take(&mut self.held)
+    }
+
+    /// Say in the copy's links which holders changes are held back from.
+    pub(super) fn say_held(&self) {
+        self.links
+            .hold_from(self.held.iter().map(|(from, _)| *from).collect());
+    }
+
+    /// Where this device's copy stands against the other holders.
+    pub(super) fn links(&self) -> &Links {
+        &self.links
+    }
 }

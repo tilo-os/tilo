@@ -7,7 +7,7 @@ use tilo_server::{Envelope, ServerClient};
 use tilo_server_protocol::{WorkFrom, WorkSetting};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, host_on, receives, session_to};
+use crate::common::{TestUser, receives, serve_on, session_to};
 use tilo_server::WorkspaceId;
 
 /// How long the holders are watched doing nothing: longer than the holder's
@@ -71,8 +71,8 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
-    let member = host_on(&alice, &nas, WorkSetting::own_person()).await;
+    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let member = serve_on(&alice, &nas, WorkSetting::own_person()).await;
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
 
@@ -169,8 +169,8 @@ async fn a_device_serves_no_workspace_another_device_governs() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let desktop = alice.enrol("desktop", DeviceCapabilities::primary());
-    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
-    let other = host_on(&alice, &desktop, WorkSetting::none()).await;
+    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let other = serve_on(&alice, &desktop, WorkSetting::none()).await;
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
 
@@ -204,8 +204,8 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let tablet = alice.enrol("tablet", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
-    let member = host_on(&alice, &nas, WorkSetting::own_person()).await;
+    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let member = serve_on(&alice, &nas, WorkSetting::own_person()).await;
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     let records = member.host.workspace_documents();
@@ -308,7 +308,7 @@ async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_gover
     ];
     let mut holders = Vec::new();
     for (device, work) in devices.iter().zip(&settings) {
-        holders.push(Some(host_on(&alice, device, work.clone()).await));
+        holders.push(Some(serve_on(&alice, device, work.clone()).await));
     }
     let made_on = holders[0].as_ref().unwrap().host.workspaces();
     let workspace = made_on.create("Notes").await.unwrap();
@@ -402,7 +402,7 @@ async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_gover
         drop((on_one, on_two));
 
         holders[gone] = Some(
-            crate::common::host_in(&alice, devices[gone], settings[gone].clone(), state).await,
+            crate::common::serve_in(&alice, devices[gone], settings[gone].clone(), state).await,
         );
     }
 
@@ -518,10 +518,10 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let site = TestUser::fresh("Site");
     let server = site.enrol("server", DeviceCapabilities::member());
-    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
-    let refusing = host_on(&site, &server, WorkSetting::own_person()).await;
+    let refusing = serve_on(&site, &server, WorkSetting::own_person()).await;
     let refused = workspaces
         .attach_server(
             &workspace.workspace,
@@ -564,7 +564,7 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let site = TestUser::fresh("Site");
     let server = site.enrol("server", DeviceCapabilities::member());
-    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     workspaces
@@ -575,7 +575,7 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     let mut takes = WorkSetting::own_person();
     takes.from =
         tilo_server_protocol::WorkFrom::Workspaces([workspace.workspace_id].into_iter().collect());
-    let holder = host_on(&site, &server, takes.clone()).await;
+    let holder = serve_on(&site, &server, takes.clone()).await;
     let hint = workspaces
         .attach_server(
             &workspace.workspace,
@@ -630,7 +630,7 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     // The holder restarts and holds the workspace again from its own record.
     drop(on_holder);
     let state = holder.stop_keeping().await;
-    let holder = crate::common::host_in(&site, &server, takes, state).await;
+    let holder = crate::common::serve_in(&site, &server, takes, state).await;
     let again = session_at(&phone, &site, &server, &holder).await;
     tilo_test_env::within("the restarted holder admits the member", async {
         while !admitted(&again, workspace.workspace_id).await {
@@ -700,14 +700,14 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let site = TestUser::fresh("Site");
     let server = site.enrol("server", DeviceCapabilities::member());
-    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     workspaces
         .enter(&workspace.workspace, &phone.cert)
         .await
         .unwrap();
-    let holder = host_on(&site, &server, WorkSetting::own_person()).await;
+    let holder = serve_on(&site, &server, WorkSetting::own_person()).await;
     let at_site = holder.host.workspaces();
     assert!(
         at_site
@@ -813,10 +813,10 @@ async fn a_hand_over_names_its_workspace_by_its_id_and_writes_nowhere_else() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let state = tempfile::tempdir().unwrap();
     let root = state.path().to_path_buf();
-    let member = crate::common::host_in(&alice, &nas, WorkSetting::own_person(), state).await;
+    let member = crate::common::serve_in(&alice, &nas, WorkSetting::own_person(), state).await;
     let at = member.host.node_addr();
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
@@ -900,7 +900,7 @@ async fn a_held_workspace_is_not_taken_from_another_governor() {
     let hers = mallory.enrol("laptop", DeviceCapabilities::primary());
     let site = TestUser::fresh("Site");
     let kept_on = site.enrol("server", DeviceCapabilities::member());
-    let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
     workspaces
@@ -910,7 +910,7 @@ async fn a_held_workspace_is_not_taken_from_another_governor() {
     // The site's operator takes that workspace, whoever hands it over.
     let mut takes = WorkSetting::own_person();
     takes.from = WorkFrom::Workspaces([workspace.workspace_id].into_iter().collect());
-    let holder = host_on(&site, &kept_on, takes).await;
+    let holder = serve_on(&site, &kept_on, takes).await;
     let at = holder.host.node_addr();
     workspaces
         .attach_server(&workspace.workspace, kept_on.device_pubkey(), at.clone())
@@ -925,7 +925,7 @@ async fn a_held_workspace_is_not_taken_from_another_governor() {
     .await;
 
     // Mallory's own device governs a workspace she made under Alice's id.
-    let second = host_on(&mallory, &hers, WorkSetting::none()).await;
+    let second = serve_on(&mallory, &hers, WorkSetting::none()).await;
     let of_mallory = second.host.workspaces();
     of_mallory
         .create_workspace("Notes", Some(&workspace.workspace))

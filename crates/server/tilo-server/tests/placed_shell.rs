@@ -34,7 +34,7 @@ use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 use ush::environment_programs::{Heard, Start};
 
-use crate::common::{Hosted, TestUser, device_endpoint, host_on};
+use crate::common::{Hosted, TestUser, device_endpoint, serve_on};
 
 /// The VM host the placer names, as the operator's `StatefulSet` calls it.
 const VM_HOST: &str = "tilo-vm-host-0";
@@ -144,7 +144,7 @@ async fn placed() -> Arc<Placed> {
     let operator = TestUser::fresh("operator");
     let shell = operator.enrol("host", DeviceCapabilities::primary());
     let vm_host = operator.enrol(VM_HOST, DeviceCapabilities::member());
-    let hosted = host_on(&operator, &shell, WorkSetting::own_person()).await;
+    let hosted = serve_on(&operator, &shell, WorkSetting::own_person()).await;
     let workspace = hosted
         .host
         .workspaces()

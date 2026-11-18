@@ -889,6 +889,9 @@ struct WorkspacesInner {
     calls: Arc<voice::Calls>,
     /// The workspace UUID after each settled governance decision.
     changes: tokio::sync::broadcast::Sender<String>,
+    /// The workspace UUID each time this device's copy turns current with
+    /// another of its holders ([`Workspaces::holders_reached`]).
+    reached: tokio::sync::broadcast::Sender<String>,
     /// Each workspace deleted here, and its server workspace
     /// ([`Workspaces::deletions`]).
     deletions: tokio::sync::broadcast::Sender<(String, WorkspaceId)>,
@@ -1193,6 +1196,7 @@ impl Workspaces {
                 calls: Arc::default(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
+                reached: tokio::sync::broadcast::Sender::new(64),
                 deletions: tokio::sync::broadcast::channel(64).0,
                 branches: tokio::sync::broadcast::channel(64).0,
                 branch_content: std::sync::RwLock::default(),
@@ -2040,7 +2044,9 @@ impl Workspaces {
         };
         #[cfg(any(feature = "agents", feature = "web"))]
         self.found_retained(workspace, &state, &retained).await;
-        self.recall_retained(&mut *state.lock().await, retained);
+        let mut governed = state.lock().await;
+        self.recall_retained(&mut governed, retained);
+        self.retry_held(&mut governed).await;
     }
 
     /// Found every record of `workspace` that `retained` holds a write of and
@@ -2398,18 +2404,75 @@ impl Workspaces {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Result<(), String> {
-        let host = &self.inner.host;
         let workspace = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
         let mut workspace = workspace.lock().await;
+        if !self.take_topology(&mut workspace, author, message).await? {
+            // Held back for history this device lacks: the history the
+            // server keeps is taken in again, and the change with it.
+            self.replay_soon(workspace.workspace().to_owned());
+            return Ok(());
+        }
+        self.retry_held(&mut workspace).await;
+        Ok(())
+    }
+
+    /// Try again the changes held back for history (`take_topology`), now
+    /// that something landed: those whose history arrived are taken in, the
+    /// others held on.
+    async fn retry_held(&self, workspace: &mut GovernedWorkspace) {
+        loop {
+            let held = workspace.holders.take_held();
+            if held.is_empty() {
+                break;
+            }
+            let mut took = false;
+            for (author, message) in held {
+                match self.take_topology(workspace, author, message).await {
+                    Ok(taken) => took |= taken,
+                    Err(error) => {
+                        tracing::warn!(workspace = %workspace.workspace(), %error, "a change held back for its history was refused");
+                    }
+                }
+            }
+            if !took {
+                break;
+            }
+        }
+        workspace.holders.say_held();
+    }
+
+    /// Take `message`, `author`'s change to the workspace's state, into
+    /// `workspace`. Whether it was taken: a change another holder sent that
+    /// builds on history this device lacks is held back
+    /// ([`holding::Holders::hold`]) until that history arrives, and the
+    /// workspace's copy status says so; a member's windows built on a
+    /// history the workspace started over from are refused.
+    async fn take_topology(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        author: [u8; 32],
+        message: neighbour_wire::NeighbourMsg,
+    ) -> Result<bool, String> {
+        let host = &self.inner.host;
         if let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = &message {
             let missing = unbuildable_windows::missing_history(
                 workspace.peer().admitted_workspace(),
                 changes,
             )?;
             if missing > 0 {
+                let from_holder = workspace
+                    .peer()
+                    .governance()
+                    .keeping_devices()
+                    .iter()
+                    .any(|hint| hint.host.device_public_key == author);
+                if from_holder {
+                    workspace.holders.hold(author, message);
+                    return Ok(false);
+                }
                 return Err(self.unbuildable_windows(workspace.workspace(), missing));
             }
         }
@@ -2419,7 +2482,7 @@ impl Workspaces {
             .receive_from(TransportOrigin::RetainedServerDelta(author), message, now)
             .map_err(|error| error.to_string())?;
         if !outcome.changed {
-            return Ok(());
+            return Ok(true);
         }
         // A member removed takes every way in the workspace handed them with
         // them: an invitation issued to them before, still unredeemed,
@@ -2445,7 +2508,8 @@ impl Workspaces {
             Ok(state)
         })?;
         workspace.keep_out_removed(&removed, author_person, tilo_clock::unix_now_ns())?;
-        self.settle(&mut workspace).await
+        self.settle(workspace).await?;
+        Ok(true)
     }
 
     /// Refound `record` of `app` from what the governor itself can still read,

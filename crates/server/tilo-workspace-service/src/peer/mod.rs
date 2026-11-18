@@ -81,6 +81,7 @@ use dispatch::handle_inbound_frame;
 use dispatch::{handle_envelope, unserved_private};
 pub use fetch::FetchGrants;
 use hello::handle_host_hello;
+pub(crate) use live::answer_content;
 use live::{
     handle_content_want, handle_host_said, handle_live_join, handle_presence, handle_voice,
     route_document_content,

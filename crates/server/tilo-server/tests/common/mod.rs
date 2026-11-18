@@ -396,7 +396,7 @@ impl Hosted {
         drop(self.stop_keeping().await);
     }
 
-    /// Stop the host, keeping its state for [`host_in`] to open again.
+    /// Stop the host, keeping its state for [`serve_in`] to open again.
     pub async fn stop_keeping(self) -> TempDir {
         self.router.shutdown().await.unwrap();
         self.host.shutdown().await;
@@ -404,12 +404,12 @@ impl Hosted {
     }
 }
 
-pub async fn host_on(user: &TestUser, device: &TestDevice, work: WorkSetting) -> Hosted {
-    host_in(user, device, work, tempfile::tempdir().unwrap()).await
+pub async fn serve_on(user: &TestUser, device: &TestDevice, work: WorkSetting) -> Hosted {
+    serve_in(user, device, work, tempfile::tempdir().unwrap()).await
 }
 
-/// A host as [`host_on`] makes one, over the state `state` holds.
-pub async fn host_in(
+/// A host as [`serve_on`] makes one, over the state `state` holds.
+pub async fn serve_in(
     user: &TestUser,
     device: &TestDevice,
     work: WorkSetting,

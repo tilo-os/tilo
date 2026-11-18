@@ -115,14 +115,20 @@ pub enum Link {
 }
 
 /// Where each of a workspace's sessions to its other holders stands, by the
-/// other holder's device, and a wake-up for whoever says so in the
-/// workspace.
+/// other holder's device, what this device holds back of what they sent for
+/// lack of history, how much of the content the workspace names it lacks,
+/// and a wake-up for whoever says so in the workspace.
 #[derive(Clone, Default)]
 pub struct Links(Arc<LinksInner>);
 
 #[derive(Default)]
 struct LinksInner {
     links: std::sync::Mutex<BTreeMap<[u8; 32], Link>>,
+    /// The holders a change is held back from until the history it builds
+    /// on arrives.
+    held_from: std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>>,
+    /// Blobs of the content the workspace's files name that this device lacks.
+    content_missing: std::sync::atomic::AtomicU32,
     changed: tokio::sync::Notify,
 }
 
@@ -158,6 +164,31 @@ impl Links {
     /// Wait until a session's link changes, or say it changed at once.
     pub(crate) async fn changed(&self) {
         self.0.changed.notified().await;
+    }
+
+    /// Changes from `held_from` are held back for history this device lacks.
+    pub(crate) fn hold_from(&self, held_from: std::collections::BTreeSet<[u8; 32]>) {
+        if *self.0.held_from.lock_recover() != held_from {
+            *self.0.held_from.lock_recover() = held_from;
+            self.0.changed.notify_one();
+        }
+    }
+
+    /// The holders a change is held back from.
+    pub(crate) fn held_from(&self) -> std::collections::BTreeSet<[u8; 32]> {
+        self.0.held_from.lock_recover().clone()
+    }
+
+    /// This device lacks `blobs` of the content the workspace names.
+    pub fn lacks_content(&self, blobs: u32) {
+        if self.0.content_missing.swap(blobs, Ordering::SeqCst) != blobs {
+            self.0.changed.notify_one();
+        }
+    }
+
+    /// How many blobs of the content the workspace names this device lacks.
+    pub(crate) fn content_missing(&self) -> u32 {
+        self.0.content_missing.load(Ordering::SeqCst)
     }
 
     /// Have the next [`Self::changed`] return at once.
@@ -323,6 +354,7 @@ impl HostDialer {
         }
         let session = Session {
             client,
+            own_device: self.identity.cert.device_public_key,
             workspaces: &self.workspaces,
             source: &source,
             metrics: &self.metrics,
@@ -387,6 +419,8 @@ async fn negotiate_intersection(
 /// A connected attach session.
 struct Session<'a> {
     client: &'a ServerClient,
+    /// This server's own device, which answers the other holder's asks.
+    own_device: [u8; 32],
     workspaces: &'a WorkspaceRegistry,
     source: &'a crate::peer::StateSource,
     metrics: &'a Arc<Metrics>,
@@ -483,15 +517,19 @@ impl Session<'_> {
                     crate::peer::tell_governor(&workspace, &tap, author, body).await;
                 }
             }
-            Envelope::RetiredPresence { workspace_id, .. } => {
+            Envelope::RetiredPresence {
+                workspace_id,
+                payload,
+            } => {
                 if let Some(workspace) = self.workspace(*workspace_id).await {
                     // Presence carries no author on the wire; zero stands
                     // in. Fan-out only compares it to subscribers and keeps
                     // it from other attached hosts.
-                    workspace
-                        .lock()
-                        .await
-                        .fanout_presence(&[0u8; 32], &envelope);
+                    let mut runtime = workspace.lock().await;
+                    runtime.fanout_presence(&[0u8; 32], &envelope);
+                    let authority = runtime.workspace_authority.clone();
+                    drop(runtime);
+                    self.answer_holder(&workspace, authority.as_ref(), *workspace_id, payload);
                 }
             }
             Envelope::NotAuthorised {
@@ -506,6 +544,41 @@ impl Session<'_> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Answer the other holder's own ask for content this server keeps of a
+    /// workspace both hold (the files it lacks, for one): back on this
+    /// session, addressed to that holder's device, which keeps what it asked
+    /// for. What a member of the other holder asks, that member's own
+    /// holder answers; only the holder itself is answered here.
+    fn answer_holder(
+        &self,
+        workspace: &crate::workspace::SharedWorkspace,
+        authority: Option<&crate::workspaces::WorkspaceAuthority>,
+        workspace_id: WorkspaceId,
+        payload: &[u8],
+    ) {
+        let holder = &self.client.server_peer;
+        let Some(asked) = crate::AttributedPresence::decode(payload) else {
+            return;
+        };
+        if asked.author != holder.device_public_key || authority.is_none() {
+            return;
+        }
+        let outbound = self.client.outbound.clone();
+        crate::peer::answer_content(
+            workspace,
+            authority,
+            workspace_id,
+            (self.own_device, holder.device_public_key),
+            holder.user_public_key,
+            asked.body,
+            move |_, envelope| {
+                if outbound.try_send(envelope).is_err() {
+                    tracing::debug!("a piece for the other holder did not fit its session");
+                }
+            },
+        );
     }
 
     /// Take in the changes the upstream backfilled, and fan them out to this
@@ -536,6 +609,14 @@ impl Session<'_> {
         .map_err(|error| error.to_string())?
         .kept()
         .await;
+        // What the governor held back for lack of this history is taken in
+        // with it.
+        let authority = workspace.lock().await.workspace_authority.clone();
+        if let Some(authority) = authority
+            && let Some(workspaces) = authority.workspaces()
+        {
+            workspaces.history_arrived(authority.workspace());
+        }
         Ok(())
     }
 
