@@ -3865,9 +3865,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         let _entry = self.app.enter_wake_scope();
         self.surface_suspended = true;
-        for error in self.app.checkpoint_before_close() {
-            tracing::error!(%error, "could not save state on suspend");
-        }
+        self.app.autosave_flush();
         if let Some(mut render) = self.render.take() {
             self.suspended_renderer = render.shutdown_keeping_renderer();
         }
@@ -3941,9 +3939,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // the launch opens the app in it.
         if !self.handing_over && crate::launch::window_gives_place() {
             self.handing_over = true;
-            for error in self.app.checkpoint_before_close() {
-                tracing::error!(%error, "could not save before opening the workspace");
-            }
+            self.app.autosave_flush();
             self.closing.set(true);
             return;
         }
