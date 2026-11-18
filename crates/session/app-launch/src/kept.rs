@@ -45,7 +45,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // What an adopted launch is, as the session reads it.
 pub use tilo_app_keeper::registry::{KeptLaunch, LAUNCH_VERSION};
@@ -74,6 +74,10 @@ pub(crate) const KEEPER_END: Duration = Duration::from_secs(1);
 /// How long a session that goes on watches a keeper it removed the directory of, to clear what its
 /// X11 display left once it is gone: longer than a keeper told to end gives its app.
 const KEEPER_GONE: Duration = Duration::from_secs(30);
+
+/// How long clearing an ended keeper's display waits for its name to be free: the launch's X
+/// server holds it for a moment after the keeper ends.
+const DISPLAY_FREE: Duration = Duration::from_secs(1);
 
 /// Where whoever removes a keeper's directory waits for the keeper to be gone before it clears
 /// what the keeper's X11 display left in `/tmp`. A keeper that ends on its own removes its files
@@ -207,8 +211,9 @@ fn clear_once_gone(tmp: PathBuf, number: u32, keeper: Option<OwnedFd>, wait: Awa
 /// cgroup) cannot remove its own, and over a long uptime they pile up. Nothing is removed while
 /// the display's abstract name is bound (a keeper holds it for as long as it lives) or while the
 /// lock names a process that is still alive. The name is held here meanwhile, as a keeper takes a
-/// display, so one taking the number at the same moment never loses its files. True when the
-/// files were a dead keeper's and are gone.
+/// display, so one taking the number at the same moment never loses its files; and since an
+/// ended keeper's X server holds it for a moment more, the take waits for the server to go rather
+/// than giving up. True when the files were a dead keeper's and are gone.
 pub(crate) fn clear_dead_display(tmp: &Path, number: u32) -> bool {
     use std::os::linux::net::SocketAddrExt as _;
     let Ok(name) =
@@ -216,8 +221,24 @@ pub(crate) fn clear_dead_display(tmp: &Path, number: u32) -> bool {
     else {
         return false;
     };
-    let Ok(_held) = std::os::unix::net::UnixListener::bind_addr(&name) else {
+    // Taking the name is what keeps a live keeper's files from ever being removed: a keeper holds
+    // it for as long as it lives. One that just ended leaves its X server closing for a moment,
+    // and that holds the name too, so the take is waited for; a keeper that keeps the display is
+    // never waited out.
+    let Some(deadline) = Instant::now().checked_add(DISPLAY_FREE) else {
         return false;
+    };
+    let _held = loop {
+        match std::os::unix::net::UnixListener::bind_addr(&name) {
+            Ok(held) => break held,
+            Err(error) => {
+                if Instant::now() >= deadline {
+                    tracing::info!(number, %error, "an ended keeper's display is still held");
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
     };
     let lock = tmp.join(format!(".X{number}-lock"));
     let holder = std::fs::read_to_string(&lock)

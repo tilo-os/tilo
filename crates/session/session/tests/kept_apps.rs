@@ -320,26 +320,34 @@ fn tab_showing(session: &mut Session, title: &str) -> Option<TabId> {
     })
 }
 
-/// Wait until every window `titles` names stands in a tab, and the keeper was told each one: the
-/// tabs by title.
+/// Wait until the keeper was told the tab each of the app's windows `titles` names stands in, and
+/// answer those tabs: what the keeper says of its windows is where the launch stands, not a tab
+/// that showed a window of the same name before this launch's own came.
 fn shown_and_told(rig: &Rig, pass: &mut Pass, titles: &[&str]) -> Vec<(String, TabId)> {
     let mut placed = Vec::new();
-    crate::common::wait_for(&mut pass.session, "every window is in a tab", |session| {
-        placed = titles
-            .iter()
-            .map(|title| Some(((*title).to_owned(), tab_showing(session, title)?)))
-            .collect::<Option<Vec<_>>>()
-            .unwrap_or_default();
-        (placed.len() == titles.len()).then_some(())
-    });
-    let mut expected: Vec<(String, Option<String>)> = placed
-        .iter()
-        .map(|(title, tab)| (title.clone(), Some(tab.to_string())))
-        .collect();
-    expected.sort();
-    until(&mut pass.session, "the keeper is told each tab", |_| {
-        rig.told() == expected
-    });
+    until(
+        &mut pass.session,
+        "the keeper is told each tab",
+        |session| {
+            let told = rig.told();
+            let found: Option<Vec<(String, TabId)>> = titles
+                .iter()
+                .map(|title| {
+                    let (_, placement) = told
+                        .iter()
+                        .find(|(told, placement)| told == title && placement.is_some())?;
+                    let tab: TabId = placement.as_deref()?.parse().ok()?;
+                    matches!(tile_of(session, tab), Some(TileContent::Foreign { .. }))
+                        .then(|| ((*title).to_owned(), tab))
+                })
+                .collect();
+            let Some(found) = found else {
+                return false;
+            };
+            placed = found;
+            true
+        },
+    );
     placed
 }
 
@@ -1011,7 +1019,9 @@ fn named_display(rig: &Rig, pass: &mut Pass, which: &str) -> PathBuf {
 }
 
 /// A kept launch's X11 display leaves nothing in `/tmp` however its keeper ends: killed while the
-/// desktop is up, when it has no moment to remove its own lock, or at the logout that ends it.
+/// desktop is up, when it has no moment to remove its own lock, or at the logout that ends it. The
+/// same app starts again in that session while the killed keeper's files are still being cleared:
+/// its new keeper names a display of its own, an X client reaches it, and the app starts again.
 #[test]
 fn a_kept_launchs_x11_display_leaves_nothing_in_tmp_however_its_keeper_ends() {
     tilo_test_env::require_capability!(XServer, x_servers(), "the keeper's X11 display");
@@ -1022,32 +1032,50 @@ fn a_kept_launchs_x11_display_leaves_nothing_in_tmp_however_its_keeper_ends() {
     // Killed while the desktop is up.
     rig.launch(&pass);
     shown_and_told(&rig, &mut pass, &["Only"]);
-    let files = display_files(&named_display(&rig, &mut pass, "first"));
+    let first = display_files(&named_display(&rig, &mut pass, "first"));
+    assert!(
+        first.iter().all(|file| file.exists()),
+        "the keeper holds its display: {first:?}"
+    );
+    let (first_dir, pid, _) = rig.kept();
+    signal(parent_of(pid), libc::SIGKILL);
+    tilo_test_env::exited("the app of a keeper that is gone", pid);
+
+    // Started again in the same session, at once: its new keeper names a display of its own, an X
+    // client reaches it, and the app starts a second time.
+    rig.launch(&pass);
+    shown_and_told(&rig, &mut pass, &["Only"]);
+    assert_eq!(rig.starts().len(), 2, "the app started again");
+    let dir = named_display(&rig, &mut pass, "second");
+    assert_ne!(dir, first_dir, "a keeper of its own");
+    let files = display_files(&dir);
     assert!(
         files.iter().all(|file| file.exists()),
         "the keeper holds its display: {files:?}"
     );
-    let (_, pid, _) = rig.kept();
-    signal(parent_of(pid), libc::SIGKILL);
-    tilo_test_env::exited("the app of a keeper that is gone", pid);
-    until(
-        &mut pass.session,
-        "the killed keeper's display files go",
-        |_| files.iter().all(|file| !file.exists()),
+    let handed = testing::launcher_handed(&rig.home.home().join("tilo-launcher"));
+    assert!(
+        handed.iter().any(|arg| arg == "--x11-display"),
+        "the second launch is given a display: {handed:?}"
+    );
+    let x11 = connect_to_kept_display(&dir);
+    // The killed keeper's files go, and clearing them leaves the new keeper's alone.
+    if first != files {
+        tilo_test_env::wait_until("the killed keeper's display files go", || {
+            first.iter().all(|file| !file.exists())
+        });
+    }
+    assert!(
+        files.iter().all(|file| file.exists()),
+        "the new keeper's display files stay: {files:?}"
     );
 
-    pass.end(Teardown::Logout);
-
-    // Ended by the logout.
-    let rig = Rig::keeping_x11(&["Only"]);
-    let mut pass = rig.desktop(false);
-    rig.launch(&pass);
-    shown_and_told(&rig, &mut pass, &["Only"]);
-    let files = display_files(&named_display(&rig, &mut pass, "second"));
+    // Ended by the logout, its X server with it: the display leaves nothing behind.
     pass.end(Teardown::Logout);
     tilo_test_env::wait_until("the logout's keeper leaves no display files", || {
         files.iter().all(|file| !file.exists())
     });
+    let _x11 = x11;
 }
 
 /// The X program behind a kept launch can lose its server, as Xwayland does when its programs are
