@@ -1728,9 +1728,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("journal");
         let _journal = InvocationJournal::open(&root).unwrap();
+        // By the name alone: the harness names the case by its whole module
+        // path, which `--exact` would have to spell out and this test only
+        // knows as a suffix.
         let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--exact").arg("collab_app_broker::invocation_journal::tests::invocation_journal_excludes_a_second_process")
-            .env(PROBE, &root).output_locked().unwrap();
+            .arg("invocation_journal_excludes_a_second_process")
+            .env(PROBE, &root)
+            .output_locked()
+            .unwrap();
         assert!(
             child.status.success(),
             "{}",
