@@ -2,18 +2,18 @@
 # review a change here like an API change (docs/architecture/compatibility.md).
 # Everything above [schema] is authored; [schema] and `version` are written.
 
-# App ↔ app process: the service the launcher hands the Store and Settings, and
+# App ↔ package service: the service the launcher hands the Store and Settings, and
 # nothing else. Both speak postcard calls on its socket: the Store's resources
 # and actions, and Settings' language packs, whose operations only Settings may
 # call. Its own number, apart from the runtime interface every app speaks.
-name = "app-process"
+name = "package-service"
 version = 6
-version_const = "crates/packaging/app-process/src/lib.rs:APP_PROCESS_INTERFACE_VERSION"
+version_const = "crates/packaging/package-service/src/lib.rs:PACKAGE_SERVICE_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
 sources = [
-    "crates/packaging/app-process/src/wire.rs",
-    "crates/packaging/app-process/src/client.rs",
+    "crates/packaging/package-service/src/wire.rs",
+    "crates/packaging/package-service/src/client.rs",
 ]
 roots = ["Call", "Frame", "Handoff", "Progress"]
 

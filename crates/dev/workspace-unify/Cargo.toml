@@ -60,7 +60,7 @@ doc = false
 "app-catalogue" = { path = "../../../crates/packaging/app-catalogue", default-features = false, features = [] }
 "app-cli" = { path = "../../../crates/packaging/app-cli", default-features = false, features = [] }
 "app-fleet" = { path = "../../../crates/packaging/app-fleet", default-features = false, features = ["surfaces"] }
-"app-process" = { path = "../../../crates/packaging/app-process", default-features = false, features = ["default", "service", "test-support"] }
+"package-service" = { path = "../../../crates/packaging/package-service", default-features = false, features = ["default", "service", "test-support"] }
 "app-registry" = { path = "../../../crates/packaging/app-registry", default-features = false, features = [] }
 "appendlist-1_4_0" = { package = "appendlist", version = "^1.4.0", default-features = false, features = [] }
 "approx-0_4_0" = { package = "approx", version = "^0.4.0", default-features = false, features = ["default", "std"] }
@@ -2675,7 +2675,7 @@ doc = false
 "app-catalogue" = { path = "../../../crates/packaging/app-catalogue", default-features = false, features = [] }
 "app-cli" = { path = "../../../crates/packaging/app-cli", default-features = false, features = [] }
 "app-fleet" = { path = "../../../crates/packaging/app-fleet", default-features = false, features = [] }
-"app-process" = { path = "../../../crates/packaging/app-process", default-features = false, features = ["default", "service", "test-support"] }
+"package-service" = { path = "../../../crates/packaging/package-service", default-features = false, features = ["default", "service", "test-support"] }
 "app-registry" = { path = "../../../crates/packaging/app-registry", default-features = false, features = [] }
 "appendlist-1_4_0" = { package = "appendlist", version = "^1.4.0", default-features = false, features = [] }
 "approx-0_4_0" = { package = "approx", version = "^0.4.0", default-features = false, features = ["default", "std"] }

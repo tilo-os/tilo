@@ -1,4 +1,4 @@
-//! The `tilo-app-process` daemon: loads the on-disk registry, binds the control socket, runs the
+//! The `tilo-package-service` daemon: loads the on-disk registry, binds the control socket, runs the
 //! accept loop, and sends a best-effort systemd `READY=1` so a `Type=notify` unit can serialise
 //! dependent units behind it.
 
@@ -7,17 +7,17 @@ use std::sync::Arc;
 
 use clap::Parser;
 
-use app_process::{default_socket_path, transport};
+use package_service::{default_socket_path, transport};
 use package_store::{Catalog, PackageStore, SystemStore};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "tilo-app-process",
-    about = "Tilo app process: the package store's privileged service, over a control socket."
+    name = "tilo-package-service",
+    about = "Tilo package service: the package store's privileged service, over a control socket."
 )]
 struct Cli {
     /// Control socket path. Default:
-    /// `$XDG_RUNTIME_DIR/tilo/services/app-process.sock`.
+    /// `$XDG_RUNTIME_DIR/tilo/services/package-service.sock`.
     #[arg(long)]
     socket: Option<PathBuf>,
     /// Package store root. Default: `$XDG_DATA_HOME/tilo-apps`, the store
@@ -52,7 +52,7 @@ fn main() -> anyhow::Result<()> {
         socket = %socket.display(),
         store  = %root.display(),
         max_store_bytes = cli.max_store_bytes,
-        "tilo-app-process starting"
+        "tilo-package-service starting"
     );
 
     // The store builds its on-disk layout lazily; the catalogue lists it
@@ -83,7 +83,7 @@ fn main() -> anyhow::Result<()> {
         let _startup = tokio::task::spawn_blocking(move || {
             startup(&startup_store, &startup_catalog, max_store_bytes);
         });
-        let language_packs = app_process::language_pack::LanguagePackInstalls::new();
+        let language_packs = package_service::language_pack::LanguagePackInstalls::new();
         transport::serve(
             listener,
             store,
@@ -109,5 +109,5 @@ fn init_tracing() {
 /// them) without any install running, so the builds an earlier one left are collected here. A
 /// failure is logged and retried on the next start.
 fn startup(store: &PackageStore, catalog: &Catalog, max_store_bytes: u64) {
-    app_process::service::collect_after_change(store, catalog, max_store_bytes, &[]);
+    package_service::service::collect_after_change(store, catalog, max_store_bytes, &[]);
 }

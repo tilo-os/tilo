@@ -16,7 +16,7 @@ impl Drop for Host {
 }
 
 fn host() -> PathBuf {
-    tilo_test_env::package_binary!("tilo-app-process")
+    tilo_test_env::package_binary!("tilo-package-service")
 }
 
 fn installer() -> PathBuf {

@@ -37,7 +37,7 @@ pub const COMPAT_SERVICE: &str = "compat";
 pub const SYSTEM_SERVICE: &str = "system";
 /// Hosted model planning is performed by this per-user, desktop-owned gateway.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
-pub const APP_HOST_SERVICE: &str = "app-process";
+pub const PACKAGE_SERVICE: &str = "package-service";
 /// The person's messaging accounts (`tilo-messaging`).
 pub const MESSAGING_SERVICE: &str = "messaging";
 /// The shell runtime's supervisor.
@@ -131,7 +131,7 @@ fn child_fd_reserved(fd: i32) -> bool {
     }
     false
 }
-/// Settings holds `app-process` for the person's languages alone: the host answers it which language packs
+/// Settings holds `package-service` for the person's languages alone: the host answers it which language packs
 /// are offered and installs one, never the Store's package-management interface (the host decides by
 /// the app id stamped on the connection).
 use tilo_app_id::apps::SETTINGS as SETTINGS_APP_ID;
@@ -202,9 +202,9 @@ pub enum ServiceError {
         source: std::io::Error,
     },
     #[error(
-        "service `app-process` is restricted to the Store, and to Settings for its language packs"
+        "service `package-service` is restricted to the Store, and to Settings for its language packs"
     )]
-    AppProcessUnauthorized,
+    PackageServiceUnauthorized,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -697,9 +697,9 @@ fn authenticate_service(
         };
     }
 
-    if name == APP_HOST_SERVICE {
-        let launch = context.ok_or(ServiceError::AppProcessUnauthorized)?;
-        write_app_process_handoff(stream, launch.app_id).map_err(|source| {
+    if name == PACKAGE_SERVICE {
+        let launch = context.ok_or(ServiceError::PackageServiceUnauthorized)?;
+        write_package_service_handoff(stream, launch.app_id).map_err(|source| {
             ServiceError::OpenFailed {
                 path: path.to_path_buf(),
                 source,
@@ -728,8 +728,8 @@ fn write_ush_handoff(
     stream.flush()
 }
 
-fn write_app_process_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
-    app_process::wire::write_handoff(stream, app_id)
+fn write_package_service_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
+    package_service::wire::write_handoff(stream, app_id)
 }
 
 fn resolve_service_binds_inner(
@@ -748,11 +748,11 @@ fn resolve_service_binds_inner(
         }
         let path = socket_for(name);
 
-        if name == APP_HOST_SERVICE
+        if name == PACKAGE_SERVICE
             && context
                 .is_none_or(|launch| ![STORE_APP_ID, SETTINGS_APP_ID].contains(&launch.app_id))
         {
-            return Err(ServiceError::AppProcessUnauthorized);
+            return Err(ServiceError::PackageServiceUnauthorized);
         }
 
         if no_services {
@@ -890,7 +890,7 @@ mod image_interface_tests {
             COMPAT_SERVICE,
             SYSTEM_SERVICE,
             MODEL_GATEWAY_SERVICE,
-            APP_HOST_SERVICE,
+            PACKAGE_SERVICE,
             USH_SERVICE,
             "tools",
             "models",
@@ -1198,8 +1198,8 @@ mod tests {
                     })
                 );
 
-                let bytes = written(|stream| write_app_process_handoff(stream, "so.tilo.notes"));
-                let handoff = app_process::wire::read_handoff(&mut bytes.as_slice())
+                let bytes = written(|stream| write_package_service_handoff(stream, "so.tilo.notes"));
+                let handoff = package_service::wire::read_handoff(&mut bytes.as_slice())
                     .expect("the package service handoff");
                 assert_eq!(handoff.app_id, "so.tilo.notes");
             }
@@ -1409,7 +1409,7 @@ mod tests {
             {
                 let mut services = BTreeMap::new();
                 services.insert(
-                    APP_HOST_SERVICE.to_string(),
+                    PACKAGE_SERVICE.to_string(),
                     crate::manifest::service_req("required@1"),
                 );
                 let error = resolve_service_binds_for_launch(
@@ -1421,7 +1421,7 @@ mod tests {
                     },
                 )
                 .expect_err("third-party manifest must not grant package-manager authority");
-                assert!(matches!(error, ServiceError::AppProcessUnauthorized));
+                assert!(matches!(error, ServiceError::PackageServiceUnauthorized));
             }
             {
                 let dir = tempfile::tempdir().unwrap();

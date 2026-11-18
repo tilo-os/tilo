@@ -480,7 +480,7 @@ fi
 grep -Fq 'systemctl --global enable tilo-models.socket' "$repo/os/Containerfile"
 grep -Fq 'systemctl --global enable tilo-model-gateway.socket' "$repo/os/Containerfile"
 session_target="$repo/os/usr/lib/systemd/user/tilo-graphical-session.target"
-if grep -Eq '^Wants=.*tilo-(models|model-gateway|app-process)\.service' "$session_target"; then
+if grep -Eq '^Wants=.*tilo-(models|model-gateway|package-service)\.service' "$session_target"; then
   echo 'socket-activated app/model daemons still start eagerly with the graphical session' >&2
   exit 1
 fi
@@ -496,59 +496,59 @@ for model_socket in tilo-models.socket tilo-model-gateway.socket; do
   grep -Fqx 'PartOf=tilo-graphical-session.target' "$repo/os/usr/lib/systemd/user/$model_socket"
   grep -Fqx 'WantedBy=tilo-graphical-session.target' "$repo/os/usr/lib/systemd/user/$model_socket"
 done
-if grep -Fq 'systemctl --global enable tilo-app-process.service' "$repo/os/Containerfile"; then
-  echo 'app-process broker still starts eagerly at every graphical login' >&2
+if grep -Fq 'systemctl --global enable tilo-package-service.service' "$repo/os/Containerfile"; then
+  echo 'package-service broker still starts eagerly at every graphical login' >&2
   exit 1
 fi
-grep -Fq 'systemctl --global enable tilo-app-process.socket' "$repo/os/Containerfile"
+grep -Fq 'systemctl --global enable tilo-package-service.socket' "$repo/os/Containerfile"
 if grep -Eq '^[[:space:]]+greetd-tuigreet([[:space:]\\]|$)' "$repo/os/Containerfile"; then
   echo 'unused text greeter remains installed beside the graphical greeter' >&2
   exit 1
 fi
-app_process_socket="$repo/os/usr/lib/systemd/user/tilo-app-process.socket"
-app_process_service="$repo/os/usr/lib/systemd/user/tilo-app-process.service"
-cmp -s "$app_process_service" "$repo/crates/packaging/app-process/systemd/tilo-app-process.service" || {
-  fail 'source-packaged and OS app-process service sandboxes have drifted'
+package_service_socket="$repo/os/usr/lib/systemd/user/tilo-package-service.socket"
+package_service_service="$repo/os/usr/lib/systemd/user/tilo-package-service.service"
+cmp -s "$package_service_service" "$repo/crates/packaging/package-service/systemd/tilo-package-service.service" || {
+  fail 'source-packaged and OS package-service service sandboxes have drifted'
 }
-cmp -s "$app_process_socket" "$repo/crates/packaging/app-process/systemd/tilo-app-process.socket" || {
-  fail 'source-packaged and OS app-process activation sockets have drifted'
+cmp -s "$package_service_socket" "$repo/crates/packaging/package-service/systemd/tilo-package-service.socket" || {
+  fail 'source-packaged and OS package-service activation sockets have drifted'
 }
-grep -Fqx 'ProtectHome=read-only' "$app_process_service" \
-  || fail 'app-process exposes writable home outside its scoped broker state'
-grep -Fqx 'ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak' "$app_process_service" \
-  || fail 'app-process broker state is not provisioned before confinement'
-grep -Fqx 'ReadWritePaths=%S/tilo-app-process %h/.local/share/tilo-apps %h/.local/share/tilo-runtime %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak' "$app_process_service" \
-  || fail 'app-process checkpoint and account package-manager writes lack exact scoped storage'
-grep -Fqx 'Environment=TILO_STORE_CACHE_DIR=%S/tilo-app-process/cache' "$app_process_service" \
-  || fail 'app-process verified downloads do not use its private writable state directory'
-grep -Fqx 'StateDirectoryMode=0700' "$app_process_service" \
-  || fail 'app-process download state is not private'
-app_process_source="$repo/crates/packaging/app-process/src/main.rs"
-app_process_rpc="$repo/crates/packaging/app-process/src/service.rs"
-grep -Fqx 'ListenStream=%t/tilo/services/app-process.sock' "$app_process_socket"
-grep -Fqx 'SocketMode=0600' "$app_process_socket"
-grep -Fqx 'Service=tilo-app-process.service' "$app_process_socket"
-grep -Fqx 'Backlog=16' "$app_process_socket" \
-  || fail 'tilo-app-process activation queue is unbounded'
+grep -Fqx 'ProtectHome=read-only' "$package_service_service" \
+  || fail 'package-service exposes writable home outside its scoped broker state'
+grep -Fqx 'ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak' "$package_service_service" \
+  || fail 'package-service broker state is not provisioned before confinement'
+grep -Fqx 'ReadWritePaths=%S/tilo-package-service %h/.local/share/tilo-apps %h/.local/share/tilo-runtime %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak' "$package_service_service" \
+  || fail 'package-service checkpoint and account package-manager writes lack exact scoped storage'
+grep -Fqx 'Environment=TILO_STORE_CACHE_DIR=%S/tilo-package-service/cache' "$package_service_service" \
+  || fail 'package-service verified downloads do not use its private writable state directory'
+grep -Fqx 'StateDirectoryMode=0700' "$package_service_service" \
+  || fail 'package-service download state is not private'
+package_service_source="$repo/crates/packaging/package-service/src/main.rs"
+package_service_rpc="$repo/crates/packaging/package-service/src/service.rs"
+grep -Fqx 'ListenStream=%t/tilo/services/package-service.sock' "$package_service_socket"
+grep -Fqx 'SocketMode=0600' "$package_service_socket"
+grep -Fqx 'Service=tilo-package-service.service' "$package_service_socket"
+grep -Fqx 'Backlog=16' "$package_service_socket" \
+  || fail 'tilo-package-service activation queue is unbounded'
 for protection in ProtectKernelTunables ProtectKernelModules ProtectKernelLogs \
                   ProtectControlGroups ProtectClock ProtectHostname; do
-  grep -Fqx "$protection=yes" "$app_process_service" || {
-    fail "tilo-app-process sandbox is missing $protection=yes"
+  grep -Fqx "$protection=yes" "$package_service_service" || {
+    fail "tilo-package-service sandbox is missing $protection=yes"
   }
 done
-grep -Fqx 'KeyringMode=private' "$app_process_service" \
-  || fail 'tilo-app-process shares the session keyring'
-grep -Fqx 'CapabilityBoundingSet=' "$app_process_service" \
-  || fail 'tilo-app-process retains an ambient capability set'
-if grep -Eq '^\[Install\]|^WantedBy=' "$app_process_service"; then
-  fail 'tilo-app-process service remains directly enableable instead of socket-only'
+grep -Fqx 'KeyringMode=private' "$package_service_service" \
+  || fail 'tilo-package-service shares the session keyring'
+grep -Fqx 'CapabilityBoundingSet=' "$package_service_service" \
+  || fail 'tilo-package-service retains an ambient capability set'
+if grep -Eq '^\[Install\]|^WantedBy=' "$package_service_service"; then
+  fail 'tilo-package-service service remains directly enableable instead of socket-only'
 fi
-grep -Fqx 'RuntimeDirectoryPreserve=yes' "$app_process_service"
-grep -Fq 'activated_socket(&socket)' "$app_process_source"
-grep -Fq 'bounded_command::run_prepared(' "$app_process_rpc" \
-  || fail 'app-process RPC trusts unbounded package-manager subprocesses'
-if grep -Fq '.output()' "$app_process_rpc"; then
-  fail 'app-process RPC can capture unbounded helper output'
+grep -Fqx 'RuntimeDirectoryPreserve=yes' "$package_service_service"
+grep -Fq 'activated_socket(&socket)' "$package_service_source"
+grep -Fq 'bounded_command::run_prepared(' "$package_service_rpc" \
+  || fail 'package-service RPC trusts unbounded package-manager subprocesses'
+if grep -Fq '.output()' "$package_service_rpc"; then
+  fail 'package-service RPC can capture unbounded helper output'
 fi
 
 if grep -Fq 'systemctl --global enable tilo-ush.service' "$repo/os/Containerfile"; then
@@ -589,10 +589,10 @@ if ! grep -A2 -F 'if let Some(actual) = listener.local_addr()?.as_pathname()' "$
   echo 'socket activation no longer requires the listener to be the expected socket' >&2
   exit 1
 fi
-app_process_gc_line="$(grep -n 'let _startup = tokio::task::spawn_blocking' "$app_process_source" | cut -d: -f1)"
-app_process_serve_line="$(grep -n 'transport::serve(listener, store' "$app_process_source" | cut -d: -f1)"
-if [ -z "$app_process_gc_line" ] || [ -z "$app_process_serve_line" ] \
-   || [ "$app_process_gc_line" -ge "$app_process_serve_line" ]; then
+package_service_gc_line="$(grep -n 'let _startup = tokio::task::spawn_blocking' "$package_service_source" | cut -d: -f1)"
+package_service_serve_line="$(grep -n 'transport::serve(listener, store' "$package_service_source" | cut -d: -f1)"
+if [ -z "$package_service_gc_line" ] || [ -z "$package_service_serve_line" ] \
+   || [ "$package_service_gc_line" -ge "$package_service_serve_line" ]; then
   echo 'socket-activated app host still blocks first use on its store migration and GC pass' >&2
   exit 1
 fi

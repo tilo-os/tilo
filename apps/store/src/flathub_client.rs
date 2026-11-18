@@ -79,8 +79,8 @@ pub fn refreshed_remotes(rows: &str, previous: &[Remote]) -> Vec<Remote> {
 
 /// What the Store says when the Flatpak repository `remote` could not be
 /// read: decided by the host's typed refusal, never by an error's text.
-pub fn remote_error(remote: &Remote, error: &app_process::client::CatalogueError) -> String {
-    use app_process::client::Refusal;
+pub fn remote_error(remote: &Remote, error: &package_service::client::CatalogueError) -> String {
+    use package_service::client::Refusal;
     tracing::warn!(repository = %remote.name, %error, "could not read Flatpak repository");
     match error.refusal() {
         Some(Refusal::DeviceRepositoryStale) => crate::resource::CATALOG.t_args(
@@ -465,7 +465,7 @@ pub fn installed_origins(output: &str) -> std::collections::HashMap<String, (Str
     installed
 }
 
-/// Decode remote rows read outside the app sandbox by app-process.
+/// Decode remote rows read outside the app sandbox by package-service.
 pub fn list_remotes(output: &str) -> Vec<Remote> {
     output
         .lines()
@@ -533,8 +533,8 @@ mod tests {
             };
             let message = remote_error(
                 &remote,
-                &app_process::client::CatalogueError::Refused {
-                    refusal: app_process::client::Refusal::TimedOut,
+                &package_service::client::CatalogueError::Refused {
+                    refusal: package_service::client::Refusal::TimedOut,
                     detail: "Flatpak repository query: command timed out after 8000 ms".into(),
                 },
             );
@@ -543,8 +543,8 @@ mod tests {
                 assert_eq!(
                     remote_error(
                         &remote,
-                        &app_process::client::CatalogueError::Refused {
-                            refusal: app_process::client::Refusal::TimedOut,
+                        &package_service::client::CatalogueError::Refused {
+                            refusal: package_service::client::Refusal::TimedOut,
                             detail: detail.into(),
                         },
                     ),
@@ -555,7 +555,7 @@ mod tests {
             assert_ne!(
                 remote_error(
                     &remote,
-                    &app_process::client::CatalogueError::Failed(
+                    &package_service::client::CatalogueError::Failed(
                         "command timed out after 8000 ms GenerateOciSummary".into()
                     ),
                 ),

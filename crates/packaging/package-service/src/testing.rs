@@ -26,7 +26,7 @@ impl ConnectedService {
             .map_err(|error| error.to_string())?;
         let (shutdown, stopped) = tokio::sync::oneshot::channel();
         let driver = std::thread::Builder::new()
-            .name("app-process-test-service".into())
+            .name("package-service-test-service".into())
             .spawn(move || serve(server, connection, stopped))
             .map_err(|error| error.to_string())?;
         Ok((
@@ -50,7 +50,7 @@ impl ConnectedService {
         self.driver.take().map_or(Ok(()), |driver| {
             driver
                 .join()
-                .map_err(|_| "app-process test service panicked".to_owned())?
+                .map_err(|_| "package-service test service panicked".to_owned())?
         })
     }
 }
@@ -88,7 +88,7 @@ where
                 disconnect.shutdown(std::net::Shutdown::Both)
                     .map_err(|error| error.to_string())?;
                 let result = tokio::time::timeout(tilo_test_env::hang_bound(), &mut driver)
-                    .await.map_err(|_| "app-process test transport did not disconnect".to_owned())?;
+                    .await.map_err(|_| "package-service test transport did not disconnect".to_owned())?;
                 driver_result(result)
             },
         }
@@ -168,7 +168,7 @@ mod tests {
             drop(client);
             assert_eq!(
                 service.shutdown(),
-                Err("app-process test service panicked".into())
+                Err("package-service test service panicked".into())
             );
         }
 

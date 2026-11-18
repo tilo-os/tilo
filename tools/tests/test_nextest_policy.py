@@ -414,7 +414,7 @@ class WrapperHandedProgramTests(unittest.TestCase):
     # Package whose shards go through the wrapper -> the programs they need, built in this order.
     PROGRAMS = {
         "tilo-agent-session": ("tilo-video-render", "tilolang-process"),
-        "app-process": ("tilo-install",),
+        "package-service": ("tilo-install",),
         "app-cli": ("tilo-install",),
     }
     # The pam-tilo shards' cdylib: the wrapper exports it as TILO_PAM_TILO_MODULE, which the tests
@@ -492,7 +492,7 @@ class WrapperHandedProgramTests(unittest.TestCase):
 
     def test_a_handed_program_that_cannot_run_fails_instead_of_building(self):
         # Building here would hide a broken handoff and compile the program in every shard again.
-        result, ran, _, _, _ = self.run_wrapper("app-process", broken="tilo-install")
+        result, ran, _, _, _ = self.run_wrapper("package-service", broken="tilo-install")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("NEXTEST_BIN_EXE_tilo-install", result.stderr)
         self.assertEqual(ran, [])

@@ -1,4 +1,4 @@
-//! The app process's side of the wire ([`crate::wire::Server`]): reads of the device's
+//! The package service's side of the wire ([`crate::wire::Server`]): reads of the device's
 //! [`PackageStore`] and its [`Catalog`], and the actions on them. Blocking work (fs IO,
 //! content-store sessions, materialisation) runs through `tokio::task::spawn_blocking` so the
 //! connection stays responsive.
@@ -49,7 +49,7 @@ pub fn collect_after_change(
     }
 }
 
-pub struct AppProcessServer {
+pub struct PackageServiceServer {
     store: Arc<PackageStore>,
     catalog: Arc<Catalog>,
     max_store_bytes: u64,
@@ -59,7 +59,7 @@ pub struct AppProcessServer {
     language_packs: Arc<LanguagePackInstalls>,
 }
 
-impl AppProcessServer {
+impl PackageServiceServer {
     /// A server backed by `store`, listing what `catalog` (the same user store plus the image's
     /// preinstalled packages) can run. `max_store_bytes` is the soft cap for the post-install
     /// sweep; `0` disables it. `app_id` is the app the connection was opened for, and
@@ -799,7 +799,7 @@ fn run_host_command(command: std::process::Command) -> Result<String, Error> {
     }
 }
 
-impl crate::wire::Server for AppProcessServer {
+impl crate::wire::Server for PackageServiceServer {
     #[allow(
         clippy::future_not_send,
         reason = "calls are answered on the connection's LocalSet and never cross a thread"
@@ -813,7 +813,7 @@ impl crate::wire::Server for AppProcessServer {
     }
 }
 
-impl AppProcessServer {
+impl PackageServiceServer {
     /// The language packs the enabled repositories offer.
     async fn language_packs(&self) -> Result<Answer, Error> {
         let installs = Arc::clone(&self.language_packs);
@@ -1184,7 +1184,7 @@ mod command_tests {
 
             std::fs::write(
                 &path,
-                "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 2\n\n[runtime]\nservices = [\"app-process\"]\n",
+                "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 2\n\n[runtime]\nservices = [\"package-service\"]\n",
             )
             .unwrap();
             assert!(super::system_declaration_readable(&path).is_ok());

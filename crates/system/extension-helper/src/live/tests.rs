@@ -17,11 +17,11 @@ files = [
 ]
 
 [[component]]
-name = "app-process"
+name = "package-service"
 kind = "userspace"
 scope = "session"
-user_units = ["tilo-app-process.service"]
-files = [{ from = "tilo-app-process", to = "/usr/libexec/tilo-app-process", mode = "0755" }]
+user_units = ["tilo-package-service.service"]
+files = [{ from = "tilo-package-service", to = "/usr/libexec/tilo-package-service", mode = "0755" }]
 
 [[component]]
 name = "apps+runtime"
@@ -157,7 +157,7 @@ tilo_test_env::scenario! {
             vec![
                 written("/usr/bin/fs"),
                 written("/usr/bin/shell"),
-                written("/usr/libexec/tilo-app-process"),
+                written("/usr/libexec/tilo-package-service"),
                 written("/usr/lib/tilo-runtime/2026.10/lib.so"),
                 written("/usr/lib64/libfoo.so"),
             ],
@@ -194,7 +194,7 @@ tilo_test_env::scenario! {
             session.units.is_empty(),
             "already restarted by the system phase"
         );
-        assert_eq!(session.user_units, ["tilo-app-process.service"]);
+        assert_eq!(session.user_units, ["tilo-package-service.service"]);
 
         let interfaces = Plan::new(
             vec![

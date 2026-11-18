@@ -1,5 +1,5 @@
 //! The package service's socket: one tokio task per accepted connection, each serving
-//! [`crate::service::AppProcessServer`] over [`crate::wire`].
+//! [`crate::service::PackageServiceServer`] over [`crate::wire`].
 
 use std::path::Path;
 use std::sync::Arc;
@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::net::UnixListener;
 
 use crate::language_pack::LanguagePackInstalls;
-use crate::service::AppProcessServer;
+use crate::service::PackageServiceServer;
 use crate::wire::read_handoff_async;
 use package_store::{Catalog, PackageStore};
 
@@ -59,7 +59,7 @@ pub async fn handle_connection(
     language_packs: Arc<LanguagePackInstalls>,
 ) -> anyhow::Result<()> {
     let handoff = read_handoff_async(&mut stream).await?;
-    let service = std::rc::Rc::new(AppProcessServer::new(
+    let service = std::rc::Rc::new(PackageServiceServer::new(
         store,
         catalog,
         max_store_bytes,

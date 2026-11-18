@@ -1,7 +1,7 @@
 //! Installs a real signed ~1 MiB tapp repeatedly and reports wall-clock samples, then measures
 //! accounting and a size-pressure sweep over a store of many cached packages.
 //!
-//!     cargo bench -p app-process --bench install_timing
+//!     cargo bench -p package-service --bench install_timing
 
 #![allow(
     clippy::expect_used,
@@ -11,8 +11,8 @@
 #[path = "../tests/common/mod.rs"]
 mod common;
 
-use app_process::install::install_tapp;
-use app_process::{PackageStore, Pinning};
+use package_service::install::install_tapp;
+use package_service::{PackageStore, Pinning};
 
 fn main() {
     const ITERATIONS: u32 = 10;

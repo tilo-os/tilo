@@ -26,15 +26,15 @@ fn activation_child(
     command
         .arg("-c")
         .arg("LISTEN_PID=$$; export LISTEN_PID; exec \"$@\"")
-        .arg("tilo-app-process-activation-test")
-        .arg(tilo_test_env::package_binary!("tilo-app-process"))
+        .arg("tilo-package-service-activation-test")
+        .arg(tilo_test_env::package_binary!("tilo-package-service"))
         .arg("--socket")
         .arg(socket)
         .arg("--store")
         .arg(store)
         .arg("--max-store-bytes=0")
         .env("LISTEN_FDS", "1")
-        .env("LISTEN_FDNAMES", "app-process")
+        .env("LISTEN_FDNAMES", "package-service")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     // SAFETY: this closure runs after fork and before exec and calls only the
@@ -50,7 +50,7 @@ fn activation_child(
     }
     let child = command
         .spawn_locked()
-        .expect("spawn socket-activated app host");
+        .expect("spawn socket-activated package service");
     drop(inherited);
     child
 }
@@ -58,7 +58,7 @@ fn activation_child(
 #[test]
 fn consumes_systemd_listener_without_rebinding_it() {
     let temp = tempfile::tempdir().expect("temporary directory");
-    let socket = temp.path().join("app-process.sock");
+    let socket = temp.path().join("package-service.sock");
     let store = temp.path().join("store");
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("activation listener");
     let original_inode = std::fs::metadata(&socket).expect("socket metadata").ino();

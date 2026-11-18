@@ -20,7 +20,7 @@ use package_store::InstalledPackage;
 /// the user's `registries.toml`, not the wire — the registry
 /// doesn't publish its own name to a fetched entry).
 ///
-/// `installed_index` is the app host's install snapshot — passed by-ref so the merge can cheaply
+/// `installed_index` is the package service's install snapshot — passed by-ref so the merge can cheaply
 /// look up install state per package id.
 pub fn tilo_to_store_item(
     verified: &VerifiedEntry,
@@ -187,7 +187,7 @@ pub const INSTALLED_ON_DEVICE: &str = "Installed on this device";
 /// offer an update based on stale or invented metadata.
 pub fn installed_tilo_to_store_item(
     entry: &InstalledPackage,
-    about: Option<&app_process::client::PackageAbout>,
+    about: Option<&package_service::client::PackageAbout>,
 ) -> StoreItem {
     let locale = preferred_locale();
     StoreItem {
@@ -222,7 +222,7 @@ pub fn installed_tilo_to_store_item(
         source: StoreSource::Tilo {
             registry_name: INSTALLED_ON_DEVICE.into(),
         },
-        // app-process accepts only packages whose signature and declared package
+        // package-service accepts only packages whose signature and declared package
         // identity verified at installation. This is not a current registry
         // review claim; the detail sheet spells that distinction out.
         trust: StoreTrust::PublisherSigned,

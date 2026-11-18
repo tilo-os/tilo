@@ -1167,17 +1167,17 @@ mod tests {
             );
         }
 
-        phase app_process_stages_verified_downloads_in_private_state_without_writable_home;
+        phase package_service_stages_verified_downloads_in_private_state_without_writable_home;
         {
             use std::io::{Read as _, Write as _};
             use std::net::TcpListener;
 
-            let unit = include_str!("../../app-process/systemd/tilo-app-process.service");
+            let unit = include_str!("../../package-service/systemd/tilo-package-service.service");
             let setting = unit
                 .lines()
                 .find_map(|line| line.strip_prefix("Environment=TILO_STORE_CACHE_DIR="))
                 .expect("the hardened host must explicitly locate writable download state");
-            assert_eq!(setting, "%S/tilo-app-process/cache");
+            assert_eq!(setting, "%S/tilo-package-service/cache");
             assert!(unit.lines().any(|line| line == "ProtectHome=read-only"));
             let writes = unit
                 .lines()
@@ -1186,7 +1186,7 @@ mod tests {
             assert!(
                 writes
                     .split_whitespace()
-                    .any(|path| path == "%S/tilo-app-process")
+                    .any(|path| path == "%S/tilo-package-service")
             );
             assert!(
                 !writes

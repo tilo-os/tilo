@@ -11,7 +11,7 @@ extern crate runtime_dylib;
 #[cfg(feature = "thin")]
 pub use app_catalogue;
 #[cfg(feature = "thin")]
-pub use app_process;
+pub use package_service;
 
 /// Run the engine's own code: review bytes that are no app archive through
 /// the app host's client, which must refuse them, and block an app in an
@@ -21,7 +21,7 @@ pub use app_process;
 /// and runs against the runtime it ships with.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
-    use app_process::local_package::{ArchiveReviewError, review_archive};
+    use package_service::local_package::{ArchiveReviewError, review_archive};
 
     match review_archive(b"not an app archive") {
         Err(ArchiveReviewError::Invalid) => {}

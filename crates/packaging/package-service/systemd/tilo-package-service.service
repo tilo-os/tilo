@@ -1,5 +1,5 @@
 [Unit]
-Description=Tilo app process (verified package store and launch broker)
+Description=Tilo package service (verified package store and launch broker)
 After=tilo-graphical-session.target
 PartOf=tilo-graphical-session.target
 
@@ -17,7 +17,7 @@ ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.local/share/tilo-runtime
 # Only canonical package/runtime roots, broker state and account Flatpak state are writable.
 # Repository configuration and the rest of this person's home remain read-only.
 ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak
-ExecStart=/usr/libexec/tilo-app-process --socket %t/tilo/services/app-process.sock --store %h/.local/share/tilo-apps
+ExecStart=/usr/libexec/tilo-package-service --socket %t/tilo/services/package-service.sock --store %h/.local/share/tilo-apps
 Restart=on-failure
 RestartSec=1
 RuntimeDirectory=tilo/services
@@ -37,8 +37,8 @@ ProtectHostname=yes
 KeyringMode=private
 CapabilityBoundingSet=
 AmbientCapabilities=
-StateDirectory=tilo-app-process
+StateDirectory=tilo-package-service
 StateDirectoryMode=0700
 # Verified downloads are disposable broker state, never writes to the read-only home.
-Environment=TILO_STORE_CACHE_DIR=%S/tilo-app-process/cache
-ReadWritePaths=%S/tilo-app-process %h/.local/share/tilo-apps %h/.local/share/tilo-runtime %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak
+Environment=TILO_STORE_CACHE_DIR=%S/tilo-package-service/cache
+ReadWritePaths=%S/tilo-package-service %h/.local/share/tilo-apps %h/.local/share/tilo-runtime %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak

@@ -1,4 +1,4 @@
-//! Typed client for the launcher-issued `app-process` connection. Apps are synchronous, so this
+//! Typed client for the launcher-issued `package-service` connection. Apps are synchronous, so this
 //! wrapper owns a runtime and blocks on each call while keeping one connection for its whole
 //! lifetime. Calls carry ids, so a reader task answers any of them and several app threads may
 //! use the client at once: a long install never holds up a list. It never reaches for a path or
@@ -221,7 +221,7 @@ impl Connection {
                 .await;
                 if let Err(error) = sent {
                     waiting(&connection).remove(&id);
-                    return Err(format!("app-process: {error}"));
+                    return Err(format!("package-service: {error}"));
                 }
             }
             loop {
@@ -281,7 +281,7 @@ fn waiting(connection: &Connection) -> std::sync::MutexGuard<'_, HashMap<u64, Wa
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-const DISCONNECTED: &str = "the app process connection has ended";
+const DISCONNECTED: &str = "the package service connection has ended";
 
 pub struct BlockingClient {
     runtime: tokio::runtime::Runtime,
@@ -298,9 +298,9 @@ impl BlockingClient {
         // interleave frames and close the descriptor twice.
         static CLAIMED: AtomicBool = AtomicBool::new(false);
         let fd = runtime_portal::service_fd(crate::SERVICE)
-            .ok_or_else(|| "the app process was not handed to this app".to_owned())?;
+            .ok_or_else(|| "the package service was not handed to this app".to_owned())?;
         if CLAIMED.swap(true, Ordering::SeqCst) {
-            return Err("the app process connection is already in use".to_owned());
+            return Err("the package service connection is already in use".to_owned());
         }
         // SAFETY: `service_fd` verified the descriptor is open, the launcher
         // gave it to this process alone, and `CLAIMED` makes this its one owner.
@@ -314,15 +314,15 @@ impl BlockingClient {
             .worker_threads(1)
             .enable_all()
             .build()
-            .map_err(|e| format!("create app-process runtime: {e}"))?;
+            .map_err(|e| format!("create package-service runtime: {e}"))?;
         let stream = std::os::unix::net::UnixStream::from(fd);
         stream
             .set_nonblocking(true)
-            .map_err(|e| format!("app-process connection: {e}"))?;
+            .map_err(|e| format!("package-service connection: {e}"))?;
         let (reader, writer) = {
             let _entered = runtime.enter();
             let stream = tokio::net::UnixStream::from_std(stream)
-                .map_err(|e| format!("app-process connection: {e}"))?;
+                .map_err(|e| format!("package-service connection: {e}"))?;
             stream.into_split()
         };
         let connection = Arc::new(Connection {
@@ -571,7 +571,7 @@ impl From<&InstallExpectation> for Expected {
 }
 
 fn unexpected(answer: &Answer) -> String {
-    format!("app-process answered {answer:?}")
+    format!("package-service answered {answer:?}")
 }
 
 fn installed(answer: Answer) -> Result<PackageId, String> {

@@ -652,45 +652,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "app-process"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "app-cli",
- "app-registry",
- "blake3",
- "bounded-command",
- "clap",
- "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
- "hex",
- "install",
- "libc",
- "package-store",
- "registry-types",
- "runtime-bundle",
- "runtime-portal",
- "sd-notify",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tilo-app-id",
- "tilo-app-package",
- "tilo-clock",
- "tilo-files",
- "tilo-lock",
- "tilo-paths",
- "tilo-test-env",
- "tokio",
- "toml 1.0.6+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "wire-frame",
- "workspace-hack",
-]
-
-[[package]]
 name = "app-registry"
 version = "0.1.0"
 dependencies = [
@@ -8634,7 +8595,6 @@ version = "0.1.0"
 dependencies = [
  "accesskit",
  "accesskit_unix",
- "app-process",
  "ash",
  "blake3",
  "bounded-command",
@@ -8649,6 +8609,7 @@ dependencies = [
  "landlock",
  "libc",
  "libloading 0.8.9",
+ "package-service",
  "package-store",
  "runtime-bundle",
  "runtime-identity",
@@ -11786,6 +11747,45 @@ dependencies = [
  "primefield",
  "primeorder 0.14.0",
  "sha2 0.11.0",
+]
+
+[[package]]
+name = "package-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app-cli",
+ "app-registry",
+ "blake3",
+ "bounded-command",
+ "clap",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "install",
+ "libc",
+ "package-store",
+ "registry-types",
+ "runtime-bundle",
+ "runtime-portal",
+ "sd-notify",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-app-id",
+ "tilo-app-package",
+ "tilo-clock",
+ "tilo-files",
+ "tilo-lock",
+ "tilo-paths",
+ "tilo-test-env",
+ "tokio",
+ "toml 1.0.6+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15401,7 +15401,6 @@ dependencies = [
  "account-credentials",
  "accounts",
  "agent-provider-config",
- "app-process",
  "bounded-command",
  "calendar",
  "cloud-source",
@@ -15416,6 +15415,7 @@ dependencies = [
  "jiff",
  "launcher",
  "os-actions",
+ "package-service",
  "package-store",
  "provider-settings-ui",
  "quick-xml 0.41.0",
@@ -16302,12 +16302,12 @@ version = "0.1.2"
 dependencies = [
  "app-catalogue",
  "app-cli",
- "app-process",
  "blake3",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
  "lru 0.18.3",
+ "package-service",
  "package-store",
  "reqwest 0.13.4",
  "runtime-bundle",
@@ -17847,7 +17847,7 @@ name = "tilo-app-process-engine"
 version = "0.1.0"
 dependencies = [
  "app-catalogue",
- "app-process",
+ "package-service",
  "runtime-dylib",
  "workspace-hack",
 ]
@@ -27834,7 +27834,6 @@ dependencies = [
  "app-catalogue",
  "app-cli",
  "app-fleet",
- "app-process",
  "app-registry",
  "appendlist",
  "approx 0.4.0",
@@ -28598,6 +28597,7 @@ dependencies = [
  "p384 0.13.1",
  "p384 0.14.0",
  "p521",
+ "package-service",
  "package-store",
  "page_size",
  "palette",

@@ -1,4 +1,4 @@
-//! End-to-end round trip: serve the `AppProcessServer` on a Unix socket on its
+//! End-to-end round trip: serve the `PackageServiceServer` on a Unix socket on its
 //! own thread, connect the Store's client, and drive install → list → pin.
 
 #![allow(
@@ -8,7 +8,7 @@
 
 use crate::common;
 
-use app_process::install::{InstallExpectation, install_tapp};
+use package_service::install::{InstallExpectation, install_tapp};
 use package_store::PackageStore;
 
 #[test]
@@ -44,7 +44,7 @@ fn install_list_pin_over_the_wire() {
     assert!(!entry.package.pinned);
     assert!(
         entry.package.user_managed(),
-        "app-process entries are mutable"
+        "package-service entries are mutable"
     );
     assert_eq!(entry.package.package_id_hex, expected_id.to_hex());
     assert!(!entry.package.payload_root.as_os_str().is_empty());
@@ -74,7 +74,7 @@ fn list_reports_payload_bytes_without_walking() {
     let h = common::Harness::new();
     let store = PackageStore::at(h.store_root());
     let (bytes, _) = common::build_tapp(2);
-    install_tapp(&store, &bytes, app_process::Pinning::Tried, None).unwrap();
+    install_tapp(&store, &bytes, package_service::Pinning::Tried, None).unwrap();
     let row = store.registry().unwrap().entries()[0].clone();
     let measured = package_store::tree_size(&row.payload_root);
     assert!(measured > 0);

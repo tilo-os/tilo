@@ -1,4 +1,4 @@
-//! Cooperative reads on the same authenticated app-process connection.
+//! Cooperative reads on the same authenticated package-service connection.
 
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
@@ -49,7 +49,7 @@ impl BlockingClient {
         let future = read
             .future
             .take()
-            .ok_or_else(|| E::from("app-process read already completed".to_string()))?;
+            .ok_or_else(|| E::from("package-service read already completed".to_string()))?;
         self.runtime.block_on(future)
     }
 

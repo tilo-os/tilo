@@ -4,8 +4,8 @@
 )]
 
 use crate::common;
-use app_process::install::install_tapp;
-use app_process::{PackageStore, Pinning};
+use package_service::install::install_tapp;
+use package_service::{PackageStore, Pinning};
 
 fn pinning(store: &PackageStore, app_id: &str) -> Pinning {
     store.registry().unwrap().find(app_id).unwrap().pinning()

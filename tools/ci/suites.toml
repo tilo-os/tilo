@@ -1246,7 +1246,7 @@ readers = [
 [[cargo]]
 package = "app-cli"
 # The canonical downloader proves its staging path against the installed host unit.
-inputs = ["crates/packaging/app-process/systemd/tilo-app-process.service"]
+inputs = ["crates/packaging/package-service/systemd/tilo-package-service.service"]
 readers = ["crates/packaging/app-cli/src/install.rs"]
 
 [[cargo]]
@@ -2201,7 +2201,7 @@ reason = "requires native Flatpak, GPG and bubblewrap user namespaces; the diges
 [[cargo]]
 package = "install"
 # Real signed runtime installation is checked against its broker service grants.
-inputs = ["crates/packaging/app-process/systemd/tilo-app-process.service", "os/usr/lib/systemd/user/tilo-app-process.service"]
+inputs = ["crates/packaging/package-service/systemd/tilo-package-service.service", "os/usr/lib/systemd/user/tilo-package-service.service"]
 readers = ["crates/packaging/install/tests/runtime_package.rs"]
 
 [[unrequired]]

@@ -1,20 +1,20 @@
 [package]
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
-name = "app-process"
+name = "package-service"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Tilo app process — the privileged service over the device package store on a control socket: verified installs for the Store, pin, remove, launch and size-pressure eviction."
+description = "Tilo package service — the privileged service over the device package store on a control socket: verified installs for the Store, pin, remove, launch and size-pressure eviction."
 
 [[bin]]
-name = "tilo-app-process"
+name = "tilo-package-service"
 path = "src/main.rs"
 required-features = ["service"]
 
 [lib]
-name = "app_process"
+name = "package_service"
 path = "src/lib.rs"
 
 [features]

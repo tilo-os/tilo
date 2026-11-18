@@ -4,8 +4,10 @@
 )]
 
 use crate::common;
-use app_process::install::{InstallError, InstallExpectation, install_tapp, install_verified_tapp};
-use app_process::{PackageStore, Pinning};
+use package_service::install::{
+    InstallError, InstallExpectation, install_tapp, install_verified_tapp,
+};
+use package_service::{PackageStore, Pinning};
 
 #[test]
 fn installs_resolve_list_and_bind_registry_identity() {
@@ -83,7 +85,7 @@ fn installs_resolve_list_and_bind_registry_identity() {
         refused(&expected);
 
         let mut expected = expectation(&bytes, id);
-        expected.package_root = app_process::PackageId::from_bytes([1; 32]);
+        expected.package_root = package_service::PackageId::from_bytes([1; 32]);
         refused(&expected);
 
         let installed = install_verified_tapp(
@@ -98,7 +100,7 @@ fn installs_resolve_list_and_bind_registry_identity() {
     }
 }
 
-fn expectation(bytes: &[u8], id: app_process::PackageId) -> InstallExpectation {
+fn expectation(bytes: &[u8], id: package_service::PackageId) -> InstallExpectation {
     let meta = app_registry::tapp::load(bytes).unwrap();
     InstallExpectation {
         package_root: id,

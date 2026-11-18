@@ -126,16 +126,16 @@ pub fn build_tapp_for(app_id: &str, payload_kib: usize) -> (Vec<u8>, PackageId) 
 
 /// The Store's connection to the host listening at `socket`, past the
 /// launcher's handoff, once the host accepts connections.
-pub fn store_client(socket: &std::path::Path) -> app_process::client::BlockingClient {
+pub fn store_client(socket: &std::path::Path) -> package_service::client::BlockingClient {
     client_for(socket, tilo_app_id::apps::STORE)
 }
 
 /// A connection the launcher would hand Settings.
-pub fn settings_client(socket: &std::path::Path) -> app_process::client::BlockingClient {
+pub fn settings_client(socket: &std::path::Path) -> package_service::client::BlockingClient {
     client_for(socket, tilo_app_id::apps::SETTINGS)
 }
 
-fn client_for(socket: &std::path::Path, app_id: &str) -> app_process::client::BlockingClient {
+fn client_for(socket: &std::path::Path, app_id: &str) -> package_service::client::BlockingClient {
     let deadline = tilo_test_env::hang_deadline();
     let mut stream = loop {
         if let Ok(stream) = std::os::unix::net::UnixStream::connect(socket) {
@@ -143,12 +143,12 @@ fn client_for(socket: &std::path::Path, app_id: &str) -> app_process::client::Bl
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the app host never became ready"
+            "the package service never became ready"
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     };
-    app_process::wire::write_handoff(&mut stream, app_id).unwrap();
-    app_process::client::BlockingClient::from_connected_fd(stream.into()).unwrap()
+    package_service::wire::write_handoff(&mut stream, app_id).unwrap();
+    package_service::client::BlockingClient::from_connected_fd(stream.into()).unwrap()
 }
 
 /// The daemon on a socket of its own, on a thread that ends with the test
@@ -161,14 +161,14 @@ pub struct Harness {
 
 impl Harness {
     pub fn new() -> Self {
-        Self::with_language_packs(app_process::language_pack::LanguagePackInstalls::new())
+        Self::with_language_packs(package_service::language_pack::LanguagePackInstalls::new())
     }
 
     pub fn with_language_packs(
-        language_packs: std::sync::Arc<app_process::language_pack::LanguagePackInstalls>,
+        language_packs: std::sync::Arc<package_service::language_pack::LanguagePackInstalls>,
     ) -> Self {
         let tmp = tempfile::tempdir().unwrap();
-        let socket = tmp.path().join("app-process.sock");
+        let socket = tmp.path().join("package-service.sock");
         let store_root = tmp.path().join("store");
         let store = std::sync::Arc::new(package_store::PackageStore::at(&store_root));
         // An empty image catalog: the host's own preinstalled packages must
@@ -191,8 +191,8 @@ impl Harness {
                 .build()
                 .unwrap();
             tokio::task::LocalSet::new().block_on(&runtime, async move {
-                let listener = app_process::transport::bind(&bound).unwrap();
-                app_process::transport::serve(listener, store, catalog, 0, language_packs).await
+                let listener = package_service::transport::bind(&bound).unwrap();
+                package_service::transport::serve(listener, store, catalog, 0, language_packs).await
             })
         });
         Self {

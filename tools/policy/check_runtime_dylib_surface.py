@@ -64,7 +64,7 @@ DENIED = {
     "tilo-fs": "the FUSE filesystem daemon",
     "fuser": "the FUSE filesystem daemon's kernel binding",
     "launcher": "the sandbox launcher",
-    "app-process": "the app host daemon (apps use its client side)",
+    "package-service": "the app host daemon (apps use its client side)",
     "app-cli": "the install and registry CLI",
     "app-registry": "the registry client edges behind the installer",
     "install": "the package installer (tilo-install)",

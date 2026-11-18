@@ -11,8 +11,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use app_process::language_pack::{LanguagePackInstalls, LanguagePacks};
-use app_process::wire::{OfferedLanguage, Phase, Progress};
+use package_service::language_pack::{LanguagePackInstalls, LanguagePacks};
+use package_service::wire::{OfferedLanguage, Phase, Progress};
 
 use crate::common;
 
@@ -79,7 +79,7 @@ fn settings_reads_and_installs_a_pack_the_store_cannot_touch() {
     assert!(settings.list().is_err());
     assert!(
         settings
-            .pin(app_process::PackageId::from_bytes([7; 32]), true)
+            .pin(package_service::PackageId::from_bytes([7; 32]), true)
             .is_err()
     );
 }

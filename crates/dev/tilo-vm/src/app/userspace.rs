@@ -292,11 +292,14 @@ mod tests {
         let partner = partner_for(
             "device",
             &current,
-            &[member("tilo-session", "cc"), member("app-process", "dd")],
+            &[
+                member("tilo-session", "cc"),
+                member("package-service", "dd"),
+            ],
         );
         assert_eq!(partner.account, "device");
         assert_eq!(partner.components.get("tilo-session").unwrap(), "cc");
-        assert_eq!(partner.components.get("app-process").unwrap(), "dd");
+        assert_eq!(partner.components.get("package-service").unwrap(), "dd");
         assert_eq!(partner.components.get("model-manager").unwrap(), "bb");
     }
 }

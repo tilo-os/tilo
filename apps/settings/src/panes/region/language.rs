@@ -4,8 +4,8 @@
 //! One whose pack is installed is chosen at once; one the repositories offer is
 //! installed first, through the host's package portal.
 
-use app_process::client::BlockingClient;
-use app_process::wire::OfferedLanguage;
+use package_service::client::BlockingClient;
+use package_service::wire::OfferedLanguage;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_resource;

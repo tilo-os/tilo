@@ -1,4 +1,4 @@
-//! `app-process`: the runtime service for Tilo's native app model. The daemon is the privileged
+//! `package-service`: the runtime service for Tilo's native app model. The daemon is the privileged
 //! service over the device's [`PackageStore`], installing verified packages for the Store app, pinning,
 //! removing and launching them, running size-pressure eviction, and serving a control socket. It
 //! keeps no store of its own: packages, their registry and their payload bytes live in the one
@@ -30,17 +30,20 @@ pub use tilo_app_package::PackageId;
 
 /// The name the launcher hands this service to an app under, and its socket
 /// file's name without the extension.
-pub const SERVICE: &str = "app-process";
+pub const SERVICE: &str = "package-service";
 
-/// The `app-process` interface's one version (crates/packaging/app-process/interface.toml), which the
+/// The `package-service` interface's one version (crates/packaging/package-service/interface.toml), which the
 /// service speaks to the apps it is handed to, on its own rather than the runtime interface's.
-pub const APP_PROCESS_INTERFACE_VERSION: u32 = 6;
+pub const PACKAGE_SERVICE_INTERFACE_VERSION: u32 = 6;
 
-/// `$XDG_RUNTIME_DIR/tilo/services/app-process.sock`, or `None` without a runtime directory. Never
+/// `$XDG_RUNTIME_DIR/tilo/services/package-service.sock`, or `None` without a runtime directory. Never
 /// the shared temp directory, where any local user could bind the name first.
 pub fn default_socket_path() -> Option<PathBuf> {
-    tilo_paths::xdg::runtime_dir()
-        .map(|base| base.join("tilo").join("services").join("app-process.sock"))
+    tilo_paths::xdg::runtime_dir().map(|base| {
+        base.join("tilo")
+            .join("services")
+            .join("package-service.sock")
+    })
 }
 
 pub mod local_package;

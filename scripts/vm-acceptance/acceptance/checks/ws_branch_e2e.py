@@ -915,7 +915,7 @@ def post_chat(ctx, ws: dict, text: str) -> None:
                 f"t=$(date -d {shlex.quote(first.group(1))} +%s); journalctl --no-pager -o short-precise "
                 "--since @$((t-20)) --until @$((t+2)) 2>/dev/null | grep -aE 'Started app-|launch|segfault|core' "
                 "| tail -n 30 | cut -c1-300", timeout=120, check=False)
-        running = app_processes(ctx, CHAT) + "\n== the crashed drawing threads' processes\n" + crashed_threads(ctx)
+        running = package_servicees(ctx, CHAT) + "\n== the crashed drawing threads' processes\n" + crashed_threads(ctx)
         # The session started with the launcher keeping its apps' own output (run.py's drop-in), so
         # Chat says itself why it shows nothing.
         evidence = chat_evidence(ctx, ctx.facts.get("wsb:since", 0))
@@ -1339,10 +1339,10 @@ def app_output(ctx, ws: dict, app: str) -> str:
     return "switch: " + debug_switch(ctx)[-600:] + "\n" + ctx.vm.root_exec(
         "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
         f"-path '*{app}*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
-        "tail -c 5000 \"$f\"; done", timeout=300, check=False) + "\n" + app_processes(ctx, app)[-3000:]
+        "tail -c 5000 \"$f\"; done", timeout=300, check=False) + "\n" + package_servicees(ctx, app)[-3000:]
 
 
-def app_processes(ctx, app: str) -> str:
+def package_servicees(ctx, app: str) -> str:
     """`app`'s running processes: each one's threads, what they wait in, and what its scope
     logged, whatever words it used. For an app whose window never came."""
     return ctx.vm.root_exec(

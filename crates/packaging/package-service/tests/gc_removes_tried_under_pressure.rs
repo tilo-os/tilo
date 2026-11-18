@@ -1,6 +1,6 @@
 use crate::common;
-use app_process::install::install_tapp;
-use app_process::{PackageStore, Pinning};
+use package_service::install::install_tapp;
+use package_service::{PackageStore, Pinning};
 
 fn stored_blob_files(root: &std::path::Path) -> usize {
     std::fs::read_dir(root.join("content/data")).map_or(0, |entries| entries.flatten().count())
@@ -97,7 +97,7 @@ fn the_collection_after_an_install_keeps_the_app_it_installed() {
     let (large, _) = common::build_tapp_for("so.tilo.just-installed", 96);
     let installed = install_tapp(&store, &large, Pinning::Tried, None).unwrap();
 
-    app_process::service::collect_after_change(
+    package_service::service::collect_after_change(
         &store,
         &catalog,
         60 * 1024,
