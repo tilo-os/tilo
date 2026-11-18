@@ -161,7 +161,7 @@ tilo_test_env::scenario! {
 
     phase native_socket_serves_parallel_requests;
     // The daemon's native socket answers one session's MCP requests as they
-    // finish, not in the order asked: a `tilo_status` and a `tilo_cancel`
+    // finish, not in the order asked: a `tilo_status` and one that cancels
     // answer while two invokes of the same connection wait.
     {
         use tilo_mcp::test_hosts::{HeldHost, overlapping_lines};

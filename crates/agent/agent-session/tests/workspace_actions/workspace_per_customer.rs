@@ -439,7 +439,7 @@ fn arguments_against(tool: &str, other: &str, page: &str, content: &str) -> Valu
         "tilo_get" => json!({"content": content}),
         "tilo_put_begin" => json!({"size": 4}),
         "tilo_put_append" => json!({"upload": content, "offset": 0, "chunk": "eA=="}),
-        "tilo_put_finish" | "tilo_status" | "tilo_cancel" => {
+        "tilo_put_finish" | "tilo_status" => {
             json!({"upload": content, "invocation_id": content})
         }
         _ => json!({}),

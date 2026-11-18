@@ -126,27 +126,35 @@ fn connected_manager() -> Result<ui::collaboration::CollaborationManager> {
     );
     Ok(manager)
 }
-/// Ask for the apps `tilo_list_apps` reports, once.
+/// The app instances MCP `resources/list` reports, once: each as its
+/// `app_id` and the `uri` of its own connection.
 fn apps_once(stream: &mut UnixStream) -> Result<Vec<Value>> {
     let mut reader = BufReader::new(stream.try_clone()?);
     writeln!(
         stream,
         "{}",
-        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tilo_list_apps","arguments":{}}})
+        json!({"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}})
     )?;
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let reply: Value =
         serde_json::from_str(&line).with_context(|| format!("the apps reply: {line:?}"))?;
-    reply
+    let resources = reply
         .get("result")
-        .and_then(|result| result.get("structuredContent"))
-        .and_then(|content| content.get("apps"))
+        .and_then(|result| result.get("resources"))
         .and_then(Value::as_array)
-        .cloned()
-        .with_context(|| format!("the reply reports no apps: {reply}"))
+        .with_context(|| format!("the reply reports no apps: {reply}"))?;
+    // Each is named `<app id> (<instance>)`.
+    Ok(resources
+        .iter()
+        .map(|resource| {
+            let name = resource["name"].as_str().unwrap_or_default();
+            let app_id = name.split_once(" (").map_or(name, |(app, _)| app);
+            json!({"app_id": app_id, "peer_id": resource["uri"]})
+        })
+        .collect())
 }
-/// The apps a `tilo_list_apps` request reports, once `count` of them run.
+/// The app instances `resources/list` reports, once `count` of them run.
 fn listed_apps(stream: &mut UnixStream, count: usize) -> Result<Vec<Value>> {
     let deadline = tilo_test_env::hang_deadline();
     loop {

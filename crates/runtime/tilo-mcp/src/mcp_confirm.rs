@@ -160,7 +160,7 @@ pub(super) fn unanswered_admission(
     json!({
         "invocation_id": id.0.to_string(),
         "pending": format!(
-            "admission not answered within {} ms; tilo_invoke again with this invocation_id \
+            "admission not answered within {} ms; tilo_status with this invocation_id \
              answers how it went (the same invocation_id never runs twice)",
             patience.as_millis()
         ),
