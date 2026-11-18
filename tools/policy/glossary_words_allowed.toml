@@ -129,6 +129,7 @@ paths = [
     "crates/server/tilo-workspace-service/src/apps/local_document_action.rs",
     "crates/sdk/ui-core/src/app/local_action_persistence.rs",
     "crates/sdk/ui-core/src/app/local_action_persistence_tests.rs",
+    "crates/sdk/ui-core/src/local_document_action.rs",
 ]
 
 [[allow]]
