@@ -38,6 +38,10 @@ with no X display). When the desktop restarts in place:
   appliance program closes inside Windows.
 - Its end is reported like a capsule program's, also when it ended while no
   desktop was there; then its tab closes and nothing opens it again.
+- Another appliance program waits for it, as one shown before the restart
+  would: the appliance has one interactive Windows session, and a second
+  client connecting to it takes the session over, windows and all. Programs
+  open one after another in the order they were asked for.
 - A setup in progress stays the same transaction: the appliance keeps its
   operation with its state until nothing in it is left to add, so the manager
   after the restart shows it running and, once it found applications, offers

@@ -2109,7 +2109,6 @@ fn a_remote_app_window_stays_open_through_an_in_place_restart() {
         "the presentation asks its keeper for an X11 display: {launched:?}"
     );
     first.shown();
-    let tab = saved_window_tab(&rig, &mut first);
     let [pid] = rig.starts()[..] else {
         panic!("one start: {:?}", rig.starts());
     };
@@ -2168,6 +2167,22 @@ fn a_remote_app_window_stays_open_through_an_in_place_restart() {
     assert!(alive(pid), "on the same X11 connection, not quit");
     assert!(daemons.iter().all(|daemon| alive(*daemon)));
 
+    // Another appliance program waits for it, as a second client would take its Windows session
+    // over: once it closes, the next one opens.
+    let answers = second.manage(&rig, "queued", &["launch-vm"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    for _ in 0..200 {
+        second.session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(rig.starts(), [pid], "the next one waits for the open one");
+    rig.exit(0);
+    crate::common::wait_for(&mut second.session, "the next one opens", |_| {
+        (rig.starts().len() == 2).then_some(())
+    });
+    second.shown();
+    let tab = saved_window_tab(&rig, &mut second);
+    let daemons = rig.appliance_daemons(&mut second);
+
     // It ends while no desktop is there (the program closed inside Windows): the next desktop
     // reports it, and the tab it left closes rather than opening the program again.
     second.end(tilo_app_launch::Teardown::InPlaceRestart);
@@ -2177,7 +2192,7 @@ fn a_remote_app_window_stays_open_through_an_in_place_restart() {
     let answers = third.manage(&rig, "third", &["ended"]);
     assert_eq!(answers[0]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
     assert_eq!(answers[0]["ended"][0]["exit_code"], 4, "{answers:?}");
-    closed_and_not_started(&rig, &mut third, tab, 1);
+    closed_and_not_started(&rig, &mut third, tab, 2);
 
     // A logout ends a presentation, its keeper and its sound.
     let answers = third.manage(&rig, "fourth", &["launch-vm"]);

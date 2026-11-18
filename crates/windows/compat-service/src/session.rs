@@ -406,6 +406,13 @@ where
         let spawned = std::thread::Builder::new()
             .name("tilo-windows-appliance-program".to_owned())
             .spawn(move || {
+                // The appliance has one interactive Windows session: a second client connecting
+                // to it takes the session over, and the windows of the one before go with it.
+                // An appliance program opens once the ones asked for before it closed, whether
+                // this service showed them or took them back open after a desktop restart.
+                managed
+                    .programs
+                    .wait_for_earlier(id, crate::vm_adapter::is_appliance_entry);
                 let now_unix = try_unix_now();
                 let service = &managed.service;
                 let outcome = match file {
