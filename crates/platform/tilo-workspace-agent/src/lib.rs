@@ -948,11 +948,17 @@ fn author(cx: &ActionCx) -> Result<String, Refusal> {
         .ok_or_else(|| Refusal::new("an agent is always made by someone"))
 }
 
-/// The person invoking, when they act themselves: an agent acting for its keeper never counts its
-/// own spending, moves itself or writes its own instruction, so what its keeper set holds
-/// against it.
+/// The person invoking, when they act themselves and nothing acts for them: an agent acting for
+/// its keeper never counts its own spending, moves itself or writes its own instruction, so what
+/// its keeper set holds against it. Nor does anything else that names the keeper as whom it acts
+/// for: a bot they installed, an automation they set up or one an agent of theirs works, an app
+/// acting by itself. Whatever an agent can reach could otherwise do in its keeper's name what
+/// the agent is refused.
 fn keeping(cx: &ActionCx) -> Result<String, Refusal> {
-    if cx.invoked_by().is_some_and(|acting| acting.is_agent()) {
+    let themselves = cx
+        .invoked_by()
+        .is_some_and(|acting| acting.is_person() && acting.acted_for.is_empty());
+    if !themselves {
         return Err(Refusal::new("only the agent's keeper does this"));
     }
     author(cx)
