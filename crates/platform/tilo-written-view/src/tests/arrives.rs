@@ -233,3 +233,57 @@ fn an_actor_stays_unread_by_a_viewer_who_may_not_read_the_app() {
     );
     assert!(workspace.invoked().is_empty());
 }
+
+const CHAT: &str = "so.tilo.chat";
+
+/// What Chat keeps of how far each of `marks` (who, how far) has read its one conversation, as
+/// a read answers what Chat stores: a map by person of a map by conversation.
+fn chat(marks: &[(&str, i64)]) -> Json {
+    let mut read = serde_json::Map::new();
+    for (who, seen) in marks {
+        read.insert(
+            (*who).to_owned(),
+            json!({ "c_chat": { "part": 0, "seen": seen } }),
+        );
+    }
+    json!({ "read": read })
+}
+
+/// How far each person has read each conversation.
+const MARKS: &str = "view marks() {\n    for who in chat.workspace.read.keys() {\n        match chat.workspace.read.get(who) {\n            .none => text(\"nothing\"),\n            .some(marks) => {\n                for conversation in marks.keys() {\n                    match marks.get(conversation) {\n                        .none => text(\"gone\"),\n                        .some(mark) => text(\"{who} in {conversation}: {mark.seen}\"),\n                    }\n                }\n            }\n        }\n    }\n}";
+
+#[test]
+fn a_map_inside_a_map_reaches_a_view_from_what_chat_keeps() {
+    let workspace = TestWorkspace::default();
+    workspace.write(CHAT, chat(&[("bo", 3)]));
+    let (mut surface, state) = shown_reading(MARKS, ada(), &["chat"], &workspace);
+    assert_eq!(
+        texts(&surface),
+        ["bo in c_chat: 3"],
+        "how far each person has read each conversation: {:?}",
+        surface.nodes("error")
+    );
+
+    // Someone reads on and someone else begins: the view follows both.
+    workspace.write(CHAT, chat(&[("bo", 5), ("cy", 1)]));
+    surface.turn();
+    assert_eq!(texts(&surface), ["bo in c_chat: 5", "cy in c_chat: 1"]);
+    assert!(state.refused().is_empty());
+    assert!(workspace.invoked().is_empty(), "reading sends nothing");
+}
+
+#[test]
+fn what_chat_keeps_stays_unread_by_a_viewer_who_may_not_read_chat() {
+    let workspace = TestWorkspace::default();
+    workspace.write(CHAT, chat(&[("bo", 3)]));
+    workspace.refuse(CHAT);
+    let (mut surface, state) = shown_reading(MARKS, ada(), &["chat"], &workspace);
+    surface.turn();
+    assert_eq!(state.refused(), ["Chat"]);
+    assert!(
+        texts(&surface).is_empty(),
+        "nothing anybody read is shown: {:?}",
+        texts(&surface)
+    );
+    assert!(workspace.invoked().is_empty());
+}

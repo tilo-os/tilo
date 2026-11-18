@@ -225,7 +225,10 @@ impl Core {
             // A host value (an action, a lens, a type's metadata) is held as its fields, and so
             // is a filter, held as the `host.Filter` its catalogue entry is.
             (Ty::Record(key), Value::Tuple(_)) => tilolang::host::is_value(key),
-            (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier, Value::Text(_))
+            // A map a reading gives is held as the map it is, which `keys()` and `get(key)` are
+            // asked of; a map a field's own store gives is the list of its entries, below.
+            (Ty::Map(_), Value::Map(_))
+            | (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier, Value::Text(_))
             | (Ty::RichText, Value::Rich(_))
             | (Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_), Value::List(_))
             | (Ty::List(_) | Ty::Collection(_), Value::Coll(_))
