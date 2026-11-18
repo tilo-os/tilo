@@ -348,6 +348,16 @@ second field for a key. A key typed for a linked provider takes the place of the
 server keeps (`set-key`; the provider is not added again), the model step follows, and the
 model the person chose stands. Not now puts the step away.
 
+**The way back from the failure itself.** A reply whose model gave no answer carries why, where
+the person's server says so with the reply's work (`failure_cause`: the kind, and the provider by
+the id and the name their server gives it). Where the cause is the key, the key's account or a
+missing provider (`authentication`, `permission_denied`, `credits_exhausted`, `no_provider`),
+the main chat offers one press under the newest such reply: "Use another key for NAME", or "Link
+another provider" (`AssistantModel.replyWay(in:)`). It shows the same step, with what their
+server lists at that moment. The app reads the typed cause and never the reply's words: a
+server that says no cause gets no press. Once a key was typed for that provider nothing is
+offered under that reply again.
+
 **What Tilo asks before it pairs.** Tilo's page asks "Add this device?" before it asks
 anyone to let the device in, and says whose devices it would join and which server adds it.
 The engine tells the app the page's own sentences and its own words for the two ways on

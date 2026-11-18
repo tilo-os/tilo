@@ -201,12 +201,18 @@ public struct Message: Equatable, Sendable {
     public var attachments: [Attachment]
     /// Live Tilo things that stand in this message. The views leave room for each and draw none.
     public var live: [LiveThing]
+    /// Why the model gave no answer here, where the person's server says so with the reply and
+    /// the cause is one the person mends themselves: the key, the key's account, or no provider.
+    /// Nil for every other message, and for a failure whose cause their server does not say.
+    public var keyFault: KeyFault?
 
-    public init(_ author: Author, _ text: String, attachments: [Attachment] = [], live: [LiveThing] = []) {
+    public init(_ author: Author, _ text: String, attachments: [Attachment] = [], live: [LiveThing] = [],
+                keyFault: KeyFault? = nil) {
         self.author = author
         self.text = text
         self.attachments = attachments
         self.live = live
+        self.keyFault = keyFault
     }
 
     public enum Author: Equatable, Sendable {
@@ -220,6 +226,15 @@ public struct Message: Equatable, Sendable {
     public enum MainAgentWord: Equatable, Sendable {
         case job
         case instruction
+    }
+
+    /// A cause of a reply without an answer that another key or another provider mends.
+    public enum KeyFault: Equatable, Sendable {
+        /// The provider refused the key, or the key's account: the provider by the id and the
+        /// name the person's server gives it.
+        case key(ProviderChoice.ID, name: String)
+        /// No provider of the person's was there to ask.
+        case noProvider
     }
 }
 
