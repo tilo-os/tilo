@@ -144,7 +144,7 @@ fn root_for(kind: Kind, text: &str) -> Result<[u8; 32], Refusal> {
             {
                 return Err(Refusal::Malformed("not a root envelope"));
             }
-            root_for(&envelope.root_public_key)
+            root_of(&envelope.root_public_key)
                 .ok_or(Refusal::Malformed("malformed root public key"))
         }
         Kind::Profile => {
@@ -172,8 +172,7 @@ fn root_for(kind: Kind, text: &str) -> Result<[u8; 32], Refusal> {
             {
                 return Err(Refusal::Malformed("not a profile"));
             }
-            root_for(&profile.user_public_key)
-                .ok_or(Refusal::Malformed("malformed root public key"))
+            root_of(&profile.user_public_key).ok_or(Refusal::Malformed("malformed root public key"))
         }
     }
 }

@@ -101,7 +101,7 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         workspaces: server.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(server.state_root().join("envelopes")),
         profiles: Arc::new(envelopes::Envelopes::of(
-            envelopes::Record::Profile,
+            envelopes::Kind::Profile,
             server.state_root().join("profiles"),
         )),
         fetch: None,
@@ -1336,7 +1336,6 @@ async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
     reason = "the server serves the routes until it shuts down at the end"
 )]
 async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
-    use ed25519_dalek::Signer as _;
     use tilo_server_protocol::login_code as wire;
     use tilo_server_protocol::login_code::StandInRequest;
     use tilo_user_identity::{CertificationRequest, verify_device_cert_at};
