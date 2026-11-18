@@ -13343,11 +13343,22 @@ version = "0.1.0"
 dependencies = [
  "app-registry",
  "hex",
+ "publisher-model",
  "registry-types",
  "runtime-dylib",
  "tilo-app",
  "tilo-history",
  "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
+name = "publisher-model"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-resource",
+ "url",
  "workspace-hack",
 ]
 

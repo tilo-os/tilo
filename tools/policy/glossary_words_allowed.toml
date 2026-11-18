@@ -825,3 +825,9 @@ paths = [
     "crates/system/tilo-auth/src/sibling/enrol.rs",
     "crates/system/tilo-auth/tests/peer_enrol.rs",
 ]
+
+[[allow]]
+reason = "A registry address's host, the network name a registry is reached at, which the glossary keeps as a network host name."
+words = ["host"]
+identifiers = ["host", "host_str"]
+paths = ["apps/publisher-model/src/lib.rs"]
