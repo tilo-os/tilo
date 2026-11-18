@@ -1655,6 +1655,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 args.needle
             },
             target: None,
+            action: None,
             revision: (!args.revision.is_empty()).then_some(args.revision),
             cursor,
             max_results: args.max_results.unwrap_or(DEFAULT_PAGE).min(128),

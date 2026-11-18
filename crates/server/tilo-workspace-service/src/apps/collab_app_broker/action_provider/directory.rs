@@ -48,6 +48,7 @@ impl AppBrokerState {
             || query.parent_resource.is_some()
             || !query.needle.is_empty()
             || query.target.is_some()
+            || query.action.is_some()
             || query.revision.is_some()
             || !query.cursor.is_empty()
             || query.limits.is_some()
