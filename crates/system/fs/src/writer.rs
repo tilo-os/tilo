@@ -18,9 +18,9 @@
 //!    id>-<n>.scope`, the convention desktop environments and Flatpak share);
 //! 5. otherwise the person at this device.
 //!
-//! An agent session's writes are changes of the tree that name the agent as their
-//! invoker ([`Writer::invoker`]), for the person at this device; everything else
-//! writes as that person. It grants nothing: the device vouches for the name.
+//! A writer's writes are changes of the tree that name it as their invoker
+//! ([`Writer::invoker`]), for the person at this device: an agent session, a Tilo
+//! app or another program. It grants nothing: the device vouches for the name.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -81,28 +81,40 @@ pub enum Writer {
 }
 
 impl Writer {
-    /// Who the file actions it writes are done by: an agent session acting for the person,
-    /// named as its session is. `None` for anything that writes as the person.
+    /// Who the file actions it writes are done by, for `person` (the hex key of the person at
+    /// this device, when the mount knows it): an agent session, a Tilo app or another program
+    /// acting for them, named as it goes by. `None` for the person themselves.
     #[must_use]
-    pub fn invoker(&self) -> Option<tilo_actions::ActionInvoker> {
-        let Self::Agent {
-            harness,
-            session,
-            title,
-        } = self
-        else {
-            return None;
+    pub fn invoker(&self, person: Option<&str>) -> Option<tilo_actions::ActionInvoker> {
+        let invoker = match self {
+            Self::Agent {
+                harness,
+                session,
+                title,
+            } => {
+                // A coding agent on the person's own computer works in the session the
+                // person handed it: it carries the delegation a device gives its agents.
+                let acting = tilo_actions::Acting::agent(harness.agent())
+                    .handed()
+                    .in_session(bounded(session));
+                tilo_actions::ActionInvoker::admitted(&acting).named(Some(bounded(
+                    title.as_deref().unwrap_or_else(|| harness.name()),
+                )))
+            }
+            // A Tilo app goes by the name its catalogue gives it.
+            Self::App { id } => {
+                tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::by_app(bounded(id)))
+            }
+            Self::Program { id, name } => {
+                tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::by_app(bounded(id)))
+                    .named(Some(bounded(name)))
+            }
+            Self::Person => return None,
         };
-        // A coding agent on the person's own computer works in the session the
-        // person handed it: it carries the delegation a device gives its agents.
-        let acting = tilo_actions::Acting::agent(harness.agent())
-            .handed()
-            .in_session(bounded(session));
-        Some(
-            tilo_actions::ActionInvoker::admitted(&acting).named(Some(bounded(
-                title.as_deref().unwrap_or_else(|| harness.name()),
-            ))),
-        )
+        Some(match person {
+            Some(person) => invoker.acting_for(person),
+            None => invoker,
+        })
     }
 }
 

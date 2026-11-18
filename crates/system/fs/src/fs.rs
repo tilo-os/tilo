@@ -2028,9 +2028,15 @@ impl QuickFS {
             return WriterNote(None);
         };
         let writer = writers.resolve(pid);
-        WriterNote(Some(crate::namespace::acting_as(writer.invoker().map(
-            |invoker| tilo_actions::ActionContext::default().with_invoker(invoker),
-        ))))
+        let person = self
+            .history
+            .as_ref()
+            .map(|actor| hex::encode(actor.person.0));
+        WriterNote(Some(crate::namespace::acting_as(
+            writer
+                .invoker(person.as_deref())
+                .map(|invoker| tilo_actions::ActionContext::default().with_invoker(invoker)),
+        )))
     }
 
     fn ensure_history_baseline(&self) -> Result<(), crate::namespace::history::HistoryError> {

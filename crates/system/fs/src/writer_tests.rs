@@ -94,7 +94,7 @@ tilo_test_env::scenario! {
             writer,
             Writer::Agent { harness: Harness::ClaudeCode, session: "4f2c".into(), title: Some("Tidy the notes".into()) }
         );
-        let invoker = writer.invoker().unwrap();
+        let invoker = writer.invoker(None).unwrap();
         assert_eq!(invoker.acting.agent_id(), Some("claude"));
         assert_eq!(invoker.acting.agent_session.as_ref().map(|s| s.0.as_str()), Some("4f2c"));
         assert_eq!(invoker.name.as_deref(), Some("Tidy the notes"));
@@ -113,7 +113,7 @@ tilo_test_env::scenario! {
         // The person's own shell beside it is the person.
         procs.spawn(400, 100, 40, true, &[("HOME", home)], TERMINAL);
         assert_eq!(resolver.resolve(400), Writer::Person);
-        assert_eq!(Writer::Person.invoker(), None);
+        assert_eq!(Writer::Person.invoker(Some("ad")), None);
     }
 
     phase an_agent_started_inside_another_is_its_own_session;
@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
             resolver.resolve(210),
             Writer::Agent { harness: Harness::ClaudeCode, session: "c1".into(), title: None }
         );
-        assert_eq!(resolver.resolve(210).invoker().unwrap().name.as_deref(), Some("Claude Code"));
+        assert_eq!(resolver.resolve(210).invoker(None).unwrap().name.as_deref(), Some("Claude Code"));
         // A pi or a Codex started from Claude Code's commands sets an id of its own.
         procs.spawn(220, 200, 22, false, &[("HOME", home), ("PI_SESSION_ID", "p2")], TERMINAL);
         assert_eq!(resolver.resolve(220), Writer::Agent { harness: Harness::Pi, session: "p2".into(), title: None });
@@ -179,6 +179,9 @@ tilo_test_env::scenario! {
         procs.spawn(606, 1, 1, false, &[], "/user.slice/user-1000.slice/session-2.scope");
         let resolver = procs.resolver();
         assert_eq!(resolver.resolve(600), Writer::App { id: "so.tilo.notes".into() });
+        let notes = resolver.resolve(600).invoker(Some("ad")).unwrap();
+        assert_eq!(notes.acting.by, tilo_actions::Actor::App("so.tilo.notes".into()));
+        assert_eq!(notes.acting.acted_for_person(), Some("ad"));
         assert_eq!(resolver.resolve(601), Writer::App { id: "so.tilo.my-app".into() });
         assert_eq!(
             resolver.resolve(602),
@@ -201,7 +204,7 @@ tilo_test_env::scenario! {
             session: "s".into(),
             title: Some(format!("a\u{7}{}", "é".repeat(200))),
         };
-        let name = writer.invoker().unwrap().name.unwrap();
+        let name = writer.invoker(None).unwrap().name.unwrap();
         assert!(name.len() <= MAX_TEXT_BYTES);
         assert!(!name.contains('\u{7}'));
     }

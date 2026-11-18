@@ -458,9 +458,11 @@ impl AuthorDirectory {
                 }
                 None if !self.is_registered(&written_as) => {
                     let mut author = author;
-                    author.name = match actor.id().trim() {
-                        "" => UNKNOWN_AUTHOR_NAME.to_owned(),
-                        id => id.to_owned(),
+                    // An app goes by its own name in the reader's language.
+                    author.name = match (actor, actor.id().trim()) {
+                        (_, "") => UNKNOWN_AUTHOR_NAME.to_owned(),
+                        (tilo_actions::Actor::App(_), _) => actor_label(actor),
+                        (_, id) => id.to_owned(),
                     };
                     author
                 }
