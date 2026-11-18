@@ -2790,6 +2790,13 @@
           }
         },
         {
+          "name": "edits",
+          "doc": "The field its title shows, by the address a field bound to it is named by: the item's id and the field's, as an action on it is addressed. An agent's rename there is drawn on the title, as on the field that edits it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "secondary",
           "doc": "The line under the title: the start of the item's content, the last message.",
           "type": {

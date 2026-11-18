@@ -579,6 +579,19 @@ impl Checker<'_> {
         self.emit(Stmt::If(test, some, none));
     }
 
+    /// Tell the list row `node` which field of which resource its title shows, when the title `v`
+    /// reads one: the resource and the field's declared id, which the window names as a field bound
+    /// to it is named. An agent's rename there is drawn on the row's title.
+    pub(super) fn title_edits(&mut self, node: &Ex, v: &Ex, span: Span) {
+        if let Ek::Host(Imp::ResGetH, args) = &v.kind
+            && let [of, field] = args.as_slice()
+            && let Ek::Str(field) = &field.kind
+        {
+            let shown = self.tuple_of(vec![of.clone(), Ex::str(field)]);
+            self.prop(node.clone(), "edits", shown, span);
+        }
+    }
+
     /// A list row's positional: its title (Text, a Date, a Time, or an Option of one, `.none` being
     /// the empty text), which the host formats; or the resource it shows.
     fn row_target(&mut self, node: &Ex, value: &ast::Expr) -> Option<LocalId> {
@@ -606,6 +619,7 @@ impl Checker<'_> {
             self.text_prop(node, "title", v, value.span);
             return None;
         }
+        self.title_edits(node, &v, value.span);
         let title = self.fresh(Ty::Text);
         self.emit(Stmt::Set(title, v));
         self.prop(

@@ -764,6 +764,9 @@ impl Checker<'_> {
                     return;
                 }
                 if fits(ty, &v.ty) {
+                    if name == "title" && d.prop("edits").is_some() {
+                        self.title_edits(&node, &v, value.span);
+                    }
                     self.prop(node, name, v, value.span);
                 } else {
                     mismatch(self, &v.ty);

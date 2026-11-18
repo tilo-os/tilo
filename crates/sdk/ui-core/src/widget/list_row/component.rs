@@ -28,6 +28,10 @@ pub struct ListRowProps {
     pub prefix: Option<String>,
     /// The resource the row shows, which activating the row opens.
     pub item: Option<ResourceId>,
+    /// The field its title shows, by the address a field bound to it is named by: the item's id
+    /// and the field's, as an action on it is addressed. An agent's rename there is drawn on the
+    /// title, as on the field that edits it.
+    pub edits: Option<String>,
     /// The line under the title: the start of the item's content, the last message.
     pub secondary: Option<String>,
     /// A line of the row's own under its text: what waits on the item and is not its
@@ -92,6 +96,7 @@ impl ListRowProps {
             title: self.title.clone(),
             prefix: self.prefix.clone(),
             item: self.item.clone(),
+            edits: self.edits.clone(),
             secondary: self.secondary.clone(),
             note: self.note.clone(),
             meta: self.meta.clone(),
@@ -186,6 +191,7 @@ impl ListRow {
             title,
             prefix,
             item: _,
+            edits,
             secondary,
             note,
             meta,
@@ -209,6 +215,14 @@ impl ListRow {
         let shown = |text: Option<String>| text.filter(|text| !text.is_empty());
         let badge = shown(badge);
         self.title = title;
+        // The item and field a write on the title names, read as a field bound to them reads them.
+        let written = edits
+            .as_deref()
+            .and_then(tilo_actions::ActionAddress::parse);
+        self.item = written
+            .as_ref()
+            .map(|at| tilo_actions::logical_resource_id(&at.resource).into_owned());
+        self.edits = written.map(|at| at.action);
         self.prefix = shown(prefix);
         self.secondary = shown(secondary);
         self.note = shown(note);

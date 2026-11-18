@@ -392,6 +392,15 @@ impl PartType for DescribedRows {
 }
 
 impl DescribedRows {
+    /// Rows of `items` given whole.
+    #[cfg(test)]
+    pub(crate) fn given(items: Vec<ListItemProps>) -> Self {
+        Self {
+            held: Held::Given(Rc::new(items)),
+            ..Self::default()
+        }
+    }
+
     /// The same items, to read from elsewhere (what an event of the list reports).
     fn reader(&self) -> Self {
         Self {
@@ -1668,20 +1677,18 @@ mod tests {
 
     /// The rows of a list given its items whole: a row a title each.
     fn given_rows(count: usize) -> DescribedRows {
-        let items = (0..count)
-            .map(|at| ListItemProps {
-                key: format!("row-{at}"),
-                row: ItemRow::Row(Box::new(ListRowProps {
-                    title: format!("row {at}"),
-                    ..ListRowProps::default()
-                })),
-                ..ListItemProps::default()
-            })
-            .collect();
-        DescribedRows {
-            held: Held::Given(Rc::new(items)),
-            ..DescribedRows::default()
-        }
+        DescribedRows::given(
+            (0..count)
+                .map(|at| ListItemProps {
+                    key: format!("row-{at}"),
+                    row: ItemRow::Row(Box::new(ListRowProps {
+                        title: format!("row {at}"),
+                        ..ListRowProps::default()
+                    })),
+                    ..ListItemProps::default()
+                })
+                .collect(),
+        )
     }
 
     /// The props of a list of `rows` that is a column's whole body.

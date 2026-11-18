@@ -1165,6 +1165,50 @@ fn an_agents_writes_are_drawn_on_the_items_row() {
     assert_eq!(agent_marks(rows(), &event), vec!["Ada: wrote".to_owned()]);
 }
 
+/// A list's row names the field its title shows by its address, as a field bound to it is named: an
+/// agent's rename there is drawn on the row's title, as on a row an app builds itself.
+#[test]
+fn an_agents_rename_is_drawn_on_the_title_of_a_list_items_row() {
+    use crate::component::{Described as _, ResourceId};
+    use crate::widget::{
+        DescribedList, DescribedRows, ItemRow, ListItemProps, ListRowProps, VirtualListProps,
+    };
+    let title = "Book the studio for Friday";
+    let item = |key: &str, title: &str| ListItemProps {
+        key: key.into(),
+        item: Some(ResourceId(format!("issue-{key}"))),
+        row: ItemRow::Row(Box::new(ListRowProps {
+            title: title.into(),
+            edits: Some(tilo_actions::ActionAddress::new(format!("issue-{key}"), "title").encode()),
+            ..ListRowProps::default()
+        })),
+        ..ListItemProps::default()
+    };
+    let list = DescribedList::from_props(
+        "tasks",
+        VirtualListProps {
+            rows: DescribedRows::given(vec![item("a", "First task"), item("b", title)]),
+            ..VirtualListProps::default()
+        },
+    );
+    let mut event = crate::headless::agent_acting("tasks.tracker", "rename");
+    event.actor = tilo_actions::Acting::agent("scribe");
+    event.phase = tilo_actions::InteractionPhase::Committed;
+    event.action.did = Some("renamed".into());
+    event.anchor = tilo_actions::InteractionAnchor::Text {
+        region: "title".into(),
+        ranges: vec![tilo_actions::InteractionTextRange {
+            block: "issue-b".into(),
+            start: 0,
+            end: u64::try_from(title.chars().count()).unwrap(),
+        }],
+    };
+    assert_eq!(
+        agent_marks(Box::new(list), &event),
+        vec!["Ada: renamed".to_owned()]
+    );
+}
+
 /// What someone else changed in a field stays only as the hover note saying who and what it held:
 /// the write itself is drawn where it landed by presence ([`crate::presence::PresenceCtx::draw_writes_in`]),
 /// so the field keeps no colour of theirs of its own.

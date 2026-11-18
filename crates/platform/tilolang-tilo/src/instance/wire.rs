@@ -8,6 +8,9 @@
 
 use tilo_render_protocol::patch as wire;
 
+/// The prop of a list row naming the field its title shows.
+const EDITS: &str = "edits";
+
 use crate::runtime::rich::{Reference, RichValue};
 use crate::runtime::{Binding, NameHost, ResourceRef, UiNode, Value};
 use tilo_render_protocol::patch::rich::{self as rich_wire, InlineView};
@@ -85,6 +88,20 @@ impl Convert<'_> {
                 })
                 .collect();
             props.insert(CASES.to_owned(), wire::Value::List(cases));
+        }
+        // A list row's title that shows a field of a resource names that field as a field bound to
+        // it is named: the resource's published id and the field's.
+        if let Some(Value::Tuple(shown)) = node.props.get(EDITS)
+            && let [Value::Ref(of), Value::Text(field)] = shown.as_slice()
+        {
+            match (self.published)(&of.target)
+                .and_then(|(_, id)| tilo_actions::ActionAddress::checked(&id, field))
+            {
+                Some(address) => {
+                    props.insert(EDITS.to_owned(), wire::Value::Text(address.encode()))
+                }
+                None => props.remove(EDITS),
+            };
         }
         wire::Node {
             kind: node.kind.clone(),
