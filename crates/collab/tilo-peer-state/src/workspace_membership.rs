@@ -300,7 +300,20 @@ pub enum WorkspaceMembershipCommand {
     /// End the share `share`: the grants of it the caller gave, or all of
     /// them when they may revoke in the workspace.
     Unshare { share: String },
+    /// Claim the lease `id` of the workspace's own state for the caller's
+    /// device, for `ttl_ms` from now, ranked by `rank`, or let it go
+    /// (`ttl_ms` 0) ([`crate::state::leases`]). A member device that does
+    /// work for the workspace — keeps its VM going — claims it as every key holder
+    /// does, its claim travelling as any member's change.
+    Lease {
+        id: String,
+        ttl_ms: u64,
+        rank: neighbour_wire::placement::Rank,
+    },
 }
+
+/// The longest lease id a member claims.
+const MAX_LEASE_ID: usize = 256;
 
 /// A change to the workspace's own settings: its name, its saved grant sets and
 /// their assignment, the actions its apps may use of each other, its apps'
@@ -360,6 +373,12 @@ pub fn valid_workspace_name(name: &str) -> Result<&str, String> {
 impl WorkspaceMembershipCommand {
     /// Validate the canonical identifier before entering the owner turn.
     pub fn validate(&self) -> Result<(), String> {
+        if let Self::Lease { id, .. } = self {
+            if id.is_empty() || id.len() > MAX_LEASE_ID || id.chars().any(char::is_control) {
+                return Err("invalid lease id".into());
+            }
+            return Ok(());
+        }
         if let Self::InstallBot(install) = self {
             install.installation.validate()?;
             if install.program.len() > tilo_automation::program::MAX_PROGRAM_BYTES {

@@ -54,7 +54,7 @@ pub use copies::{
     Missing, Shortfall,
 };
 mod leases;
-pub use leases::{CLOCK_SKEW_NS, LEASES_KEY, Lease, LeaseClaim, unranked};
+pub use leases::{CLOCK_SKEW_NS, LEASES_KEY, Lease, LeaseClaim, unranked, vm_lease, vm_rank};
 mod bot_schedules;
 pub use bot_schedules::{BOT_SCHEDULES_KEY, trigger_mark};
 mod done;

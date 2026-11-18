@@ -77,6 +77,7 @@ pub use state::{
     default_surfaces, keeping_devices_of, peer_handle, seed_workspace, trigger_mark, unranked,
     workspace_grants_of, workspace_host_actor, workspace_seed,
 };
+pub use state::{vm_lease, vm_rank};
 pub mod coverage;
 mod governed_routes;
 pub mod removals;

@@ -104,6 +104,9 @@ impl AppBrokerState {
             | WorkspaceMembershipCommand::Unshare { .. } => {
                 return Err("a share is its sharer's own, made at their device".into());
             }
+            WorkspaceMembershipCommand::Lease { .. } => {
+                return Err("a lease is claimed by the device that does the work".into());
+            }
             WorkspaceMembershipCommand::InstallApp(_)
             | WorkspaceMembershipCommand::UninstallApp { .. } => {
                 return Err(

@@ -37,6 +37,41 @@ pub const LEASES_KEY: &str = "leases_v1";
 /// to take, once it is this far in the past.
 pub const CLOCK_SKEW_NS: u64 = 60_000_000_000;
 
+/// The lease running the workspace's VM of `environment` is taken under: the
+/// one device whose VM service boots it, so it is up on exactly one.
+#[must_use]
+pub fn vm_lease(environment: &str) -> String {
+    format!("vm/{environment}")
+}
+
+/// The one input a VM's placement weighs: its disk.
+const DISK: [u8; 32] = [0; 32];
+
+/// What a VM machine ranks itself by for a workspace's VM: its own `rank` where
+/// it `holds` the VM's disk. One that would have to fetch the disk of
+/// `disk_bytes` ranks below every machine that holds it, whatever their loads,
+/// and among those that would, by how long the fetch takes
+/// ([`placement::transfer`]) as its round trip: the VM stays where its disk
+/// is, and moves only once that machine is gone.
+#[must_use]
+pub fn vm_rank(rank: Rank, disk_bytes: u64, holds: bool) -> Rank {
+    if holds {
+        return rank;
+    }
+    let work = neighbour_wire::placement::Work {
+        inputs: vec![(DISK, disk_bytes)],
+        input_bytes: disk_bytes,
+        local_wall_ms: None,
+        offload: None,
+    };
+    let moving = placement::transfer(&Answer::taking(rank, Vec::new()), &work, rank.latency_ms);
+    Rank {
+        load_permille: rank.load_permille.saturating_add(1_000),
+        latency_ms: u32::try_from(moving.moving_ms).unwrap_or(u32::MAX),
+        ..rank
+    }
+}
+
 /// What a device ranks itself by when it has nothing better to say: it takes
 /// the work without preferring any power state or load.
 #[must_use]
@@ -490,6 +525,67 @@ mod tests {
         assert_eq!(taken.term, claim.term + 1, "a takeover starts a term");
         sync(&right, &mut left);
         assert_eq!(left.workspace().lease("tick", over).holder, Some(taken));
+    }
+
+    /// Two VM machines that claim a workspace's VM at once settle on the one
+    /// holding its disk, though the other is less loaded: the VM stays where
+    /// it is, and moves only once that machine is gone.
+    #[test]
+    fn the_vm_goes_to_the_machine_that_holds_its_disk() {
+        let (mut left, _left_key, mut right, _right_key) = desktops();
+        let now = now();
+        let (left_cert, right_cert) = (cert_of(&left), cert_of(&right));
+        let lease = vm_lease("default");
+        let disk = 8 << 30;
+        let ttl = Duration::from_secs(60);
+        // The left machine has the VM, so its disk is there.
+        assert!(
+            left.workspace_mut()
+                .take_lease(&left_cert, &lease, ttl, vm_rank(rank(900), disk, true), now)
+                .unwrap()
+                .is_some()
+        );
+        sync(&left, &mut right);
+        // Both machines restart after its claim is over, and claim it at once.
+        let back = at(now, 62 + CLOCK_SKEW_NS / 1_000_000_000);
+        for (peer, cert, holds, load) in [
+            (&mut left, &left_cert, true, 900),
+            (&mut right, &right_cert, false, 0),
+        ] {
+            let ranked = vm_rank(rank(load), disk, holds);
+            assert!(
+                peer.workspace_mut()
+                    .take_lease(cert, &lease, ttl, ranked, back)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        sync(&left, &mut right);
+        sync(&right, &mut left);
+        for peer in [&left, &right] {
+            assert_eq!(
+                peer.workspace()
+                    .lease(&lease, back)
+                    .holder
+                    .map(|claim| claim.device),
+                Some(left_cert.device_public_key),
+                "the machine with the disk keeps the VM"
+            );
+        }
+        // Once it is gone and its claim over, the other machine takes the VM.
+        let over = at(back, 62 + CLOCK_SKEW_NS / 1_000_000_000);
+        let taken = right
+            .workspace_mut()
+            .take_lease(
+                &right_cert,
+                &lease,
+                ttl,
+                vm_rank(rank(0), disk, false),
+                over,
+            )
+            .unwrap()
+            .expect("the lease moves");
+        assert_eq!(taken.device, right_cert.device_public_key);
     }
 
     #[test]
