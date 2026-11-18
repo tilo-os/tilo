@@ -82,6 +82,8 @@ fields = [
   { path = "map_map", type = { map = { map = "int" } } },
   { path = "map_rich", type = { map = "rich_text" } },
   { path = "reference", type = { resource = "sweep.shapes" } },
+  { path = "named_view", type = { named = "View" } },
+  { path = "map_bytes", type = { map = { named = "Bytes" } } },
   { path = "any", type = "any" },
   { path = "reactions", type = "reactions" },
 ]
@@ -117,6 +119,23 @@ fields = [
   { name = "title", type = "text" },
   { name = "count", type = "int" },
   { name = "done", type = "bool" },
+]
+
+# Two types named as the app language names two of its own: an app names its types without
+# knowing which names the language holds. One holds what only reads by its declared type.
+[[resources.types]]
+name = "View"
+fields = [
+  { name = "source", type = "text" },
+  { name = "by", type = "actor" },
+  { name = "parts", type = { collection = { named = "Part" } } },
+]
+
+[[resources.types]]
+name = "Bytes"
+fields = [
+  { name = "received", type = "int" },
+  { name = "sent", type = "int" },
 ]
 "#;
 

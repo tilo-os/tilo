@@ -9,7 +9,9 @@ use automerge::AutoCommit;
 use serde_json::json;
 use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-use tilolang_runtime::{Actor, ModuleHash, Patch, Value, ViewInstance};
+use tilolang_runtime::{
+    Actor, AmStore, ModuleHash, Patch, ResourceRef, Runtime, SimpleAuthority, Value, ViewInstance,
+};
 use tilolang_tilo::catalogue;
 use tilolang_tilo::host::Host;
 
@@ -361,4 +363,96 @@ view switcher(m: settings.AgentModels) {
         let open = host.open_resource(&reading, Some(&view)).unwrap();
         assert_eq!(shown(&open), Value::text("Small model"), "{:?}", open.tree());
     }
+}
+
+/// The surface of an app that names a type of its own after each of `names` and keeps one of
+/// each, under the name in lower case. An app's author names their types without knowing which
+/// names the language holds a type of its own under.
+fn named_as_the_language(names: &[&str]) -> String {
+    let fields = names
+        .iter()
+        .map(|name| {
+            let path = name.to_lowercase();
+            format!("  {{ path = \"{path}\", type = {{ named = \"{name}\" }} }},\n")
+        })
+        .collect::<Vec<_>>()
+        .concat();
+    let types = names
+        .iter()
+        .map(|name| {
+            format!(
+                "\n[[resources.types]]\nname = \"{name}\"\nfields = [{{ name = \"said\", type = \"text\" }}]\n"
+            )
+        })
+        .collect::<Vec<_>>()
+        .concat();
+    format!(
+        "[[resources]]\nkind = \"post.tray\"\nlabel = \"Tray\"\nversion = 1\nfields = [\n{fields}]\n{types}"
+    )
+}
+
+#[test]
+fn a_type_an_app_names_as_the_language_names_one_of_its_own_stays_the_apps_in_a_reading() {
+    let names = tilolang::types::LANGUAGE_TYPE_NAMES;
+    let surfaces =
+        catalogue::parse_surfaces(&named_as_the_language(names)).expect("a surface file");
+    let meta = catalogue::package_of("post", "Post", &surfaces);
+    let runtime = Runtime::new(AmStore::new(), SimpleAuthority::new()).expect("a runtime starts");
+    runtime.load_foreign(meta).expect("the app's package loads");
+    let tray = ResourceRef::root("post.tray".to_owned(), "post#Tray".to_owned());
+    let reading: serde_json::Map<String, serde_json::Value> = names
+        .iter()
+        .map(|name| (name.to_lowercase(), json!({ "said": name })))
+        .collect();
+    runtime
+        .set_reading(&tray, &serde_json::Value::Object(reading).to_string())
+        .expect("the reading is taken");
+    for name in names {
+        let held = match runtime.read(&tray, &name.to_lowercase()) {
+            Ok(Value::Ref(held)) => held,
+            other => panic!("the app's `{name}` reads as the app's own type, not as {other:?}"),
+        };
+        let said = runtime
+            .read(&held.target, "said")
+            .unwrap_or_else(|why| panic!("what the app's `{name}` holds: {why}"));
+        assert_eq!(said, Value::text(*name), "what the app's `{name}` holds");
+    }
+}
+
+/// The surface of an app whose kind is named as the language names a type of its own: the
+/// kind `post.view` is the app's `View`, and its verb takes it.
+const KIND_NAMED_AS_THE_LANGUAGE: &str = r#"
+[[resources]]
+kind = "post.view"
+label = "Post"
+version = 1
+fields = [{ path = "title", type = "text" }]
+
+[[resources.verbs]]
+id = "show-all"
+label = "Show all"
+kind = "undoable"
+params = []
+"#;
+
+/// A view over that kind, whose button calls the kind's verb on it.
+const CALLER: &str = r#"app test.caller "Caller"
+
+use post as post
+
+view shown(v: post.View) {
+  stack {
+    text("{v.title}")
+    button("All", on: post.show_all(v)) as all
+  }
+}
+"#;
+
+#[test]
+fn a_kind_an_app_names_as_the_language_names_a_type_is_the_apps_where_its_verb_takes_it() {
+    let surfaces = catalogue::parse_surfaces(KIND_NAMED_AS_THE_LANGUAGE).expect("a surface file");
+    let meta = catalogue::package_of("post", "Post", &surfaces);
+    tilolang::compile_package(CALLER, &IdsLock::new(), std::slice::from_ref(&meta)).unwrap_or_else(
+        |diagnostics| panic!("a view calls the verb on the app's own kind: {diagnostics:#?}"),
+    );
 }

@@ -3,11 +3,6 @@
 # The path is the field of the kind a view reads, then what stands inside it (`*` an item or an entry).
 # The app so.tilo.sweep is the sweep's own kind of every shape a surface declares, a field each.
 
-# NAMED LIKE A BUILT-IN: a named type the app calls by a name the app language has a type of its own for (`Bytes`): a reading's value is read as that type, which no reading gives.
-NAMED LIKE A BUILT-IN | so.tilo.chat | chat.messages | messages
-NAMED LIKE A BUILT-IN | so.tilo.settings | settings.network-usage | connections
-NAMED LIKE A BUILT-IN | so.tilo.settings | settings.network-usage | counters
-
 # UNTYPED: the surface declares the field as any value, as reactions or as an outbox: the app language has no type for it and the package leaves it out.
 UNTYPED | so.tilo.browser | browser.personal-bookmarks | trees
 UNTYPED | so.tilo.calendar | calendar.calendar | deletes
@@ -88,6 +83,7 @@ UNTYPED | so.tilo.settings | settings.display-change | state
 UNTYPED | so.tilo.settings | settings.display-placement | placement
 UNTYPED | so.tilo.settings | settings.hosted-agent-providers | hosted.profiles
 UNTYPED | so.tilo.settings | settings.input-device | tablets
+UNTYPED | so.tilo.settings | settings.network-usage | connections.*.kind
 UNTYPED | so.tilo.settings | settings.network-usage | reset_day
 UNTYPED | so.tilo.settings | settings.search_history | places
 UNTYPED | so.tilo.settings | settings.shortcuts | actions
