@@ -22026,6 +22026,7 @@ dependencies = [
  "account-credentials",
  "accounts",
  "agent-provider-config",
+ "anyhow",
  "app-catalogue",
  "app-cli",
  "base64 0.22.1",

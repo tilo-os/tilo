@@ -1,6 +1,19 @@
 use super::*;
-use crate::protocol::v2_body;
+
+use ed25519_dalek::Signer;
+use tilo_enrollment::approval::{ApprovalOptions, register_home_peer};
+use tilo_enrollment::protocol::{
+    Approver, Response, ResponseRoute, decrypt_pair_offer, decrypt_request, encrypt_response,
+    make_finalized, v2_body, verify_ack,
+};
+
+use tilo_enrollment::ISSUANCE_CLOCK_ALLOWANCE_NS;
+use tilo_enrollment::response_preimage;
+use tilo_enrollment::sign_response;
+use tilo_identity::certification_ceremony::pairing_code;
+use tilo_server::HomePeerRegistration;
 use tilo_test_env::SpawnUnderEnvLock as _;
+use tilo_user_identity::verify_device_cert;
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
@@ -47,6 +60,7 @@ tilo_test_env::scenario! {
             port: 0,
             ready: None,
             approved: None,
+            person_uid: None,
         };
         let identity = load_approval_identity(&options).unwrap();
         let mut cert = payload(&ed25519_dalek::SigningKey::from_bytes(&[74; 32])).cert;
@@ -61,7 +75,7 @@ tilo_test_env::scenario! {
             signature: [0; 64],
         };
         sign_revocation_entry(&mut revocation, identity.root.as_deref().unwrap()).unwrap();
-        let store = fleet_store(&root, &identities);
+        let store = fleet_store(&root, &identities, None);
         let identity_id = hex::encode(identity.user_public_key);
         let mut fleet = store.load(&identity_id).unwrap();
         fleet.revocations.push(revocation);
@@ -143,7 +157,7 @@ tilo_test_env::scenario! {
         verify_device_cert(&cert).unwrap();
         assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
         assert_eq!(cert.capabilities, DeviceCapabilities::administrator());
-        let fleet = fleet_store(identity_root.path(), identity_dir.path())
+        let fleet = fleet_store(identity_root.path(), identity_dir.path(), None)
             .load(&hex::encode(cert.user_public_key))
             .unwrap();
         assert_eq!(fleet.certificates, vec![cert]);
@@ -276,7 +290,7 @@ tilo_test_env::scenario! {
         };
         let identity_root = tempfile::tempdir().unwrap();
         let identities = tempfile::tempdir().unwrap();
-        let store = fleet_store(identity_root.path(), identities.path());
+        let store = fleet_store(identity_root.path(), identities.path(), None);
         let accepting =
             |document: &[u8], identity: &str| store.accept_transferred(identity, document, [1; 32]);
         let now = now_ns().unwrap();
@@ -340,7 +354,7 @@ fn personal_payload(
         server_node_id: [8; 32],
         cert,
         home_peer_toml: None,
-        public_identity_json: Some(public_identity_record(user, "My Tilo identity").unwrap()),
+        public_identity_json: Some(public_identity_document(user, "My Tilo identity").unwrap()),
         fleet_json: Some(fleet),
         home_peers_json: Some(b"[]".to_vec()),
     }
@@ -416,7 +430,7 @@ tilo_test_env::scenario! {
         };
         sign_device_cert(&mut cert, &root).unwrap();
         let identity = tempfile::tempdir().unwrap();
-        let store = fleet_store(identity.path(), identity.path());
+        let store = fleet_store(identity.path(), identity.path(), None);
 
         let error = store
             .transferred(&hex::encode(cert.user_public_key), &cert)
@@ -445,7 +459,7 @@ tilo_test_env::scenario! {
         };
         sign_revocation_entry(&mut revocation, &root).unwrap();
         let identity = tempfile::tempdir().unwrap();
-        let store = fleet_store(identity.path(), identity.path());
+        let store = fleet_store(identity.path(), identity.path(), None);
         let mut fleet = DeviceFleet::new(hex::encode(user));
         fleet.revocations.push(revocation);
         store.adopt_transferred(&fleet).unwrap();
@@ -489,6 +503,7 @@ tilo_test_env::scenario! {
             port: 0,
             ready: None,
             approved: None,
+            person_uid: None,
         };
         assert_eq!(expected_pair(&options).unwrap(), None);
 
@@ -759,7 +774,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             server_node_id: [8; 32],
             cert: cert.clone(),
             home_peer_toml: None,
-            public_identity_json: Some(public_identity_record(user, "My Tilo identity").unwrap()),
+            public_identity_json: Some(public_identity_document(user, "My Tilo identity").unwrap()),
             fleet_json: Some(fleet_document(&hex::encode(user), vec![cert], Vec::new())),
             home_peers_json: Some(b"[]".to_vec()),
         };
@@ -799,7 +814,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             );
             assert_eq!(
                 std::fs::metadata(
-                    fleet_store(identity_root.path(), identity_dir.path())
+                    fleet_store(identity_root.path(), identity_dir.path(), None)
                         .fleet_file(&hex::encode(user))
                 )
                 .unwrap()
@@ -1016,7 +1031,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         &issuer_cert,
     )
     .unwrap();
-    fleet_store(approver_root.path(), approver_identities.path())
+    fleet_store(approver_root.path(), approver_identities.path(), None)
         .remember_certificate(&hex::encode(root.verifying_key().to_bytes()), issuer_cert)
         .unwrap();
     let home_device = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
@@ -1064,6 +1079,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
             port: 0,
             ready: Some(&ready_tx),
             approved: None,
+            person_uid: None,
         })
     });
     let port = match ready_rx.recv_timeout(tilo_test_env::hang_bound()) {
@@ -1200,11 +1216,11 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
         &member_cert,
     )
     .unwrap();
-    fleet_store(member_root.path(), member_identities.path())
+    fleet_store(member_root.path(), member_identities.path(), None)
         .remember_certificate(&hex::encode(user), member_cert)
         .unwrap();
     assert!(
-        load_approval_root(member_root.path(), Some(member_identities.path())).is_err(),
+        tilo_enrollment::load_root(member_root.path(), Some(member_identities.path())).is_err(),
         "the member holds none of the key"
     );
 
@@ -1266,6 +1282,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
         port: 0,
         ready: None,
         approved: None,
+        person_uid: None,
     });
     assert!(refused.is_err());
 
@@ -1288,6 +1305,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
             port: 0,
             ready: Some(&ready_tx),
             approved: Some(&approved),
+            person_uid: None,
         })
     });
     let port = match ready_rx.recv_timeout(tilo_test_env::hang_bound()) {
@@ -1317,7 +1335,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
     assert_eq!(cert.user_public_key, user);
     assert_eq!(cert.device_label, "New laptop");
     verify_device_cert(&cert).unwrap();
-    let fleet = fleet_store(member_root.path(), member_identities.path())
+    let fleet = fleet_store(member_root.path(), member_identities.path(), None)
         .load(&hex::encode(user))
         .unwrap();
     assert!(
