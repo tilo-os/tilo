@@ -221,9 +221,9 @@ paths = ["crates/collab/threshold-identity/*"]
 reason = "An iCalendar or WhatsApp group participant."
 words = ["participant"]
 paths = [
-    "apps/calendar/src/ics.rs",
-    "apps/calendar/src/ics/tests.rs",
-    "apps/calendar/src/model.rs",
+    "apps/calendar-model/src/ics.rs",
+    "apps/calendar-model/src/ics/tests.rs",
+    "apps/calendar-model/src/model.rs",
     "apps/calendar/src/app.rs",
     "crates/system/messaging-protocol/src/supervisor/whatsapp/*",
 ]

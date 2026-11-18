@@ -16,6 +16,7 @@ use ui::tokens::TextRole;
 use ui::widget::empty_state::{EmptyState, EmptyStateContent};
 use ui::widget::{Interaction, ListRowFace, RowLeading, Scrollable};
 
+use crate::colours::Themed;
 use crate::date;
 use crate::draw_util::text_in_band;
 use crate::model::{Calendar, Event, Id, Priority, Task};

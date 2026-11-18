@@ -23,7 +23,7 @@
 
 use std::path::PathBuf;
 
-use calendar::spans::{FreeAsked, SpanAsked};
+use calendar_model::spans::{FreeAsked, SpanAsked};
 use serde_json::Value;
 use tilo_actions::remote::{
     ActionCallError as ActionError, CatalogueRow, InvokeRequest, RemoteActionTarget,

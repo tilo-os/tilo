@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::{Id, key};
+use crate::model::*;
 use accounts::person::PersonAccounts;
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Replica, scope_contains};
