@@ -61,12 +61,8 @@ pub enum Capability {
     /// broadly this is granted; printing goes through the `Print` portal.
     Print { scope: GrantScope },
     /// Outbound network access. `hosts: None` = any host; `Some(list)` =
-    /// only those.
-    ///
-    /// **Enforcement gap:** only the per-workspace network namespace
-    /// isolation is wired up. The `hosts` allowlist is recorded but not
-    /// enforced — no per-namespace nftables rules yet, so `Some([...])`
-    /// and `None` behave identically.
+    /// only those. The launcher lets the app reach what both this grant and
+    /// its manifest's `[sandbox.net]` allow, through its egress proxy.
     Network {
         hosts: Option<Vec<String>>,
         scope: GrantScope,

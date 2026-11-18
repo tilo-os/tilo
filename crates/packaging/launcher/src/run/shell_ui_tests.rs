@@ -19,7 +19,7 @@ tilo_test_env::scenario! {
         .unwrap();
         assert!(opens_window(&LaunchMode::Gui, None));
         for (mode, allowed) in [("off", false), ("host", true)] {
-            let egress = crate::egress_proxy::EgressDecision::resolve(mode, &[], &[]);
+            let egress = crate::egress_proxy::EgressDecision::resolve(mode, &[], &[], true);
             let bind = resolve_shell_ui_bind("so.tilo.activity", &egress, false)
                 .unwrap()
                 .expect("a window gets the shell-ui connection");
@@ -30,7 +30,7 @@ tilo_test_env::scenario! {
             assert_eq!(handshake["app_id"], "so.tilo.activity");
             assert_eq!(handshake["network_status_allowed"], allowed, "{mode}");
         }
-        let egress = crate::egress_proxy::EgressDecision::resolve("off", &[], &[]);
+        let egress = crate::egress_proxy::EgressDecision::resolve("off", &[], &[], true);
         assert!(resolve_shell_ui_bind("so.tilo.activity", &egress, true).unwrap().is_none());
 
         let service = LaunchMode::Service { passthrough_argv: Vec::new() };

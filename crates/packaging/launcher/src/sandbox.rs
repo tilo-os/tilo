@@ -620,7 +620,7 @@ pub fn build_bwrap_argv_for_entry(
     // anything more specific keeps the empty namespace and uses the egress proxy, since `--share-net`
     // is all-or-nothing.
     argv.push("--unshare-all".to_string());
-    if egress_decision(manifest, capabilities).shares_host_network() {
+    if egress_decision(manifest, capabilities, payload_root).shares_host_network() {
         argv.push("--share-net".to_string());
     }
     argv.push("--die-with-parent".to_string());
@@ -674,7 +674,7 @@ pub fn build_bwrap_argv_for_entry(
     // The system read profile: fixed, identical for every package, fed by no manifest field.
     crate::profile::push_system_profile(
         &mut argv,
-        egress_decision(manifest, capabilities).shares_host_network(),
+        egress_decision(manifest, capabilities, payload_root).shares_host_network(),
     );
 
     // User-granted capabilities after the system profile (read-write wins over read-only).
@@ -741,15 +741,17 @@ pub fn build_bwrap_argv_for_entry(
     argv
 }
 
-/// The outbound access this launch resolves to.
+/// The outbound access this launch of the package at `payload_root` resolves to.
 pub fn egress_decision(
     manifest: &ManifestView,
     capabilities: &CapabilityPlan,
+    payload_root: &Path,
 ) -> crate::egress_proxy::EgressDecision {
     let decision = crate::egress_proxy::EgressDecision::resolve(
         &manifest.sandbox.net.mode,
         &manifest.sandbox.net.hosts,
         &capabilities.net_hosts,
+        crate::system_stats::image_shipped(payload_root),
     );
     // Applied here, not at the check: the namespace decision and the check must come from the same
     // answer, or the app gets an empty namespace with nothing to reach through it.
@@ -1264,17 +1266,19 @@ mod tests {
                 assert!(argv.windows(2).any(|w| w[0] == "--dev" && w[1] == "/dev"));
             }
             {
+                // `host` outside the image is the most the app may ask for: it shares the network
+                // once a person granted any host, not before.
                 let m = mk_manifest("host");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
-                assert!(argv.iter().any(|a| a == "--share-net"));
+                let argv = |plan: &CapabilityPlan| {
+                    build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, plan)
+                };
+                assert!(!argv(&CapabilityPlan::empty()).iter().any(|a| a == "--share-net"));
+                let granted = CapabilityPlan {
+                    allow_network: true,
+                    net_hosts: vec!["*".to_owned()],
+                    ..CapabilityPlan::empty()
+                };
+                assert!(argv(&granted).iter().any(|a| a == "--share-net"));
             }
             {
                 let m = mk_manifest("off");
@@ -2142,7 +2146,7 @@ mod tests {
     /// Build the argv the launcher would really produce for `app_id`, through the same production path
     /// as `run_with`; only the device-node lookup is substituted.
     fn argv_with_caps(app_id: &str, caps: &[CapOverride], now: u64) -> Vec<String> {
-        let m = mk_manifest("off");
+        let m = mk_manifest("host");
         let plan = CapabilityPlan::for_app_with(app_id, caps, Some(now), fake_device_paths);
         build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &plan)
     }
@@ -2675,45 +2679,44 @@ mod tests {
 
         phase network_capabilities_decide_namespace_and_egress_proxy;
         {
+            // An app outside the image that may ask for any host (`host`) reaches what its grants
+            // name, and nothing before a person granted it.
+            let asks_anything = mk_manifest("host");
+            let argv = |caps: &[CapOverride]| argv_with_caps("so.tilo.mail", caps, 1_000);
             {
-                // The manifest says net.mode = "off": without a capability the sandbox keeps the empty
-                // network namespace, and no packet can leave.
-                let isolated = argv_with_caps("so.tilo.mail", &[], 1_000);
+                let isolated = argv(&[]);
                 assert!(
                     !isolated.iter().any(|a| a == "--share-net"),
-                    "no network capability must leave the netns unshared: {isolated:?}"
+                    "no network grant must leave the netns unshared: {isolated:?}"
                 );
-
-                let caps = vec![app_grant(
+                let caps = [app_grant(
                     "so.tilo.mail",
                     Scope::NetHost("*".to_string()),
                     Access::Write,
                 )];
-                let granted = argv_with_caps("so.tilo.mail", &caps, 1_000);
+                let granted = argv(&caps);
                 assert!(
                     granted.iter().any(|a| a == "--share-net"),
                     "a grant for `*` is unrestricted access and shares the namespace: {granted:?}"
                 );
             }
             {
-                let caps = vec![app_grant(
+                let caps = [app_grant(
                     "so.tilo.mail",
                     Scope::NetHost("github.com".to_string()),
                     Access::Write,
                 )];
-                let argv = argv_with_caps("so.tilo.mail", &caps, 1_000);
-
+                let argv = argv(&caps);
                 assert!(
                     !argv.iter().any(|a| a == "--share-net"),
-                    "a grant naming one host must NOT hand the app the host's whole network — that \
-                 equivalence between `github.com` and `*` is the bug this closes: {argv:?}"
+                    "a grant naming one host must NOT hand the app the host's whole network: {argv:?}"
                 );
 
-                // And the grant does reach a mechanism now: the check decision comes from the same manifest
-                // + capability pair that built the argv above.
+                // The check decision comes from the same manifest and capability pair that built
+                // the argv above.
                 let plan =
                     CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1_000), |_| Vec::new());
-                let decision = egress_decision(&mk_manifest("off"), &plan);
+                let decision = egress_decision(&asks_anything, &plan, Path::new("/host/pkg"));
                 let policy = decision.policy().unwrap_or_else(|| {
                     panic!("a named host must resolve to a filtered egress policy, got {decision:?}")
                 });
@@ -2721,6 +2724,11 @@ mod tests {
                 assert!(
                     !policy.permits("evil.example.com"),
                     "the allowlist must exclude what it does not name: {policy:?}"
+                );
+                // A manifest that asks for no network is not given any by a grant.
+                assert_eq!(
+                    egress_decision(&mk_manifest("off"), &plan, Path::new("/host/pkg")),
+                    crate::egress_proxy::EgressDecision::Blocked
                 );
             }
             {

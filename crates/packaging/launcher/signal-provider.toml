@@ -16,10 +16,19 @@ signature = ""
 namespaces = ["user", "pid", "uts", "ipc", "mount"]
 seccomp = "tilo-default"
 landlock = "strict"
-# Source/fixture delivery remains offline. Live network permission must be
-# reviewed through the normal release/account policy; this creates no grant.
+# The most the provider may reach. This grants nothing: each start reaches
+# only what the person allowed for it.
 [sandbox.net]
-mode = "off"
+mode = "allowlist"
+hosts = [
+    "chat.signal.org",
+    "cdn.signal.org",
+    "cdn2.signal.org",
+    "cdn3.signal.org",
+    "storage.signal.org",
+    "cdsi.signal.org",
+    "svr2.signal.org",
+]
 [entrypoint]
 bin = "bin/tilo-signal-provider"
 type = "cli"

@@ -203,7 +203,11 @@ def verify(out, source, sequence, trusted_key):
                 and manifest['sandbox'].get('landlock') == 'strict',
                 'Signal package sandbox declaration differs')
         field = 'provides' if kind == 'runtime' else 'runtime'
-        require(manifest['package'][field] == runtime_build and manifest['sandbox']['net']['mode'] == 'off',
+        # The runtime reaches nothing; the provider declares the most it may ask for.
+        declared = (tomllib.loads((ROOT / 'crates/packaging/launcher/signal-provider.toml').read_text())
+                    ['sandbox']['net'] if kind == 'service' else {'mode': 'off'})
+        require(manifest['package'][field] == runtime_build
+                and {key: manifest['sandbox']['net'].get(key) for key in declared} == declared,
                 'Signal package runtime/network declaration differs')
         if kind in ('service', 'runtime'):
             # Packing serializes Entrypoint's splash defaults into the signed

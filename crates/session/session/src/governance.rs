@@ -22,6 +22,81 @@ impl Workspaces for Session<'_> {
     }
 }
 
+/// What a change to a workspace is written through: the shell, the person making it, this
+/// device's engine and where the loop takes in what the workspace answered.
+pub(crate) struct Governing<'a> {
+    pub(crate) handle: &'a tilo_desktop_surface::DesktopHandle,
+    pub(crate) person: &'a tilo_desktop_model::UserId,
+    pub(crate) engine: Option<&'a std::sync::Arc<crate::engine::Engine>>,
+    pub(crate) landings: &'a crate::landing::Landings,
+}
+
+/// Make `edit` to `workspace` as the person, where the workspace keeps it: the workspace's
+/// governance first, signed with this device's key, so every member admits it as it admits every
+/// change its people make, and the shell takes the change only once the workspace took it. A
+/// workspace whose governance this device does not hold has only the shell. `landed` hears whether
+/// the change stands. Whether `edit` changed anything, or why it was refused at once.
+pub(crate) fn govern(
+    at: &Governing<'_>,
+    workspace_id: WorkspaceId,
+    edit: impl Fn(
+        &mut Workspace,
+        &tilo_desktop_model::UserId,
+    )
+        -> Result<tilo_desktop::workspace_settings::PolicyEdit, tilo_action_policy::Refusal>
+    + 'static,
+    landed: impl FnOnce(Result<(), String>) + 'static,
+) -> Result<bool, tilo_action_policy::Refusal> {
+    let mut tree = at.handle.read(Clone::clone);
+    let Some(workspace) = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id() == workspace_id)
+    else {
+        return Ok(false);
+    };
+    let changed = edit(workspace, at.person)?;
+    if changed.is_empty() {
+        return Ok(false);
+    }
+    let Some(engine) = at
+        .engine
+        .filter(|engine| engine.policy(&workspace_id.to_string()).is_ok())
+        .cloned()
+    else {
+        at.handle.replace_tree(tree);
+        landed(Ok(()));
+        return Ok(true);
+    };
+    let writes =
+        crate::membership::Membership::of(&engine, workspace_id).changes(workspace, &changed);
+    let written = crate::landing::off_loop(async move {
+        crate::membership::Membership::of(&engine, workspace_id)
+            .write(&writes)
+            .await
+    });
+    let (handle, person) = (at.handle.clone(), at.person.clone());
+    at.landings.then(written, move |written| {
+        let written = written
+            .unwrap_or_else(|| Err("the change was given up before the workspace answered".into()));
+        if written.is_ok() {
+            // The shell takes the change as it stands now, which moved while the workspace
+            // answered.
+            let mut tree = handle.read(Clone::clone);
+            if let Some(workspace) = tree
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id() == workspace_id)
+                && edit(workspace, &person).is_ok_and(|changed| !changed.is_empty())
+            {
+                handle.replace_tree(tree);
+            }
+        }
+        landed(written);
+    });
+    Ok(true)
+}
+
 impl crate::Shared {
     /// Who each workspace on the shell has in it, which bots it runs and which shortcuts it saved,
     /// as the workspace's own governance here says: who it was shared with, in what part, when each

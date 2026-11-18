@@ -482,3 +482,23 @@ paths = [
     "os/tests/host_image.sh",
     "os/tests/server_update_policy_test.sh"
 ]
+
+[[allow]]
+reason = "A network host name: what an app's manifest declares it may reach and a network grant allows."
+words = ["host"]
+paths = [
+    "crates/collab/collab-types/src/caps/net.rs",
+    "crates/packaging/launcher/signal-provider.toml",
+    "crates/packaging/launcher/src/egress_proxy.rs",
+    "crates/packaging/launcher/src/sandbox.rs",
+    "crates/packaging/launcher/src/services.rs",
+    "crates/packaging/launcher/tests/egress_proxy.rs",
+    "crates/packaging/launcher/src/run/shell_ui_tests.rs",
+    "crates/windows/compat-service/src/plan.rs",
+    "crates/session/app-launch/src/workspace.rs",
+    "crates/session/session/src/apps/reach.rs",
+    "crates/session/session/src/network_reach.rs",
+    "crates/session/session/src/questions.rs",
+    "crates/session/sheets/locales/*",
+    "tools/apps/signal_provider_release.py",
+]

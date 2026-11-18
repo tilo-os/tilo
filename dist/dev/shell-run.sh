@@ -209,7 +209,11 @@ home=$scratch/home
 runtime=$scratch/run
 mkdir -m 700 "$home" "$runtime"
 log=$scratch/session.log
+# The tree's apps are this session's image: their store is its system store, as
+# a device's /usr/share/tilo-apps is, so the launcher treats them as the image's
+# own. The person's store starts empty.
 store=$scratch/apps
+user_store=$scratch/user-apps
 runtimes=$scratch/runtimes
 keys=$scratch/keys
 # This session's own secret store: a file-backed one, as a headless machine uses
@@ -221,7 +225,7 @@ keys=$scratch/keys
 # scratch directory, and goes with the rest of it.
 secrets=$scratch/secrets
 mkdir -m 700 "$secrets"
-mkdir -m 700 "$store" "$runtimes" "$keys"
+mkdir -m 700 "$store" "$user_store" "$runtimes" "$keys"
 
 session_pid=
 group=
@@ -388,8 +392,8 @@ install_apps() {
     rm -rf "$out"
 }
 
-# Install the package at `tapp` into the session's own store, as `tilo-install` installs a
-# person's app: signed with this session's key, which the launcher's trust file names. The
+# Install the package at `tapp` into the session's system store, as `tilo-install` installs an
+# image's app: signed with this session's key, which the launcher's trust file names. The
 # store reads the same file, so a package this session built and signed installs under the
 # local-build ceiling: a `thin-dev` build is compiled for speed, not size, and is never published.
 install_tapp() {
@@ -486,7 +490,8 @@ start_session() {
         XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache" \
         XDG_RUNTIME_DIR="$runtime" TILO_IDENTITY_ROOT="$scratch/identity" \
         TILO_SECRETS_DIR="$secrets" \
-        TILO_APPS_DATA_DIR="$store" TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
+        TILO_APPS_DATA_DIR="$user_store" TILO_APPS_SYSTEM_DIR="$store" \
+        TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
         TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$trust" \
         TILO_LAUNCHER_BIN="$bin/tilo-launcher" \
         TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \

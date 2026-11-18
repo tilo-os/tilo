@@ -145,6 +145,11 @@ pub(crate) struct Asker {
 }
 
 impl Asker {
+    /// Where the services' questions are asked, when the session has them.
+    pub(crate) const fn questions(&self) -> Option<&Questions> {
+        self.questions.as_ref()
+    }
+
     /// An asker showing its questions on `portal` and `picker` , taking allowances back through
     /// `services` .
     pub(crate) const fn new(
@@ -754,6 +759,7 @@ fn compose(question: &Question) -> Option<Composed> {
         crate::network::AGENT_QUESTION => agent_question(&question.handle, details)?,
         crate::step_questions::KIND => step_question(&question.handle, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
+        crate::network_reach::KIND => reach(&question.handle, &who, details)?,
         _ => return None,
     };
     Some(Composed {
@@ -837,6 +843,31 @@ fn access(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let mut dialog = review(handle, title, heading, detail);
     dialog.body = Body::Choices(labels);
     Some((dialog, Plan::Choose(allowances)))
+}
+
+/// An app the person installed, before it first starts in a workspace: whether it may reach what
+/// its manifest declares. Allowing writes the workspace's network grants for it.
+fn reach(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: crate::network_reach::ReachQuestion = serde_json::from_value(details).ok()?;
+    let any = asked.hosts.iter().any(|host| host == "*");
+    let title = words(
+        "portal-access-title",
+        &[("app", who), ("what", &word("portal-access-network"))],
+    );
+    let detail = word(if any {
+        "portal-network-any"
+    } else {
+        "portal-network-hosts"
+    });
+    let mut dialog = review(handle, title, who.to_owned(), detail);
+    if !any {
+        dialog.facts = asked
+            .hosts
+            .into_iter()
+            .map(|host| (word("portal-network-site"), host))
+            .collect();
+    }
+    Some((dialog, Plan::Confirm))
 }
 
 /// The MCP server's question: a program of this login wants to work in the workspace in front as an
@@ -1651,6 +1682,43 @@ mod tests {
             );
             assert!(matches!(&shown.plan, Plan::Choose(choices) if choices.len() == 2));
             assert_eq!(asked(false).dialog.alternate_label, None);
+        }
+
+        phase an_installed_app_asks_for_the_sites_it_declares;
+        // An app the person installed lists the sites its manifest declares; one that may reach
+        // any site says so instead. Allowing is the one answer that writes the grants.
+        {
+            let asked = |hosts: &[&str]| {
+                sheet(
+                    crate::network_reach::KIND,
+                    serde_json::to_value(crate::network_reach::ReachQuestion {
+                        hosts: hosts.iter().map(|host| (*host).to_owned()).collect(),
+                    })
+                    .unwrap(),
+                )
+            };
+            let shown = asked(&["api.open-meteo.com", "geocoding-api.open-meteo.com"]);
+            assert_eq!(
+                shown.dialog.title,
+                words(
+                    "portal-access-title",
+                    &[("app", "Notes"), ("what", &word("portal-access-network"))]
+                )
+            );
+            assert_eq!(shown.dialog.detail, word("portal-network-hosts"));
+            let site = word("portal-network-site");
+            assert_eq!(
+                shown.dialog.facts,
+                vec![
+                    (site.clone(), "api.open-meteo.com".to_owned()),
+                    (site, "geocoding-api.open-meteo.com".to_owned()),
+                ]
+            );
+            assert_eq!(shown.dialog.confirm_label, word("portal-allow"));
+            assert!(matches!(shown.plan, Plan::Confirm));
+            let any = asked(&["*"]);
+            assert_eq!(any.dialog.detail, word("portal-network-any"));
+            assert!(any.dialog.facts.is_empty());
         }
 
         phase an_agents_question_shows_its_agent_action_and_risk;

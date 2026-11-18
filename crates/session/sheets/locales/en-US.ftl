@@ -306,6 +306,10 @@ portal-access-notification = your notifications
 portal-access-secret = your saved passwords
 portal-access-host-shell = the device's own shell
 portal-access-generic = { $capability }
+portal-access-network = the internet
+portal-network-hosts = It reaches only these sites. Everyone in this workspace sees this and can take it back.
+portal-network-any = It may reach any site. Everyone in this workspace sees this and can take it back.
+portal-network-site = Site
 
 ## The portal's other questions
 portal-account-title = Share your identity with { $app }?

@@ -276,6 +276,8 @@ pub mod nearby_transfer;
 #[cfg(target_os = "linux")]
 mod network;
 #[cfg(target_os = "linux")]
+mod network_reach;
+#[cfg(target_os = "linux")]
 pub mod night_light;
 #[cfg(target_os = "linux")]
 pub mod notices;

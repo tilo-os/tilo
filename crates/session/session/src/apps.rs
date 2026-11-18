@@ -30,6 +30,8 @@ use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_surface::outcome::{Closed, Outcome};
 
 mod launch;
+mod reach;
+pub(crate) use reach::ReachFirst;
 #[cfg(target_os = "linux")]
 mod outdated;
 
@@ -74,6 +76,8 @@ pub struct Apps {
     state: RefCell<State>,
     /// Why a workspace's apps may not start yet, once the session lent it ([`Self::lend_admission`]).
     admission: RefCell<Option<Admission>>,
+    /// What the person is asked about an app's network before it first starts ([`reach`]).
+    reach: reach::Reach,
     /// The deliveries whose answer a caller waits for, admitted and not settled yet: the broker
     /// answers a person's action as soon as it is admitted, and the action's own answer is read
     /// from its state once it settles ([`AppActions::poll_answers`]).
@@ -275,6 +279,7 @@ impl Apps {
         Self {
             desktop: RefCell::new(None),
             admission: RefCell::new(None),
+            reach: reach::Reach::default(),
             awaited: Arc::default(),
             state: RefCell::new(State {
                 environment,
@@ -1561,6 +1566,9 @@ impl Apps {
         reveal: Option<&str>,
     ) -> Result<bool, ApiError> {
         self.admitted(&workspace.id)?;
+        if self.held_for_reach(launch, workspace, new_window, instance, reveal) {
+            return Ok(true);
+        }
         self.start_launched_window(launch, workspace, new_window, instance, reveal)
     }
 

@@ -503,9 +503,28 @@ impl Shared {
         }
         self.tell_agent_bindings_lost();
         self.asker.follow();
+        self.follow_reach();
         self.shortcut_guide.follow();
         self.app_sheets.follow(self.downloaded_apps().as_ref());
     }
+    /// Lend the apps what decides whether a launch starts now: an app of a workspace that has not
+    /// admitted this device yet is not started, and whoever asked hears why at once
+    /// (`Apps::spawn`); an app the person installed waits on what they let it reach.
+    pub(crate) fn lend_to_apps(&self) {
+        let Some(launch) = &self.launch else {
+            return;
+        };
+        if let Some(engine) = &self.engine {
+            let (engine, handle) = (std::sync::Arc::clone(engine), self.handle.clone());
+            launch.lend_admission(std::rc::Rc::new(move |workspace: &str| {
+                crate::mcp_server::awaited_reason(&engine, &handle, workspace)
+            }));
+        }
+        if let Some(questions) = self.asker.questions() {
+            launch.lend_questions(questions.clone());
+        }
+    }
+
     /// One anchored surface at a time, whichever side opened it.
     /// The shell's own popovers and the shell's views are two stacks that meet here: a popover that
     /// came up over a shell surface takes that surface down — the person is looking at the menu

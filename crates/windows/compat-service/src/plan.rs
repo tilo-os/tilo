@@ -398,10 +398,15 @@ impl NetworkShape {
         if !capabilities.allow_network {
             return Self::Offline;
         }
-        // The decision an app's grants get, with no manifest to add: `*` is
-        // the host network, named hosts a proxy, and grants that are not hosts
-        // in the one grammar (IP literals) nothing.
-        match launcher::egress_proxy::EgressDecision::resolve("off", &[], &capabilities.net_hosts) {
+        // A Windows app declares no network, so it may ask for any host and its
+        // grants decide: `*` is the host network, named hosts a proxy, and
+        // grants that are not hosts in the one grammar (IP literals) nothing.
+        match launcher::egress_proxy::EgressDecision::resolve(
+            "host",
+            &[],
+            &capabilities.net_hosts,
+            false,
+        ) {
             launcher::egress_proxy::EgressDecision::Blocked => Self::Offline,
             launcher::egress_proxy::EgressDecision::Unrestricted => Self::Unrestricted,
             launcher::egress_proxy::EgressDecision::Filtered(_) => Self::Filtered,

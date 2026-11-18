@@ -305,6 +305,10 @@ portal-access-notification = deine Benachrichtigungen
 portal-access-secret = deine gespeicherten Passwörter
 portal-access-host-shell = die Shell des Geräts
 portal-access-generic = { $capability }
+portal-access-network = das Internet
+portal-network-hosts = Es erreicht nur diese Seiten. Alle in diesem Arbeitsbereich sehen das und können es zurücknehmen.
+portal-network-any = Es darf jede Seite erreichen. Alle in diesem Arbeitsbereich sehen das und können es zurücknehmen.
+portal-network-site = Seite
 
 ## Die weiteren Fragen des Portals
 portal-account-title = Deine Identität mit { $app } teilen?

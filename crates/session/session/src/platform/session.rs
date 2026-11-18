@@ -1698,14 +1698,7 @@ impl Session {
             controller_keys,
             app_sheets,
         };
-        // An app of a workspace this device waits for its host to admit it to is not started:
-        // whoever asked hears why at once (`Apps::spawn`).
-        if let (Some(launch), Some(engine)) = (&shared.launch, &shared.engine) {
-            let (engine, handle) = (std::sync::Arc::clone(engine), shared.handle.clone());
-            launch.lend_admission(Rc::new(move |workspace: &str| {
-                crate::mcp_server::awaited_reason(&engine, &handle, workspace)
-            }));
-        }
+        shared.lend_to_apps();
         shared.start_search();
         // What the person copied is personal: the clipboard publishes the
         // copies itself, as a reading only a caller the workspace grants reads.

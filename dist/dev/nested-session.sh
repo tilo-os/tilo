@@ -512,7 +512,12 @@ if [[ -d $build_out/language-packs ]]; then
 fi
 stamps=$state/stamps
 mkdir -p "$stamps" "$TILO_APPS_DATA_DIR"
-installed=$("$bin/tilo-install" list 2>/dev/null || true)
+# The tree's apps are this session's image: installed into its system store, as
+# os/scripts/pack-apps.sh installs a device's, so the launcher treats them as
+# the image's own. The person's store keeps what they install themselves.
+in_system_store() { env -u TILO_APPS_SYSTEM_DIR TILO_APPS_DATA_DIR="$system_store" "$@"; }
+installed=$(in_system_store "$bin/tilo-install" list 2>/dev/null || true)
+user_installed=$(env -u TILO_APPS_SYSTEM_DIR "$bin/tilo-install" list 2>/dev/null || true)
 # The selected apps' catalog entries, read before the loop: a failing filter
 # in a process substitution would install nothing and say nothing.
 catalog=$(jq -r '.catalog[] | select(.name | IN($ARGS.positional[]))
@@ -521,6 +526,11 @@ catalog=$(jq -r '.catalog[] | select(.name | IN($ARGS.positional[]))
     || die "cannot read the selected apps from $plan"
 while IFS=$'\t' read -r name binary id version manifest; do
     [[ -n $name ]] || continue
+    # A copy an earlier session installed into the person's store would start instead of the
+    # image's. Removed with the system store in view, so the runtime the image's apps name stays.
+    if grep -q "^$id " <<<"$user_installed"; then
+        "$bin/tilo-install" uninstall "$id" --keep-state >/dev/null
+    fi
     built=$thin/$binary
     [[ -x $built ]] || die "missing app binary $built"
     work=$state/work/app-$name
@@ -550,7 +560,7 @@ while IFS=$'\t' read -r name binary id version manifest; do
     # --force replaces the package of the same version; app data stays. The
     # main runtime is installed above; an optional one (Browser's Chromium
     # engine) is offered for download by the app itself.
-    "$bin/tilo-install" install "$tapp" --allow-self-signed --force \
+    in_system_store "$bin/tilo-install" install "$tapp" --allow-self-signed --force \
         --ignore-missing-runtime >/dev/null
     printf '%s\n' "$digest" > "$stamps/$name"
     rm -rf "$work"
