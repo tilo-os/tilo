@@ -948,7 +948,6 @@ if [ "$ENCRYPT" = 1 ]; then
   # `--karg console=ttyS0` itself and answers there).
   install_args+=(--boot-mount-spec "UUID=$ENC_BOOT_UUID")
   for karg in $ENC_KARGS; do install_args+=(--karg "$karg"); done
-  install_args+=(--karg console=tty0)
 fi
 [ "$DIRECT_SEALED_SOURCE" = 0 ] || install_args+=(--enforce-container-sigpolicy)
 install_args+=("/run/tilo-install-target")
