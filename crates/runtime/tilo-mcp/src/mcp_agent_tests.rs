@@ -2909,6 +2909,8 @@ mod levels;
 mod narrowed;
 #[path = "mcp_agent_open_tests.rs"]
 mod opening;
+#[path = "mcp_agent_outside_tests.rs"]
+mod outside;
 #[path = "mcp_runs_tests.rs"]
 mod runs;
 #[path = "mcp_status_tests.rs"]

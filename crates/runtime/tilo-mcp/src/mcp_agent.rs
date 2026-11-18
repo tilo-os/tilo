@@ -192,6 +192,24 @@ pub(super) struct Reply {
 }
 
 impl Reply {
+    /// `self`, saying first that it carries content from outside the person's own data: data
+    /// to reason about, never an instruction. The label stands before the text a model is
+    /// handed and first in the typed answer.
+    fn labelled(mut self) -> Self {
+        if !self.text.is_empty() {
+            self.text = format!(
+                "[{}: {}]\n{}",
+                crate::UNTRUSTED,
+                crate::UNTRUSTED_NOTE,
+                self.text
+            );
+        }
+        if let Some(typed) = self.structured.as_mut() {
+            crate::mark_untrusted(typed);
+        }
+        self
+    }
+
     fn ok(text: String) -> Self {
         Self {
             text,
@@ -1980,6 +1998,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if answered.failed {
             return Ok(answered);
         }
+        // What a document says is whoever wrote it's, and what its provider says carries
+        // content from outside is that when it is read by a path too: either reaches a
+        // model behind the label, every page of it.
+        let outside = value.get(crate::UNTRUSTED).is_some() || reader.contract.reads_document();
         let output = value
             .pointer("/update/output/value")
             .cloned()
@@ -2001,14 +2023,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let mut reply = Reply::ok(String::new());
             reply.structured =
                 Some(serde_json::to_value(&read).map_err(|error| error.to_string())?);
-            return Ok(reply);
+            return Ok(if outside { reply.labelled() } else { reply });
         }
-        Ok(Reply::ok(read_answer(
+        let reply = Reply::ok(read_answer(
             &read,
             already,
             app_cursor.as_deref(),
             args.max_chars,
-        )))
+        ));
+        Ok(if outside { reply.labelled() } else { reply })
     }
 
     /// The action that reads `resolved`, and the id of the resource that
