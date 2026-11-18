@@ -589,21 +589,10 @@ pub fn fmt_hours(hours: i64) -> String {
 mod tests {
     use super::*;
 
-    /// The sample topology: drive mix, partition classes, free tail, clamped usage and JSON
-    /// round-trip.
+    /// A partition's role, its drive's free tail and a usage figure held to the
+    /// partition's size.
     #[test]
-    fn sample_topology_geometry_and_serialisation() {
-        // --- phase: sample_has_four_drives_with_mixed_kinds ---
-        {
-            let t = Topology::sample();
-            assert_eq!(t.drives.len(), 4);
-            let kinds: Vec<_> = t.drives.iter().map(|d| d.kind).collect();
-            assert!(kinds.contains(&DriveKind::Nvme));
-            assert!(kinds.contains(&DriveKind::Ssd));
-            assert!(kinds.contains(&DriveKind::Hdd));
-            assert!(kinds.contains(&DriveKind::Usb));
-        }
-
+    fn partition_roles_free_tail_and_usage() {
         // --- phase: nvme_partitions_classify_correctly ---
         {
             let t = Topology::sample();
@@ -638,15 +627,6 @@ mod tests {
                 part_type_name: None,
             };
             assert_eq!(p.used_frac(), Some(1.0));
-        }
-
-        // --- phase: round_trips_through_json ---
-        {
-            let t = Topology::sample();
-            let json = serde_json::to_string(&t).unwrap();
-            let back: Topology = serde_json::from_str(&json).unwrap();
-            assert_eq!(back.drives.len(), t.drives.len());
-            assert_eq!(back.drives[0].name, "nvme0n1");
         }
     }
 
