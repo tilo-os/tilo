@@ -75,10 +75,17 @@ public final class TiloSource: AssistantSource {
     /// How often one ask of her server on the way to her assistant is made in all, where it
     /// goes unanswered or is answered with nothing in it, before the main chat says so.
     var setupAsks = 5
+    /// How long after the main chat said that her server left the finding of her assistant
+    /// unanswered it is begun again by itself, the first time. The wait doubles each time, up
+    /// to a minute.
+    var findingPause: Duration = .seconds(15)
     /// Her server's asks beside the conversation, made again where one of them went unanswered.
     private let serverAgain = Again()
     /// The ask for what came while she was away, made again where it went unanswered.
     private let sinceAgain = Again()
+    /// The finding of her assistant, begun again where her server left it unanswered and the
+    /// main chat said so.
+    private let findingAgain = Again()
     /// What she saw on this device that her server has not heard yet: each thing it told her
     /// of, by its id, with how she saw it. It is said again until her server has heard it.
     private var unheard: [String: String] = [:]
@@ -281,6 +288,7 @@ public final class TiloSource: AssistantSource {
         toldRefused = false
         serverAgain.settle()
         sinceAgain.settle()
+        findingAgain.settle()
         unheard = [:]
         hearing.settle()
         for chat in Array(feeds.keys) {
@@ -603,14 +611,18 @@ public final class TiloSource: AssistantSource {
     /// while every device of its person is off.
     /// Where the page hands an app no way to its server, or the server offers none of this,
     /// the assistant is found in what the page itself holds, and nothing is made.
-    private func findAssistant() async {
+    ///
+    /// Where her server left it unanswered the main chat says so, and it is begun again by
+    /// itself (`findLater`), `quietly`: the sentence that stands is true until her server
+    /// answers, so it stays in place of the line that says her assistant is being set up.
+    private func findAssistant(quietly: Bool = false) async {
         feeds[.main, default: Feed()].conversation = nil
         recipient = nil
         assistant = nil
         guard let me, !finding else { return }
         finding = true
         defer { finding = false }
-        setups.set(.findingAssistant)
+        if !quietly { setups.set(.findingAssistant) }
         do {
             var all = try await askedAgain { try await self.agentsWhenOffered() }
             // The agent this device just had the server answer for.
@@ -631,6 +643,8 @@ public final class TiloSource: AssistantSource {
                 guard !livesInOwn || standsInOwn else {
                     if startedOver { return }
                     setups.set(.noAssistant(TiloSource.notInOwn))
+                    // Her server left unanswered which workspace is her own: it is asked again.
+                    if ownRoute == nil { findLater() }
                     return
                 }
                 do {
@@ -679,6 +693,7 @@ public final class TiloSource: AssistantSource {
             // then is never answered. Nothing is wrong: it is asked again once it is in.
             if startedOver { return }
             setups.set(.noAssistant(TiloSource.notAnswered))
+            findLater()
             return
         }
         if let all = await agentsInPage(), let found = TiloSource.assistant(among: all, of: me) {
@@ -695,9 +710,26 @@ public final class TiloSource: AssistantSource {
         if case .arriving = engine.state { true } else { false }
     }
 
+    /// Her server left the finding of her assistant unanswered, and the main chat says so. It
+    /// is begun again by itself after `findingPause`, which doubles each time up to a minute, for as
+    /// long as the page is in and she has none: she presses nothing. A page that is on its way
+    /// in again finds her assistant when it is in. Her own press does the same at once.
+    private func findLater() {
+        findingAgain.later(first: findingPause) { [weak self] in
+            guard let self, case .open = self.engine.state, self.mainChat == .assistant, self.assistant == nil else { return }
+            await self.findAssistant(quietly: true)
+            guard self.assistant != nil else { return }
+            // Found: her conversation with it and what stands beside it are read, as after her press.
+            for chat in Array(self.feeds.keys) { self.feeds[chat]?.told = false }
+            await self.look()
+            await self.survey(.everything)
+        }
+    }
+
     /// This agent is the person's assistant: the main chat is their conversation with it.
     private func take(_ found: JSON, of me: String) {
         guard let id = found["id"]?.string else { return }
+        findingAgain.settle()
         assistant = id
         feeds[.main, default: Feed()].conversation = direct(me, id)
         recipient = ChatRecipient(.agent, id: id, name: found["name"]?.string ?? id)

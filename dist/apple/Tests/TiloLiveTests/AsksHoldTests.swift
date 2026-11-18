@@ -878,5 +878,60 @@ final class AsksHoldTests: XCTestCase {
         try await source.choose("anthropic/m-1", for: .task)
         try await until("nothing more stands in the way") { self.setups.last == .ready }
     }
+
+    // MARK: After the sentence
+
+    private static let notAnswered = Setup.noAssistant("Tilo did not answer while your assistant was being set up")
+
+    /// As a server that is too busy for a while: five asks in a row go unanswered, the next is answered.
+    func testAfterFiveUnansweredAsksTheFindingOfHerAssistantIsBegunAgainByItselfAndNeedsNoPress() async throws {
+        try await start()
+        source.firstPause = .milliseconds(20)
+        source.findingPause = .milliseconds(20)
+        try await enter("""
+            window.agents = [kept('assistant', {name: 'Reed'})]; \(Self.twoMessages);
+            window.plan = {'chat read': ['lost', 'lost', 'lost', 'lost', 'lost']}
+            """)
+        try await until("the main chat says that her server did not answer") { self.setups.contains(Self.notAnswered) }
+        // Nobody presses anything: her server answers the next ask, her assistant is found and
+        // her conversation with it is read.
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        try await until("her conversation with her assistant is read") { self.held.count == 2 }
+        let made = try await asked("chat create-agent")
+        XCTAssertEqual(made, 0)
+    }
+
+    /// As a server that stays too busy for longer: the sentence is true for as long as no answer
+    /// comes, so it stands, and it goes when her server answers.
+    func testWhileTheFindingIsBegunAgainByItselfTheSentenceStandsAndGoesOnlyWhenHerServerAnswers() async throws {
+        try await start()
+        source.firstPause = .milliseconds(20)
+        source.findingPause = .milliseconds(20)
+        let lost = Array(repeating: "'lost'", count: 12).joined(separator: ", ")
+        try await enter("window.agents = [kept('reed', {name: 'Reed'})]; window.plan = {'chat read': [\(lost)]}")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let from = try XCTUnwrap(setups.firstIndex(of: Self.notAnswered), "the sentence was never said")
+        XCTAssertFalse(setups[from...].contains(.findingAssistant),
+                       "the sentence gave way to the line of the setting up before her server answered")
+        let asks = try await asked("chat read")
+        XCTAssertEqual(asks, 13, "twelve asks that went unanswered and the one her server answered")
+        let made = try await asked("chat create-agent")
+        XCTAssertEqual(made, 0)
+    }
+
+    /// Her server's own refusal is its word, and stands until she presses: only what went
+    /// unanswered is asked again by itself.
+    func testWhereHerServerItselfRefusedTheFindingNothingIsAskedAgainByItself() async throws {
+        try await start()
+        source.firstPause = .milliseconds(20)
+        source.findingPause = .milliseconds(20)
+        try await enter("window.agents = [kept('reed', {name: 'Reed'})]; window.plan = {'chat read': ['failed']}")
+        let refused = Setup.noAssistant("The write did not finish in time")
+        try await until("the main chat says her server's own words") { self.setups.last == refused }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(setups.last, refused)
+        let asks = try await asked("chat read")
+        XCTAssertEqual(asks, 1)
+    }
 }
 #endif
