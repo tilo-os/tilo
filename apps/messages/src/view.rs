@@ -1374,7 +1374,7 @@ mod route_tests {
             .expect("person");
         let mut accounts = PersonAccounts::default();
         accounts
-            .save_account(
+            .keep_account(
                 "sender".into(),
                 "signal".into(),
                 "Personal".into(),
@@ -1436,7 +1436,7 @@ mod route_tests {
             .expect("person");
         let mut accounts = PersonAccounts::default();
         accounts
-            .save_account(
+            .keep_account(
                 "sender".into(),
                 "signal".into(),
                 "Personal".into(),
@@ -1526,7 +1526,7 @@ mod route_tests {
         }
         let mut accounts = PersonAccounts::default();
         accounts
-            .save_account(
+            .keep_account(
                 "sender".into(),
                 "signal".into(),
                 "Personal".into(),
