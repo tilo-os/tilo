@@ -18,9 +18,13 @@ from pathlib import Path
 import re
 import shutil
 
-REF = re.compile(r"(registry\.tilo\.so/tilo/tilo|code\.tilo\.so/tilo/tilo)@(sha256:[0-9a-f]{64})\Z")
-# Board images carry private firmware and stay on the forge's private registry.
-REPOSITORY = {"generic": "registry.tilo.so/tilo/tilo", "lenovo-83ed": "code.tilo.so/tilo/tilo"}
+# One image repository: the public registry, or the forge's private registry for
+# board images that carry private firmware.
+REPOSITORY = re.compile(
+    r"(?:registry\.tilo\.so/tilo/|code\.tilo\.so/tilo/)[a-z0-9]+(?:[._-][a-z0-9]+)*\Z")
+# The OCI config architecture each target architecture names.
+OCI_ARCHITECTURE = {"x86_64": "amd64", "aarch64": "arm64"}
+TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\Z")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 IMAGE = {"application/vnd.oci.image.manifest.v1+json",
          "application/vnd.docker.distribution.manifest.v2+json"}
@@ -59,32 +63,29 @@ def verify(directory, *, development=False):
         require(uki.is_file() and not uki.is_symlink() and 0 < uki.stat().st_size <= MAX_UKI_BYTES,
                 "development target UKI is missing, unsafe or oversized")
     metadata = bounded_json(directory / "target.json", 16384)
-    fields = {"schema", "target_ref", "target_digest", "architecture", "hardware_profile",
+    fields = {"schema", "repository", "target_digest", "architecture", "hardware_profile",
               "update_origin"}
     if development:
         fields |= {"source_revision", "ci_run_id"}
     require(isinstance(metadata, dict) and set(metadata) == fields
             and all(isinstance(value, str) for value in metadata.values()),
             "target metadata fields differ")
-    target_pattern = (r"(registry\.tilo\.so/tilo/tilo-vm)@(sha256:[0-9a-f]{64})\Z"
-                      if development else REF)
-    match = re.fullmatch(target_pattern, metadata["target_ref"])
     expected_schema = "tilo.installer-dev-target.v1" if development else "tilo.installer-offline-target.v1"
-    if development:
-        origin_pattern = r"registry\.tilo\.so/tilo/tilo-vm:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}"
-    elif metadata["hardware_profile"] == "lenovo-83ed":
-        origin_pattern = r"code\.tilo\.so/tilo/tilo:lenovo-83ed-[0-9a-f]{40}"
-    else:
-        origin_pattern = r"registry\.tilo\.so/tilo/tilo:gen[1-9][0-9]*"
+    repository = metadata["repository"]
+    origin = metadata["update_origin"]
+    profile = metadata["hardware_profile"]
     require(metadata["schema"] == expected_schema
-            and match is not None and metadata["target_digest"] == match.group(2)
-            and metadata["architecture"] == "aarch64"
-            and metadata["hardware_profile"] in ("generic", "lenovo-83ed")
-            and match.group(1) == ("registry.tilo.so/tilo/tilo-vm" if development
-                                   else REPOSITORY[metadata["hardware_profile"]])
-            and isinstance(metadata["update_origin"], str)
-            and re.fullmatch(origin_pattern, metadata["update_origin"]) is not None,
-            "target metadata does not pin a supported CI ARM64 child")
+            and REPOSITORY.fullmatch(repository) is not None
+            and DIGEST.fullmatch(metadata["target_digest"]) is not None
+            and metadata["architecture"] in OCI_ARCHITECTURE
+            and profile in ("generic", "lenovo-83ed")
+            # A board target carries private firmware, so its image stays on
+            # the forge's private registry.
+            and (development or profile != "lenovo-83ed"
+                 or repository.startswith("code.tilo.so/tilo/"))
+            and origin.startswith(repository + ":")
+            and TAG.fullmatch(origin.removeprefix(repository + ":")) is not None,
+            "target metadata does not pin a supported CI image")
     if development:
         require(re.fullmatch(r"[0-9a-f]{40}", metadata["source_revision"])
                 and re.fullmatch(r"[1-9][0-9]*", metadata["ci_run_id"]),
@@ -121,12 +122,19 @@ def verify(directory, *, development=False):
         if descriptor is target[0]:
             require(manifest["layers"], "target image has no layers")
             config = bounded_json(blob_path(layout, manifest["config"].get("digest")))
-            require(config.get("architecture") == "arm64" and config.get("os") == "linux",
-                    "target OCI config is not Linux ARM64")
+            require(config.get("architecture") == OCI_ARCHITECTURE[metadata["architecture"]]
+                    and config.get("os") == "linux",
+                    "target OCI config is not the declared Linux architecture")
             if development:
                 labels = config.get("config", {}).get("Labels", {})
-                require(labels.get("org.opencontainers.image.revision") == metadata["source_revision"]
-                        and labels.get("sh.tilo.image.flavour") == "dev",
+                flavour = labels.get("sh.tilo.image.flavour")
+                revision = labels.get("org.opencontainers.image.revision")
+                # A dev image's build names its commit; the server image's build
+                # reads no history (its cache is commit-free), so its digest
+                # binds the build and it carries no revision label.
+                require((flavour == "dev" and revision == metadata["source_revision"])
+                        or (flavour == "server"
+                            and revision in (None, metadata["source_revision"])),
                         "development target source or flavour label differs")
         refs.extend([descriptor, manifest["config"], *manifest["layers"]])
     require(len(refs) <= MAX_BLOBS, "too many OCI blobs")

@@ -40,7 +40,8 @@ ARG SOURCE_REVISION
 LABEL org.opencontainers.image.title="Tilo server" \
       org.opencontainers.image.description="A headless Tilo machine that serves workspaces and their VMs" \
       org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
-      org.opencontainers.image.revision="${SOURCE_REVISION}"
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      sh.tilo.image.flavour="server"
 
 # ---- Programs ---------------------------------------------------------------
 # Host image ships the server, the authenticated filesystem replica and the enroll

@@ -368,8 +368,10 @@ wheel account, so this result complements the release workflow's graphical
 cycle on the SSH-disabled published medium; it does not replace that check.
 
 The installed system's update origin defaults to
-`registry.tilo.so/tilo/tilo:latest`. `TILO_TARGET_IMGREF` may select a tag or digest
-in that same signature-required repository; the backend rejects other origins.
+`registry.tilo.so/tilo/tilo:latest`. `TILO_TARGET_IMGREF` may select a tag or
+digest in a signature-required Tilo repository (`registry.tilo.so/tilo/tilo`,
+`registry.tilo.so/tilo/tilo-host` for a server, or `code.tilo.so/tilo/tilo` for
+board images); the backend rejects other origins.
 
 ### Separate development target on Windows ARM64
 
@@ -387,7 +389,7 @@ For a local disposable medium, prepare that same transport with
 `TILO_UNVERIFIED_VM_INSTALL=1` when building the installer. Normal transports
 continue to require signed release targets. The unsigned path requires a dev
 live image, the explicit VM marker, a VM proof port, and detected virtualization;
-the target must contain the dev flavour and OpenSSH. A separate target may
+the target must contain the dev or server flavour and OpenSSH. A separate target may
 provide the installed-target bundle, a sealed board UKI, or one split kernel
 and initramfs. For the latter two forms, the installer projects an unsigned
 installed UKI from the exact selected CI kernel, initramfs and pinned hardware

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # dev-installer-medium-<arch> on a machine whose kernel can't build it: its kernel has no EROFS
 # for composefs and no btrfs, and its rootless podman no loop devices. The medium's own script,
-# tools/ci/publish/dev-installer-medium.sh, runs unchanged in the project's builder image inside
+# tools/ci/publish/installer-medium.sh, runs unchanged in the project's builder image inside
 # a worker VM booted from the newest published development disk (the generic package
 # tilo-vm-disk-candidate), which has all three.
 #
@@ -78,7 +78,7 @@ if [[ ${1:-} == guest ]]; then
       -e HOME=/root -e TMPDIR=/tmp \
       -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/var/w/src \
       --entrypoint bash $builder_image \
-      -eo pipefail -c 'git reset -q && bash tools/ci/publish/dev-installer-medium.sh $arch /var/w/image /var/w/out' \
+      -eo pipefail -c 'git reset -q && bash tools/ci/publish/installer-medium.sh $arch /var/w/image /var/w/out' \
       > /var/w/medium.log 2>&1" || status=$?
   on_worker 'cat /var/w/medium.log' > /out/medium.log || true
   if ((status)); then

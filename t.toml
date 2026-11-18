@@ -4505,7 +4505,7 @@ arch = ["x86_64", "aarch64"]
 name = "dev-installer-medium-{arch}"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/dev-installer-medium.sh {arch} /target/os/{arch}/image /target/publish/dev-installer-medium/{arch}"
+run = "bash tools/ci/publish/installer-medium.sh {arch} /target/os/{arch}/image /target/publish/dev-installer-medium/{arch}"
 needs = ["os-image-{arch}"]
 requires = ["disk-100g"]
 isolation = "vm"
@@ -4515,6 +4515,33 @@ timeout_secs = 7200
 default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "server-installer-medium-x86_64"
+# dnf installs from Fedora's mirrors, which are no fixed host list; the server image itself
+# comes from image-host's archive.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "export TILO_INSTALLER_TARGET_OCI=/target/publish/host/image.oci.tar\nexport TILO_INSTALLER_TARGET_REPOSITORY=registry.tilo.so/tilo/tilo-host\nexport TILO_INSTALLER_TARGET_DIGEST=$(cat /target/publish/host/digest)\nexport TILO_INSTALLER_TARGET_ARCHITECTURE=x86_64\nexport TILO_INSTALLER_TARGET_PROFILE=generic\nexport TILO_INSTALLER_TARGET_UPDATE_ORIGIN=registry.tilo.so/tilo/tilo-host:dev-${T_COMMIT:?}\nbash tools/ci/publish/installer-medium.sh x86_64 /target/os/x86_64/image /target/publish/server-installer-medium/x86_64"
+needs = ["os-image-x86_64", "image-host"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/server-installer-medium/x86_64/disk.qcow2", "/target/publish/server-installer-medium/x86_64/disk.qcow2.sha256", "/target/publish/server-installer-medium/x86_64/disk.qcow2.hardware.json", "/target/publish/server-installer-medium/x86_64/source.json"]
+git = true
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "test-server-installer-medium-x86_64"
+# QEMU and its firmware come from the packages below, which dnf fetches from Fedora's mirrors.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/signin-e2e.txt tools/ci/packages/qemu-x86_64.txt && bash tools/ci/server-installer-smoke.sh /target/publish/server-installer-medium/x86_64 $(cat /target/publish/host/digest) /target/server-installer-smoke"
+needs = ["server-installer-medium-x86_64", "image-host", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/server-installer-smoke/**"]
+timeout_secs = 3600
+default = false
 
 [[check]]
 name = "os-dev-disk-{arch}"

@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# A bootable development installer medium from an OS image the same run built.
+# A bootable development installer medium from an OS image the same run built,
+# for any image it preloads as the install target.
 #
-#   dev-installer-medium.sh ARCH IMAGE_DIR OUT
+#   installer-medium.sh ARCH IMAGE_DIR OUT
 #
 # IMAGE_DIR is what os/image/build-layer.sh compose left: the image composed from its layer
 # actions as an OCI layout (oci/) and its digest. The medium is made from that exact image,
 # never a registry tag, and writes OUT/disk.qcow2 with its
 # SHA-256, the media-provenance sidecar the canonical disk step records, and source.json naming
 # the image commit and OCI digest the medium was made from.
+#
+# A preloaded target is optional and is any OCI archive the same run built
+# (TILO_INSTALLER_TARGET_OCI), with TILO_INSTALLER_TARGET_REPOSITORY,
+# _DIGEST, _ARCHITECTURE, _PROFILE and _UPDATE_ORIGIN naming it. The target's
+# architecture may differ from the live medium's; the transport records every
+# field explicitly, and source.json carries the same identity.
 #
 # The image is an ordinary development build: its UKI seals a placeholder composefs digest, so
 # it is not installable by itself. os/dev/build-custom-installer.sh is the canonical way to
@@ -23,7 +30,7 @@ set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
 
-arch=${1:?usage: dev-installer-medium.sh ARCH IMAGE_DIR OUT}
+arch=${1:?usage: installer-medium.sh ARCH IMAGE_DIR OUT}
 in=${2:?}
 out=${3:?}
 case $arch in
@@ -85,6 +92,50 @@ mkdir -p "$out"
 medium="$out/disk.qcow2"
 installer_output="$out/installer"
 rm -rf "$medium" "$medium.sha256" "$medium.hardware.json" "$out/source.json" "$installer_output"
+
+# An optional preloaded target makes this that image's installer: any image the
+# same run built, staged as the unsigned development transport the VM installer
+# admits, with its repository, digest, architecture and update origin written
+# out explicitly rather than inferred from a hardware profile.
+target_json=""
+if [ -n "${TILO_INSTALLER_TARGET_OCI:-}" ]; then
+  : "${TILO_INSTALLER_TARGET_REPOSITORY:?TILO_INSTALLER_TARGET_REPOSITORY is required with a target}"
+  : "${TILO_INSTALLER_TARGET_DIGEST:?TILO_INSTALLER_TARGET_DIGEST is required with a target}"
+  : "${TILO_INSTALLER_TARGET_ARCHITECTURE:?TILO_INSTALLER_TARGET_ARCHITECTURE is required with a target}"
+  : "${TILO_INSTALLER_TARGET_PROFILE:?TILO_INSTALLER_TARGET_PROFILE is required with a target}"
+  : "${TILO_INSTALLER_TARGET_UPDATE_ORIGIN:?TILO_INSTALLER_TARGET_UPDATE_ORIGIN is required with a target}"
+  target_dir="$out/target"
+  rm -rf "$target_dir"
+  mkdir -p "$target_dir"
+  skopeo copy --preserve-digests "oci-archive:$TILO_INSTALLER_TARGET_OCI" \
+    "oci:$target_dir/oci:target" >/dev/null \
+    || die "could not stage $TILO_INSTALLER_TARGET_OCI as the preloaded target"
+  python3 - "$target_dir/target.json" \
+    "$TILO_INSTALLER_TARGET_REPOSITORY" "$TILO_INSTALLER_TARGET_DIGEST" \
+    "$TILO_INSTALLER_TARGET_ARCHITECTURE" "$TILO_INSTALLER_TARGET_PROFILE" \
+    "$TILO_INSTALLER_TARGET_UPDATE_ORIGIN" "$revision" "${source_epoch:-1}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+target, repository, digest, architecture, profile, origin, revision, run = sys.argv[1:]
+Path(target).write_text(json.dumps({
+    "schema": "tilo.installer-dev-target.v1",
+    "repository": repository,
+    "target_digest": digest,
+    "architecture": architecture,
+    "hardware_profile": profile,
+    "update_origin": origin,
+    "source_revision": revision,
+    "ci_run_id": run,
+}, sort_keys=True) + "\n")
+PY
+  python3 os/dev/installer-offline-target.py verify "$target_dir" --development >/dev/null \
+    || die "the preloaded target is not a verified development transport"
+  target_json="$target_dir/target.json"
+  export TILO_INSTALLER_OFFLINE_TARGET_DIR="$target_dir"
+  export TILO_INSTALLER_DEV_TARGET=1
+fi
 # A unique local tag keeps the medium apart from another architecture's images in one guest.
 tag="dev-installer-medium-$arch-${revision:0:12}"
 export TILO_DISTROBOX=
@@ -133,17 +184,18 @@ python3 apps/imager/packaging/media-provenance.py validate "$medium" "$arch" gen
   || die "the medium does not match the media provenance the disk step recorded"
 
 sha256sum "$medium" | awk '{print $1 "  disk.qcow2"}' > "$medium.sha256"
-python3 - "$medium" "$medium.hardware.json" "$out/source.json" "$arch" "$revision" "$actual_digest" "$rootfs" <<'PY'
+python3 - "$medium" "$medium.hardware.json" "$out/source.json" "$arch" "$revision" "$actual_digest" "$rootfs" "$target_json" <<'PY'
 import hashlib
 import json
 from pathlib import Path
 import sys
 
-medium, hardware, destination, arch, revision, digest, rootfs = sys.argv[1:]
+medium, hardware, destination, arch, revision, digest, rootfs, target = sys.argv[1:]
 medium_path = Path(medium)
 with medium_path.open("rb") as stream:
     medium_digest = hashlib.file_digest(stream, "sha256").hexdigest()
 record = json.loads(Path(hardware).read_text())
+target = json.loads(Path(target).read_text()) if target else None
 source = {
     "schema": "tilo.dev-installer-medium.v1",
     "architecture": arch,
@@ -156,6 +208,11 @@ source = {
     "medium_sha256": medium_digest,
     "medium_size": medium_path.stat().st_size,
     "media_provenance_sha256": hashlib.sha256(Path(hardware).read_bytes()).hexdigest(),
+    "target": None if target is None else {
+        key: target[key]
+        for key in ("repository", "target_digest", "architecture",
+                    "hardware_profile", "update_origin")
+    },
     "trust": "development-unsigned",
     "release": False,
 }

@@ -143,7 +143,7 @@ def checked_guest_proof(path, child_digest, ci_image=None, ci_provenance=None):
         require(type(selected) is dict
                 and selected.get("schema") == "tilo.installer-offline-target.v1"
                 and selected.get("target_digest") == child_digest
-                and selected.get("target_ref") == repository(board) + "@" + child_digest
+                and selected.get("repository") == repository(board)
                 and selected.get("architecture") == "aarch64"
                 and selected.get("hardware_profile") == ("lenovo-83ed" if board else "generic"),
                 "VM selected target differs from signed CI image")
@@ -303,7 +303,8 @@ def signed_medium_identity(identity_path, ci_guest_proof_path, key,
             and ci_proof.get("installed_image_digest") == identity["target_image"].split("@", 1)[1]
             and type(ci_proof.get("selected_target")) is dict
             and ci_proof["selected_target"].get("schema") == "tilo.installer-offline-target.v1"
-            and ci_proof["selected_target"].get("target_ref") == identity["target_image"]
+            and ci_proof["selected_target"].get("repository")
+            == identity["target_image"].split("@", 1)[0]
             and ci_proof["selected_target"].get("target_digest")
             == ci_proof["installed_image_digest"]
             and ci_proof["selected_target"].get("hardware_profile") == identity["target_profile"],

@@ -33,7 +33,7 @@ class ProofTests(unittest.TestCase):
             origin.write_text("[image]\nmanifest_digest=" + DIGEST + "\n"
                               "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://" + update_origin + "\n")
             metadata = {"schema": "tilo.installer-dev-target.v1",
-                        "target_ref": "registry.tilo.so/tilo/tilo-vm@" + DIGEST,
+                        "repository": "registry.tilo.so/tilo/tilo-vm",
                         "target_digest": DIGEST, "architecture": "aarch64",
                         "hardware_profile": "lenovo-83ed", "update_origin": update_origin,
                         "source_revision": "e" * 40, "ci_run_id": "42",
@@ -116,11 +116,11 @@ class ProofTests(unittest.TestCase):
                 args, status, origin, command = self.fixture(directory)
                 status["status"]["booted"]["image"]["imageDigest"] = "sha256:" + "c" * 64
                 status["status"]["booted"]["composefs"]["verity"] = "d" * 128
-                target_ref = "code.tilo.so/tilo/tilo@" + DIGEST
                 update_origin = "code.tilo.so/tilo/tilo:lenovo-83ed-" + "e" * 40
                 receipt = Path(directory) / "offline-target.json"
                 receipt.write_text(json.dumps({"schema": "tilo.installer-offline-target.v1",
-                                               "target_ref": target_ref, "target_digest": DIGEST,
+                                               "repository": "code.tilo.so/tilo/tilo",
+                                               "target_digest": DIGEST, "architecture": "aarch64",
                                                "hardware_profile": "lenovo-83ed",
                                                "update_origin": update_origin}))
                 args.offline_target_receipt = receipt
@@ -131,7 +131,8 @@ class ProofTests(unittest.TestCase):
                 self.assertEqual(result["schema"], "tilo.vm-install-image-proof.v2")
                 self.assertEqual(result["booted_composefs_digest"], "d" * 128)
                 self.assertEqual(result["installed_composefs_digest"], COMPOSEFS)
-                self.assertEqual(result["selected_target"]["target_ref"], target_ref)
+                self.assertEqual(result["selected_target"]["repository"],
+                                 "code.tilo.so/tilo/tilo")
                 self.assertEqual(result["installed_update_origin"],
                                  "ostree-unverified-image:docker://" + update_origin)
                 origin.write_text("[image]\nmanifest_digest=" + DIGEST + "\n"

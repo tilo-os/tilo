@@ -502,12 +502,17 @@ pub fn check(host: &dyn Host) -> Result<Selected> {
         serde_json::from_str(&read_text(&receipt)?).map_err(|e| Error::new(e.to_string()))?;
     let string = |key: &str| document.get(key).and_then(Value::as_str);
     let digest = string("target_digest").unwrap_or_default();
+    let repository = string("repository").unwrap_or_default();
     require(
         string("schema") == Some("tilo.installer-dev-target.v1")
             && digest
                 .strip_prefix("sha256:")
                 .is_some_and(|hex| is_hex(hex, 64))
-            && string("target_ref") == Some(&format!("registry.tilo.so/tilo/tilo-vm@{digest}")),
+            && crate::target_transport::is_repository(repository)
+            && crate::target_transport::is_update_origin(
+                repository,
+                string("update_origin").unwrap_or_default(),
+            ),
         "unsigned UKI requires the verified development target",
     )?;
     Ok(Selected {

@@ -131,7 +131,7 @@ pattern!(
 );
 pattern!(
     RELEASE_REF,
-    r"(?:registry\.tilo\.so|code\.tilo\.so)/tilo/tilo(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})"
+    r"(?:registry\.tilo\.so|code\.tilo\.so)/tilo/tilo(?:-host)?(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})"
 );
 pattern!(
     DEVELOPMENT_REF,
