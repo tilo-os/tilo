@@ -7,6 +7,8 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+# Text's names, shared with the clipboard a Wayland program publishes.
+tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 tracing.workspace = true
 # The XDND bridge's own connection to an X11 display; XFixes tells it who owns the drag.
 x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }

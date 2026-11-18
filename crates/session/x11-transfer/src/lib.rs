@@ -29,29 +29,8 @@ pub fn serve(fd: std::os::fd::OwnedFd, bytes: Vec<u8>) {
     });
 }
 
-/// UTF-8 text, the form every text offer is also given in.
-pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
-
-/// The names text goes by, most specific first: X11 programs ask for the older ones.
-pub const TEXT_MIMES: [&str; 6] = [
-    TEXT_MIME,
-    "text/plain",
-    "UTF8_STRING",
-    "STRING",
-    "TEXT",
-    "COMPOUND_TEXT",
-];
-
-/// Text's names, best first, when a request is served by another name: UTF-8 under either side's
-/// name, then the ambiguous ones.
-const TEXT_PREFERENCE: [&str; 6] = [
-    TEXT_MIME,
-    "UTF8_STRING",
-    "text/plain",
-    "STRING",
-    "TEXT",
-    "COMPOUND_TEXT",
-];
+use tilo_mime::TEXT_PREFERENCE;
+pub use tilo_mime::{TEXT_MIME, TEXT_MIMES};
 
 /// Cap on the formats one offer advertises.
 pub const MAX_MIMES: usize = 16;
@@ -61,7 +40,7 @@ const MAX_MIME_BYTES: usize = 128;
 /// Whether `mime` is one of text's names.
 #[must_use]
 pub fn is_text_mime(mime: &str) -> bool {
-    TEXT_MIMES.contains(&mime)
+    tilo_mime::is_text(mime)
 }
 
 /// Whether `mime` can name a format: not empty, bounded, no whitespace or control characters.

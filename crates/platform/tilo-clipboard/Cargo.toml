@@ -24,6 +24,9 @@ x11 = ["dep:arboard"]
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 raw-window-handle = "0.6"
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+# The names text goes by on both sides: what an X11 program offered through the compositor and a
+# Wayland program offer each other.
+tilo-mime = { version = "0.1.0", path = "../tilo-mime" }
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
 tracing.workspace = true
 
