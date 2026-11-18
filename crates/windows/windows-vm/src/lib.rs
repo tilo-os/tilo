@@ -74,4 +74,5 @@ pub use remote_app::{
 };
 pub use state::{
     AppliancePhase, ApplianceState, LicenseState, ProvisioningError, ProvisioningStore,
+    RetainedSetup,
 };

@@ -629,6 +629,11 @@ struct ActiveVmUninstallation {
     status: crate::VmUninstallation,
 }
 
+/// The guest keeps the transaction itself; its workspace, operation and
+/// catalogue generation are also kept with the appliance's state
+/// ([`windows_vm::WindowsAppliance::retain_setup`]) until it needs nothing more
+/// of the person, so a service that restarts while the setup's window stays
+/// open finds it again and offers the same next step.
 struct ActiveVmInstallation {
     /// The authenticated Tilo workspace that started this transaction. This
     /// deliberately outlives a manager connection so reconnects in the same
@@ -659,6 +664,40 @@ impl ActiveVmInstallation {
             .then(|| self.candidates.get(entry_id).cloned())
             .flatten()
     }
+
+    /// `operation` of `workspace_id`, whose setup is still going on in the guest as far as the service
+    /// knows: what it holds until the guest is next asked.
+    fn running(
+        workspace_id: String,
+        operation: windows_vm::InstallationOperationId,
+        generation: u64,
+    ) -> Self {
+        let status = vm_installation_from_guest(
+            &operation,
+            &windows_vm::InstallationStatus {
+                operation_id: operation.clone(),
+                state: windows_vm::InstallationState::Running,
+                exit_code: None,
+                candidates: Vec::new(),
+            },
+        );
+        Self {
+            workspace_id,
+            operation,
+            generation,
+            candidates: BTreeMap::new(),
+            status,
+        }
+    }
+
+    /// The setup ended and every application it found was added or none was: nothing in it is
+    /// left for the person to do.
+    fn settled(&self) -> bool {
+        matches!(
+            self.status.phase,
+            VmInstallationPhase::Completed | VmInstallationPhase::Failed
+        ) && self.candidates.is_empty()
+    }
 }
 
 impl ActiveVmUninstallation {
@@ -675,6 +714,25 @@ impl ActiveVmUninstallation {
 }
 
 impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
+    fn installer(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<ActiveVmInstallation>>, windows_vm::LaunchError>
+    {
+        self.installer.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "Windows installer state is unavailable".to_string(),
+            )
+        })
+    }
+
+    /// `operation` needs nothing more of the person: the appliance stops keeping it, so a later
+    /// service does not offer it again. What this service shows of it stays until the next setup.
+    fn forget_setup(&self, operation: &windows_vm::InstallationOperationId) {
+        if let Err(error) = self.appliance.forget_setup(operation) {
+            tracing::warn!(%error, "a finished Windows setup stays kept");
+        }
+    }
+
     fn require_no_active_uninstallation(&self) -> Result<(), windows_vm::LaunchError> {
         let uninstaller = self.uninstaller.lock().map_err(|_| {
             windows_vm::LaunchError::CapabilityBroker(
@@ -714,13 +772,20 @@ impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
         presentation: windows_vm::ApplicationPresentation,
         shared_session: VmSharedSessionTracker,
     ) -> Self {
+        // A setup that was in progress when the service before this one ended: its window may
+        // still be open, and the next step is the same one.
+        let installer = appliance
+            .retained_setup()
+            .map(|(workspace_id, operation, generation)| {
+                ActiveVmInstallation::running(workspace_id, operation, generation)
+            });
         Self {
             appliance,
             portal,
             presentation,
             shared_session,
             launch_lock: Mutex::new(()),
-            installer: Mutex::new(None),
+            installer: Mutex::new(installer),
             uninstaller: Mutex::new(None),
         }
     }
@@ -821,26 +886,38 @@ where
         let staged = self.appliance.stage_installer(&package, source)?;
         let prepared = self.appliance.begin_installation(&staged)?;
         let operation = prepared.operation_id.clone();
+        let catalog = self.appliance.catalog()?;
+        // Kept before the setup shows: its window outlives a desktop restart, and the service
+        // after it resumes this transaction rather than forgetting its next step.
+        self.appliance
+            .retain_setup(workspace_id, &operation, catalog.generation)?;
+        *self.installer()? = Some(ActiveVmInstallation::running(
+            workspace_id.to_string(),
+            operation.clone(),
+            catalog.generation,
+        ));
         // This is intentionally blocking: setup is visible only through the
         // typed app-focused SPICE surface, never an invisible process or a
         // general Windows desktop.
-        self.appliance
-            .present_installation(workspace_id, &prepared)?;
+        if let Err(error) = self.appliance.present_installation(workspace_id, &prepared) {
+            self.forget_setup(&operation);
+            self.installer()?
+                .take_if(|active| active.operation == operation);
+            return Err(error);
+        }
         let guest_status = self.appliance.installation_status(&operation)?;
-        let catalog = self.appliance.catalog()?;
-        let status = vm_installation_from_guest(&operation, &guest_status);
-        let active = ActiveVmInstallation {
-            workspace_id: workspace_id.to_string(),
-            operation,
-            generation: catalog.generation,
-            candidates: candidate_map(&guest_status),
-            status: status.clone(),
-        };
-        *self.installer.lock().map_err(|_| {
-            windows_vm::LaunchError::CapabilityBroker(
-                "Windows installer state is unavailable".to_string(),
-            )
-        })? = Some(active);
+        let mut installer = self.installer()?;
+        let active = installer
+            .as_mut()
+            .filter(|active| active.operation == operation)
+            .ok_or(windows_vm::AgentError::InvalidInstaller)?;
+        active.candidates = candidate_map(&guest_status);
+        active.status = vm_installation_from_guest(&operation, &guest_status);
+        let (status, settled) = (active.status.clone(), active.settled());
+        drop(installer);
+        if settled {
+            self.forget_setup(&operation);
+        }
         Ok(status)
     }
 
@@ -857,33 +934,35 @@ where
         workspace_id: &str,
     ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
         let operation = self
-            .installer
-            .lock()
-            .map_err(|_| {
-                windows_vm::LaunchError::CapabilityBroker(
-                    "Windows installer state is unavailable".to_string(),
-                )
-            })?
+            .installer()?
             .as_ref()
             .filter(|active| active.belongs_to(workspace_id))
             .map(|active| active.operation.clone());
         let Some(operation) = operation else {
             return Ok(None);
         };
-        let guest_status = self.appliance.installation_status(&operation)?;
-        let mut installer = self.installer.lock().map_err(|_| {
-            windows_vm::LaunchError::CapabilityBroker(
-                "Windows installer state is unavailable".to_string(),
-            )
-        })?;
+        let guest_status = match self.appliance.installation_status(&operation) {
+            Ok(status) => status,
+            // The guest no longer knows the transaction (Windows was reset meanwhile): there is
+            // nothing left to resume.
+            Err(windows_vm::LaunchError::Agent(windows_vm::AgentError::InvalidInstaller)) => {
+                self.forget_setup(&operation);
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let mut installer = self.installer()?;
         let active = installer
             .as_mut()
             .filter(|active| active.operation == operation && active.belongs_to(workspace_id))
             .ok_or(windows_vm::AgentError::InvalidInstaller)?;
         active.candidates = candidate_map(&guest_status);
         active.status = vm_installation_from_guest(&operation, &guest_status);
-        let status = active.status.clone();
+        let (status, settled) = (active.status.clone(), active.settled());
         drop(installer);
+        if settled {
+            self.forget_setup(&operation);
+        }
         Ok(Some(status))
     }
 
@@ -893,13 +972,7 @@ where
         entry_id: &str,
     ) -> Result<crate::VmCandidatePublication, windows_vm::LaunchError> {
         let (operation, generation, candidate) = self
-            .installer
-            .lock()
-            .map_err(|_| {
-                windows_vm::LaunchError::CapabilityBroker(
-                    "Windows installer state is unavailable".to_string(),
-                )
-            })?
+            .installer()?
             .as_ref()
             .and_then(|active| {
                 active
@@ -914,11 +987,7 @@ where
             &candidate.display_name,
             generation,
         )?;
-        let mut installer = self.installer.lock().map_err(|_| {
-            windows_vm::LaunchError::CapabilityBroker(
-                "Windows installer state is unavailable".to_string(),
-            )
-        })?;
+        let mut installer = self.installer()?;
         let active = installer
             .as_mut()
             .filter(|active| {
@@ -933,8 +1002,15 @@ where
             .status
             .candidates
             .retain(|candidate| candidate.entry_id != entry_id);
-        let status = active.status.clone();
+        let (status, settled) = (active.status.clone(), active.settled());
         drop(installer);
+        if settled {
+            self.forget_setup(&operation);
+        } else {
+            // The candidates left are published against the generation this one moved to.
+            self.appliance
+                .retain_setup(workspace_id, &operation, result.catalog_generation)?;
+        }
         Ok(crate::VmCandidatePublication {
             installation: status,
             published_entry_id: vm_entry_id(&vm_published_application_id(&candidate.id)),
@@ -1283,6 +1359,265 @@ fn validate_portal_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the stand-in guest says of its one setup transaction.
+    #[derive(Default)]
+    struct Guest {
+        state: Option<windows_vm::InstallationState>,
+        candidates: Vec<windows_vm::DiscoveredApplication>,
+        generation: u64,
+    }
+
+    /// The stand-in guest bridge: ready, and holding the setup [`Guest`] describes.
+    #[derive(Clone, Default)]
+    struct Agent(Arc<Mutex<Guest>>);
+
+    impl Agent {
+        fn guest(&self) -> std::sync::MutexGuard<'_, Guest> {
+            self.0.lock().unwrap()
+        }
+    }
+
+    impl windows_vm::GuestAgent for Agent {
+        fn wait_ready(
+            &self,
+            _: std::time::Duration,
+        ) -> Result<windows_vm::GuestSession, windows_vm::AgentError> {
+            Ok(windows_vm::GuestSession {
+                id: "session".to_owned(),
+                health: windows_vm::AgentHealth {
+                    protocol_major: 1,
+                    guest_boot_id: "boot".to_owned(),
+                    catalog_generation: self.guest().generation,
+                    license: windows_vm::LicenseState::DigitallyActivated,
+                },
+            })
+        }
+
+        fn catalog(
+            &self,
+            _: &windows_vm::GuestSession,
+        ) -> Result<windows_vm::Catalog, windows_vm::AgentError> {
+            Ok(windows_vm::Catalog {
+                generation: self.guest().generation,
+                applications: Vec::new(),
+            })
+        }
+
+        fn prepare_launch(
+            &self,
+            _: &windows_vm::GuestSession,
+            _: &str,
+            _: Option<&windows_vm::GuestNetworkBinding>,
+        ) -> Result<windows_vm::GuestLaunch, windows_vm::AgentError> {
+            Err(windows_vm::AgentError::Unavailable)
+        }
+
+        fn installation_status(
+            &self,
+            _: &windows_vm::GuestSession,
+            operation: &windows_vm::InstallationOperationId,
+        ) -> Result<windows_vm::InstallationStatus, windows_vm::AgentError> {
+            let guest = self.guest();
+            Ok(windows_vm::InstallationStatus {
+                operation_id: operation.clone(),
+                state: guest
+                    .state
+                    .ok_or(windows_vm::AgentError::InvalidInstaller)?,
+                exit_code: None,
+                candidates: guest.candidates.clone(),
+            })
+        }
+
+        fn publish_candidate(
+            &self,
+            _: &windows_vm::GuestSession,
+            _: &windows_vm::InstallationOperationId,
+            candidate_id: &str,
+            application_id: &str,
+            _: &str,
+            expected_generation: u64,
+        ) -> Result<windows_vm::PublicationResult, windows_vm::AgentError> {
+            let mut guest = self.guest();
+            if expected_generation != guest.generation {
+                return Err(windows_vm::AgentError::NotPublished(
+                    candidate_id.to_owned(),
+                ));
+            }
+            guest
+                .candidates
+                .retain(|candidate| candidate.id != candidate_id);
+            guest.generation = guest.generation.saturating_add(1);
+            Ok(windows_vm::PublicationResult {
+                application_id: application_id.to_owned(),
+                catalog_generation: guest.generation,
+            })
+        }
+    }
+
+    struct Running;
+
+    impl windows_vm::VmBackend for Running {
+        fn ensure_singleton(
+            &self,
+            _: &windows_vm::ApplianceConfig,
+        ) -> Result<(), windows_vm::VmBackendError> {
+            Ok(())
+        }
+        fn state(
+            &self,
+            _: &windows_vm::ApplianceConfig,
+        ) -> Result<windows_vm::DomainState, windows_vm::VmBackendError> {
+            Ok(windows_vm::DomainState::Running)
+        }
+        fn start(&self, _: &windows_vm::ApplianceConfig) -> Result<(), windows_vm::VmBackendError> {
+            Ok(())
+        }
+        fn retire_installation_media(
+            &self,
+            _: &windows_vm::ApplianceConfig,
+        ) -> Result<(), windows_vm::VmBackendError> {
+            Ok(())
+        }
+    }
+
+    struct NoBroker;
+
+    impl windows_vm::CapabilityBroker for NoBroker {
+        fn materialize(
+            &self,
+            request: &windows_vm::LaunchRequest,
+        ) -> Result<windows_vm::BrokeredLaunch, windows_vm::LaunchError> {
+            Ok(windows_vm::BrokeredLaunch::deny_all(
+                request.application_id.clone(),
+            ))
+        }
+        fn revoke(&self, _: &str) {}
+    }
+
+    struct NoWindow;
+
+    impl windows_vm::RemoteAppLauncher for NoWindow {
+        fn launch(
+            &self,
+            _: &windows_vm::Shown<'_>,
+            _: &windows_vm::GuestLaunch,
+            _: &windows_vm::BrokeredLaunch,
+        ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
+            Err(windows_vm::RemoteAppError::PresentationMismatch)
+        }
+    }
+
+    type Delegate =
+        LiveVmDelegate<Running, Agent, NoBroker, NoWindow, CanonicalRailPortalAuthority>;
+
+    /// The service as it starts, over the appliance whose state is in `dir`.
+    fn service(dir: &std::path::Path, agent: &Agent) -> Delegate {
+        LiveVmDelegate::new(
+            windows_vm::WindowsAppliance::new(
+                windows_vm::ApplianceConfig::recommended(
+                    "01234567-89ab-cdef-0123-456789abcdef",
+                    "/var/lib/tilo/windows/system.qcow2",
+                    "/var/lib/tilo/windows/nvram.fd",
+                ),
+                windows_vm::ProvisioningStore::new(dir.join("state.json")),
+                Running,
+                agent.clone(),
+                NoBroker,
+                NoWindow,
+            ),
+            CanonicalRailPortalAuthority::new(windows_vm::ApplicationPresentation::AppFocusedSpice),
+            windows_vm::ApplicationPresentation::AppFocusedSpice,
+        )
+    }
+
+    /// A setup still running in Windows when the service restarts (the desktop restarted in
+    /// place, and the setup's window stayed open) is the same transaction to the service after
+    /// it: its workspace sees it in progress, and once the setup found applications, it offers
+    /// them to add. Once none is left to add, a later service no longer resumes it.
+    #[test]
+    fn a_setup_in_progress_resumes_after_the_service_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = Agent::default();
+        agent.guest().generation = 4;
+        agent.guest().state = Some(windows_vm::InstallationState::Running);
+        let store = windows_vm::ProvisioningStore::new(dir.path().join("state.json"));
+        store
+            .save(&windows_vm::ApplianceState {
+                phase: windows_vm::AppliancePhase::Ready,
+                license: windows_vm::LicenseState::DigitallyActivated,
+                catalog_generation: 4,
+                ..windows_vm::ApplianceState::default()
+            })
+            .unwrap();
+        let operation = windows_vm::InstallationOperationId::parse("a".repeat(48)).unwrap();
+        // What the service that showed the setup kept before showing it.
+        let before = service(dir.path(), &agent);
+        before
+            .appliance
+            .retain_setup("workspace", &operation, 4)
+            .unwrap();
+        drop(before);
+
+        let after = service(dir.path(), &agent);
+        let status = after.installation_status("workspace").expect("resumed");
+        assert_eq!(status.phase, VmInstallationPhase::Running);
+        assert!(status.candidates.is_empty());
+        assert_eq!(
+            after.installation_status("other"),
+            None,
+            "another workspace's"
+        );
+        assert_eq!(
+            after
+                .refresh_installation_status("workspace")
+                .unwrap()
+                .unwrap()
+                .phase,
+            VmInstallationPhase::Running
+        );
+
+        // The setup finishes in Windows with an application found: the next step is offered.
+        {
+            let mut guest = agent.guest();
+            guest.state = Some(windows_vm::InstallationState::Completed);
+            guest.candidates = vec![windows_vm::DiscoveredApplication {
+                id: "editor".to_owned(),
+                display_name: "Editor".to_owned(),
+                product_name: None,
+                publisher: None,
+                version: None,
+                uninstall: None,
+            }];
+        }
+        let status = after
+            .refresh_installation_status("workspace")
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.phase, VmInstallationPhase::Completed);
+        let entry = vm_candidate_entry_id(&operation, "editor");
+        assert_eq!(
+            status
+                .candidates
+                .iter()
+                .map(|candidate| candidate.entry_id.clone())
+                .collect::<Vec<_>>(),
+            std::slice::from_ref(&entry)
+        );
+        assert!(
+            store.load().unwrap().setup.is_some(),
+            "kept while an application waits to be added"
+        );
+        let published = after
+            .publish_install_candidate("workspace", &entry)
+            .unwrap();
+        assert!(published.installation.candidates.is_empty());
+        assert_eq!(store.load().unwrap().setup, None, "nothing left to resume");
+        assert_eq!(
+            service(dir.path(), &agent).installation_status("workspace"),
+            None
+        );
+    }
 
     #[test]
     fn portal_projections_are_denied_by_default_and_exact_for_leases() {

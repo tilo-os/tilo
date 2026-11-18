@@ -40,6 +40,22 @@ pub struct ApplianceState {
     /// as an invitation to run arbitrary Windows input.
     #[serde(default)]
     pub cached_catalog: Option<crate::Catalog>,
+    /// The setup a workspace started in the appliance, while the person may still have a step to
+    /// take in it: the guest keeps the transaction itself, and this is what lets the service find
+    /// it again after it restarted while the setup's window stayed open.
+    /// Boxed: it is rarely there, and the state travels inside launch errors.
+    #[serde(default)]
+    pub setup: Option<Box<RetainedSetup>>,
+}
+
+/// A setup transaction of the guest's, by the workspace that started it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RetainedSetup {
+    pub workspace_id: String,
+    /// The guest's operation id.
+    pub operation: String,
+    /// The catalogue generation its candidates are published against.
+    pub catalog_generation: u64,
 }
 
 impl Default for ApplianceState {
@@ -50,6 +66,7 @@ impl Default for ApplianceState {
             license: LicenseState::Unknown,
             catalog_generation: 0,
             cached_catalog: None,
+            setup: None,
         }
     }
 }
@@ -147,6 +164,11 @@ mod tests {
                 license: LicenseState::DigitallyActivated,
                 catalog_generation: 19,
                 cached_catalog: None,
+                setup: Some(Box::new(RetainedSetup {
+                    workspace_id: "workspace".to_owned(),
+                    operation: "a".repeat(48),
+                    catalog_generation: 19,
+                })),
             };
             store.save(&state).unwrap();
             assert_eq!(store.load().unwrap(), state);

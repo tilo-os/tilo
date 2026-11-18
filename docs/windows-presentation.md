@@ -37,7 +37,11 @@ with no X display). When the desktop restarts in place:
   application open again. It offers no Quit for it, as before the restart: an
   appliance program closes inside Windows.
 - Its end is reported like a capsule program's, also when it ended while no
-  desktop was there.
+  desktop was there; then its tab closes and nothing opens it again.
+- A setup in progress stays the same transaction: the appliance keeps its
+  operation with its state until nothing in it is left to add, so the manager
+  after the restart shows it running and, once it found applications, offers
+  them to add.
 - A logout ends the presentation, its keeper and its sound.
 
 The RDP password never reaches a command line, an environment or a file: the
