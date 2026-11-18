@@ -67,6 +67,12 @@ pub trait HostStepServices: Send + Sync {
     fn for_agent_sessions(&self) -> bool {
         false
     }
+    /// Whether its steps are listed in a catalogue. A step only a process of this device's own asks
+    /// for (an agent's tools, which its app calls rather than its model) is taken without being
+    /// offered.
+    fn listed(&self) -> bool {
+        true
+    }
     /// The step at `address` as one invocation with `argument` (its slot form) is: by default as
     /// described, or, for a setting, as risky as the value it carries makes it.
     fn invocation(

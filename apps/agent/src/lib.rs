@@ -7,8 +7,8 @@
 //!
 //! A turn is answered the way every agent in Tilo works: through the
 //! workspace's MCP tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`,
-//! `tilo_view`, …), served here over the session's action API on the agent's
-//! own connection, which the broker decides as the turn's
+//! `tilo_view`, …), which the device's session lists and takes for the agent
+//! on its own connection, as the turn's, in its agent session
 //! ([`tilo_agent_turn`]). Beside them the agent searches and reads the web
 //! with its own two tools. What the turn does, and what it says, is written
 //! in the conversation that asked (`session::conversation`).

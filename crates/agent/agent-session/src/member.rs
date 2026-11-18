@@ -30,8 +30,9 @@ use std::time::{Duration, Instant};
 
 use collab_types::presence::Shown;
 use iroh::EndpointId;
-use tilo_agent_turn::{Answer, Asked, Doing, McpServer, Outcome, SessionActions};
+use tilo_agent_turn::{Answer, Asked, Doing, Outcome, SessionActions};
 use tilo_live::presence::KEEPALIVE_MS;
+use tilo_mcp::McpServer;
 use tilo_model_gateway::host_backend::protocol::{ModelRequest, ModelResponse, ToolCall};
 use tilo_server_client::Host;
 use tilo_server_protocol::WorkspaceId;
@@ -487,7 +488,7 @@ struct Steering {
     leaving: Arc<AtomicBool>,
 }
 
-impl Doing<SessionActions> for Steering {
+impl Doing<McpServer<SessionActions>> for Steering {
     /// A paused agent holds here until its person resumes or stops it.
     fn stopped(&self) -> bool {
         if self.control.paused_on(&self.task) {

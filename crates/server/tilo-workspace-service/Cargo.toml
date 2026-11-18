@@ -140,6 +140,9 @@ tilo-workspace-agent = { path = "../../platform/tilo-workspace-agent" }
 rustix = { workspace = true, features = ["process"], optional = true }
 
 [dev-dependencies]
+# The MCP tools a device's session takes for an agent whose turn is in its own process, taken as its session's
+# steps in the broker's tests.
+tilo-mcp = { path = "../../runtime/tilo-mcp" }
 # A dispatcher that answers as an app's own host: what a device's action service asks
 # through, and what a workspace's host answers beside it.
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }

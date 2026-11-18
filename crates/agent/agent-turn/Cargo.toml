@@ -4,11 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "One agent turn over the workspace's MCP tools: the tools an McpServer lists are the model's, each call it makes goes through the server's tools/call, until the model answers, its person stops it or its bounds are reached."
+description = "One agent turn over the workspace's MCP tools: the tools listed are the model's, each call it makes is answered by them (in process on a server, or by the device's session for an agent in a process of its own), until the model answers, its person stops it or its bounds are reached."
 
 [dependencies]
-# The tools every agent works through, and the model's neutral request and answer.
-tilo-mcp = { path = "../../runtime/tilo-mcp" }
+# The model's neutral request and answer.
 agent-provider-config = { path = "../provider-config" }
 # The provider an agent's process reaches the session's actions by, carried over whatever link
 # the process has to its host.
@@ -16,6 +15,7 @@ tilo-session-actions = { path = "../../session/session-actions" }
 tilo-actions = { path = "../../collab/actions" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-lock = { path = "../../platform/tilo-lock" }
+serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tracing.workspace = true

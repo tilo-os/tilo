@@ -77,6 +77,8 @@ mod activity_models;
 #[cfg(target_os = "linux")]
 mod agent_sessions;
 #[cfg(target_os = "linux")]
+mod agent_tools;
+#[cfg(target_os = "linux")]
 mod agents;
 #[cfg(target_os = "linux")]
 mod ambient_brightness;

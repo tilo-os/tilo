@@ -17462,10 +17462,10 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "collab-types",
+ "serde",
  "serde_json",
  "tilo-actions",
  "tilo-lock",
- "tilo-mcp",
  "tilo-session-actions",
  "tokio",
  "tracing",
@@ -20074,6 +20074,7 @@ dependencies = [
 name = "tilo-mcp"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "app-fleet",
  "base64 0.22.1",
  "blake3",
@@ -20087,6 +20088,7 @@ dependencies = [
  "serde_json",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-agent-turn",
  "tilo-clock",
  "tilo-content",
  "tilo-files",

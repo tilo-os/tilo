@@ -1,17 +1,17 @@
 //! One agent turn over the workspace's MCP tools.
 //!
-//! Every agent in Tilo works through one tool set: what an [`McpServer`] lists (`tilo_ls`,
-//! `tilo_read`, `tilo_do`, `tilo_find`, `tilo_view`, `tilo_watch` and the rest). A turn lists the
-//! server's `tools/list` as the model's tools, sends every call the model makes to the server's
-//! `tools/call`, and hands the model what each answered, until the model answers in words, its
-//! person stops it, its spending limit is reached or its rounds run out ([`work`]).
+//! Every agent in Tilo works through one tool set: what the workspace's MCP server lists
+//! (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_view`, `tilo_watch` and the rest). A turn
+//! lists those tools as the model's, sends every call the model makes to them, and hands the model
+//! what each answered, until the model answers in words, its person stops it, its spending limit
+//! is reached or its rounds are spent ([`work`]).
 //!
-//! What the turn runs on is the caller's: the server over the action provider of where the agent
-//! runs (the session's on a device, [`carried`]; the host's on a server), the model that answers
-//! ([`Model`]), and what the agent's person is told as it works ([`Doing`]). Tools of the caller's
-//! own beside the server's (a web search, a view the answer is) are offered with
-//! [`Asked::own_tools`] and answered by [`Doing::own`]. What its person writes while it works is
-//! taken in between its rounds ([`Doing::went_on`]).
+//! What the turn works with is the caller's: where its tools are answered ([`Tools`]: an MCP
+//! server in the same process on a server, or the device's session asked over the agent's own
+//! link, [`SessionTools`]), the model that answers ([`Model`]), and what the agent's person is told as it
+//! works ([`Doing`]). Tools of the caller's own beside the workspace's (a web search, a view the
+//! answer is) are offered with [`Asked::own_tools`] and answered by [`Doing::own`]. What its
+//! person writes while it works is taken in between its rounds ([`Doing::went_on`]).
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -21,17 +21,17 @@ use agent_provider_config::protocol::{
     Content, Message, ModelRequest, ModelResponse, Role, StopReason, ToolCall, ToolChoice,
     ToolDefinition, ToolResult,
 };
-use serde_json::{Value, json};
-use tilo_actions::remote::ActionProvider;
+use serde_json::Value;
 use tilo_lock::MutexRecover as _;
-pub use tilo_mcp::McpServer;
 
 mod carried;
 mod compact;
+mod session_tools;
 pub use carried::{Carried, carried};
+pub use session_tools::SessionTools;
 pub use tilo_session_actions::SessionActions;
 
-/// How long the server may take to list its tools or answer one call.
+/// How long the tools may take to say what they are or to answer one call.
 pub const TOOL_TIME: Duration = Duration::from_secs(120);
 /// The most bytes of one tool's words the model is handed; past it the answer says to ask for less.
 pub const MOST_RESULT_BYTES: usize = 48 * 1024;
@@ -82,9 +82,21 @@ impl Model for Box<dyn Model> {
     }
 }
 
-/// What a turn tells its person as it works, and how they stop it. `H` is the action provider its
-/// tools reach.
-pub trait Doing<H>: Send + Sync {
+/// Where a turn's tools are answered: what they are, and what one call of them answered.
+pub trait Tools: Send + Sync {
+    /// The tools, as a model is told them.
+    ///
+    /// # Errors
+    /// They did not say what they are in time, or answered something else, in words its person
+    /// reads.
+    fn list(&self) -> impl Future<Output = Result<Vec<ToolDefinition>, String>> + Send;
+    /// Call tool `name` with `arguments`: what it answered, as the model reads it.
+    fn call(&self, name: &str, arguments: Value) -> impl Future<Output = Answer> + Send;
+}
+
+/// What a turn tells its person as it works, and how they stop it. `T` is where its tools are
+/// answered.
+pub trait Doing<T>: Send + Sync {
     /// Whether the person stopped the turn: no tool is begun after a stop.
     fn stopped(&self) -> bool;
     /// The turn is about to run `call`.
@@ -101,7 +113,7 @@ pub trait Doing<H>: Send + Sync {
         let _ = total;
     }
     /// Answer `call` when it is one of the caller's own tools ([`Asked::own_tools`]); `None` sends
-    /// it to the server. Every call is asked here first.
+    /// it to the workspace's tools. Every call is asked here first.
     fn own(&self, call: &ToolCall) -> impl Future<Output = Option<Answer>> + Send {
         let _ = call;
         async { None }
@@ -110,7 +122,7 @@ pub trait Doing<H>: Send + Sync {
     ///
     /// # Errors
     /// What came cannot be taken in, in words its person reads: the turn ends with them.
-    fn went_on(&self) -> impl Future<Output = Result<Option<WentOn<H>>, String>> + Send {
+    fn went_on(&self) -> impl Future<Output = Result<Option<WentOn<T>>, String>> + Send {
         async { Ok(None) }
     }
     /// Whether its person wrote while the model answered: the turn goes on with that rather than
@@ -121,11 +133,11 @@ pub trait Doing<H>: Send + Sync {
 }
 
 /// What its person wrote while a turn worked, as the turn takes it in.
-pub struct WentOn<H> {
+pub struct WentOn<T> {
     /// What the model is told of it, after [`CAME_SINCE`].
     pub told: String,
-    /// The server the turn's tools go on through, when what came is someone else's to act for.
-    pub server: Option<McpServer<H>>,
+    /// Where the turn's tools go on being answered, when what came is someone else's to act for.
+    pub tools: Option<T>,
 }
 
 /// What one tool call answered, as the model reads it.
@@ -158,7 +170,7 @@ pub struct Asked {
     pub system: String,
     /// The person's request, as the model reads it.
     pub request: String,
-    /// The caller's own tools beside the server's, answered by [`Doing::own`].
+    /// The caller's own tools beside the workspace's, answered by [`Doing::own`].
     pub own_tools: Vec<ToolDefinition>,
     /// Whether the model is shown the pictures a tool answers with.
     pub sees: bool,
@@ -208,117 +220,9 @@ pub enum Outcome {
     Cancelled,
 }
 
-/// The tools `server` offers, as a model is told them.
-///
-/// # Errors
-/// The server did not list them in time, or answered something else.
-pub async fn tools<H: ActionProvider + Send + Sync + 'static>(
-    server: &McpServer<H>,
-) -> Result<Vec<ToolDefinition>, String> {
-    let listed = tokio::time::timeout(
-        TOOL_TIME,
-        server.handle(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})),
-    )
-    .await
-    .map_err(|_| "the agent's tools did not say what they are in time".to_owned())?
-    .ok_or("the agent's tools did not answer")?;
-    let tools = listed
-        .pointer("/result/tools")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("the agent's tools answered {listed}"))?;
-    Ok(tools
-        .iter()
-        .filter_map(|tool| {
-            Some(ToolDefinition {
-                name: tool.get("name")?.as_str()?.to_owned(),
-                description: tool
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                input_schema: tool
-                    .get("inputSchema")
-                    .cloned()
-                    .unwrap_or_else(|| json!({"type": "object"})),
-            })
-        })
-        .collect())
-}
-
-/// Run tool `name` with `arguments` on `server`: what it answered, as the model reads it.
-pub async fn call<H: ActionProvider + Send + Sync + 'static>(
-    server: &McpServer<H>,
-    name: &str,
-    arguments: Value,
-) -> Answer {
-    let answer = tokio::time::timeout(
-        TOOL_TIME,
-        server.handle(json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments},
-        })),
-    )
-    .await;
-    let Ok(answer) = answer else {
-        return Answer::failed(format!("{name} did not answer in time"));
-    };
-    let Some(answer) = answer else {
-        return Answer::failed("the tool did not answer");
-    };
-    if let Some(error) = answer.get("error") {
-        return Answer::failed(
-            error
-                .get("message")
-                .and_then(Value::as_str)
-                .map_or_else(|| error.to_string(), str::to_owned),
-        );
-    }
-    let result = answer.get("result").cloned().unwrap_or(Value::Null);
-    answer_of(&result)
-}
-
-/// A `tools/call` result as the model reads it: its text blocks joined, its image blocks kept.
-#[must_use]
-pub fn answer_of(result: &Value) -> Answer {
-    let is_error = result
-        .get("isError")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let mut texts = Vec::new();
-    let mut pictures = Vec::new();
-    for block in result
-        .get("content")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        match block.get("type").and_then(Value::as_str) {
-            Some("image") => {
-                if let (Some(data), Some(mime)) = (
-                    block.get("data").and_then(Value::as_str),
-                    block.get("mimeType").and_then(Value::as_str),
-                ) {
-                    pictures.push((mime.to_owned(), data.to_owned()));
-                }
-            }
-            _ => texts.extend(block.get("text").and_then(Value::as_str)),
-        }
-    }
-    let mut text = texts.join("\n");
-    if text.is_empty() && pictures.is_empty() {
-        text = result.to_string();
-    }
-    Answer {
-        text: cut(text),
-        pictures,
-        is_error,
-    }
-}
-
 /// `text`, at most [`MOST_RESULT_BYTES`] of it.
-fn cut(mut text: String) -> String {
+#[must_use]
+pub fn cut(mut text: String) -> String {
     if text.len() > MOST_RESULT_BYTES {
         let mut end = MOST_RESULT_BYTES;
         while !text.is_char_boundary(end) {
@@ -347,22 +251,30 @@ pub fn words_of(response: &ModelResponse) -> String {
         .to_owned()
 }
 
-/// Work on `asked` with `model` through `server`'s tools until the model answers, a bound stops
-/// it or its person does: how it ended, and what its model calls cost.
-pub async fn work<H, M, D>(
-    server: &McpServer<H>,
+/// Work on `asked` with `model` through `answering`'s tools until the model answers, a bound
+/// stops it or its person does: how it ended, and what its model calls cost.
+pub async fn work<T, M, D>(
+    answering: &T,
     model: Arc<Mutex<M>>,
     asked: &Asked,
     doing: &D,
 ) -> (Outcome, u64)
 where
-    H: ActionProvider + Send + Sync + 'static,
+    T: Tools,
     M: Model + 'static,
-    D: Doing<H>,
+    D: Doing<T>,
 {
-    let mut tools = match tools(server).await {
-        Ok(tools) => tools,
-        Err(why) => return (Outcome::Failed(why), 0),
+    // Boxed: where the tools are answered is the caller's, and its futures stay out of the turn's.
+    let listed = tokio::time::timeout(TOOL_TIME, Box::pin(answering.list())).await;
+    let mut tools = match listed {
+        Ok(Ok(tools)) => tools,
+        Ok(Err(why)) => return (Outcome::Failed(why), 0),
+        Err(_) => {
+            return (
+                Outcome::Failed("the agent's tools did not say what they are in time".to_owned()),
+                0,
+            );
+        }
     };
     tools.extend(asked.own_tools.iter().cloned());
     let mut messages = vec![
@@ -372,8 +284,8 @@ where
     let mut cost = 0u64;
     let mut asked_for_words = false;
     let mut unusable = 0usize;
-    // The server the turn's tools go through once what its person wrote since moved it.
-    let mut moved: Option<McpServer<H>> = None;
+    // Where the turn's tools are answered once what its person wrote since moved it.
+    let mut moved: Option<T> = None;
     for round in 0..asked.most_rounds {
         if doing.stopped() {
             return (Outcome::Cancelled, cost);
@@ -381,8 +293,8 @@ where
         match doing.went_on().await {
             Ok(Some(came)) => {
                 told_since(&mut messages, &came.told);
-                if let Some(server) = came.server {
-                    moved = Some(server);
+                if let Some(tools) = came.tools {
+                    moved = Some(tools);
                 }
             }
             Ok(None) => {}
@@ -441,8 +353,8 @@ where
             }
             return (Outcome::Answered(words), cost);
         }
-        let server = moved.as_ref().unwrap_or(server);
-        let Some((results, pictures)) = run_calls(server, calls, asked, doing).await else {
+        let answering = moved.as_ref().unwrap_or(answering);
+        let Some((results, pictures)) = call_each(answering, calls, asked, doing).await else {
             return (Outcome::Cancelled, cost);
         };
         messages.push(results);
@@ -455,10 +367,10 @@ where
 
 /// Out of rounds, it may well have finished: it is asked once more, with no tools, to say what
 /// it did, rather than its person being told only that it stopped.
-async fn said_where_it_got<H, M: Model + 'static>(
+async fn said_where_it_got<T, M: Model + 'static>(
     model: &Arc<Mutex<M>>,
     asked: &Asked,
-    doing: &impl Doing<H>,
+    doing: &impl Doing<T>,
     mut messages: Vec<Message>,
     tools: Vec<ToolDefinition>,
     mut cost: u64,
@@ -581,11 +493,11 @@ fn has_calls(response: &ModelResponse) -> bool {
 
 /// Run the calls one round made, in order: the message answering them, and the pictures they
 /// showed a model that sees. `None` when the person stopped the turn.
-async fn run_calls<H: ActionProvider + Send + Sync + 'static>(
-    server: &McpServer<H>,
+async fn call_each<T: Tools>(
+    answering: &T,
     calls: Vec<ToolCall>,
     asked: &Asked,
-    doing: &impl Doing<H>,
+    doing: &impl Doing<T>,
 ) -> Option<(Message, Vec<(String, String)>)> {
     let mut results = Vec::new();
     let mut shown = Vec::new();
@@ -594,10 +506,16 @@ async fn run_calls<H: ActionProvider + Send + Sync + 'static>(
             return None;
         }
         doing.calling(&call).await;
-        let answer = match doing.own(&call).await {
+        let mut answer = match doing.own(&call).await {
             Some(answer) => answer,
-            None => self::call(server, &call.name, call.input.clone()).await,
+            None => tokio::time::timeout(
+                TOOL_TIME,
+                Box::pin(answering.call(&call.name, call.input.clone())),
+            )
+            .await
+            .unwrap_or_else(|_| Answer::failed(format!("{} did not answer in time", call.name))),
         };
+        answer.text = cut(std::mem::take(&mut answer.text));
         doing.called(&call, &answer);
         // What it asked is logged with a refusal, so the call can be made again by hand.
         if answer.is_error {
