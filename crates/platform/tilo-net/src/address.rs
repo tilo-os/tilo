@@ -200,7 +200,7 @@ pub fn system_lookup() -> Lookup {
 #[cfg(not(target_family = "wasm"))]
 #[must_use]
 pub fn not_public(error: &std::io::Error) -> bool {
-    error.get_ref().is_some_and(|inner| inner.is::<NotPublic>())
+    matches!(error.get_ref(), Some(inner) if inner.is::<NotPublic>())
 }
 
 #[cfg(test)]
