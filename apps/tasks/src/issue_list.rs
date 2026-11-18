@@ -309,12 +309,12 @@ impl IssueList {
 
     /// Rename an issue: its title, as the board and its page show it.
     #[action(item = issues, field = "title", step = "edit", did = "renamed", writes = issues)]
-    pub fn rename(&mut self, issue: &Id, title: NonBlank) -> Result<(), Refusal> {
+    pub fn rename(issue: &mut Issue, title: NonBlank) -> Result<(), Refusal> {
         let title = title.into_string();
         if title.chars().count() > crate::model::MAX_TITLE_CHARS {
             return Err(Refusal::new("An issue's title fits on a line"));
         }
-        title.trim().clone_into(&mut self.issue_mut(issue)?.title);
+        title.trim().clone_into(&mut issue.title);
         Ok(())
     }
 
@@ -344,9 +344,8 @@ impl IssueList {
     /// proposal nobody asked for yet: assigning it to that agent gives it.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn assign(
-        &mut self,
+        issue: &mut Issue,
         cx: &mut ActionCx,
-        issue: &Id,
         #[param(
             "a person's root key, agent:<id>, or outside:<name> for someone not in the workspace yet; nobody without"
         )]
@@ -354,7 +353,7 @@ impl IssueList {
     ) -> Result<(), Refusal> {
         let assignee = checked_assignee(assignee)?;
         let (by, at_ms) = given_to_agent(assignee.as_ref(), Some(&giver(cx)?), cx.now_ms());
-        let target = self.issue_mut(issue)?;
+        let target = issue;
         // Giving it to the agent it is with already asks nothing new, unless
         // nobody gave it yet.
         if target.assignee != assignee || by.is_none() || target.assigned_by.is_none() {
@@ -371,8 +370,7 @@ impl IssueList {
     /// Refuses a project the tracker does not have.
     #[action(item = issues, step = "move", writes = issues)]
     pub fn set_project(
-        &mut self,
-        issue: &Id,
+        issue: &mut Issue,
         #[param("The project or area it works towards, by its name or id; none without")]
         project: Option<Ref>,
         #[param("The project as the issue keeps it: filled in where it is invoked")] goal: Option<
@@ -382,7 +380,7 @@ impl IssueList {
         if project.is_some() && goal.is_none() {
             return Err(Tracker::no_area());
         }
-        self.issue_mut(issue)?.area = goal;
+        issue.area = goal;
         Ok(())
     }
 
@@ -393,9 +391,8 @@ impl IssueList {
     /// Refuses an empty file or a name too long.
     #[action(item = issues, step = "create", writes = issues)]
     pub fn attach(
-        &mut self,
+        issue: &mut Issue,
         cx: &mut ActionCx,
-        issue: &Id,
         #[param("Its file name")] name: NonBlank,
         #[param("Its bytes, inline or as a content reference (blake3:<hex>:<len>)")] bytes: Bytes,
         #[param("Its media type, such as image/png")] media_type: Option<String>,
@@ -411,7 +408,7 @@ impl IssueList {
         let author_name = cx.acting_name();
         let at_ms = cx.now_ms();
         let id = cx.id();
-        self.issue_mut(issue)?.attachments.push(
+        issue.attachments.push(
             id,
             Attachment {
                 name,
@@ -429,8 +426,8 @@ impl IssueList {
 
     /// Take a file off an issue.
     #[action(item = issues, step = "delete", writes = issues)]
-    pub fn detach(&mut self, issue: &Id, attachment: &Id) -> Result<(), Refusal> {
-        self.issue_mut(issue)?
+    pub fn detach(issue: &mut Issue, attachment: &Id) -> Result<(), Refusal> {
+        issue
             .attachments
             .remove(attachment)
             .ok_or_else(|| Refusal::new("That file is not attached"))?;
@@ -442,8 +439,8 @@ impl IssueList {
     /// # Errors
     /// Refuses an issue at its 32 labels.
     #[action(item = issues, step = "edit", writes = issues)]
-    pub fn add_label(&mut self, issue: &Id, label: NonBlank) -> Result<(), Refusal> {
-        self.issue_mut(issue)?.labels.insert(label.into_string());
+    pub fn add_label(issue: &mut Issue, label: NonBlank) -> Result<(), Refusal> {
+        issue.labels.insert(label.into_string());
         Ok(())
     }
 
@@ -451,8 +448,7 @@ impl IssueList {
     /// issue or at the end.
     #[action(item = issues, step = "move", writes = issues)]
     pub fn place(
-        &mut self,
-        issue: &Id,
+        issue: &mut Issue,
         status: Status,
         #[param("The issue it goes before, by its name or id; the end of the column without")]
         before: Option<Ref>,
@@ -461,7 +457,7 @@ impl IssueList {
         >,
     ) -> Result<(), Refusal> {
         let _ = before;
-        let target = self.issue_mut(issue)?;
+        let target = issue;
         target.status = status;
         if let Some(rank) = rank {
             target.rank = rank;
@@ -473,9 +469,8 @@ impl IssueList {
     /// where it came from in `origin`.
     #[action(item = issues, field = "comments", step = "write", writes = issues)]
     pub fn comment(
-        &mut self,
+        issue: &mut Issue,
         cx: &mut ActionCx,
-        issue: &Id,
         #[param("What it says, in markdown")] text: NonBlank,
         #[param(
             "Where it was first written, when it is moved here from elsewhere: shown as its author and date, while its history keeps who moved it"
@@ -489,7 +484,7 @@ impl IssueList {
         let agent = by_agent(cx);
         let at_ms = cx.now_ms();
         let id = cx.id();
-        self.issue_mut(issue)?.comments.push(
+        issue.comments.push(
             id,
             Message {
                 author,
@@ -507,9 +502,8 @@ impl IssueList {
     /// Link an issue to another resource.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn link(
-        &mut self,
+        issue: &mut Issue,
         cx: &mut ActionCx,
-        issue: &Id,
         #[param("The app that keeps the resource")] app: NonBlank,
         #[param("The resource's kind")] kind: String,
         #[param("The resource's address in its app")] resource: NonBlank,
@@ -518,7 +512,7 @@ impl IssueList {
         record: Option<String>,
     ) -> Result<(), Refusal> {
         let id = cx.id();
-        self.issue_mut(issue)?.links.push(
+        issue.links.push(
             id,
             Link {
                 label,
@@ -536,9 +530,8 @@ impl IssueList {
     /// Link an issue to an existing note in Notes, picked by its title.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn link_note(
-        &mut self,
+        issue: &mut Issue,
         cx: &mut ActionCx,
-        issue: &Id,
         #[param("The note", resource = "notes.pages.pages")] note: ResourceAt,
     ) -> Result<(), Refusal> {
         let (Some(app), Some(resource)) = (
@@ -550,9 +543,9 @@ impl IssueList {
         if note.app != crate::model::NOTES || note.reference.kind != crate::model::NOTE_KIND {
             return Err(Refusal::new("That is not a note"));
         }
-        self.link(
-            cx,
+        Self::link(
             issue,
+            cx,
             app,
             note.reference.kind,
             resource,
@@ -563,9 +556,9 @@ impl IssueList {
 
     /// Delete an issue. Its sub-issues stand at the top level.
     #[action(item = issues, step = "delete", destructive, writes = issues)]
-    pub fn delete(&mut self, issue: &Id) -> Result<(), Refusal> {
-        self.issues.remove(issue).ok_or_else(no_issue)?;
-        Ok(())
+    pub fn delete(issue: &mut Issue, cx: &mut ActionCx) {
+        let _ = issue;
+        cx.remove_item();
     }
 
     /// Plan the issue: the goal it works towards, how urgent it is, how much
@@ -576,15 +569,14 @@ impl IssueList {
     /// Refuses a goal that is not a resource, or an estimate over 1000.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn plan(
-        &mut self,
-        issue: &Id,
+        issue: &mut Issue,
         #[param("The resource it works towards: resource, app, kind and label")] area: Option<Area>,
         #[param("How urgent it is: none, urgent, high, medium or low")] priority: Option<Priority>,
         #[param("How much work it is, in points")] estimate: Option<u32>,
         #[param("When it is wanted, in milliseconds since the epoch")] due_ms: Option<i64>,
     ) -> Result<(), Refusal> {
         check_estimate(estimate)?;
-        let target = self.issue_mut(issue)?;
+        let target = issue;
         if let Some(area) = area {
             if !area.names_a_resource() {
                 return Err(Refusal::new("A goal is a resource of the workspace"));
@@ -614,15 +606,14 @@ impl IssueList {
     /// Refuses a path that is no folder's.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn set_place(
-        &mut self,
-        issue: &Id,
+        issue: &mut Issue,
         #[param("The folder in the workspace's files, as a path: Tasks/12 Market analysis")]
         folder: String,
         #[param("The note in Notes, by its resource; as it was without")] note: Option<String>,
     ) -> Result<(), Refusal> {
         let folder = checked_folder(&folder)?;
         let note = checked_address(note)?;
-        let work = self.issue_mut(issue)?.work.get_or_insert_default();
+        let work = issue.work.get_or_insert_default();
         work.folder = folder;
         if let Some(note) = note {
             work.note = note;
@@ -641,9 +632,8 @@ impl IssueList {
     /// and a moment that is not later than now.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn wait(
-        &mut self,
+        issue: &mut Issue,
         cx: &mut ActionCx,
-        issue: &Id,
         #[param(
             "What it waits for, each with a kind (time, reply, change, answer or people), what in a few words, and optionally what is watched (on) and the event that can end it early; none to wait for the moment alone"
         )]
@@ -655,7 +645,7 @@ impl IssueList {
         if until_ms <= now {
             return Err(Refusal::new("A wait ends later than now"));
         }
-        let target = self.issue_mut(issue)?;
+        let target = issue;
         if target.status.closed() {
             return Err(closed());
         }
@@ -678,14 +668,13 @@ impl IssueList {
     /// goes on once its budget is raised.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn resume(
-        &mut self,
+        issue: &mut Issue,
         cx: &mut ActionCx,
-        issue: &Id,
         #[param("What lets it go on, in a few words: the supplier replied")] cause: NonBlank,
     ) -> Result<(), Refusal> {
         let cause = checked_line(cause.as_str(), "what lets it go on")?;
         let now = cx.now_ms();
-        let target = self.issue_mut(issue)?;
+        let target = issue;
         if target.status.closed() {
             return Err(closed());
         }
@@ -722,9 +711,8 @@ impl IssueList {
     /// Refuses an agent raising a budget a person set.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn set_budget(
-        &mut self,
+        issue: &mut Issue,
         cx: &mut ActionCx,
-        issue: &Id,
         #[param("What the whole issue may cost, in millionths of the currency")]
         money_micros: Option<u64>,
         #[param("How long it may be worked on over all its sessions, in milliseconds")]
@@ -734,7 +722,7 @@ impl IssueList {
             return Err(Refusal::new("Give the money or the time it may take"));
         }
         let agent = by_agent(cx);
-        let work = self.issue_mut(issue)?.work.get_or_insert_default();
+        let work = issue.work.get_or_insert_default();
         let kept = work.budget_micros.is_some() || work.budget_ms.is_some();
         let raises = |new: Option<u64>, old: Option<u64>| matches!((new, old), (Some(new), Some(old)) if new > old);
         if agent
@@ -770,9 +758,8 @@ impl IssueList {
     /// the issue is not given to.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn set_pieces_at_once(
-        &mut self,
+        issue: &mut Issue,
         cx: &mut ActionCx,
-        issue: &Id,
         #[param("How many of its pieces are in work at once; left out for any number")]
         at_once: Option<u64>,
     ) -> Result<(), Refusal> {
@@ -782,7 +769,7 @@ impl IssueList {
             )));
         }
         let by = author(cx)?;
-        let target = self.issue_mut(issue)?;
+        let target = issue;
         if by.is_agent() && target.assigned_member().as_ref() != Some(&by) {
             return Err(Refusal::new(
                 "Only a person or its own agent says how many of an issue's pieces are in work",
@@ -801,10 +788,10 @@ impl IssueList {
     /// # Errors
     /// Refuses anyone but the agent the issue is assigned to.
     #[action(item = issues, step = "edit", audience = "agents", writes = issues)]
-    pub fn session_began(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
+    pub fn session_began(issue: &mut Issue, cx: &mut ActionCx) -> Result<(), Refusal> {
         let now = cx.now_ms();
         let by = author(cx)?;
-        let target = self.issue_mut(issue)?;
+        let target = issue;
         its_agent(target, &by)?;
         let work = target.work.get_or_insert_default();
         if work.session_since_ms.is_some() {
@@ -826,14 +813,13 @@ impl IssueList {
     /// Refuses anyone but the agent the issue is assigned to.
     #[action(item = issues, step = "edit", audience = "agents", writes = issues)]
     pub fn session_ended(
-        &mut self,
+        issue: &mut Issue,
         cx: &mut ActionCx,
-        issue: &Id,
         #[param("What the session cost, in millionths of the currency")] cost_micros: u64,
         #[param("How long it worked, in milliseconds")] worked_ms: u64,
     ) -> Result<(), Refusal> {
         let by = author(cx)?;
-        let target = self.issue_mut(issue)?;
+        let target = issue;
         its_agent(target, &by)?;
         let work = target.work.get_or_insert_default();
         work.spent_micros = work.spent_micros.saturating_add(cost_micros);
@@ -854,15 +840,14 @@ impl IssueList {
     /// Refuses a closed issue.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn stop(
-        &mut self,
+        issue: &mut Issue,
         cx: &mut ActionCx,
-        issue: &Id,
         #[param("Why: failed, budget, time, lost-worker or person")] why: StoppedWhy,
         #[param("The plain line its person reads")] words: NonBlank,
     ) -> Result<(), Refusal> {
         let words = checked_line(words.as_str(), "why it stopped")?;
         let now = cx.now_ms();
-        let target = self.issue_mut(issue)?;
+        let target = issue;
         if target.status.closed() {
             return Err(closed());
         }

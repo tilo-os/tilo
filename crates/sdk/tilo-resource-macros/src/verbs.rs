@@ -516,7 +516,7 @@ enum Role {
     /// A struct whose fields are the action's parameters
     /// (`#[param(flatten)]`, the only parameter).
     Flatten,
-    /// A place inside the record the verb acts at.
+    /// A place inside the resource the verb acts at.
     Place,
 }
 
@@ -1265,23 +1265,26 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                             );
                         }
                     };
-                    #krate::Outcome::into_result(<#self_ty>::#method(#(#call_args),*))
+                    let __outcome = #krate::Outcome::into_result(<#self_ty>::#method(#(#call_args),*));
+                    // An item method that removes its item ([`ActionCx::remove_item`]).
+                    if __outcome.is_ok() && cx.take_item_removal() {
+                        drop(record.#field_ident.remove(&__key));
+                    }
+                    __outcome
                 }
             });
             item_arms.push(quote! {
-                Self::#variant(params) => ::core::option::Option::Some(
-                    #krate::__private::apply_item::<#self_ty, #item_ty>(
-                        doc,
-                        cx,
-                        &[
-                            #krate::Segment::Field(::std::string::String::from(#field)),
-                            #krate::Segment::Item(::core::clone::Clone::clone(&params.#ident)),
-                        ],
-                        |__item, cx| {
-                            let _ = &cx;
-                            #krate::Outcome::into_result(<#self_ty>::#method(#(#call_args),*))
-                        },
-                    ),
+                Self::#variant(params) => #krate::__private::apply_item::<#self_ty, #item_ty>(
+                    doc,
+                    cx,
+                    &[
+                        #krate::Segment::Field(::std::string::String::from(#field)),
+                        #krate::Segment::Item(::core::clone::Clone::clone(&params.#ident)),
+                    ],
+                    |__item, cx| {
+                        let _ = &cx;
+                        #krate::Outcome::into_result(<#self_ty>::#method(#(#call_args),*))
+                    },
                 ),
             });
         } else {
