@@ -249,7 +249,7 @@ fn carried_words(words: &str, otherwise: &str) -> String {
 impl BrowserServiceSessionCommand {
     pub fn valid(&self) -> bool {
         match self {
-            Self::List {} => true,
+            Self::List {} | Self::LendsItems {} => true,
             Self::Resolve {
                 id: value,
                 setup_binding,
@@ -264,7 +264,6 @@ impl BrowserServiceSessionCommand {
             } => account(value) && secret(password),
             Self::ReleaseAccountSecret { account: value } => account(value),
             Self::UseItem { item, origin, .. } => item_reference(item) && item_origin(origin),
-            Self::LendsItems {} => true,
         }
     }
     /// Whether only Browser may send this: its website sessions, and the

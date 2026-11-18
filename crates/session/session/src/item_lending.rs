@@ -107,7 +107,7 @@ impl std::fmt::Debug for ItemLending {
             .field("holds_a_browser", &state.workspace.is_some())
             .field("asks_its_server", &state.lender.is_some())
             .field("asked", &state.asked.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -169,6 +169,7 @@ impl ItemLending {
                 state.asked.pop_front();
             }
             state.asked.push_back(invocation);
+            drop(state);
             lender
         };
         let Ok(tasks) = tilo_rt::try_app() else {
@@ -269,6 +270,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn only_a_session_that_holds_the_workspaces_browser_has_an_item_used_and_each_refusal_says_why()
     {
         let asked = Asked::default();
@@ -309,10 +311,8 @@ mod tests {
             fill,
             "holds no Browser of that workspace"
         ));
-        assert!(
-            asked.lock().unwrap().is_empty(),
-            "nobody was asked for any of the refusals"
-        );
+        let asked_so_far = asked.lock().unwrap().len();
+        assert_eq!(asked_so_far, 0, "nobody was asked for any of the refusals");
 
         // Browser's ask is carried to the server as it was named, and the text comes back
         // for that page action.
@@ -322,8 +322,9 @@ mod tests {
             Reply::ItemText { invocation, text, into: runtime_collab::ItemField::Password }
                 if *invocation == fill && text.as_str() == MADE_UP_TEXT
         ));
+        let carried = asked.lock().unwrap().clone();
         assert_eq!(
-            *asked.lock().unwrap(),
+            carried,
             [ItemUse {
                 invocation: fill,
                 item: ITEM.into(),
@@ -337,7 +338,8 @@ mod tests {
             fill,
             "asked for its item already"
         ));
-        assert_eq!(asked.lock().unwrap().len(), 1);
+        let asked_in_all = asked.lock().unwrap().len();
+        assert_eq!(asked_in_all, 1);
 
         // What is no item's use is no answer at all.
         assert!(
@@ -404,7 +406,8 @@ mod tests {
         // The call that starts the ask comes back while the server has said nothing: what
         // waits is the answer.
         let mut answering = lending.answer(BROWSER, WORKSPACE, &uses(silent));
-        assert_eq!(asked.lock().unwrap().len(), 1);
+        let asked_at_once = asked.lock().unwrap().len();
+        assert_eq!(asked_at_once, 1);
         assert!(
             answering
                 .as_mut()

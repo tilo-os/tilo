@@ -1448,6 +1448,7 @@ mod tests {
     /// other, a question's words and a refusal's reason are carried, and nothing that is said
     /// holds the text.
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn what_the_server_answers_an_items_use_is_opened_here_or_its_reason_is_carried() {
         use environment_device::{ItemUse, ItemUsed};
         let handed = material();

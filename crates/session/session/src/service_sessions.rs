@@ -133,7 +133,7 @@ impl BrowserServiceSessionServices for ServiceSessions {
         if !command.valid() {
             return Err("Invalid account credentials request".into());
         }
-        if matches!(command, Command::LendsItems {}) {
+        if command == (Command::LendsItems {}) {
             // Answered by what this session is: it says so before its server can be asked.
             return Ok(Reply::ItemsLent {
                 lent: self.items.lends(context.workspace_id()),

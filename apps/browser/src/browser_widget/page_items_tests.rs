@@ -451,6 +451,7 @@ fn window_of(url: &str, session: &Rc<crate::session_items::testing::Session>) ->
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
 fn a_window_whose_session_lends_items_has_a_field_filled_through_its_session() {
     use crate::session_items::testing::Session;
     use ui::collaboration::browser_service_sessions::{

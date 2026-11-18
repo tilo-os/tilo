@@ -148,7 +148,7 @@ impl std::fmt::Debug for LendingQuestion {
             .field("asked", &self.asked)
             .field("asking", &self.asking.is_some())
             .field("settled", &self.settled)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -284,7 +284,7 @@ impl std::fmt::Debug for SessionItems {
             .field("waiting", &state.waiting.len())
             .field("asking", &state.asking.is_some())
             .field("answers", &state.answers.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -345,6 +345,10 @@ fn unanswered(error: &str) -> String {
 /// A window's session, stood in for in tests: what it was sent, and what a test has it
 /// answer.
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "in a test's stand-in a failed step is the assertion"
+)]
 pub(crate) mod testing {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
