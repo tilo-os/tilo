@@ -175,11 +175,14 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
             document_id: String::new(),
             channel_id: channel.clone(),
         };
-        let opened = wait_for("the host to open the voice channel's call", || {
-            let second = &second;
-            let open = open();
-            async move { operate(second, workspace_id, request, open).await.ok() }
-        })
+        let opened = wait_for(
+            &format!("{kind:?}: the server to open the voice channel's call"),
+            || {
+                let second = &second;
+                let open = open();
+                async move { operate(second, workspace_id, request, open).await.ok() }
+            },
+        )
         .await;
         assert!(
             opened.active,

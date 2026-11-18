@@ -135,9 +135,13 @@ pub struct WorkspaceRuntime {
     /// retained body a device's admitted delta carries. Bounded; a full queue
     /// drops the notice.
     pub(crate) governor_tap: Option<mpsc::Sender<([u8; 32], Vec<u8>)>>,
-    /// The in-process authority governing this workspace, if any: it
-    /// answers the workspace's calls.
+    /// The in-process authority serving this workspace, if any: it answers
+    /// the workspace's calls.
     pub workspace_authority: Option<crate::workspaces::WorkspaceAuthority>,
+    /// Whether this server's own device governs the workspace: it made it
+    /// here. A workspace another server hands over is governed where it was
+    /// made, and this server carries its calls.
+    pub(crate) governs_here: bool,
     /// The access of each member device, as the workspace's governor projects
     /// it: what the server decides each change's claimed action against.
     /// `None` until a governor projects one; the server then decides changes
@@ -434,6 +438,7 @@ impl WorkspaceRuntime {
             live_members: HashSet::new(),
             governor_tap: None,
             workspace_authority: None,
+            governs_here: false,
             device_access: None,
             governance_heads: tilo_peer_state::GovernanceHeads::default(),
             governance_waits: Arc::default(),
