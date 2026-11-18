@@ -261,6 +261,9 @@ mod component_adapter {
         owes_settle: bool,
         /// The size the root was last laid out at: a new size is input its next sync takes up.
         laid_out: Option<vello::kurbo::Size>,
+        /// How a person reaches the window, as the window was last told: telling it again is
+        /// no input.
+        environment: Option<crate::interaction::InteractionEnvironment>,
         /// What the root's updates read since its last sync: a view built from what moved is input the sync
         /// it precedes takes up, and a build that loads the words it shows proves nothing
         /// ([`crate::component_inputs`]).
@@ -277,6 +280,7 @@ mod component_adapter {
                 owes_sync: true,
                 owes_settle: true,
                 laid_out: None,
+                environment: None,
                 update_reads: None,
             }
         }
@@ -1039,7 +1043,10 @@ mod component_adapter {
             &mut self,
             environment: crate::interaction::InteractionEnvironment,
         ) {
-            self.owes_sync = true;
+            if self.environment != Some(environment) {
+                self.environment = Some(environment);
+                self.owes_sync = true;
+            }
             self.in_root_mut(|root| root.set_interaction_environment(environment));
         }
         fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
@@ -1133,7 +1140,10 @@ mod component_adapter {
             theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            self.owes_sync = true;
+            // A control the build makes is a change of the root's own
+            // ([`Self::take_structure_change`]), which owes the sync that
+            // feeds it before it is measured: laying out a window whose tree
+            // stood as it was reads nothing new.
             let Some(child) = self.in_root_mut(|root| root.build_layout(taffy, theme, node_map))
             else {
                 return taffy.leaf_node(taffy::Style::default());
@@ -1526,7 +1536,16 @@ mod component_adapter {
                 return relayout;
             };
             let change = root.take_structure_change().join(relayout);
-            self.owes_sync |= change != StructureChange::None;
+            // A change the widgets carry out in place leaves every widget
+            // alive: what they mount they build from what they hold. A tree
+            // built anew may stand with controls it made, which take what
+            // they show in the sync that precedes their measure.
+            if matches!(
+                change,
+                StructureChange::Described | StructureChange::Rebuild
+            ) {
+                self.owes_sync = true;
+            }
             change
         }
         fn needs_redraw(&self) -> bool {
