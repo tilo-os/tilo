@@ -122,6 +122,10 @@ public enum EngineScript {
         const data = root.dataset;
         const now = {
           kind: 'state', entry: data.entry ?? '', arrival: data.arrival ?? '', code: data.pairingCode ?? '',
+          // Why the page stopped, as the page itself names the case: its failure screen's
+          // (`data-failure`, web/failure-screen.mjs), and that its server turned its open
+          // session away (`data-refusal`, web/session-refusal.mjs). Names of cases, never words.
+          failure: (data.failure ?? '').slice(0, 64), refusal: (data.refusal ?? '').slice(0, 64),
           // A page that cannot draw empties its status line and says why in a card.
           status: ((document.getElementById('status')?.textContent ?? '')
             || (data.entry === 'unsupported' ? document.querySelector('.tilo-entry-card[data-card="renderer"] p')?.textContent ?? '' : '')).slice(0, 400),
@@ -133,7 +137,7 @@ public enum EngineScript {
         post(now);
       };
       new MutationObserver(state).observe(root,
-        {attributes: true, attributeFilter: ['data-entry', 'data-arrival', 'data-pairing-code']});
+        {attributes: true, attributeFilter: ['data-entry', 'data-arrival', 'data-pairing-code', 'data-failure', 'data-refusal']});
       const ready = () => {
         const status = document.getElementById('status');
         if (status) new MutationObserver(state).observe(status, {childList: true, characterData: true, subtree: true});

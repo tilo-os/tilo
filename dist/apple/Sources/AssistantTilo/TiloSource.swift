@@ -100,6 +100,10 @@ public final class TiloSource: AssistantSource {
     private var saysSeen = false
     private static let routeKey = "TiloLiveRoute"
     private static let personKey = "TiloLivePerson"
+    /// Kept from the moment the app was told that the workspace it was let into is gone until
+    /// the device is paired again or its person signs out: the way in says why it stands there.
+    private static let resetKey = "TiloLiveReset"
+    private var wasReset = false
 
     private var person: Person?
     /// The ask for the person's name that goes on beside the way in.
@@ -216,6 +220,7 @@ public final class TiloSource: AssistantSource {
             // The key this device handed its person's server at an earlier launch.
             closedKey = closedKeys?.read()
         }
+        wasReset = defaults.bool(forKey: TiloSource.resetKey)
         sessions.set(sessionNow)
         let engine = engine
         listening = [
@@ -280,6 +285,32 @@ public final class TiloSource: AssistantSource {
         // whoever signs in here next is handed nothing of this person's. Their server is asked
         // to forget the address as the page is put away, below: signing out waits for no answer.
         let forgets = person != nil && closedKeys != nil
+        mark(reset: false)
+        forget()
+        if forgets { engine.leaveForgettingAddress() } else { engine.leave() }
+        tell()
+    }
+
+    /// The site says that the workspace this device was let into is no longer there. What the
+    /// app held of it is put away as at a sign-out, and nothing is asked of a server that
+    /// holds none of it. The device stands at its way in, which says why until it is paired
+    /// again. Its key stays in its store, as at a sign-out.
+    private func lost() {
+        // Only a device that was somebody's here is told at its way in that its workspace is gone.
+        mark(reset: wasReset || person != nil || defaults.string(forKey: TiloSource.routeKey) != nil)
+        forget()
+        engine.leave()
+        tell()
+    }
+
+    /// Whether the way in says that the device stood in a workspace that is gone, kept across launches.
+    private func mark(reset: Bool) {
+        wasReset = reset
+        if reset { defaults.set(true, forKey: TiloSource.resetKey) } else { defaults.removeObject(forKey: TiloSource.resetKey) }
+    }
+
+    /// Everything the app keeps and holds of its person and their workspace is forgotten.
+    private func forget() {
         address = nil
         handing.settle()
         forgetClosedKey()
@@ -326,8 +357,6 @@ public final class TiloSource: AssistantSource {
         automationList.set([])
         supervisionNow.set(Supervision())
         choices = []
-        if forgets { engine.leaveForgettingAddress() } else { engine.leave() }
-        tell()
     }
 
     private var sessionNow: Session {
@@ -338,7 +367,7 @@ public final class TiloSource: AssistantSource {
         case .asking(let ask): .asked(PairingAsk(heading: ask.heading, said: ask.said, go: ask.go, stop: ask.stop))
         case .pairing(let code): code.isEmpty ? .pairing : .confirming(code: code)
         case .arriving: person.map(Session.signedIn) ?? .pairing
-        case .away, .refused, .failed: person.map(Session.signedIn) ?? .signedOut
+        case .away, .refused, .failed, .gone: person.map(Session.signedIn) ?? (wasReset ? .reset : .signedOut)
         }
     }
 
@@ -356,8 +385,9 @@ public final class TiloSource: AssistantSource {
         switch engine.state {
         case .open: reaches.set(.reachable)
         case .refused, .failed: reaches.set(.unreachable)
-        // Nothing is tried, so nothing is known.
-        case .away: reaches.set(.unknown)
+        // Nothing is tried, so nothing is known. Where the workspace is gone nothing is tried
+        // either: the way in says so, and no try at it failed.
+        case .away, .gone: reaches.set(.unknown)
         // A try is in work, or the page waits for its person: nothing new is known.
         case .arriving, .asking, .pairing: break
         }
@@ -391,9 +421,16 @@ public final class TiloSource: AssistantSource {
     }
 
     private func stood(_ state: TiloEngine.State) async {
+        // The workspace this device was let into is gone: the app goes back to its way in by itself.
+        if case .gone = state {
+            lost()
+            return
+        }
         // Whether Tilo answers is said the moment a try ends, before anything is asked of the page.
         sayReach()
         if case .open(let route) = state {
+            // The device is in again: its way in has nothing left to say of a workspace that was gone.
+            if wasReset { mark(reset: false) }
             // The workspace, without the app the page shows of it.
             if let workspace = EngineAddress.workspace(of: route) { defaults.set(workspace, forKey: TiloSource.routeKey) }
             await arrived(at: route)
@@ -1449,7 +1486,11 @@ public final class TiloSource: AssistantSource {
         switch chat {
         case .main:
             // Where no try got in, nobody was asked who the assistant is: Tilo did not answer.
-            guard let recipient else { throw reaches.now == .unreachable ? SourceProblem.unreachable : noAssistant }
+            guard let recipient else {
+                // A device that is nobody's any more, its workspace gone or its person signed out, sends nothing.
+                if person == nil { throw SourceProblem.signedOut }
+                throw reaches.now == .unreachable ? SourceProblem.unreachable : noAssistant
+            }
             to = recipient
         case .subAgent(let agent):
             guard let id = feeds[chat]?.conversation else { throw SourceProblem.refused("This sub-agent has no conversation yet") }

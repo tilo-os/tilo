@@ -170,6 +170,7 @@ final class AssistantDrive {
             let workspace = EngineAddress.workspace(of: route)?.split(separator: "/").last.map { String($0.prefix(8)) } ?? ""
             AssistantDrive.say(["state": "open", "workspace": .string(workspace), "s": seconds])
         case .refused(let why): AssistantDrive.say(["state": "refused", "why": .string(why), "s": seconds])
+        case .gone(let why): AssistantDrive.say(["state": "gone", "why": .string(why), "s": seconds])
         case .failed(let why): AssistantDrive.say(["state": "failed", "why": .string(why), "s": seconds])
         }
     }
@@ -196,6 +197,7 @@ final class AssistantDrive {
         switch model.session {
         case nil: break
         case .signedOut: once("session", ["is": "signedOut"])
+        case .reset: once("session", ["is": "reset"])
         case .asked(let ask):
             once("session", ["is": "asked", "heading": .string(ask.heading), "said": .array(ask.said.map(JSON.string)),
                              "go": .string(ask.go), "stop": .string(ask.stop)])

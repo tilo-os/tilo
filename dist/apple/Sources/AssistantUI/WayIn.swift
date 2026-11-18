@@ -21,7 +21,8 @@ public struct WayIn: View {
                     .accessibilityAddTraits(.isHeader)
                 // While a code is compared, the code is what the window is about.
                 if !comparing {
-                    Text(AssistantWords.wayInLead.said).font(.tilo(15))
+                    // A device whose workspace is gone is told so, in the place of what a first pairing promises.
+                    Text((model.session == .reset ? AssistantWords.wayInReset : AssistantWords.wayInLead).said).font(.tilo(15))
                         .foregroundStyle(Token.ink2).multilineTextAlignment(.center)
                         .frame(maxWidth: 420)
                 }

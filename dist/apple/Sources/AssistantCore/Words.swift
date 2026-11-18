@@ -78,7 +78,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case coderIn = "coder-in", codingAgent = "coding-agent"
     case none, forget, signOut = "sign-out", addConnectionDraft = "add-connection-draft"
     // The way in.
-    case wayInTitle = "way-in-title", wayInLead = "way-in-lead", scanCode = "scan-code", pasteLink = "paste-link"
+    case wayInTitle = "way-in-title", wayInLead = "way-in-lead", wayInReset = "way-in-reset", scanCode = "scan-code", pasteLink = "paste-link"
     case wayInHelp = "way-in-help", wayInHelpOne = "way-in-help-one", pairing, noLink = "no-link", codeNoLink = "code-no-link"
     case codeFromElsewhere = "code-from-elsewhere", pairsNothing = "pairs-nothing"
     case compareCode = "compare-code"
@@ -295,6 +295,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .addConnectionDraft: "Connect this service: "
         case .wayInTitle: "Your assistant, on this device"
         case .wayInLead: "Pair this device with your Tilo. Your assistant, its tasks and everything it set up come with you."
+        case .wayInReset: "Your Tilo was reset since this device was paired, so it has to be paired again."
         case .scanCode: "Scan code"
         case .pasteLink: "Paste link"
         case .wayInHelp: "Both come from “Pair a new device” on a device where you are signed in."
