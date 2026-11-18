@@ -160,6 +160,13 @@ class OfflineTargetTest(unittest.TestCase):
         self.dev_transport(revision="b" * 40)
         with self.assertRaisesRegex(ValueError, "source or flavour"):
             offline.verify(self.root, development=True)
+        # A server image's build names no commit, so its revision label is
+        # empty and its digest binds the build.
+        self.dev_transport(flavour="server", revision="")
+        offline.verify(self.root, development=True)
+        self.dev_transport(flavour="server", revision="b" * 40)
+        with self.assertRaisesRegex(ValueError, "source or flavour"):
+            offline.verify(self.root, development=True)
         self.dev_transport()
         metadata = json.loads((self.root / "target.json").read_text())
         metadata["update_origin"] = "registry.tilo.so/tilo/tilo:latest"
