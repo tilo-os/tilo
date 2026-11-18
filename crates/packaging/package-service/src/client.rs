@@ -4,16 +4,22 @@
 //! use the client at once: a long install never holds up a list. It never reaches for a path or
 //! executable outside the app.
 
+#[cfg(unix)]
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::Arc;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+#[cfg(unix)]
+use std::sync::{Mutex, PoisonError};
 
 use crate::install::InstallExpectation;
 use crate::wire::{
-    Action, Answer, Call, Catalogue, Event, Expected, FlatpakVerb, Frame, OfferedLanguage,
-    Operation, RemoteVerb, Reply, Resource, WirePinning,
+    Action, Answer, Catalogue, Event, Expected, FlatpakVerb, OfferedLanguage, Operation,
+    RemoteVerb, Resource, WirePinning,
 };
+#[cfg(unix)]
+use crate::wire::{Call, Frame, Reply};
 
 mod pending;
 use package_store::InstalledPackage;
@@ -165,6 +171,7 @@ pub struct FlatpakStatus {
 }
 
 /// One call in flight: where its progress goes, and where its answer does.
+#[cfg(unix)]
 struct Waiting {
     /// Where the call's progress goes. It is called on the reader task, so it
     /// must not call back into the client.
@@ -176,6 +183,7 @@ struct Waiting {
 }
 
 /// The calls in flight on one connection, answered by its reader task.
+#[cfg(unix)]
 struct Connection {
     writer: tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>,
     waiting: Mutex<HashMap<u64, Waiting>>,
@@ -183,6 +191,7 @@ struct Connection {
     closed: AtomicBool,
 }
 
+#[cfg(unix)]
 impl Connection {
     fn call<F>(
         self: &Arc<Self>,
@@ -274,6 +283,7 @@ impl Connection {
     }
 }
 
+#[cfg(unix)]
 fn waiting(connection: &Connection) -> std::sync::MutexGuard<'_, HashMap<u64, Waiting>> {
     connection
         .waiting
@@ -281,7 +291,28 @@ fn waiting(connection: &Connection) -> std::sync::MutexGuard<'_, HashMap<u64, Wa
         .unwrap_or_else(PoisonError::into_inner)
 }
 
+#[cfg(unix)]
 const DISCONNECTED: &str = "the package service connection has ended";
+
+/// No transport carries the service off unix, so no client is ever made
+/// there. The type exists on every target, so its callers select none.
+#[cfg(not(unix))]
+struct Connection(std::convert::Infallible);
+
+#[cfg(not(unix))]
+impl Connection {
+    fn call<F>(
+        self: &Arc<Self>,
+        _request: Operation,
+        _progress: F,
+    ) -> impl Future<Output = Result<Answer, String>> + use<F>
+    where
+        F: FnMut(Event) + Send + 'static,
+    {
+        let never = self.0;
+        async move { match never {} }
+    }
+}
 
 pub struct BlockingClient {
     runtime: tokio::runtime::Runtime,
