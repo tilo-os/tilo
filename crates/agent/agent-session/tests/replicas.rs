@@ -773,12 +773,14 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
         "so.tilo.notes",
         &MemberId::person("ada"),
         ReplicaActor::Member {
-            access,
+            access: access
+                .as_acting(
+                    tilo_action_policy::Acting::handed_agent("Claude Code", "ada").in_session("s1"),
+                )
+                .unwrap(),
             sandbox: Vec::new(),
             unix_time: 1_900_000_000,
-            agent: Some("Claude Code".into()),
             agent_name: None,
-            agent_session: Some("s1".into()),
         },
         Seed::Existing {
             record: made.document_id().clone(),
@@ -827,9 +829,12 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
                         .map(tilo_action_policy::AgentSessionId::as_str)
                         == Some("s1")
                         && invoker.acting.acted_for_person() == Some("ada")
+                        // The delegation its person handed it, which the replica decided it
+                        // by: every receiver decides the change by the same.
+                        && invoker.acting.handed
                 })
         }),
-        "the agent's session is on its change"
+        "the agent's session and delegation are on its change"
     );
 }
 
@@ -864,12 +869,16 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
             "so.tilo.notes",
             &MemberId::person("ada"),
             ReplicaActor::Member {
-                access: access.clone(),
+                access: access
+                    .clone()
+                    .as_acting(tilo_action_policy::Acting::handed_agent(
+                        "Claude Code",
+                        "ada",
+                    ))
+                    .unwrap(),
                 sandbox: Vec::new(),
                 unix_time: 1_900_000_000,
-                agent: Some("Claude Code".into()),
                 agent_name: None,
-                agent_session: None,
             },
             Seed::Existing {
                 record: made.document_id().clone(),
