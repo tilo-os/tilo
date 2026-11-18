@@ -46,7 +46,8 @@ pub(super) enum Job {
         length: u64,
         done: Completer<Result<tilo_actions::remote::ContentGetAnswer, ActionCallError>>,
     },
-    /// A link to content of a workspace, for a caller who may read it.
+    /// A link to content of a workspace whose store the service has not found
+    /// yet, for a caller who may read it.
     ContentLink {
         workspace_id: WorkspaceId,
         caller: Caller,

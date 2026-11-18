@@ -31,6 +31,12 @@ pub(super) struct Membership {
     answer: Mutex<Option<ConfirmationReply>>,
     asked: AtomicUsize,
     content: tilo_content::ContentStore,
+    /// Set by [`Self::hold`]: whether the next read of a member's access waits,
+    /// and whether it began. It takes its time once it has, as a request that
+    /// keeps the workspace's thread busy does.
+    slow: Mutex<(bool, bool)>,
+    /// Wakes the test when the read [`Self::hold`] armed begins.
+    began: std::sync::Condvar,
 }
 
 impl Membership {
@@ -59,6 +65,8 @@ impl Membership {
             answer: Mutex::new(None),
             asked: AtomicUsize::new(0),
             content: tilo_content::ContentStore::in_dir(content),
+            slow: Mutex::new((false, false)),
+            began: std::sync::Condvar::new(),
         })
     }
 
@@ -87,6 +95,28 @@ impl Membership {
             )
             .await
             .unwrap();
+    }
+
+    /// Hold the workspace's thread from the next read of a member's access
+    /// ([`Self::held`]) for [`HELD`], waking [`Self::began`] when it starts.
+    fn hold(&self) {
+        *self.slow.lock().unwrap() = (true, false);
+    }
+
+    /// The one read of the member's own access [`Self::hold`] armed waits,
+    /// and says it began.
+    fn held(&self, caller: &Caller) {
+        if caller.user_public_key() != Some(&self.person) {
+            return;
+        }
+        let mut slow = self.slow.lock().unwrap();
+        if !slow.0 {
+            return;
+        }
+        *slow = (false, true);
+        self.began.notify_all();
+        drop(slow);
+        std::thread::sleep(HELD);
     }
 
     fn access(&self, caller: &Caller) -> Option<ui::permissions::MemberAccess> {
@@ -133,6 +163,7 @@ impl WorkspaceDocumentsLink for Membership {
         })
     }
     fn workspace_policy(&self, workspace: WorkspaceId, caller: &Caller) -> Option<ViewReadPolicy> {
+        self.held(caller);
         self.view_read_policy(workspace, caller, "", "")
     }
     fn workspace_content(&self, _workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
@@ -856,6 +887,152 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
         "{invokers:?}"
     );
     ended(browser, hosted).await;
+}
+
+/// How long the request that holds the workspace's thread takes (see
+/// [`Membership::hold`]).
+const HELD: Duration = Duration::from_secs(3);
+/// How long content steps that do not need that thread may take: far below
+/// [`HELD`], far above what a step of them costs.
+const SOON: Duration = Duration::from_secs(1);
+
+/// Putting content into a workspace is not the workspace's thread's work:
+/// once its store is found, a member's content steps answer beside a request
+/// that holds that thread, and many of them finish while it is still held.
+///
+/// Before they answered beside it, each of them queued behind whatever the
+/// thread was serving, so one slow request held a whole folder's upload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn content_steps_answer_beside_a_request_that_holds_the_workspaces_thread() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
+    let machine = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let editor_device = enrol(&guest, "editor-browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let server = start(&root, &machine, state.path()).await;
+    let mut browser = Browser::open(&server, &browser_device, &machine).await;
+    browser.create(NOTES);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+
+    let membership = Membership::of(
+        &server,
+        &machine,
+        &editor_device,
+        state.path().join("member-content"),
+    );
+    let actions = tilo_agent_session::WorkspaceActions::new(Arc::new(crate::common::catalogue));
+    actions.attach(membership.clone()).unwrap();
+    let workspace = browser.workspace;
+    let editor = Caller::authenticated(
+        editor_device.cert.user_public_key,
+        editor_device.cert.device_public_key,
+    )
+    .in_workspace(WORKSPACE);
+    membership.set_role(Some(Role::Editor));
+    // The first step finds the workspace's store on the workspace's thread;
+    // every step after it is served beside that thread.
+    let step = |step: ContentPutStep| match served(
+        &actions,
+        workspace,
+        &editor,
+        RemoteActionMessage::ContentPutRequest {
+            correlation: 1,
+            step,
+        },
+    ) {
+        RemoteActionMessage::ContentPutResponse { result, .. } => result.unwrap(),
+        other => panic!("expected an upload's answer, got {other:?}"),
+    };
+    let ContentPutAnswer::Begun { upload: first } = step(ContentPutStep::Begin { size: 8 }) else {
+        panic!("an upload begins")
+    };
+    let ContentPutAnswer::Begun { upload: second } = step(ContentPutStep::Begin { size: 8 }) else {
+        panic!("an upload begins")
+    };
+
+    // The workspace settled: a listing of it answers before its thread is held.
+    let listing = || RemoteActionMessage::CatalogueRequest {
+        correlation: 8,
+        query: CatalogueQuery {
+            max_results: 1,
+            ..CatalogueQuery::default()
+        },
+    };
+    served(&actions, workspace, &editor, listing());
+
+    // A request holds the workspace's thread: the service reads the member's
+    // access from this fixture, which here takes its time.
+    membership.hold();
+    let mut held = actions.serve(workspace, &editor, listing()).unwrap();
+    let mut slow = membership.slow.lock().unwrap();
+    while !slow.1 {
+        let (guard, waited) = membership.began.wait_timeout(slow, HELD * 2).unwrap();
+        slow = guard;
+        assert!(
+            !waited.timed_out(),
+            "the request holding the workspace's thread began"
+        );
+    }
+    drop(slow);
+
+    // Many steps of the same member, while it is held: they answer, and none of
+    // them waits for the thread to be free. The two appends of one upload keep
+    // the order they were sent in.
+    let started = Instant::now();
+    let puts = [
+        ContentPutStep::Many {
+            files: vec![hex::encode(b"first file")],
+        },
+        ContentPutStep::Many {
+            files: vec![hex::encode(b"second file"), hex::encode(b"third file")],
+        },
+        ContentPutStep::append(first, 0, b"head"),
+        ContentPutStep::append(first, 4, b"tail"),
+        ContentPutStep::append(second, 0, b"only"),
+    ];
+    let mut answers = Vec::new();
+    for step in puts {
+        let answer = actions
+            .serve(
+                workspace,
+                &editor,
+                RemoteActionMessage::ContentPutRequest {
+                    correlation: 2,
+                    step,
+                },
+            )
+            .unwrap()
+            .wait_timeout(SOON.saturating_sub(started.elapsed()))
+            .unwrap_or_else(|_| panic!("a content step waited for the workspace's thread"))
+            .expect("a content step is answered");
+        answers.push(answer);
+    }
+    assert!(
+        started.elapsed() < SOON,
+        "the steps took {:?}, waiting for the workspace's thread",
+        started.elapsed()
+    );
+    for answer in answers {
+        match answer {
+            RemoteActionMessage::ContentPutResponse { result, .. } => {
+                assert!(result.is_ok(), "{result:?}");
+            }
+            other => panic!("expected an upload's answer, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        held.poll_ready(),
+        tilo_actions::remote::PendingPoll::Waiting,
+        "the request holding the thread still waits"
+    );
+    // Another request of the workspace may have taken the wait first, and been
+    // served before the one this test submitted.
+    assert!(
+        held.wait_timeout(HELD * 4).ok().flatten().is_some(),
+        "the held request answers once its read is done"
+    );
+    ended(browser, server).await;
 }
 
 // What an app keeps for its whole workspace is reached the same way and judged by the same

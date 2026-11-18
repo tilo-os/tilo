@@ -162,6 +162,8 @@ struct Shared {
     joins: Mutex<HashMap<WorkspaceId, Option<Workspace>>>,
     /// Each workspace's content store, once found.
     stores: content::Stores,
+    /// The content steps served beside the service's own ([`content::ContentSteps`]).
+    steps: Arc<content::ContentSteps>,
     /// The uploads callers have open.
     puts: tilo_actions::remote::HostedContentPuts,
     /// The answers people gave to invocations run for them.
@@ -220,6 +222,7 @@ impl WorkspaceActions {
                 member: OnceLock::new(),
                 joins: Mutex::default(),
                 stores: Mutex::default(),
+                steps: Arc::new(content::ContentSteps::default()),
                 puts: tilo_actions::remote::HostedContentPuts::default(),
                 approvals: bounded::Approvals::default(),
                 in_conversation: std::sync::RwLock::default(),

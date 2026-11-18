@@ -411,98 +411,171 @@ pub(super) fn member_actor(
     })
 }
 
-impl Worker {
-    /// `caller` as the host acts for them within bounds: a person who is not
-    /// the host's own, an agent a person's own device handed its session to,
-    /// or an agent device a person certified. `None` for the host's own person, and for anyone the host acts for
-    /// in no person's name.
-    pub(super) fn bounded(&self, caller: &Caller) -> Option<Bounded> {
-        if let Some(person) = caller.acting().person_id() {
-            if person == self.member.as_str() {
-                return None;
-            }
-            return Some(Bounded {
-                caller: caller.clone(),
-                person_caller: caller.clone(),
-                person: person.into(),
-                agent: None,
-                agent_name: None,
-            });
+/// `caller` as the host acts for them within bounds: a person who is not
+/// the host's own, an agent a person's own device handed its session to,
+/// or an agent device a person certified. `None` for the host's own person, and for anyone the host acts for
+/// in no person's name.
+///
+/// `member` is the person whose device the service is.
+pub(super) fn bounded(
+    member: &ui::permissions::policy::PersonId,
+    caller: &Caller,
+) -> Option<Bounded> {
+    if let Some(person) = caller.acting().person_id() {
+        if person == member.as_str() {
+            return None;
         }
-        let agent = caller.acting().agent_id()?;
-        // An agent the person's device handed its session to acts on
-        // that device's admission; an agent device the person
-        // certified, on its own device's: either is bounded by the
-        // person it acts for.
-        let person_caller = caller.delegating_person().or_else(|| {
-            let person =
-                Caller::authenticated(*caller.user_public_key()?, *caller.device_public_key()?);
-            Some(match caller.workspace() {
-                Some(workspace) => person.in_workspace(workspace),
-                None => person,
-            })
-        })?;
-        let person = person_caller.acting().person_id()?.into();
-        Some(Bounded {
+        return Some(Bounded {
             caller: caller.clone(),
-            person,
-            agent: Some(agent.to_owned()),
-            agent_name: caller.agent_name().map(str::to_owned),
-            person_caller,
+            person_caller: caller.clone(),
+            person: person.into(),
+            agent: None,
+            agent_name: None,
+        });
+    }
+    let agent = caller.acting().agent_id()?;
+    // An agent the person's device handed its session to acts on
+    // that device's admission; an agent device the person
+    // certified, on its own device's: either is bounded by the
+    // person it acts for.
+    let person_caller = caller.delegating_person().or_else(|| {
+        let person =
+            Caller::authenticated(*caller.user_public_key()?, *caller.device_public_key()?);
+        Some(match caller.workspace() {
+            Some(workspace) => person.in_workspace(workspace),
+            None => person,
         })
+    })?;
+    let person = person_caller.acting().person_id()?.into();
+    Some(Bounded {
+        caller: caller.clone(),
+        person,
+        agent: Some(agent.to_owned()),
+        agent_name: caller.agent_name().map(str::to_owned),
+        person_caller,
+    })
+}
+
+/// The person's access in the workspace `cluster` as its policy gives it now,
+/// where they may read `record` (an app and its record) when one is named:
+/// refused for a person it does not admit (a removed member, a revoked
+/// device). The host's own person (`member`), in a workspace no governance
+/// here answers for, is its owner, as the host's own mount holds it.
+pub(super) fn policy_for(
+    shared: &super::Shared,
+    member: &ui::permissions::policy::PersonId,
+    workspace_id: WorkspaceId,
+    who: &Bounded,
+    cluster: &str,
+    inside: Option<(&str, &str)>,
+) -> Result<super::ViewReadPolicy, ActionCallError> {
+    let decided = shared.link.get().and_then(|link| match inside {
+        Some((app, named)) => link.view_read_policy(workspace_id, &who.person_caller, app, named),
+        None => link.workspace_policy(workspace_id, &who.person_caller),
+    });
+    let mut policy = match decided {
+        Some(policy)
+            if policy.workspace == cluster
+                && policy.access.person_id().unwrap_or_default() == who.person.as_str() =>
+        {
+            policy
+        }
+        None if who.person == *member && !governed(shared, workspace_id) => {
+            let owner = ui::permissions::PermissionContext::member_of(
+                cluster,
+                &ui::permissions::MemberId::person(who.person.clone()),
+                ui::permissions::Role::Owner,
+            );
+            super::ViewReadPolicy {
+                workspace: cluster.to_owned(),
+                access: owner.access().clone(),
+                sandbox: Vec::new(),
+                unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
+                agent_bound: Vec::new(),
+            }
+        }
+        Some(_) | None => return Err(ActionCallError::NotPermitted),
+    };
+    // An agent a person's device handed its session to is held to the bound the workspace's
+    // list of its agents keeps for it: the own person's agents as much as anyone's, so what
+    // the person sets for it in the workspace holds on their own server too.
+    if who.agent.is_some()
+        && who.caller.is_session_delegated()
+        && let Some(link) = shared.link.get()
+    {
+        policy.agent_bound = link.workspace_agent(workspace_id, &who.caller);
+    }
+    Ok(policy)
+}
+
+/// Whether `caller` may do `kind` across the workspace `workspace_id`
+/// (its content, a new record of it): the host's own person and their
+/// agents may; anyone else as the workspace's policy gives them now, an
+/// agent held to what an agent of its person may do.
+pub(super) fn may_across(
+    shared: &super::Shared,
+    member: &ui::permissions::policy::PersonId,
+    workspace_id: WorkspaceId,
+    caller: &Caller,
+    kind: ActionKind,
+) -> bool {
+    if caller.acting().person_id() == Some(member.as_str()) {
+        return true;
+    }
+    let Some(who) = bounded(member, caller) else {
+        return false;
+    };
+    policy_for(
+        shared,
+        member,
+        workspace_id,
+        &who,
+        &workspace_id.to_string(),
+        None,
+    )
+    .ok()
+    .and_then(|policy| bounded_permissions(&policy, &who).ok())
+    .is_some_and(|permissions| permissions.answer(&TreePath::root(), kind) == Answer::Allow)
+}
+
+/// Whether a governance on this device answers for who is in `workspace_id`.
+pub(super) fn governed(shared: &super::Shared, workspace_id: WorkspaceId) -> bool {
+    let Some(device) = shared.host_device.get() else {
+        return false;
+    };
+    shared.link.get().is_some_and(|link| {
+        link.admits(
+            workspace_id,
+            &Caller::authenticated(
+                device.endpoint.host_cert.user_public_key,
+                device.endpoint.host_cert.device_public_key,
+            ),
+        )
+    })
+}
+
+impl Worker {
+    /// [`bounded`], for the person whose device this service is.
+    pub(super) fn bounded(&self, caller: &Caller) -> Option<Bounded> {
+        bounded(&self.member, caller)
     }
 
-    /// The person's access in the workspace `cluster` as its policy gives
-    /// it now, where they may read `record` (an app and its record) when one
-    /// is named: refused for a person it does not admit (a removed member, a
-    /// revoked device). The host's own person, in a workspace no governance
-    /// here answers for, is its owner, as the host's own mount holds it.
+    /// [`policy_for`], for the person whose device this service is.
     pub(super) fn policy_for(
         &self,
         workspace_id: WorkspaceId,
         who: &Bounded,
         cluster: &str,
-        record: Option<(&str, &str)>,
+        inside: Option<(&str, &str)>,
     ) -> Result<super::ViewReadPolicy, ActionCallError> {
-        let governed = self.shared.link.get().and_then(|link| match record {
-            Some((app, record)) => {
-                link.view_read_policy(workspace_id, &who.person_caller, app, record)
-            }
-            None => link.workspace_policy(workspace_id, &who.person_caller),
-        });
-        let mut policy = match governed {
-            Some(policy)
-                if policy.workspace == cluster
-                    && policy.access.person_id().unwrap_or_default() == who.person.as_str() =>
-            {
-                policy
-            }
-            None if who.person == self.member && !self.governed(workspace_id) => {
-                let owner = ui::permissions::PermissionContext::member_of(
-                    cluster,
-                    &ui::permissions::MemberId::person(who.person.clone()),
-                    ui::permissions::Role::Owner,
-                );
-                super::ViewReadPolicy {
-                    workspace: cluster.to_owned(),
-                    access: owner.access().clone(),
-                    sandbox: Vec::new(),
-                    unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
-                    agent_bound: Vec::new(),
-                }
-            }
-            Some(_) | None => return Err(ActionCallError::NotPermitted),
-        };
-        // An agent a person's device handed its session to is held to the bound the workspace's
-        // list of its agents keeps for it: the own person's agents as much as anyone's, so what
-        // the person sets for it in the workspace holds on their own server too.
-        if who.agent.is_some()
-            && who.caller.is_session_delegated()
-            && let Some(link) = self.shared.link.get()
-        {
-            policy.agent_bound = link.workspace_agent(workspace_id, &who.caller);
-        }
-        Ok(policy)
+        policy_for(
+            &self.shared,
+            &self.member,
+            workspace_id,
+            who,
+            cluster,
+            inside,
+        )
     }
 
     /// [`Self::policy_for`] the record at `route`.
@@ -516,39 +589,19 @@ impl Worker {
         self.policy_for(workspace_id, who, &route.cluster_id, record)
     }
 
-    /// Whether `caller` may do `kind` across the workspace `workspace_id`
-    /// (its content, a new record of it): the host's own person and their
-    /// agents may; anyone else as the workspace's policy gives them now, an
-    /// agent held to what an agent of its person may do.
+    /// [`may_across`], for the person whose device this service is.
     pub(super) fn may_across(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         kind: ActionKind,
     ) -> bool {
-        if self.serves_as_owner(caller) {
-            return true;
-        }
-        let Some(who) = self.bounded(caller) else {
-            return false;
-        };
-        self.policy_for(workspace_id, &who, &workspace_id.to_string(), None)
-            .ok()
-            .and_then(|policy| bounded_permissions(&policy, &who).ok())
-            .is_some_and(|permissions| permissions.answer(&TreePath::root(), kind) == Answer::Allow)
+        may_across(&self.shared, &self.member, workspace_id, caller, kind)
     }
 
-    /// Whether a governance on this host answers for who is in `workspace_id`.
+    /// [`governed`], for the device this service is.
     fn governed(&self, workspace_id: WorkspaceId) -> bool {
-        self.shared.link.get().is_some_and(|link| {
-            link.admits(
-                workspace_id,
-                &Caller::authenticated(
-                    self.host_device.endpoint.host_cert.user_public_key,
-                    self.host_device.endpoint.host_cert.device_public_key,
-                ),
-            )
-        })
+        governed(&self.shared, workspace_id)
     }
 
     /// Whether `who` may see the workspace's records at all.
@@ -1053,6 +1106,26 @@ pub(super) struct Asking {
 }
 
 impl super::Shared {
+    /// The person whose device this service is: the root the service signs under.
+    fn owner(&self) -> Option<ui::permissions::policy::PersonId> {
+        Some(ui::permissions::policy::PersonId::from_root(
+            self.link.get()?.user_public_key(),
+        ))
+    }
+
+    /// Whether `caller` may do `kind` across the workspace `workspace_id`
+    /// ([`may_across`]): what a content step is checked against before a byte
+    /// of it is taken, which needs nothing of the service's own thread.
+    pub(super) fn may_across(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        kind: ActionKind,
+    ) -> bool {
+        self.owner()
+            .is_some_and(|member| may_across(self, &member, workspace_id, caller, kind))
+    }
+
     /// The person answered `asking`'s question with `reply`: on their
     /// allowing it, the invocation runs again with the token naming their
     /// answer; otherwise it ends refused.

@@ -19,8 +19,16 @@
 //! workspace, or an agent of theirs, as their member access there is now: one who
 //! may change its records (an editor, an agent of one) puts files, and one
 //! who may read it gets them. A viewer only reads.
+//!
+//! Once a workspace's store is found, its steps are served on threads of their own
+//! ([`ContentSteps`]), the caller's access checked there before a byte of the
+//! step is taken: an upload waits neither for the step before it nor for the
+//! workspace's actions, so what bounds it is the link or the disk. Only the
+//! step that finds the store is the service's thread's ([`Job::Content`]).
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
+use std::sync::{Arc, Condvar, Mutex};
 use tilo_actions::remote::{
     ActionCallError, CONTENT_GETS_UNAVAILABLE, Caller, ContentGetAnswer, ContentPiece, ContentPut,
     ContentPutStep, ContentPuts, MAX_CONTENT_FRAME_BYTES, Pending, RemoteActionMessage, pending,
@@ -28,7 +36,7 @@ use tilo_actions::remote::{
 use tilo_content::ContentStore;
 use tilo_lock::MutexRecover as _;
 
-use super::{Job, Worker, WorkspaceActions};
+use super::{Job, Shared, Worker, WorkspaceActions};
 use crate::worker::ConfinedReplica;
 use tilo_server_protocol::WorkspaceId;
 use ui::permissions::policy::ActionKind;
@@ -273,12 +281,184 @@ fn read_up_to(file: &mut std::fs::File, into: &mut [u8]) -> std::io::Result<usiz
     Ok(read)
 }
 
+/// A step of a caller's content, served off the service's thread.
+struct Step {
+    workspace: WorkspaceId,
+    /// The upload the step belongs to, where it belongs to one: the steps of
+    /// one upload keep the order they arrived in, which the offsets an upload
+    /// appends at need.
+    upload: Option<u64>,
+    work: Box<dyn FnOnce() + Send>,
+}
+
+/// How many content steps are served at once across the service.
+const THREADS: usize = 8;
+/// How many content steps one workspace serves at once: enough that a client's
+/// calls in flight do not wait on each other, small enough that one
+/// workspace's burst leaves threads to the others, and that writes still
+/// reach the disk the disk's own way.
+const PER_WORKSPACE: usize = 4;
+/// How long a thread waits for a step before it ends, so a service that
+/// uploaded once keeps no thread for the rest of its life.
+const IDLE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The threads content steps are served on, beside the service's own thread:
+/// what was put into a workspace waits for neither the step before it nor the
+/// workspace's actions, so what bounds an upload is the link or the disk.
+///
+/// A step is served once it has been checked against the caller's access there, so
+/// no byte of one the workspace does not admit is taken. The steps of one
+/// upload keep their order, and one workspace takes [`PER_WORKSPACE`] of them,
+/// which leaves the other workspaces' steps threads of their own.
+#[derive(Default)]
+pub(super) struct ContentSteps {
+    running: Mutex<Running>,
+    /// Signals a thread that a step waits for it.
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct Running {
+    /// The steps a thread may take now, oldest first.
+    ready: VecDeque<Step>,
+    /// The steps waiting for a place in their workspace, or for the step before
+    /// them of the same upload, by workspace.
+    parked: HashMap<WorkspaceId, VecDeque<Step>>,
+    /// How many steps each workspace serves now.
+    workspaces: HashMap<WorkspaceId, usize>,
+    /// The uploads whose step is served now.
+    uploads: HashSet<u64>,
+    /// The threads started, idle or busy.
+    threads: usize,
+}
+
+impl Running {
+    /// Whether `upload`'s step in `workspace_id` may be served now.
+    fn admits(&self, workspace_id: WorkspaceId, upload: Option<u64>) -> bool {
+        let steps = self.workspaces.get(&workspace_id).copied().unwrap_or(0);
+        steps < PER_WORKSPACE && upload.is_none_or(|upload| !self.uploads.contains(&upload))
+    }
+
+    /// Take `step` as running.
+    fn hand(&mut self, step: Step) {
+        let served = self.workspaces.entry(step.workspace).or_default();
+        *served = served.saturating_add(1);
+        if let Some(upload) = step.upload {
+            self.uploads.insert(upload);
+        }
+        self.ready.push_back(step);
+    }
+
+    /// Let go of the step that ran for `workspace_id` and `upload`, and take
+    /// in the steps it held back.
+    fn finished(&mut self, workspace_id: WorkspaceId, upload: Option<u64>) {
+        if let Some(steps) = self.workspaces.get_mut(&workspace_id) {
+            *steps = steps.saturating_sub(1);
+            if *steps == 0 {
+                self.workspaces.remove(&workspace_id);
+            }
+        }
+        if let Some(upload) = upload {
+            self.uploads.remove(&upload);
+        }
+        let Some(mut parked) = self.parked.remove(&workspace_id) else {
+            return;
+        };
+        while let Some(step) = parked.pop_front() {
+            if !self.admits(step.workspace, step.upload) {
+                parked.push_front(step);
+                break;
+            }
+            self.hand(step);
+        }
+        if !parked.is_empty() {
+            self.parked.insert(workspace_id, parked);
+        }
+    }
+
+    /// Start as many threads as there are steps for, up to [`THREADS`].
+    fn staff(&mut self, pool: &Arc<ContentSteps>) {
+        while self.threads < THREADS && self.threads < self.ready.len() {
+            self.threads = self.threads.saturating_add(1);
+            let pool = Arc::clone(pool);
+            let spawned = std::thread::Builder::new()
+                .name("workspace-content".into())
+                .spawn(move || pool.serve());
+            if spawned.is_err() {
+                self.threads = self.threads.saturating_sub(1);
+                return;
+            }
+        }
+    }
+}
+
+impl ContentSteps {
+    /// Serve `work` for `workspace_id`, in the order its `upload`'s steps arrived
+    /// where it names one, once a thread of `workspace_id`'s is free.
+    pub(super) fn step(
+        self: &Arc<Self>,
+        workspace_id: WorkspaceId,
+        upload: Option<u64>,
+        work: impl FnOnce() + Send + 'static,
+    ) {
+        let step = Step {
+            workspace: workspace_id,
+            upload,
+            work: Box::new(work),
+        };
+        let mut running = self.running.lock_recover();
+        if running.admits(workspace_id, upload) {
+            running.hand(step);
+            running.staff(self);
+        } else {
+            running
+                .parked
+                .entry(workspace_id)
+                .or_default()
+                .push_back(step);
+        }
+        drop(running);
+        self.ready.notify_all();
+    }
+
+    /// Take steps while there are any, and end once none comes for [`IDLE`].
+    fn serve(self: &Arc<Self>) {
+        loop {
+            let mut running = self.running.lock_recover();
+            while running.ready.is_empty() {
+                let (held, waited) = self
+                    .ready
+                    .wait_timeout(running, IDLE)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                running = held;
+                if running.ready.is_empty() && waited.timed_out() {
+                    running.threads = running.threads.saturating_sub(1);
+                    return;
+                }
+            }
+            let Some(step) = running.ready.pop_front() else {
+                return;
+            };
+            drop(running);
+            (step.work)();
+            self.running
+                .lock_recover()
+                .finished(step.workspace, step.upload);
+            self.ready.notify_all();
+        }
+    }
+}
+
 impl WorkspaceActions {
     /// Answer `step` of an upload `caller` asks of the host in
     /// `workspace_id`. The host's own person and their agents put files; a
     /// member, or an agent of theirs, puts them where their access lets
-    /// them change the workspace's records, which the service's thread reads
-    /// when the upload begins. Its later steps go to the upload they began.
+    /// them change the workspace's records, which is read before a byte of
+    /// the step is taken. Its later steps go to the upload they began.
+    ///
+    /// Once the workspace's store is found the step is served beside the
+    /// service's thread ([`ContentSteps`]); the first step, which finds the
+    /// store, is the service thread's.
     pub(super) fn content_put(
         &self,
         workspace_id: WorkspaceId,
@@ -290,22 +470,27 @@ impl WorkspaceActions {
             correlation,
             result,
         };
-        let checked = !self.authorized(caller)
-            && matches!(
-                step,
-                ContentPutStep::Begin { .. }
-                    | ContentPutStep::Many { .. }
-                    | ContentPutStep::Have { .. }
-            );
-        if checked && !super::speaks_for_a_member(caller) {
+        let check = put_check(&step).filter(|_| !self.authorized(caller));
+        if check.is_some() && !super::speaks_for_a_member(caller) {
             return Pending::ready(respond(Err(ActionCallError::NotPermitted)));
         }
-        if let Some(store) = self.known_store(workspace_id).filter(|_| !checked) {
-            return Pending::ready(respond(self.shared.puts.step(
-                &StorePuts(store),
-                caller,
-                step,
-            )));
+        if let Some(store) = self.known_store(workspace_id) {
+            let (done, answer) = pending();
+            let caller = caller.clone();
+            let shared = Arc::clone(&self.shared);
+            self.shared
+                .steps
+                .step(workspace_id, upload_of(&step), move || {
+                    done.complete(put_into(
+                        &shared,
+                        workspace_id,
+                        &store,
+                        &caller,
+                        check,
+                        step,
+                    ));
+                });
+            return answer.map(respond);
         }
         let (done, answer) = pending();
         let job = Job::Content {
@@ -325,7 +510,7 @@ impl WorkspaceActions {
     /// Answer `caller`'s request for a piece of `content` from the content
     /// store of the host's workspace `workspace_id`: the host's own person
     /// and their agents, and anyone whose member access there lets them read it,
-    /// which the service's thread reads.
+    /// which is read before a byte of it is read out.
     pub(super) fn content_get(
         &self,
         workspace_id: WorkspaceId,
@@ -337,14 +522,25 @@ impl WorkspaceActions {
             correlation,
             result,
         };
-        let owner = self.authorized(caller);
-        if !owner && !super::speaks_for_a_member(caller) {
+        let check = (!self.authorized(caller)).then_some(ActionKind::Read);
+        if check.is_some() && !super::speaks_for_a_member(caller) {
             return Pending::ready(respond(Err(ActionCallError::NotPermitted)));
         }
-        if let Some(store) = self.known_store(workspace_id).filter(|_| owner) {
-            return Pending::ready(respond(
-                piece(&store, &content, offset, length).and_then(ContentGetAnswer::new),
-            ));
+        if let Some(store) = self.known_store(workspace_id) {
+            let (done, answer) = pending();
+            let caller = caller.clone();
+            let shared = Arc::clone(&self.shared);
+            self.shared.steps.step(workspace_id, None, move || {
+                done.complete(get_from(
+                    &shared,
+                    workspace_id,
+                    &store,
+                    &caller,
+                    check,
+                    (&content, offset, length),
+                ));
+            });
+            return answer.map(respond);
         }
         let (done, answer) = pending();
         let job = Job::ContentGet {
@@ -364,8 +560,8 @@ impl WorkspaceActions {
     }
 
     /// Answer `caller`'s request for a link to content of the host's
-    /// workspace `workspace_id`: anyone who may read it, as the service's
-    /// thread reads their access.
+    /// workspace `workspace_id`: anyone who may read it, as their access
+    /// there is read before the link is made.
     pub(super) fn content_link(
         &self,
         workspace_id: WorkspaceId,
@@ -377,11 +573,28 @@ impl WorkspaceActions {
             correlation,
             result,
         };
-        if !self.authorized(caller) && !super::speaks_for_a_member(caller) {
+        let check = (!self.authorized(caller)).then_some(ActionKind::Read);
+        if check.is_some() && !super::speaks_for_a_member(caller) {
             return Pending::ready(respond(Err(ActionCallError::NotPermitted)));
         }
         if let Err(reason) = link.check() {
             return Pending::ready(respond(Err(ActionCallError::InvalidRequest { reason })));
+        }
+        if let Some(store) = self.known_store(workspace_id) {
+            let (done, answer) = pending();
+            let caller = caller.clone();
+            let shared = Arc::clone(&self.shared);
+            self.shared.steps.step(workspace_id, None, move || {
+                done.complete(link_into(
+                    &shared,
+                    workspace_id,
+                    &store,
+                    &caller,
+                    check,
+                    &link,
+                ));
+            });
+            return answer.map(respond);
         }
         let (done, answer) = pending();
         let job = Job::ContentLink {
@@ -408,6 +621,93 @@ impl WorkspaceActions {
     }
 }
 
+/// What a put step needs the caller to be allowed across the workspace, when
+/// it changes the workspace or asks what it holds: the steps of an upload
+/// already begun were checked when it began.
+fn put_check(step: &ContentPutStep) -> Option<ActionKind> {
+    match step {
+        ContentPutStep::Begin { .. } | ContentPutStep::Many { .. } => Some(ActionKind::Undoable),
+        ContentPutStep::Have { .. } => Some(ActionKind::Read),
+        ContentPutStep::Append { .. }
+        | ContentPutStep::Finish { .. }
+        | ContentPutStep::Progress { .. } => None,
+    }
+}
+
+/// The upload `step` belongs to, where it belongs to one.
+fn upload_of(step: &ContentPutStep) -> Option<u64> {
+    match step {
+        ContentPutStep::Append { upload, .. }
+        | ContentPutStep::Finish { upload }
+        | ContentPutStep::Progress { upload } => Some(*upload),
+        ContentPutStep::Begin { .. }
+        | ContentPutStep::Many { .. }
+        | ContentPutStep::Have { .. } => None,
+    }
+}
+
+/// [`Worker::content_put`]'s step, on a content thread: the caller's access
+/// read before a byte of the step is taken.
+fn put_into(
+    shared: &Shared,
+    workspace_id: WorkspaceId,
+    store: &ContentStore,
+    caller: &Caller,
+    check: Option<ActionKind>,
+    step: ContentPutStep,
+) -> Result<tilo_actions::remote::ContentPutAnswer, ActionCallError> {
+    admitted(shared, workspace_id, caller, check)?;
+    shared.puts.step(&StorePuts(store.clone()), caller, step)
+}
+
+/// [`Worker::content_get`]'s piece, on a content thread.
+fn get_from(
+    shared: &Shared,
+    workspace_id: WorkspaceId,
+    store: &ContentStore,
+    caller: &Caller,
+    check: Option<ActionKind>,
+    (content, offset, length): (&str, u64, u64),
+) -> Result<ContentGetAnswer, ActionCallError> {
+    admitted(shared, workspace_id, caller, check)?;
+    ContentGetAnswer::new(piece(store, content, offset, length)?)
+}
+
+/// [`Worker::content_link`]'s link, on a content thread.
+fn link_into(
+    shared: &Shared,
+    workspace_id: WorkspaceId,
+    store: &ContentStore,
+    caller: &Caller,
+    check: Option<ActionKind>,
+    link: &tilo_actions::remote::ContentLinkAsk,
+) -> Result<tilo_actions::remote::ContentLink, ActionCallError> {
+    admitted(shared, workspace_id, caller, check)?;
+    let unavailable = || ActionCallError::Unavailable {
+        reason: tilo_actions::remote::CONTENT_LINKS_UNAVAILABLE.into(),
+    };
+    shared
+        .link
+        .get()
+        .and_then(|host| host.content_link(workspace_id, store.clone(), link))
+        .ok_or_else(unavailable)
+}
+
+/// What a step the workspace does not admit is answered.
+fn admitted(
+    shared: &Shared,
+    workspace_id: WorkspaceId,
+    caller: &Caller,
+    check: Option<ActionKind>,
+) -> Result<(), ActionCallError> {
+    match check {
+        Some(kind) if !shared.may_across(workspace_id, caller, kind) => {
+            Err(ActionCallError::NotPermitted)
+        }
+        _ => Ok(()),
+    }
+}
+
 impl Worker {
     /// `workspace_id`'s content store on this host, found once.
     pub(super) fn workspace_content(&self, workspace_id: WorkspaceId) -> Option<ContentStore> {
@@ -423,25 +723,15 @@ impl Worker {
     }
 
     /// Answer `step` of `caller`'s upload into `workspace_id`'s store: one
-    /// begins only where they may change the workspace's records.
+    /// begins only where they may change the workspace's records. The step a
+    /// workspace's first request carries, which finds its store.
     pub(super) fn content_put(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         step: ContentPutStep,
     ) -> Result<tilo_actions::remote::ContentPutAnswer, ActionCallError> {
-        if matches!(
-            step,
-            ContentPutStep::Begin { .. } | ContentPutStep::Many { .. }
-        ) && !self.may_across(workspace_id, caller, ActionKind::Undoable)
-        {
-            return Err(ActionCallError::NotPermitted);
-        }
-        if matches!(step, ContentPutStep::Have { .. })
-            && !self.may_across(workspace_id, caller, ActionKind::Read)
-        {
-            return Err(ActionCallError::NotPermitted);
-        }
+        admitted(&self.shared, workspace_id, caller, put_check(&step))?;
         let store =
             self.workspace_content(workspace_id)
                 .ok_or_else(|| ActionCallError::Unavailable {
@@ -459,9 +749,7 @@ impl Worker {
         content: &str,
         (offset, length): (u64, u64),
     ) -> Result<ContentGetAnswer, ActionCallError> {
-        if !self.may_across(workspace_id, caller, ActionKind::Read) {
-            return Err(ActionCallError::NotPermitted);
-        }
+        admitted(&self.shared, workspace_id, caller, Some(ActionKind::Read))?;
         let store =
             self.workspace_content(workspace_id)
                 .ok_or_else(|| ActionCallError::Unavailable {
@@ -478,9 +766,7 @@ impl Worker {
         caller: &Caller,
         link: &tilo_actions::remote::ContentLinkAsk,
     ) -> Result<tilo_actions::remote::ContentLink, ActionCallError> {
-        if !self.may_across(workspace_id, caller, ActionKind::Read) {
-            return Err(ActionCallError::NotPermitted);
-        }
+        admitted(&self.shared, workspace_id, caller, Some(ActionKind::Read))?;
         let unavailable = || ActionCallError::Unavailable {
             reason: tilo_actions::remote::CONTENT_LINKS_UNAVAILABLE.into(),
         };
