@@ -48,6 +48,26 @@ impl DeviceFleetStore {
         }
     }
 
+    /// The store this device keeps `identity_id`'s fleet in: its account's
+    /// identity directory when that holds one, otherwise the identity root
+    /// that holds this device's key and certificate. A server has no identity
+    /// directory of its own, and the enrollment that admitted it wrote the
+    /// fleet into its identity root, so both sides find it there.
+    #[must_use]
+    pub fn of_device(identity_paths: IdentityPaths, identity_id: &str) -> Self {
+        if let Ok(store) = Self::from_env()
+            && store.fleet_file(identity_id).exists()
+        {
+            return store;
+        }
+        let root = identity_paths
+            .user_pubkey
+            .parent()
+            .and_then(Path::parent)
+            .map_or_else(PathBuf::new, Path::to_path_buf);
+        Self::at(root, identity_paths)
+    }
+
     /// The store of another account's identity directory, written by a root
     /// process acting for that account (uid): every write runs as them and
     /// only into a directory they own ([`crate::person_files::as_person`]).

@@ -4865,10 +4865,8 @@ impl ScenarioSuitePlan {
     }
 
     fn build_app(&self) -> Result<PathBuf> {
-        let mut child = ProcessCommand::new(&self.build.program)
-            .args(&self.build.args)
-            .current_dir(&self.build.app_dir)
-            .stdout(Stdio::piped())
+        let mut child = self
+            .build_command()
             .spawn()
             .with_context(|| format!("starting {} build", self.build.program.to_string_lossy()))?;
         let stdout = child
@@ -4901,6 +4899,30 @@ impl ScenarioSuitePlan {
                 "the app builds several binaries; name the GUI one in tilo-app.toml's entrypoint"
             ),
         }
+    }
+
+    /// The app build, in the environment the command was started in.
+    ///
+    /// A variable in a build's environment keys every build script's and proc
+    /// macro's cache entry by it, and the test environment's (a fresh HOME, a
+    /// private audio endpoint, a PID) differ per job, so a build carrying them
+    /// shares no cache with any other job's. tools/test-env.sh writes the
+    /// caller's environment, and the build inputs, before it sets the test
+    /// one, and the build gets that file's environment instead. Outside a test
+    /// environment the build inherits the caller's already.
+    fn build_command(&self) -> ProcessCommand {
+        let mut command = ProcessCommand::new(&self.build.program);
+        command
+            .args(&self.build.args)
+            .current_dir(&self.build.app_dir)
+            .stdout(Stdio::piped());
+        let environment = std::env::var_os("TILO_TEST_ENVIRONMENT")
+            .map(PathBuf::from)
+            .and_then(|root| build_environment(&root));
+        if let Some(environment) = environment {
+            command.env_clear().envs(environment);
+        }
+        command
     }
 
     fn run_cases(&self, program: &Path) -> Result<ScenarioSuiteOutcome> {
@@ -4945,6 +4967,35 @@ impl ScenarioSuitePlan {
         }
         Ok(ScenarioSuiteOutcome { passed, failed })
     }
+}
+
+/// The environment a build is given, from the file
+/// tools/with-test-environment.sh keeps beside the fresh HOME: the caller's
+/// environment and the build inputs. `None` outside a test environment.
+fn build_environment(test_environment: &Path) -> Option<Vec<(OsString, OsString)>> {
+    let written = std::fs::read(test_environment.join("build-environment")).ok()?;
+    Some(parse_environment(&written))
+}
+
+/// `env -0`'s entries: KEY=value, each NUL-terminated, so a value may hold a
+/// newline. An empty entry, or one with no name or no `=`, is not a variable
+/// and is skipped.
+fn parse_environment(source: &[u8]) -> Vec<(OsString, OsString)> {
+    use std::os::unix::ffi::OsStringExt as _;
+    source
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| {
+            let separator = entry.iter().position(|byte| *byte == b'=')?;
+            let (name, value) = entry.split_at(separator);
+            if name.is_empty() {
+                return None;
+            }
+            Some((
+                OsString::from_vec(name.to_vec()),
+                OsString::from_vec(value.strip_prefix(b"=").unwrap_or_default().to_vec()),
+            ))
+        })
+        .collect()
 }
 
 #[derive(Debug)]

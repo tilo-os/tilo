@@ -1910,7 +1910,7 @@ impl Workspaces {
         let mut runtime = runtime_state.lock().await;
         let public = Self::entry_of(governed).is_listed();
         runtime.store.set_documents_when_opened(public);
-        // This server's workspace authority governs the workspace: never auto-enrol,
+        // This server's authority serves the workspace: never auto-enrol,
         // even if the workspace was autobound before the authority took it.
         if std::mem::replace(
             &mut runtime.admission,
@@ -1919,6 +1919,10 @@ impl Workspaces {
         {
             crate::authority_epoch::bump();
         }
+        // The device the workspace was made on governs it; a copy another
+        // server handed over keeps that one's governance.
+        runtime.governs_here =
+            governed.record.owner.device_public_key == self.inner.host.cert.device_public_key;
         runtime.workspace_authority = Some(WorkspaceAuthority {
             workspaces: Arc::downgrade(&self.inner),
             workspace: workspace.clone(),

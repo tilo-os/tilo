@@ -1165,19 +1165,32 @@ impl DesktopPolicy {
     /// `app`. The desktop makes the tab on its next pass: the place is asked
     /// for here, so one that never comes can be given up before then.
     fn hold_launch(&self, app: &str, command: ChromeEffect, background: bool, shows: &str) -> bool {
-        if self.handle.dispatch(command).is_err() {
-            return false;
-        }
+        // The place is held before the shell is asked: the shell makes the tab on a pass of its
+        // own, and a launch asked from another thread — the person's open arrives on the session's
+        // control thread — can have that pass happen before this returns. A launch the shell
+        // carries out with no place held makes no tab, and no window ever comes for it.
+        let held = HeldTab {
+            tab: None,
+            background,
+            window: None,
+            shows: shows.to_owned(),
+        };
         self.held
             .borrow_mut()
             .entry(app.to_owned())
             .or_default()
-            .push(HeldTab {
-                tab: None,
-                background,
-                window: None,
-                shows: shows.to_owned(),
-            });
+            .push(held);
+        if self.handle.dispatch(command).is_err() {
+            // The shell took no launch: the place it would have made goes with it.
+            let mut places = self.held.borrow_mut();
+            if let Some(queue) = places.get_mut(app) {
+                queue.pop();
+                if queue.is_empty() {
+                    places.remove(app);
+                }
+            }
+            return false;
+        }
         true
     }
 

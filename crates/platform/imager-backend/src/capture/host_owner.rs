@@ -5,7 +5,7 @@ use launcher::{
         self, CaptureAdmission, CaptureOutputAdmission, ConnectedService, QuiescentExit,
         ServiceAuthority, ServiceCancellation, ServiceLaunch, ServiceLeaseKey,
     },
-    run::{LaunchMode, RunError, RunOptions},
+    run::{LaunchError, LaunchMode, LaunchOptions},
 };
 use std::{fs::File, io, path::Path, sync::Arc};
 
@@ -108,14 +108,14 @@ impl CaptureHostOwner {
         self,
         working: &Path,
         connected: Option<ConnectedService>,
-    ) -> Result<QuiescentExit, RunError> {
+    ) -> Result<QuiescentExit, LaunchError> {
         let installation = self.installation.ok_or_else(|| {
-            RunError::InvalidServiceLaunch("Capture installation was not admitted".into())
+            LaunchError::InvalidServiceLaunch("Capture installation was not admitted".into())
         })?;
         let launch = ServiceLaunch {
             manifest: installation.manifest,
             payload: installation.payload,
-            options: RunOptions {
+            options: LaunchOptions {
                 no_services: true,
                 expected_package_hash: Some(installation.package_hash),
                 app_id: Some(PACKAGE.into()),
@@ -123,11 +123,11 @@ impl CaptureHostOwner {
                 mode: LaunchMode::Service {
                     passthrough_argv: Vec::new(),
                 },
-                ..RunOptions::default()
+                ..LaunchOptions::default()
             },
         };
         let authority = Arc::new(Authority(self.cancellation.clone()));
-        owned_service::run_capture_connected(
+        owned_service::launch_capture_connected(
             launch,
             self.admission,
             authority,

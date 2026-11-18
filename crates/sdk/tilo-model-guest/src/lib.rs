@@ -18,13 +18,18 @@
 //! The request and the answer are JSON. A document travels base64, because
 //! the ABI carries bytes as text at the boundary and nothing else.
 //!
+//! An app's module serves every resource it declares: a request names the
+//! resource kind it is for, and the module routes it to that resource's verbs.
 //! An app builds one module per version by exporting [`serve`] over its
-//! resource:
+//! resources:
 //!
 //! ```text
 //! #[unsafe(no_mangle)]
 //! pub extern "C" fn tilo_model_apply() -> i32 {
-//!     tilo_model_guest::serve::<tasks_model::Tracker>()
+//!     tilo_model_guest::serve(&[
+//!         tilo_model_guest::Served::of::<tube_model::Library>(),
+//!         tilo_model_guest::Served::of::<tube_model::WatchHistory>(),
+//!     ])
 //! }
 //! ```
 
@@ -66,10 +71,38 @@ enum Op {
     Apply,
 }
 
+/// One resource an app's module serves, and the code that answers a request
+/// for it.
+///
+/// A module is one per app, and an app declares one resource per document
+/// kind it keeps ([`Resource::KIND`]), so a request names the kind it is for
+/// and the module routes it here.
+#[derive(Clone, Copy)]
+pub struct Served {
+    /// The resource kind this serves, as the app declares it.
+    pub kind: &'static str,
+    /// The handler that answers a request for it.
+    pub handler: fn(&Request) -> Result<Answer, String>,
+}
+
+impl Served {
+    /// Serve the resource `R` through its own verbs.
+    #[must_use]
+    pub fn of<R: Resource>() -> Self {
+        Self {
+            kind: R::KIND,
+            handler: serve_resource::<R>,
+        }
+    }
+}
+
 /// One request from the device.
 #[derive(Debug, Deserialize)]
-struct Request {
+pub struct Request {
     op: Op,
+    /// The resource kind the request is for: which of the app's resources the
+    /// module routes it to ([`Resource::KIND`]).
+    pub kind: String,
     /// The resource's document id: `@tilo:package-primary` for what an app
     /// keeps per workspace.
     id: String,
@@ -101,7 +134,7 @@ struct Request {
 
 /// What the model answers.
 #[derive(Debug, Default, serde::Serialize)]
-struct Answer {
+pub struct Answer {
     /// The bytes of the resource's document after `initialize`, base64.
     #[serde(skip_serializing_if = "Option::is_none")]
     document: Option<String>,
@@ -116,10 +149,11 @@ struct Answer {
     error: Option<String>,
 }
 
-/// Serve the device's requests for the resource `R`: what an app's model
-/// module exports as [`EXPORT`].
-pub fn serve<R: Resource>() -> i32 {
-    let answer = match asked::<R>() {
+/// Serve the device's requests for every resource an app declares: what its
+/// model module exports as [`EXPORT`]. Each request names the resource kind it
+/// is for, and only that resource's verbs answer it.
+pub fn serve(resources: &[Served]) -> i32 {
+    let answer = match asked(resources) {
         Ok(answer) => answer,
         Err(error) => Answer {
             error: Some(error),
@@ -129,12 +163,21 @@ pub fn serve<R: Resource>() -> i32 {
     write(&answer)
 }
 
-fn asked<R: Resource>() -> Result<Answer, String> {
+fn asked(resources: &[Served]) -> Result<Answer, String> {
     let request: Request =
         serde_json::from_slice(&read()?).map_err(|error| format!("the request: {error}"))?;
+    let served = resources
+        .iter()
+        .find(|served| served.kind == request.kind)
+        .ok_or_else(|| format!("the module serves no `{}` resource", request.kind))?;
+    (served.handler)(&request)
+}
+
+/// One request for the resource `R`, answered by its own verbs.
+fn serve_resource<R: Resource>(request: &Request) -> Result<Answer, String> {
     match request.op {
-        Op::Initialize => genesis::<R>(&request),
-        Op::Apply => apply::<R>(&request),
+        Op::Initialize => genesis::<R>(request),
+        Op::Apply => apply::<R>(request),
     }
 }
 
@@ -280,6 +323,9 @@ fn decode(text: &str) -> Result<Vec<u8>, String> {
 /// # Safety
 /// Called by getrandom with a writable buffer of `len` bytes.
 #[unsafe(no_mangle)]
+// getrandom's custom backend calls this signature; it can only answer with an
+// error it never makes, and no module build can change that contract.
+#[allow(clippy::unnecessary_wraps, reason = "getrandom's custom backend ABI")]
 unsafe extern "Rust" fn __getrandom_v03_custom(
     dest: *mut u8,
     len: usize,

@@ -84,7 +84,7 @@ fn items(r: &Replica) -> Vec<Value> {
 
 /// The title the window's header reads, as a person reads it: the shell's own, unwrapped.
 pub(crate) fn shown_title(view: &ViewInstance) -> Option<String> {
-    let shell = all(view.tree(), "ui.NavShell").into_iter().next()?;
+    let shell = view.tree().first_of_kind("ui.NavShell")?;
     match shell.props.get("title") {
         Some(Value::Text(title)) => Some(title.clone()),
         Some(Value::Opt(Some(title))) => match &**title {
@@ -97,7 +97,7 @@ pub(crate) fn shown_title(view: &ViewInstance) -> Option<String> {
 
 /// How many things the window's header says its page lists, or nothing when it says no number.
 pub(crate) fn shown_count(view: &ViewInstance) -> Option<i64> {
-    let shell = all(view.tree(), "ui.NavShell").into_iter().next()?;
+    let shell = view.tree().first_of_kind("ui.NavShell")?;
     match shell.props.get("count") {
         Some(Value::Int(count)) => Some(*count),
         Some(Value::Opt(Some(count))) => match **count {
@@ -614,7 +614,7 @@ tilo_test_env::scenario! {
         let mut view = ada.view(APP);
         go_to(&mut view, "Inbox");
         assert_eq!(
-            all(view.tree(), "ui.VirtualList")
+            view.tree().of_kind("ui.VirtualList")
                 .first()
                 .and_then(|list| list.props.get("tree")),
             Some(&Value::Int(1)),
@@ -729,7 +729,7 @@ tilo_test_env::scenario! {
             .filter(|(_, above, _, _)| above == &target(&draft))
             .map(|(row, _, _, _)| row.clone())
             .collect();
-        let outlined: Vec<String> = all(view.tree(), "ui.TreeViewNode")
+        let outlined: Vec<String> = view.tree().of_kind("ui.TreeViewNode")
             .iter()
             .filter(|node| node.props.get("parent").and_then(target) == target(&draft))
             .filter_map(|node| node.props.get("item").and_then(target))
@@ -1122,12 +1122,12 @@ tilo_test_env::scenario! {
             "the outline holds every step of the task"
         );
         assert!(
-            all(page.tree(), "ui.TreeViewNode").is_empty(),
+            page.tree().of_kind("ui.TreeViewNode").is_empty(),
             "no step is drawn before the window shows it"
         );
         // The indented step, read first: neither the step over it nor its parent has been read.
         let row = page.row(&tree, 2).unwrap().expect("shown").clone();
-        let node = all(&row, "ui.TreeViewNode").first().copied().unwrap();
+        let node = row.of_kind("ui.TreeViewNode").first().copied().unwrap();
         assert_eq!(node.props.get("label"), Some(&Value::text("Screenshots")));
         assert_eq!(
             node.props.get("depth"),
@@ -1136,7 +1136,7 @@ tilo_test_env::scenario! {
         );
         assert!(!flag(node, "branch"), "it holds no step of its own");
         let row = page.row(&tree, 1).unwrap().expect("shown").clone();
-        let node = all(&row, "ui.TreeViewNode").first().copied().unwrap();
+        let node = row.of_kind("ui.TreeViewNode").first().copied().unwrap();
         assert_eq!(node.props.get("label"), Some(&Value::text("First draft")));
         assert_eq!(
             node.props.get("depth"),
@@ -1406,7 +1406,7 @@ tilo_test_env::scenario! {
 /// draws no list, and no rows.
 pub(crate) fn home_list_rows(view: &mut ViewInstance) -> Vec<(usize, String, String, bool)> {
     view.poll_patches().unwrap();
-    let lists = all(view.tree(), "ui.VirtualList");
+    let lists = view.tree().of_kind("ui.VirtualList");
     let Some(list) = lists.first() else {
         return Vec::new();
     };
@@ -1416,13 +1416,13 @@ pub(crate) fn home_list_rows(view: &mut ViewInstance) -> Vec<(usize, String, Str
         let Some(row) = view.row(&list, index).unwrap().cloned() else {
             continue;
         };
-        let Some(item) = all(&row, "ui.ListItem").first().copied() else {
+        let Some(item) = row.of_kind("ui.ListItem").first().copied() else {
             continue;
         };
         let Some(Value::Ref(at)) = item.props.get("item") else {
             panic!("a row presents its task: {:?}", item.props.get("item"));
         };
-        let Some(drawn) = all(&row, "ui.ListRow").first().copied() else {
+        let Some(drawn) = row.of_kind("ui.ListRow").first().copied() else {
             continue;
         };
         // The box is bound to whether the task is done: what a person sees it filled with.
@@ -1471,7 +1471,9 @@ pub(crate) fn home_row_of(view: &mut ViewInstance, item: &str) -> (usize, String
 /// The row the home list draws for `item`, as a tree.
 fn home_row_node(view: &mut ViewInstance, item: &str) -> UiNode {
     let (place, _, _) = home_row_of(view, item);
-    let list = all(view.tree(), "ui.VirtualList")
+    let list = view
+        .tree()
+        .of_kind("ui.VirtualList")
         .first()
         .expect("the home list")
         .key
@@ -1600,7 +1602,7 @@ tilo_test_env::scenario! {
         assert_eq!(now, place, "in the place it stood");
         let row = home_row_node(&mut view, &of);
         assert_eq!(
-            all(&row, "ui.ListRow")
+            row.of_kind("ui.ListRow")
                 .first()
                 .and_then(|drawn| drawn.props.get("secondary")),
             Some(&Value::text("Move flat")),
@@ -1635,7 +1637,7 @@ tilo_test_env::scenario! {
         let bill = task(&ada, "Pay the electricity bill");
         let of = target(&bill).expect("a task");
         let (place, _, _) = home_row_of(&mut view, &of);
-        let list = all(view.tree(), "ui.VirtualList")
+        let list = view.tree().of_kind("ui.VirtualList")
             .first()
             .expect("the home list")
             .key
@@ -2222,17 +2224,19 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
 fn step_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<String>)> {
     view.set_lazy_rows(false).unwrap();
     view.poll_patches().unwrap();
-    let tree = all(view.tree(), "ui.TreeView")
+    let tree = view
+        .tree()
+        .of_kind("ui.TreeView")
         .into_iter()
         .find(|tree| tree.props.get("name") == Some(&Value::text("Subtasks")))
         .expect("the page's subtasks");
-    all(tree, "ui.TreeViewNode")
+    tree.of_kind("ui.TreeViewNode")
         .into_iter()
         .filter_map(|node| {
             let Some(Value::Text(label)) = node.props.get("label") else {
                 return None;
             };
-            let row = all(node, "ui.TreeViewRow").first().copied()?;
+            let row = node.of_kind("ui.TreeViewRow").first().copied()?;
             let text = |name: &str| match row.props.get(name) {
                 Some(Value::Text(text)) if !text.is_empty() => Some(text.clone()),
                 _ => None,
@@ -2242,27 +2246,14 @@ fn step_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<Str
         .collect()
 }
 
-/// Every node of this kind in the drawn view.
-pub(crate) fn all<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
-    fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
-        if node.kind == kind {
-            out.push(node);
-        }
-        for child in &node.children {
-            walk(child, kind, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(node, kind, &mut out);
-    out
-}
-
 /// What each row of the home list presents: the task, the task it stands under, what its row says
 /// of the task's subtasks, and whether it stands in the folded tail.
 fn home_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<String>, bool)> {
     let _ = view.set_lazy_rows(false);
     view.poll_patches().unwrap();
-    let list = all(view.tree(), "ui.VirtualList")
+    let list = view
+        .tree()
+        .of_kind("ui.VirtualList")
         .first()
         .expect("the home list")
         .key
@@ -2273,7 +2264,7 @@ fn home_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<Str
         let Some(row) = view.row(&list, index).unwrap() else {
             continue;
         };
-        let Some(item) = all(row, "ui.ListItem").first().copied() else {
+        let Some(item) = row.of_kind("ui.ListItem").first().copied() else {
             continue;
         };
         let Some(Value::Ref(at)) = item.props.get("item") else {
@@ -2386,7 +2377,9 @@ fn labels(commands: &[Command]) -> Vec<&str> {
 /// The home list's drawn row for a task.
 fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
     view.poll_patches().unwrap();
-    let list = all(view.tree(), "ui.VirtualList")
+    let list = view
+        .tree()
+        .of_kind("ui.VirtualList")
         .first()
         .expect("the home list")
         .key
@@ -2396,7 +2389,7 @@ fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
     for index in 0..len {
         let stands = match view.row(&list, index) {
             Ok(Some(row)) => {
-                all(row, "ui.ListItem")
+                row.of_kind("ui.ListItem")
                     .first()
                     .and_then(|item| item.props.get("item"))
                     .and_then(target)
@@ -2419,7 +2412,8 @@ fn home_row<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
 /// inside it — a task opened in the row holds rows of its own.
 fn row_menu<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
     let row = home_row(view, want);
-    let item = all(row, "ui.ListItem")
+    let item = row
+        .of_kind("ui.ListItem")
         .into_iter()
         .find(|item| item.props.get("item").and_then(target) == target(want))
         .unwrap_or_else(|| panic!("the row presents the task: {row:?}"));
@@ -2434,7 +2428,8 @@ fn row_menu<'a>(view: &'a mut ViewInstance, want: &Value) -> &'a UiNode {
 
 /// The commands a task's row offers from its own menu.
 fn row_commands(view: &mut ViewInstance, want: &Value) -> Vec<Command> {
-    all(row_menu(view, want), "ui.MenuItem")
+    (row_menu(view, want))
+        .of_kind("ui.MenuItem")
         .into_iter()
         .map(menu_command)
         .collect()
@@ -2443,16 +2438,18 @@ fn row_commands(view: &mut ViewInstance, want: &Value) -> Vec<Command> {
 /// The command a task's row runs when it is swiped, as its label reads.
 fn row_swipe(view: &mut ViewInstance, want: &Value) -> Option<String> {
     let row = home_row(view, want);
-    let swipe = all(row, "part")
+    let swipe = row
+        .of_kind("part")
         .into_iter()
         .find(|part| part.props.get("name") == Some(&Value::text("swipe")))?;
-    let action = all(swipe, "ui.SwipeAction").into_iter().next()?;
+    let action = swipe.first_of_kind("ui.SwipeAction")?;
     text_of(action, "label")
 }
 
 /// The key of the command `label` of a task's row menu: the node running it names.
 fn row_command_key(view: &mut ViewInstance, want: &Value, label: &str) -> String {
-    all(row_menu(view, want), "ui.MenuItem")
+    (row_menu(view, want))
+        .of_kind("ui.MenuItem")
         .into_iter()
         .find(|item| text_of(item, "label").as_deref() == Some(label))
         .unwrap_or_else(|| panic!("the row offers {label}"))
@@ -2462,7 +2459,9 @@ fn row_command_key(view: &mut ViewInstance, want: &Value, label: &str) -> String
 
 /// The commands a page offers behind its `...` api.
 pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
-    let more = all(view.tree(), "ui.MenuButton")
+    let more = view
+        .tree()
+        .of_kind("ui.MenuButton")
         .into_iter()
         .find(|button| button.key.ends_with("~more"))
         .unwrap_or_else(|| {
@@ -2471,7 +2470,7 @@ pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
                 view.tree()
             )
         });
-    all(more, "ui.MenuItem")
+    more.of_kind("ui.MenuItem")
         .into_iter()
         .map(menu_command)
         .collect()
@@ -2625,11 +2624,9 @@ tilo_test_env::scenario! {
         };
         let mut view = ada.host.open_resource(&at.target, None).unwrap();
         view.poll_patches().unwrap();
-        let switch = all(view.tree(), "ui.ViewTabs")
-            .into_iter()
-            .next()
+        let switch = view.tree().first_of_kind("ui.ViewTabs")
             .expect("the project's window switches between the views it declares");
-        let segments: Vec<String> = all(switch, "ui.Segment")
+        let segments: Vec<String> = switch.of_kind("ui.Segment")
             .into_iter()
             .filter_map(|segment| text_of(segment, "label"))
             .collect();
@@ -2638,7 +2635,7 @@ tilo_test_env::scenario! {
             ["List", "Board"],
             "the views it declares, in the order it declares them, each saying what it adds to the type's name"
         );
-        let icons: Vec<Option<String>> = all(switch, "ui.Segment")
+        let icons: Vec<Option<String>> = switch.of_kind("ui.Segment")
             .into_iter()
             .map(|segment| text_of(segment, "icon"))
             .collect();
@@ -2654,7 +2651,7 @@ tilo_test_env::scenario! {
         );
         let mut toggles = Vec::new();
         let mut commands = Vec::new();
-        for button in all(view.tree(), "ui.Button") {
+        for button in view.tree().of_kind("ui.Button") {
             let Some(label) = text_of(button, "label") else {
                 continue;
             };
@@ -2783,7 +2780,7 @@ tilo_test_env::scenario! {
         let mut page = task_page(&ada, &task);
         let mut said: Vec<String> = Vec::new();
         for (where_, view) in [("the list", &mut home), ("a task", &mut page)] {
-            for field in all(view.tree(), "ui.TextInput") {
+            for field in view.tree().of_kind("ui.TextInput") {
                 let placeholder = text_of(field, "placeholder").unwrap_or_default();
                 assert!(
                     !placeholder.is_empty(),

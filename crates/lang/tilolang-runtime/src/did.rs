@@ -8,7 +8,7 @@
 //! the words an action declares for itself (`did:`) are. The words name the field they are of
 //! (`$field`), in the case a sentence goes on with ("set priority to").
 
-use crate::registry::FieldInfo;
+use crate::registry::{FieldInfo, TypeInfo};
 use crate::value::Value;
 use tilolang::types::Ty;
 
@@ -60,6 +60,17 @@ pub fn said(field: &FieldInfo, named: &str, before: &Value, after: &Value) -> Sa
         said.shows = Shows::None;
     }
     said
+}
+
+/// What a write of the field `field` of a resource of `info` reads with when the field is the one
+/// its rows, menus and links show the resource by ([`TypeInfo::name_field`]): it renamed the resource,
+/// whatever the field's type. One rule for the sentence history says and the word a write leaves
+/// where it landed.
+#[must_use]
+pub fn renamed(info: &TypeInfo, field: &str) -> Option<Said> {
+    info.name_field()
+        .filter(|named| named.id == field)
+        .map(|_| plain("tilolang-did-renamed", "renamed", Shows::None))
 }
 
 /// What a change to a field of `ty` reads with.
@@ -292,6 +303,19 @@ mod tests {
                 reads(&tags, &Value::List(Vec::new()), &Value::List(Vec::new())),
                 ("tilolang-did-changed", "", true)
             );
+        }
+
+        phase a_write_of_the_field_a_resource_is_named_by_reads_as_renamed;
+        {
+            let text = |name| FieldInfo { kind: FieldKind::Text, ..field(name, Ty::Text) };
+            let task = TypeInfo {
+                id: "so.tilo.test.Task".into(),
+                name: "Task".to_owned(),
+                fields: vec![text("title"), text("notes")],
+                title: None,
+            };
+            assert_eq!(renamed(&task, "title").map(|said| said.key), Some("tilolang-did-renamed"));
+            assert_eq!(renamed(&task, "notes"), None, "another text field is not the name");
         }
 
         phase words_that_speak_of_a_value_that_stood_not_read_of_nothing;

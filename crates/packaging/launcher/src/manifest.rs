@@ -85,7 +85,7 @@ bin = "bin/app"
             let manifest = read_manifest(&path).unwrap();
             assert!(manifest.runtime.is_none());
             assert!(
-                crate::run::resolve_runtime(&manifest, &crate::run::RunOptions::default())
+                crate::run::resolve_runtime(&manifest, &crate::run::LaunchOptions::default())
                     .unwrap()
                     .is_none()
             );
@@ -102,8 +102,8 @@ bin = "bin/app"
             let thin = read_manifest(&path).unwrap();
             assert_eq!(thin.runtime.as_deref(), Some("tilo-runtime/2099.01"));
             assert!(matches!(
-                crate::run::resolve_runtime(&thin, &crate::run::RunOptions::default()),
-                Err(crate::run::RunError::RuntimeBundleMissing { .. })
+                crate::run::resolve_runtime(&thin, &crate::run::LaunchOptions::default()),
+                Err(crate::run::LaunchError::RuntimeBundleMissing { .. })
             ));
         }
 

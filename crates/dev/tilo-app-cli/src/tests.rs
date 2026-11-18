@@ -1,5 +1,6 @@
 use super::*;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::ffi::OsStr;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn request(dir: PathBuf) -> NewAppRequest {
@@ -1280,6 +1281,84 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
         let outcome = plan.execute().unwrap();
         assert_eq!(outcome.passed, ["default"], "{:?}", outcome.failed);
     }
+}
+
+#[test]
+fn scenario_build_gets_the_callers_environment() {
+    let temp = tempfile::tempdir().unwrap();
+    let test_environment = temp.path().join("test-environment");
+    std::fs::create_dir(&test_environment).unwrap();
+    std::fs::write(
+        test_environment.join("build-environment"),
+        b"HOME=/caller/home\0PATH=/caller/bin\0TILO_FONT_ASSET_CACHE=/caller/fonts\0",
+    )
+    .unwrap();
+    let plan = ScenarioSuitePlan {
+        app_dir: temp.path().to_path_buf(),
+        build: CargoPlan {
+            app_dir: temp.path().to_path_buf(),
+            program: OsString::from("cargo"),
+            args: Vec::new(),
+        },
+        bin: None,
+        artifact_dir: None,
+        cases: Vec::new(),
+    };
+    let environment = |plan: &ScenarioSuitePlan| {
+        plan.build_command()
+            .get_envs()
+            .map(|(name, value)| (name.to_owned(), value.map(OsStr::to_owned)))
+            .collect::<BTreeMap<_, _>>()
+    };
+
+    // Outside a test environment the build inherits the caller's.
+    {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_TEST_ENVIRONMENT");
+        assert!(environment(&plan).is_empty());
+    }
+
+    // Inside one it carries the written build environment, and none of the
+    // values the test environment added: no fresh HOME or XDG tree, no test
+    // marker, no audio endpoint or its PID.
+    {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_TEST_ENVIRONMENT", &test_environment);
+        for name in [
+            "HOME",
+            "TMPDIR",
+            "XDG_RUNTIME_DIR",
+            "TILO_HEADLESS_AUDIO_PID",
+            "PULSE_SERVER",
+        ] {
+            env.set(name, format!("/test-environment/{name}"));
+        }
+        let build = environment(&plan);
+        assert_eq!(
+            build
+                .keys()
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["HOME", "PATH", "TILO_FONT_ASSET_CACHE"]
+        );
+        assert_eq!(
+            build.get(OsStr::new("HOME")),
+            Some(&Some(OsString::from("/caller/home")))
+        );
+        assert_eq!(
+            build.get(OsStr::new("TILO_FONT_ASSET_CACHE")),
+            Some(&Some(OsString::from("/caller/fonts")))
+        );
+    }
+
+    // A value may hold a newline: only the terminating NUL separates entries.
+    assert_eq!(
+        parse_environment(b"A=one\ntwo\0B=\0"),
+        [
+            (OsString::from("A"), OsString::from("one\ntwo")),
+            (OsString::from("B"), OsString::from("")),
+        ]
+    );
 }
 
 tilo_test_env::scenario! {

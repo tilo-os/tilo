@@ -433,6 +433,115 @@ fn payload(root: &ed25519_dalek::SigningKey) -> ResponsePayload {
     }
 }
 
+/// A server's enrollment answers with the person's own store beside its
+/// certificate: the machine keeps that list in its identity root, where the
+/// devices it may ask at boot come from with no session of theirs running.
+#[test]
+fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
+    let dir = tempfile::tempdir().unwrap();
+    let system = dir.path().join("system");
+    let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
+    let user = root.verifying_key().to_bytes();
+    let identity_id = hex::encode(user);
+    let issuer = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
+    let mut issuer_cert = DeviceCert {
+        user_public_key: user,
+        device_public_key: issuer.verifying_key().to_bytes(),
+        device_label: "The laptop".into(),
+        capabilities: DeviceCapabilities::primary(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut issuer_cert, &root).unwrap();
+    let now = now_ns().unwrap();
+    let token = tilo_user_identity::mint_enrollment_token(
+        user,
+        DeviceCapabilities::member(),
+        now,
+        now + 60 * 60 * 1_000_000_000,
+        [3; 16],
+        Vec::new(),
+        &issuer,
+    )
+    .unwrap();
+    let token_text = tilo_user_identity::encode_enrollment_token(&token).unwrap();
+    let home_peer_output = dir.path().join("home-peer.toml");
+    let options = JoinOptions {
+        identity_root: &system,
+        label: "NAS",
+        timeout: 60,
+        kind: EnrollmentKind::HomePeer,
+        home_peer_output: Some(&home_peer_output),
+        identity_dir: None,
+        requester_lease: None,
+        port: 0,
+    };
+    let prepared = prepare_join(&token_text, options).unwrap();
+    let machine = prepared.device.verifying_key().to_bytes();
+    let mut cert = DeviceCert {
+        user_public_key: user,
+        device_public_key: machine,
+        device_label: "NAS".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: now,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, &root).unwrap();
+    let home_peer = fs::full_replica::HomePeerSet {
+        status_file: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
+        workspaces: Vec::new(),
+    };
+    let payload = ResponsePayload {
+        nonce: token.nonce,
+        recipient_device_public_key: machine,
+        server_node_id: prepared.request.server_node_id,
+        cert: cert.clone(),
+        home_peer_toml: Some(toml::to_string_pretty(&home_peer).unwrap()),
+        public_identity_json: None,
+        fleet_json: Some(fleet_document(
+            &identity_id,
+            vec![issuer_cert, cert.clone()],
+            Vec::new(),
+        )),
+        home_peers_json: Some(b"[]".to_vec()),
+    };
+    install_answer(&prepared, options, &payload, b"response", &mut |_| Ok(())).unwrap();
+
+    assert!(
+        home_peer_output.exists(),
+        "the home-peer configuration is written"
+    );
+    let paths = IdentityPaths::under(&system);
+    assert!(
+        tilo_device_identity::persist::read_device_cert(&paths.device_cert)
+            .is_ok_and(|written| written.device_public_key == machine),
+        "the machine holds its certificate"
+    );
+    let store = DeviceFleetStore::of_device(paths, &identity_id);
+    let kept = store
+        .load(&identity_id)
+        .expect("the person's devices are kept");
+    assert!(
+        kept.certificates
+            .iter()
+            .any(|known| known.device_public_key == machine),
+        "the machine's own certificate is among them"
+    );
+    assert_eq!(
+        kept.personal_devices(&user, now).len(),
+        2,
+        "the machine and the device that admitted it"
+    );
+    assert!(
+        store.fleet_file(&identity_id).starts_with(system.as_path()),
+        "kept in this machine's identity root, not an account's configuration"
+    );
+}
+
 tilo_test_env::scenario! {
     #[allow(
         clippy::too_many_lines,

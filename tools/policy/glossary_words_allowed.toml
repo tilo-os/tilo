@@ -445,7 +445,7 @@ paths = ["tools/perf/tapp-size-budget/raises/*", "tools/perf/runtime-size-budget
 [[allow]]
 reason = "The push lint and the integration script start cargo, rustfmt, t and Git: a run there is one of those processes, and Python's subprocess.run names it."
 words = ["run"]
-paths = ["tools/integrate.sh", "tools/ci/pre_push_lint.py", "tools/ci/check-changed-rustfmt.sh", "tools/tests/test_pre_push_lint.py", "tools/tests/test_changed_rustfmt.py"]
+paths = ["tools/integrate.sh", "tools/ci/pre_push_lint.py", "tools/ci/check-changed-rustfmt.sh", "tools/tests/test_pre_push_lint.py", "tools/tests/test_changed_rustfmt.py", "tools/tests/test_test_environment.py"]
 
 [[allow]]
 reason = "The installer backend's entry point starts the privileged tilo-install process and feeds it its secrets through stdin."
@@ -949,7 +949,10 @@ paths = ["crates/agent/agent-turn/src/hearing.rs"]
 reason = "The session tests' support helpers that start a test server for workspaces, by the names the other session tests import them under, and the server client's types for the address it dials."
 words = ["host"]
 identifiers = ["start_workspace_host", "start_workspace_host_relaying", "Host", "HostAddress"]
-paths = ["crates/session/client/tests/invitation_entry.rs"]
+paths = [
+    "crates/session/client/tests/invitation_entry.rs",
+    "crates/session/client/tests/voice_every_workspace.rs",
+]
 
 [[allow]]
 reason = "The url crate's name for a URL's host part: which computers can open a site is read from it."
@@ -1098,3 +1101,52 @@ paths = ["crates/agent/agent-session/tests/workspace_actions/packaged_model.rs"]
 reason = "A lane of a commit graph, as the stored history names it: a column a commit sits in, outside Tilo's vocabulary."
 words = ["lane"]
 paths = ["apps/git-client-model/src/model.rs"]
+
+[[allow]]
+reason = "The machine a VM runs on and the machine's own files and network as the guest sees them, which the glossary keeps as host: tilo-vm builds images for it and boots guests on it."
+words = ["host"]
+paths = ["crates/dev/tilo-vm/*", "crates/dev/tilo-vmd/*"]
+
+[[allow]]
+reason = "The two sides of a Linux VM: the host machine runs the domain and speaks `HostMessage` to its guest, and the hosted-VM service places guests on the host it runs them on."
+words = ["host"]
+paths = [
+    "crates/runtime/linux-vm/*",
+    "crates/runtime/linux-vm-agent/*",
+    "crates/runtime/linux-vm-protocol/*",
+]
+
+[[allow]]
+reason = "The machine a container runs on, and the web host names the tilo.sh stack serves and checks: origins, `Host` headers and ssh `Host` entries, all network names."
+words = ["host"]
+paths = ["os/containers/*"]
+
+[[allow]]
+reason = "A registry address's host, the network name a registry is reached at, which the glossary keeps as a network host name."
+words = ["host"]
+identifiers = ["host", "host_str"]
+paths = ["apps/publisher-model/src/lib.rs"]
+
+[[allow]]
+reason = "A place at a poker table: the game's own word for where a player sits, in the resource the app and its module share."
+words = ["seat"]
+identifiers = [
+    "seat", "seats", "SEATS", "seating", "seat_of", "free_seat", "button_seat", "seated",
+    "seats_are_taken", "poker-take-seat", "two_people_asking_for_one_seat_both_sit",
+]
+paths = [
+    "apps/poker-model/src/game.rs",
+    "apps/poker-model/src/cards.rs",
+    "apps/poker-model/locales/en-US.ftl",
+    "apps/poker-model/locales/de-DE.ftl",
+]
+
+[[allow]]
+reason = "A connection's host, the network host name a transport reaches, which the glossary keeps as a network host name."
+words = ["host"]
+identifiers = ["host", "host_part", "Host"]
+paths = [
+    "apps/remote-model/src/lib.rs",
+    "apps/remote-model/locales/en-US.ftl",
+    "apps/remote-model/locales/de-DE.ftl",
+]

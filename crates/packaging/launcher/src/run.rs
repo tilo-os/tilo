@@ -33,7 +33,7 @@ pub(crate) use verified_installation::{verified_launch_installation, verified_la
 pub mod tilolang_process;
 
 #[derive(Debug, thiserror::Error)]
-pub enum RunError {
+pub enum LaunchError {
     #[error(transparent)]
     Manifest(#[from] crate::manifest::ManifestReadError),
     #[error(
@@ -162,18 +162,18 @@ pub enum RunError {
 }
 
 pub use crate::capture::{
-    CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination,
+    CaptureCancellation, CapturedLaunchOutput, CapturedResourcePlan, CapturedTermination,
 };
-impl From<crate::capture::InvalidCapturePlan> for RunError {
+impl From<crate::capture::InvalidCapturePlan> for LaunchError {
     fn from(_: crate::capture::InvalidCapturePlan) -> Self {
         Self::InvalidCapturePlan
     }
 }
 
-impl RunError {
+impl LaunchError {
     pub fn to_exit_code(&self) -> i32 {
         match self {
-            RunError::Service(ServiceError::RequiredMissing { .. }) => {
+            LaunchError::Service(ServiceError::RequiredMissing { .. }) => {
                 EXIT_REQUIRED_SERVICE_MISSING
             }
             _ => 1,
@@ -196,7 +196,7 @@ fn display_paths(paths: &[PathBuf]) -> String {
               landlock_enforce, allow_missing_runtime, allow_unsigned_runtime), not combinatorial \
               state — grouping them into an enum would not make any combination less valid"
 )]
-pub struct RunOptions {
+pub struct LaunchOptions {
     /// A host launch's signed package root; another installation fails the launch.
     pub expected_package_hash: Option<String>,
     pub no_services: bool,
@@ -258,7 +258,7 @@ pub struct RunOptions {
     pub tilolang_connector: Option<String>,
 }
 
-impl Default for RunOptions {
+impl Default for LaunchOptions {
     fn default() -> Self {
         Self {
             expected_package_hash: None,
@@ -295,7 +295,7 @@ impl Default for RunOptions {
     }
 }
 
-fn gui_open_args(opts: &RunOptions) -> Vec<String> {
+fn gui_open_args(opts: &LaunchOptions) -> Vec<String> {
     let mut args = if let Some(uri) = &opts.open_uri {
         let mut args = vec![uri.clone()];
         if opts.open_as_visitor {
@@ -322,14 +322,14 @@ fn gui_open_args(opts: &RunOptions) -> Vec<String> {
     args
 }
 
-fn validate_open_uri(manifest: &ManifestView, opts: &RunOptions) -> Result<(), RunError> {
+fn validate_open_uri(manifest: &ManifestView, opts: &LaunchOptions) -> Result<(), LaunchError> {
     if let Some(instance) = opts.headless_console
         && (instance == 0
             || opts.wayland_socket.is_some()
             || !matches!(opts.mode, LaunchMode::Gui)
             || manifest.entrypoint.gui_bin().is_none())
     {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "invalid headless console launch".into(),
         ));
     }
@@ -341,18 +341,18 @@ fn validate_open_uri(manifest: &ManifestView, opts: &RunOptions) -> Result<(), R
         || uri.trim() != uri
         || uri.chars().any(char::is_control)
     {
-        return Err(RunError::InvalidOpenUri("malformed URI".into()));
+        return Err(LaunchError::InvalidOpenUri("malformed URI".into()));
     }
     let (scheme, rest) = uri
         .split_once(':')
-        .ok_or_else(|| RunError::InvalidOpenUri("URI has no scheme".into()))?;
+        .ok_or_else(|| LaunchError::InvalidOpenUri("URI has no scheme".into()))?;
     let scheme = scheme.to_ascii_lowercase();
     // Every app opens its own records; the record names nothing outside them.
     let own_document = scheme == collab_types::DOCUMENT_URI_SCHEME;
     if rest.is_empty()
         || !(own_document || manifest.opens_schemes.iter().any(|claim| claim == &scheme))
     {
-        return Err(RunError::InvalidOpenUri(format!(
+        return Err(LaunchError::InvalidOpenUri(format!(
             "{} does not declare scheme {scheme}",
             manifest.package_id
         )));
@@ -383,21 +383,21 @@ fn interfaces_unmet(
 }
 
 /// Refuse a package built against an interface version this OS does not serve.
-fn validate_interfaces(manifest: &ManifestView) -> Result<(), RunError> {
+fn validate_interfaces(manifest: &ManifestView) -> Result<(), LaunchError> {
     let provided = package_store::interfaces::system_interfaces();
     let unmet = interfaces_unmet(manifest, provided.as_ref());
     if unmet.is_empty() {
         return Ok(());
     }
-    Err(RunError::InterfacesUnmet {
+    Err(LaunchError::InterfacesUnmet {
         package: manifest.package_id.clone(),
         unmet: tilo_app_package::interfaces::describe_unmet(&unmet),
     })
 }
 
-fn validate_launch_mode(manifest: &ManifestView, opts: &RunOptions) -> Result<(), RunError> {
+fn validate_launch_mode(manifest: &ManifestView, opts: &LaunchOptions) -> Result<(), LaunchError> {
     if let LaunchMode::Host { desktop_id } = &opts.mode {
-        return Err(RunError::HostAppNotAPackage {
+        return Err(LaunchError::HostAppNotAPackage {
             desktop_id: desktop_id.clone(),
         });
     }
@@ -406,7 +406,7 @@ fn validate_launch_mode(manifest: &ManifestView, opts: &RunOptions) -> Result<()
         .as_deref()
         .filter(|app_id| *app_id != manifest.package_id)
     {
-        return Err(RunError::AppIdMismatch {
+        return Err(LaunchError::AppIdMismatch {
             app_id: app_id.to_owned(),
             package: manifest.package_id.clone(),
         });
@@ -415,26 +415,26 @@ fn validate_launch_mode(manifest: &ManifestView, opts: &RunOptions) -> Result<()
         return Ok(());
     }
     if manifest.kind != crate::manifest::KIND_SERVICE {
-        return Err(RunError::InvalidServiceLaunch(format!(
+        return Err(LaunchError::InvalidServiceLaunch(format!(
             "{} is `{}`, not a service package",
             manifest.package_id, manifest.kind
         )));
     }
     if manifest.entrypoint.cli_bin().is_none() {
-        return Err(RunError::InvalidServiceLaunch(format!(
+        return Err(LaunchError::InvalidServiceLaunch(format!(
             "{} has no headless entrypoint",
             manifest.package_id
         )));
     }
     if opts.wayland_socket.is_some() || opts.open_document.is_some() || opts.open_uri.is_some() {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "managed services cannot receive a display, document, or URI".into(),
         ));
     }
     Ok(())
 }
 
-fn is_native_game_launch(manifest: &ManifestView, opts: &RunOptions) -> bool {
+fn is_native_game_launch(manifest: &ManifestView, opts: &LaunchOptions) -> bool {
     matches!(&opts.mode, LaunchMode::Gui)
         && manifest.category.as_deref().is_some_and(|category| {
             category.eq_ignore_ascii_case("game") || category.eq_ignore_ascii_case("games")
@@ -458,7 +458,7 @@ mod headless_console_launch_tests {
 
         phase typed_headless_console_uses_fixed_standard_wire_and_refuses_other_modes;
         {
-            let mut opts = RunOptions {
+            let mut opts = LaunchOptions {
                 headless_console: Some(72),
                 ..Default::default()
             };
@@ -485,12 +485,12 @@ mod headless_console_launch_tests {
         {
             {
                 let manifest = browser_manifest();
-                let accepted = RunOptions {
+                let accepted = LaunchOptions {
                     open_uri: Some("https://example.test/a --not-an-argument".into()),
                     ..Default::default()
                 };
                 validate_open_uri(&manifest, &accepted).unwrap();
-                let own_document = RunOptions {
+                let own_document = LaunchOptions {
                     open_uri: Some("tilo-document:3f0c9a1e-2b4d-4e8f-9a6b-7c5d1e2f3a4b".into()),
                     ..Default::default()
                 };
@@ -503,7 +503,7 @@ mod headless_console_launch_tests {
                     "https://x\n--flag",
                     "tilo-document:",
                 ] {
-                    let opts = RunOptions {
+                    let opts = LaunchOptions {
                         open_uri: Some(uri.into()),
                         ..Default::default()
                     };
@@ -518,17 +518,17 @@ mod headless_console_launch_tests {
                     "id = \"so.tilo.game\"\nversion = \"1\"\nkind = \"app\"\ncategory = \"Games\"",
                     "[entrypoint]\nbin = \"bin/game\"\n",
                 );
-                assert!(is_native_game_launch(&game, &RunOptions::default()));
-                let service = RunOptions {
+                assert!(is_native_game_launch(&game, &LaunchOptions::default()));
+                let service = LaunchOptions {
                     mode: LaunchMode::Service {
                         passthrough_argv: Vec::new(),
                     },
-                    ..RunOptions::default()
+                    ..LaunchOptions::default()
                 };
                 assert!(!is_native_game_launch(&game, &service));
                 assert!(!is_native_game_launch(
                     &browser_manifest(),
-                    &RunOptions::default()
+                    &LaunchOptions::default()
                 ));
             }
             {
@@ -555,7 +555,7 @@ mod interface_tests;
 mod managed_service_tests;
 
 /// Resolve the capability plan: read the compositor's file, evaluate it for this app now.
-pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> CapabilityPlan {
+pub fn resolve_capabilities(manifest: &ManifestView, opts: &LaunchOptions) -> CapabilityPlan {
     let app_id = manifest.package_id.clone();
     let grants = opts
         .capabilities_path
@@ -584,8 +584,8 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> Capab
 
 pub fn resolve_runtime_test_helper(
     manifest: &crate::manifest::ManifestView,
-    opts: &RunOptions,
-) -> Result<Option<(PathBuf, String)>, RunError> {
+    opts: &LaunchOptions,
+) -> Result<Option<(PathBuf, String)>, LaunchError> {
     resolve_runtime(manifest, opts)
 }
 
@@ -593,26 +593,26 @@ pub fn resolve_runtime_test_helper(
 /// returned for Landlock.
 pub fn required_runtimes_test_helper(
     manifest: &crate::manifest::ManifestView,
-    opts: &RunOptions,
-) -> Result<(Vec<String>, Vec<String>), RunError> {
+    opts: &LaunchOptions,
+) -> Result<(Vec<String>, Vec<String>), LaunchError> {
     let mut argv = vec!["entry".to_string()];
     let mounts = splice_required_runtimes(&mut argv, manifest, opts)?;
     Ok((argv, mounts))
 }
 
 /// The one directory this launch may write to, keyed by `opts.workspace_id`.
-fn resolve_app_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<PathBuf, RunError> {
+fn resolve_app_dir(manifest: &ManifestView, opts: &LaunchOptions) -> Result<PathBuf, LaunchError> {
     let data_home = opts
         .data_home
         .clone()
         .or_else(crate::appdir::host_data_home)
-        .ok_or_else(|| RunError::NoDataHome(manifest.package_id.clone()))?;
+        .ok_or_else(|| LaunchError::NoDataHome(manifest.package_id.clone()))?;
     crate::appdir::prepare_host_app_dir(
         &data_home,
         opts.workspace_id.as_deref(),
         &manifest.package_id,
     )
-    .map_err(|source| RunError::AppDir {
+    .map_err(|source| LaunchError::AppDir {
         package: manifest.package_id.clone(),
         path: crate::appdir::host_app_dir(
             &data_home,
@@ -624,14 +624,17 @@ fn resolve_app_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<PathBuf
 }
 
 /// The directory the person's own records of this app are kept in, one per workspace.
-fn resolve_person_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<PathBuf, RunError> {
+fn resolve_person_dir(
+    manifest: &ManifestView,
+    opts: &LaunchOptions,
+) -> Result<PathBuf, LaunchError> {
     let data_home = opts
         .data_home
         .clone()
         .or_else(crate::appdir::host_data_home)
-        .ok_or_else(|| RunError::NoDataHome(manifest.package_id.clone()))?;
+        .ok_or_else(|| LaunchError::NoDataHome(manifest.package_id.clone()))?;
     crate::appdir::prepare_local_person_dir(&data_home, &manifest.package_id).map_err(|source| {
-        RunError::AppDir {
+        LaunchError::AppDir {
             package: manifest.package_id.clone(),
             path: crate::appdir::local_person_dir(&data_home, &manifest.package_id),
             source,
@@ -641,8 +644,8 @@ fn resolve_person_dir(manifest: &ManifestView, opts: &RunOptions) -> Result<Path
 
 fn resolve_launch_dirs(
     manifest: &ManifestView,
-    opts: &RunOptions,
-) -> Result<(PathBuf, PathBuf), RunError> {
+    opts: &LaunchOptions,
+) -> Result<(PathBuf, PathBuf), LaunchError> {
     Ok((
         resolve_app_dir(manifest, opts)?,
         resolve_person_dir(manifest, opts)?,
@@ -669,8 +672,8 @@ fn log_selection(manifest: &crate::manifest::ManifestView, selection: &crate::gp
 /// ABI-bound version) > no bind.
 pub fn resolve_runtime(
     manifest: &crate::manifest::ManifestView,
-    opts: &RunOptions,
-) -> Result<Option<(PathBuf, String)>, RunError> {
+    opts: &LaunchOptions,
+) -> Result<Option<(PathBuf, String)>, LaunchError> {
     if let Some(explicit) = &opts.runtime_root {
         let version = manifest
             .runtime_ref()
@@ -693,7 +696,7 @@ pub fn resolve_runtime(
         );
         return Ok(None);
     }
-    Err(RunError::RuntimeBundleMissing {
+    Err(LaunchError::RuntimeBundleMissing {
         runtime: raw.to_string(),
         paths: candidates,
     })
@@ -707,8 +710,8 @@ pub fn resolve_runtime(
 )]
 fn find_runtime_bundle(
     raw: &str,
-    opts: &RunOptions,
-) -> Result<(Option<(PathBuf, String)>, Vec<PathBuf>), RunError> {
+    opts: &LaunchOptions,
+) -> Result<(Option<(PathBuf, String)>, Vec<PathBuf>), LaunchError> {
     let (version, candidates) = runtime_lookup(raw)?;
     let system = runtime_bundle::system_bundle_path(version);
     for cand in &candidates {
@@ -721,11 +724,11 @@ fn find_runtime_bundle(
 }
 
 /// The version `raw` (`<name>/<version>`) names and where a launch looks for its bundle, in order.
-fn runtime_lookup(raw: &str) -> Result<(&str, Vec<PathBuf>), RunError> {
+fn runtime_lookup(raw: &str) -> Result<(&str, Vec<PathBuf>), LaunchError> {
     let (_, version) = raw
         .split_once('/')
         .filter(|(name, version)| !name.is_empty() && valid_runtime_version(version))
-        .ok_or_else(|| RunError::RuntimeReferenceMalformed(raw.to_string()))?;
+        .ok_or_else(|| LaunchError::RuntimeReferenceMalformed(raw.to_string()))?;
     let per_user = runtime_bundle::default_bundle_path_from(
         package_store::dev_env::dev_override(runtime_bundle::RUNTIME_DIR_ENV),
         version,
@@ -769,9 +772,9 @@ pub(crate) fn valid_runtime_version(version: &str) -> bool {
 fn splice_runtime_mounts(
     argv: &mut Vec<String>,
     manifest: &crate::manifest::ManifestView,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     runtime: Option<(&Path, &str)>,
-) -> Result<Vec<String>, RunError> {
+) -> Result<Vec<String>, LaunchError> {
     let required = resolve_required_runtimes(manifest, opts)?;
     preflight_entrypoint_runtime(manifest, opts, runtime, &required)?;
     splice_runtime_mounts_with(argv, opts, runtime.is_some(), &required)
@@ -780,10 +783,10 @@ fn splice_runtime_mounts(
 /// [`splice_runtime_mounts`] for required runtimes already resolved.
 fn splice_runtime_mounts_with(
     argv: &mut Vec<String>,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     resolved_runtime_present: bool,
     required: &[(PathBuf, String)],
-) -> Result<Vec<String>, RunError> {
+) -> Result<Vec<String>, LaunchError> {
     let mut paths = splice_minimal_libs(argv, opts, resolved_runtime_present)?;
     paths.extend(splice_resolved_required_runtimes(argv, required)?);
     Ok(paths)
@@ -792,14 +795,14 @@ fn splice_runtime_mounts_with(
 /// Every bundle the manifest requires, installed and verified, with its version.
 fn resolve_required_runtimes(
     manifest: &crate::manifest::ManifestView,
-    opts: &RunOptions,
-) -> Result<Vec<(PathBuf, String)>, RunError> {
+    opts: &LaunchOptions,
+) -> Result<Vec<(PathBuf, String)>, LaunchError> {
     manifest
         .required_runtimes
         .iter()
         .map(|raw| match find_runtime_bundle(raw, opts)? {
             (Some(bundle), _) => Ok(bundle),
-            (None, searched) => Err(RunError::RequiredRuntimeMissing {
+            (None, searched) => Err(LaunchError::RequiredRuntimeMissing {
                 package: manifest.package_id.clone(),
                 runtime: raw.clone(),
                 searched,
@@ -812,7 +815,7 @@ fn resolve_required_runtimes(
 fn splice_resolved_required_runtimes(
     argv: &mut Vec<String>,
     bundles: &[(PathBuf, String)],
-) -> Result<Vec<String>, RunError> {
+) -> Result<Vec<String>, LaunchError> {
     let mut mounts = Vec::new();
     for (root, version) in bundles {
         let entry = pop_entry(argv)?;
@@ -827,8 +830,8 @@ fn splice_resolved_required_runtimes(
 fn splice_required_runtimes(
     argv: &mut Vec<String>,
     manifest: &crate::manifest::ManifestView,
-    opts: &RunOptions,
-) -> Result<Vec<String>, RunError> {
+    opts: &LaunchOptions,
+) -> Result<Vec<String>, LaunchError> {
     splice_resolved_required_runtimes(argv, &resolve_required_runtimes(manifest, opts)?)
 }
 
@@ -836,26 +839,26 @@ fn splice_required_runtimes(
 /// publisher.
 fn enforce_bundle_policy(
     path: &Path,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     system_bundle: bool,
-) -> Result<(), RunError> {
+) -> Result<(), LaunchError> {
     verified_bundle(path, opts, system_bundle).map(drop)
 }
 
 /// A bundle a person installed into their own store: every payload byte proven and signed by a trusted
 /// publisher.
-pub fn verified_user_bundle(path: &Path) -> Result<runtime_bundle::BundleManifest, RunError> {
-    verified_bundle(path, &RunOptions::default(), false)
+pub fn verified_user_bundle(path: &Path) -> Result<runtime_bundle::BundleManifest, LaunchError> {
+    verified_bundle(path, &LaunchOptions::default(), false)
 }
 
 /// [`enforce_bundle_policy`], returning the verified manifest.
 fn verified_bundle(
     path: &Path,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     system_bundle: bool,
-) -> Result<runtime_bundle::BundleManifest, RunError> {
+) -> Result<runtime_bundle::BundleManifest, LaunchError> {
     let trusted = load_trusted_publishers_for_bundle(path).map_err(|error| {
-        RunError::RuntimeBundleSignature {
+        LaunchError::RuntimeBundleSignature {
             path: path.to_path_buf(),
             reason: error.to_string(),
         }
@@ -899,16 +902,16 @@ fn verified_bundle(
         Ok(manifest) => {
             trusted
                 .check(&manifest)
-                .map_err(|error| RunError::RuntimeBundleSignature {
+                .map_err(|error| LaunchError::RuntimeBundleSignature {
                     path: path.to_path_buf(),
                     reason: error.to_string(),
                 })?;
             Ok(manifest)
         }
-        Err(runtime_bundle::BundleError::NotSigned) => Err(RunError::RuntimeBundleUnsigned {
+        Err(runtime_bundle::BundleError::NotSigned) => Err(LaunchError::RuntimeBundleUnsigned {
             path: path.to_path_buf(),
         }),
-        Err(e) => Err(RunError::RuntimeBundleSignature {
+        Err(e) => Err(LaunchError::RuntimeBundleSignature {
             path: path.to_path_buf(),
             reason: e.to_string(),
         }),
@@ -1063,7 +1066,7 @@ mod per_user_runtime_verification_tests {
     fn per_user_runtime(
         parent: &Path,
         dylib_size: usize,
-    ) -> (tempfile::TempDir, PathBuf, RunOptions) {
+    ) -> (tempfile::TempDir, PathBuf, LaunchOptions) {
         let work = tempfile::tempdir_in(parent).unwrap();
         let host = work.path().join("host");
         let loader = runtime_bundle::host_minimal_paths_for(std::env::consts::ARCH).unwrap()[0]
@@ -1089,7 +1092,7 @@ mod per_user_runtime_verification_tests {
             },
         )
         .unwrap();
-        let opts = RunOptions {
+        let opts = LaunchOptions {
             require_runtime_publisher: Some(identity.public_key_hex()),
             ..Default::default()
         };
@@ -1112,7 +1115,7 @@ mod per_user_runtime_verification_tests {
         replace_with_one_byte_changed(&bundle.join(DYLIB));
         assert!(matches!(
             enforce_bundle_policy(&bundle, &opts, false),
-            Err(RunError::RuntimeBundleSignature { .. })
+            Err(LaunchError::RuntimeBundleSignature { .. })
         ));
     }
 
@@ -1167,7 +1170,7 @@ mod per_user_runtime_verification_tests {
         replace_with_one_byte_changed(&bundle.join(DYLIB));
         assert!(matches!(
             enforce_bundle_policy(&bundle, &opts, false),
-            Err(RunError::RuntimeBundleSignature { .. })
+            Err(LaunchError::RuntimeBundleSignature { .. })
         ));
     }
 }
@@ -1266,21 +1269,21 @@ mod dev_override_tests {
 }
 
 /// Reads the manifest, builds the sandbox and execs; it does not call `process::exit`.
-pub fn run(
+pub fn launch(
     manifest_path: &Path,
     payload_root: &Path,
-    opts: &RunOptions,
-) -> Result<ExitStatus, RunError> {
+    opts: &LaunchOptions,
+) -> Result<ExitStatus, LaunchError> {
     let manifest = launch_manifest(manifest_path, payload_root, opts)?;
-    run_manifest(&manifest, payload_root, opts)
+    launch_app(&manifest, payload_root, opts)
 }
 
-/// The first half of [`run`]: reads the manifest, verified against the signed installation.
+/// The first half of [`launch`]: reads the manifest, verified against the signed installation.
 pub fn launch_manifest(
     manifest_path: &Path,
     payload_root: &Path,
-    opts: &RunOptions,
-) -> Result<ManifestView, RunError> {
+    opts: &LaunchOptions,
+) -> Result<ManifestView, LaunchError> {
     let manifest = if let Some(expected) = opts.expected_package_hash.as_deref() {
         verified_original_manifest(manifest_path, payload_root, opts, expected)?
     } else {
@@ -1290,28 +1293,28 @@ pub fn launch_manifest(
     Ok(manifest)
 }
 
-/// The second half of [`run`]: builds the sandbox for a manifest and runs the app in it.
-pub fn run_manifest(
+/// The second half of [`launch`]: builds the sandbox for a manifest and runs the app in it.
+pub fn launch_app(
     manifest: &ManifestView,
     payload_root: &Path,
-    opts: &RunOptions,
-) -> Result<ExitStatus, RunError> {
-    run_with_context(manifest, payload_root, opts, None, None)
+    opts: &LaunchOptions,
+) -> Result<ExitStatus, LaunchError> {
+    launch_with_context(manifest, payload_root, opts, None, None)
 }
 
-pub fn run_supervised_gui(
+pub fn launch_supervised_gui(
     manifest_path: &Path,
     payload_root: &Path,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     owner: &crate::ordinary_namespace::OrdinaryNamespaceOwner,
-) -> Result<ExitStatus, RunError> {
+) -> Result<ExitStatus, LaunchError> {
     if !matches!(opts.mode, LaunchMode::Gui) {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "ordinary namespace owner requires GUI mode".into(),
         ));
     }
     let expected = opts.expected_package_hash.as_deref().ok_or_else(|| {
-        RunError::InvalidServiceLaunch(
+        LaunchError::InvalidServiceLaunch(
             "ordinary namespace owner requires signed package pin".into(),
         )
     })?;
@@ -1320,17 +1323,17 @@ pub fn run_supervised_gui(
     if pinned.bwrap_bin.is_none() {
         pinned.bwrap_bin = Some("/usr/bin/bwrap".into());
     }
-    run_with_context(&manifest, payload_root, &pinned, None, Some(owner))
+    launch_with_context(&manifest, payload_root, &pinned, None, Some(owner))
 }
 
 pub(crate) fn verified_original_manifest(
     manifest_path: &Path,
     payload_root: &Path,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     expected: &str,
-) -> Result<ManifestView, RunError> {
+) -> Result<ManifestView, LaunchError> {
     let refusal =
-        || RunError::InvalidServiceLaunch("original signed package launch changed".into());
+        || LaunchError::InvalidServiceLaunch("original signed package launch changed".into());
     let app = opts.app_id.as_deref().ok_or_else(refusal)?;
     let installed = package_store::find_installed(app)
         .map_err(|_| refusal())?
@@ -1373,7 +1376,7 @@ fn start_egress_proxy(
         Option<crate::sandbox::EgressProxyBind>,
         Option<crate::egress_proxy::EgressProxy>,
     ),
-    RunError,
+    LaunchError,
 > {
     // Only a `Filtered` decision needs a check; the env override shares the network instead.
     let Some(policy) = egress.policy() else {
@@ -1393,7 +1396,7 @@ fn start_egress_proxy(
             };
             Ok((Some(bind), Some(check)))
         }
-        Err(source) => Err(RunError::EgressProxy {
+        Err(source) => Err(LaunchError::EgressProxy {
             hosts: policy.describe(),
             source,
         }),
@@ -1521,8 +1524,8 @@ unsafe fn set_captured_resource_limits(plan: CapturedResourcePlan) -> std::io::R
 }
 
 /// Pop the trailing entrypoint token so a splice function can insert flags before it.
-fn pop_entry(argv: &mut Vec<String>) -> Result<String, RunError> {
-    argv.pop().ok_or(RunError::ArgvInvariant)
+fn pop_entry(argv: &mut Vec<String>) -> Result<String, LaunchError> {
+    argv.pop().ok_or(LaunchError::ArgvInvariant)
 }
 
 /// Splice in the `TILO_CLI_COMMAND` setenv before the trailing entrypoint token so bwrap still parses
@@ -1530,7 +1533,7 @@ fn pop_entry(argv: &mut Vec<String>) -> Result<String, RunError> {
 fn splice_cli_setenv(
     argv: &mut Vec<String>,
     extra_setenv: Option<(String, String)>,
-) -> Result<(), RunError> {
+) -> Result<(), LaunchError> {
     if let Some((k, v)) = extra_setenv {
         let entry = pop_entry(argv)?;
         argv.push("--setenv".to_string());
@@ -1542,7 +1545,7 @@ fn splice_cli_setenv(
 }
 
 /// Hand this launch's phase marks to the app, only when the shell asked for startup metrics.
-fn splice_startup_marks(argv: &mut Vec<String>) -> Result<(), RunError> {
+fn splice_startup_marks(argv: &mut Vec<String>) -> Result<(), LaunchError> {
     tilo_startup_metrics::handoff_mark("sandbox-argv-ready");
     splice_cli_setenv(
         argv,
@@ -1561,7 +1564,7 @@ fn splice_startup_marks(argv: &mut Vec<String>) -> Result<(), RunError> {
 }
 
 /// Expose the upstream NT synchronization device only to GUI packages marked as games.
-fn splice_game_ntsync(argv: &mut Vec<String>, latency_sensitive: bool) -> Result<(), RunError> {
+fn splice_game_ntsync(argv: &mut Vec<String>, latency_sensitive: bool) -> Result<(), LaunchError> {
     if latency_sensitive {
         let entry = pop_entry(argv)?;
         argv.extend([
@@ -1577,9 +1580,9 @@ fn splice_game_ntsync(argv: &mut Vec<String>, latency_sensitive: bool) -> Result
 /// Narrow dynamic-loader binds only (not all of `/usr`), for a plain dynamically-linked `execve()`.
 fn splice_minimal_libs(
     argv: &mut Vec<String>,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     resolved_runtime_present: bool,
-) -> Result<Vec<String>, RunError> {
+) -> Result<Vec<String>, LaunchError> {
     let mut extra_ro_paths: Vec<String> = Vec::new();
     let use_minimal_libs = opts.minimal_libs && !resolved_runtime_present;
     if opts.minimal_libs && resolved_runtime_present {
@@ -1607,7 +1610,10 @@ fn splice_minimal_libs(
 }
 
 /// Workspace id, spliced before the entrypoint token, absent when the launch has no session.
-fn splice_workspace_id_bind(argv: &mut Vec<String>, opts: &RunOptions) -> Result<(), RunError> {
+fn splice_workspace_id_bind(
+    argv: &mut Vec<String>,
+    opts: &LaunchOptions,
+) -> Result<(), LaunchError> {
     if let Some(workspace_id) = opts.workspace_id.as_deref() {
         let entry = pop_entry(argv)?;
         crate::sandbox::push_workspace_id(argv, workspace_id);
@@ -1617,7 +1623,7 @@ fn splice_workspace_id_bind(argv: &mut Vec<String>, opts: &RunOptions) -> Result
 }
 
 /// A trusted shell launch's small typed context for the app; it carries no authority.
-fn splice_tool_context(argv: &mut Vec<String>) -> Result<(), RunError> {
+fn splice_tool_context(argv: &mut Vec<String>) -> Result<(), LaunchError> {
     if let Some(context) = validated_tool_context_from_env() {
         let entry = pop_entry(argv)?;
         argv.push("--setenv".to_string());
@@ -1634,7 +1640,7 @@ fn splice_app_dir(
     app_dir: &Path,
     person_dir: &Path,
     capabilities: &CapabilityPlan,
-) -> Result<(), RunError> {
+) -> Result<(), LaunchError> {
     let entry = pop_entry(argv)?;
     crate::appdir::push_app_dir(argv, app_dir);
     crate::appdir::push_person_dir(argv, person_dir);
@@ -1662,7 +1668,7 @@ fn splice_app_dir(
 }
 
 /// Settings remaps XDG into the app dir.
-fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(), RunError> {
+fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(), LaunchError> {
     use std::os::unix::fs::DirBuilderExt as _;
 
     if package_id != tilo_app_id::apps::SETTINGS {
@@ -1696,7 +1702,7 @@ fn splice_system_authority(
         Option<crate::system_authority::SystemAuthorityPlan>,
         Option<DBusProxyGuard>,
     ),
-    RunError,
+    LaunchError,
 > {
     let Some((plan, guard)) = crate::system_authority::resolve(
         &manifest.package_id,
@@ -1715,8 +1721,8 @@ fn splice_system_authority(
 fn splice_trusted_identities(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
-    opts: &RunOptions,
-) -> Result<(), RunError> {
+    opts: &LaunchOptions,
+) -> Result<(), LaunchError> {
     if manifest.package_id == "so.tilo.file-explorer"
         && let Some(host_path) = opts.trusted_identities_host_path.as_deref()
     {
@@ -1731,8 +1737,8 @@ fn splice_trusted_identities(
 fn splice_retained_files(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
-    opts: &RunOptions,
-) -> Result<(), RunError> {
+    opts: &LaunchOptions,
+) -> Result<(), LaunchError> {
     if manifest.package_id != "so.tilo.file-explorer" {
         return Ok(());
     }
@@ -1750,8 +1756,8 @@ fn splice_retained_files(
 fn splice_documents(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
-    opts: &RunOptions,
-) -> Result<bool, RunError> {
+    opts: &LaunchOptions,
+) -> Result<bool, LaunchError> {
     let Some(view) = documents_view(
         tilo_documents::mountpoint().as_deref(),
         &manifest.package_id,
@@ -1780,10 +1786,10 @@ fn documents_view(
     view.is_dir().then_some(view)
 }
 
-fn validate_retained_files_projection(path: &Path) -> Result<(), RunError> {
+fn validate_retained_files_projection(path: &Path) -> Result<(), LaunchError> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let invalid =
-        || RunError::InvalidServiceLaunch("invalid retained file location projection".into());
+        || LaunchError::InvalidServiceLaunch("invalid retained file location projection".into());
     if !path.is_absolute()
         || path.file_name().and_then(|name| name.to_str()) != Some("locations.json")
     {
@@ -1813,14 +1819,15 @@ fn validate_retained_files_projection(path: &Path) -> Result<(), RunError> {
 fn splice_action_authority(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
-    opts: &RunOptions,
-) -> Result<(), RunError> {
+    opts: &LaunchOptions,
+) -> Result<(), LaunchError> {
     use collab_types::action_authority::{AppActionAuthorityProjection, MAX_PROJECTION_BYTES};
     use std::io::Read as _;
     let Some(path) = opts.action_authority_host_path.as_deref() else {
         return Ok(());
     };
-    let invalid = || RunError::InvalidServiceLaunch("invalid host action authority binding".into());
+    let invalid =
+        || LaunchError::InvalidServiceLaunch("invalid host action authority binding".into());
     if path.file_name().and_then(|name| name.to_str()) != Some("current.json") {
         return Err(invalid());
     }
@@ -1832,17 +1839,17 @@ fn splice_action_authority(
         return Err(invalid());
     }
     let policy: AppActionAuthorityProjection = serde_json::from_slice(&bytes).map_err(|error| {
-        RunError::InvalidServiceLaunch(format!(
+        LaunchError::InvalidServiceLaunch(format!(
             "invalid host action authority binding: unreadable projection: {error}"
         ))
     })?;
     policy.validate().map_err(|error| {
-        RunError::InvalidServiceLaunch(format!("invalid host action authority binding: {error}"))
+        LaunchError::InvalidServiceLaunch(format!("invalid host action authority binding: {error}"))
     })?;
     if policy.app_id != manifest.package_id
         || opts.workspace_id.as_deref() != Some(&policy.workspace)
     {
-        return Err(RunError::InvalidServiceLaunch(format!(
+        return Err(LaunchError::InvalidServiceLaunch(format!(
             "invalid host action authority binding: it is for {} in workspace {}, the launch for {} \
              in workspace {}",
             policy.app_id,
@@ -1860,8 +1867,8 @@ fn splice_action_authority(
 /// Wayland display, spliced before the entrypoint token like the minimal-libs binds.
 fn splice_wayland(
     argv: &mut Vec<String>,
-    opts: &RunOptions,
-) -> Result<Option<crate::sandbox::WaylandBind>, RunError> {
+    opts: &LaunchOptions,
+) -> Result<Option<crate::sandbox::WaylandBind>, LaunchError> {
     let wayland_bind = opts
         .wayland_socket
         .as_ref()
@@ -1878,7 +1885,7 @@ fn splice_wayland(
 fn splice_egress_proxy_bind(
     argv: &mut Vec<String>,
     egress_proxy: Option<&crate::sandbox::EgressProxyBind>,
-) -> Result<(), RunError> {
+) -> Result<(), LaunchError> {
     if let Some(bind) = egress_proxy {
         let entry = pop_entry(argv)?;
         crate::sandbox::push_egress_proxy(argv, bind);
@@ -1891,9 +1898,9 @@ fn splice_egress_proxy_bind(
 fn splice_gpu(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     gpu_granted: bool,
-) -> Result<(Option<crate::gpu::GpuSelection>, Option<PathBuf>), RunError> {
+) -> Result<(Option<crate::gpu::GpuSelection>, Option<PathBuf>), LaunchError> {
     // An app without `gpu` draws through its workspace's render service: no node, no pin, no ICD
     // probe. Where it draws itself all the same it has no device for Mesa's device-select layer to
     // prefer, and the layer, which crashed such apps at a session's start, is off.
@@ -1976,7 +1983,7 @@ fn splice_gpu(
 /// Read-only rules match the host projection mounts; file permissions stay in the capability plan.
 pub(crate) fn push_projection_landlock_rules(
     argv: &mut Vec<String>,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     manifest: &ManifestView,
 ) {
     if opts.action_authority_host_path.is_some() {
@@ -2021,9 +2028,9 @@ struct ShimSpliceCtx<'a> {
 /// <entry>`.
 fn splice_sandbox_shim(
     argv: &mut Vec<String>,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     ctx: &ShimSpliceCtx<'_>,
-) -> Result<(), RunError> {
+) -> Result<(), LaunchError> {
     let need_shim = opts.landlock_enforce || ctx.egress_proxy.is_some();
     if !need_shim {
         return Ok(());
@@ -2033,7 +2040,7 @@ fn splice_sandbox_shim(
         path.clone()
     } else {
         std::env::current_exe()
-            .map_err(|e| RunError::Io(std::io::Error::other(format!("current_exe: {e}"))))?
+            .map_err(|e| LaunchError::Io(std::io::Error::other(format!("current_exe: {e}"))))?
     };
     argv.push("--ro-bind".to_string());
     argv.push(launcher.display().to_string());
@@ -2190,7 +2197,7 @@ fn sandbox_account(uid: u32, gid: u32) -> String {
 fn stage_sandbox_account(
     argv: &mut Vec<String>,
     original_identity: Option<(u32, u32)>,
-) -> Result<OwnedFd, RunError> {
+) -> Result<OwnedFd, LaunchError> {
     let (uid, gid) = original_identity.unwrap_or_else(|| {
         (
             rustix::process::geteuid().as_raw(),
@@ -2324,7 +2331,7 @@ struct ChildSetup {
 fn spawn_and_wait(
     mut argv: Vec<String>,
     cli_passthrough: Vec<String>,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     child_setup: ChildSetup,
     egress: &crate::egress_proxy::EgressDecision,
     egress_proxy: Option<&crate::sandbox::EgressProxyBind>,
@@ -2332,7 +2339,7 @@ fn spawn_and_wait(
         &dyn crate::managed::EnrolledProcessObserver,
         Option<PathBuf>,
     )>,
-) -> Result<ExitStatus, RunError> {
+) -> Result<ExitStatus, LaunchError> {
     let ChildSetup {
         seccomp_fds,
         services: resolved,
@@ -2405,7 +2412,7 @@ fn spawn_and_wait(
                     .is_none()
                 && target_projection.is_none())
         {
-            return Err(RunError::InvalidServiceLaunch(
+            return Err(LaunchError::InvalidServiceLaunch(
                 "private service namespace missing".into(),
             ));
         }
@@ -2567,10 +2574,10 @@ fn spawn_and_wait(
 
     // Last parent-side policy/ownership check after preparation, immediately before spawn.
     if let Some(observer) = observer {
-        observer.before_spawn().map_err(RunError::Spawn)?;
+        observer.before_spawn().map_err(LaunchError::Spawn)?;
     }
     // 5.
-    let mut child = cmd.spawn().map_err(RunError::Spawn)?;
+    let mut child = cmd.spawn().map_err(LaunchError::Spawn)?;
     if let Some((_, file)) = debug_output {
         let sink = Arc::new(std::sync::Mutex::new(file));
         let budget = Arc::new(AtomicUsize::new(DEBUG_OUTPUT_LIMIT));
@@ -2606,7 +2613,7 @@ fn spawn_and_wait(
 fn stage_seccomp(
     manifest: &ManifestView,
     grants: crate::seccomp::SyscallGrants,
-) -> Result<SeccompFds, RunError> {
+) -> Result<SeccompFds, LaunchError> {
     let decision = crate::seccomp::resolve_profile(&manifest.sandbox.seccomp, &manifest.package_id);
     let profile = decision.applied;
     if decision.refused {
@@ -2662,9 +2669,9 @@ fn launch_entry_bin<'a>(manifest: &'a ManifestView, mode: &LaunchMode) -> Option
 fn preflight_runtime_libraries(
     manifest: &ManifestView,
     payload_root: &Path,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     runtime: Option<(&Path, &str)>,
-) -> Result<(), RunError> {
+) -> Result<(), LaunchError> {
     let Some((runtime_root, version)) = runtime else {
         return Ok(());
     };
@@ -2692,7 +2699,7 @@ fn preflight_runtime_libraries(
                 runtime = %runtime_root.display(),
                 "app links against a library its runtime does not provide"
             );
-            RunError::RuntimeLibraryMissing {
+            LaunchError::RuntimeLibraryMissing {
                 package: manifest.package_id.clone(),
                 runtime: manifest
                     .runtime
@@ -2707,12 +2714,12 @@ fn preflight_runtime_libraries(
 fn build_initial_argv(
     manifest: &ManifestView,
     payload_root: &Path,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     runtime_arg: Option<(&Path, &str)>,
     binds: &[crate::sandbox::ServiceBind],
     dbus_plan: Option<&DBusBindPlan>,
     capabilities: &CapabilityPlan,
-) -> Result<BuiltArgv, RunError> {
+) -> Result<BuiltArgv, LaunchError> {
     match &opts.mode {
         LaunchMode::Gui => Ok((
             build_bwrap_argv(
@@ -2765,8 +2772,8 @@ fn build_initial_argv(
             );
             Ok((argv, None, passthrough_argv.clone()))
         }
-        // Refused at the top of `run_with`, before any of the setup above ran.
-        LaunchMode::Host { desktop_id } => Err(RunError::HostAppNotAPackage {
+        // Refused at the top of `launch_with`, before any of the setup above ran.
+        LaunchMode::Host { desktop_id } => Err(LaunchError::HostAppNotAPackage {
             desktop_id: desktop_id.clone(),
         }),
     }
@@ -2775,20 +2782,20 @@ fn build_initial_argv(
 /// Build and exec the sandbox for an already-parsed `manifest`: validates the launch-mode/fs policy,
 /// resolves service/identity binds, the runtime bundle, the app's writable directory and its network
 /// egress proxy, then spawns `bwrap` and waits for it.
-pub fn run_with(
+pub fn launch_with(
     manifest: &ManifestView,
     payload_root: &Path,
-    opts: &RunOptions,
-) -> Result<ExitStatus, RunError> {
+    opts: &LaunchOptions,
+) -> Result<ExitStatus, LaunchError> {
     if opts.expected_package_hash.is_some() {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "original signed package requires manifest-backed run".into(),
         ));
     }
-    run_with_context(manifest, payload_root, opts, None, None)
+    launch_with_context(manifest, payload_root, opts, None, None)
 }
 
-pub(crate) fn validate_owned_service_options(opts: &RunOptions) -> Result<(), RunError> {
+pub(crate) fn validate_owned_service_options(opts: &LaunchOptions) -> Result<(), LaunchError> {
     if !matches!(opts.mode, LaunchMode::Service { .. })
         || opts.expected_package_hash.is_none()
         || !opts.landlock_enforce
@@ -2796,7 +2803,7 @@ pub(crate) fn validate_owned_service_options(opts: &RunOptions) -> Result<(), Ru
         || opts.allow_missing_runtime
         || opts.allow_unsigned_runtime
     {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "owned service requires signed, confined, identity-free launch".into(),
         ));
     }
@@ -2808,11 +2815,11 @@ fn spawn_beside<'scope, T: Send + 'scope>(
     scope: &'scope std::thread::Scope<'scope, '_>,
     name: &str,
     work: impl FnOnce() -> T + Send + 'scope,
-) -> Result<std::thread::ScopedJoinHandle<'scope, T>, RunError> {
+) -> Result<std::thread::ScopedJoinHandle<'scope, T>, LaunchError> {
     std::thread::Builder::new()
         .name(name.to_string())
         .spawn_scoped(scope, work)
-        .map_err(|error| RunError::Io(std::io::Error::other(format!("{name} thread: {error}"))))
+        .map_err(|error| LaunchError::Io(std::io::Error::other(format!("{name} thread: {error}"))))
 }
 
 /// The result of [`spawn_beside`]'s work; its panic continues here.
@@ -2835,10 +2842,10 @@ struct LaunchHost {
 fn prepare_launch_host(
     manifest: &ManifestView,
     payload_root: &Path,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     enrolled: Option<&crate::services::EnrolledServiceContext>,
     owner: Option<&dyn crate::managed::EnrolledProcessObserver>,
-) -> Result<LaunchHost, RunError> {
+) -> Result<LaunchHost, LaunchError> {
     // A resolved bundle wins over --minimal-libs and skips the loader-bind stopgap entirely.
     let retained_io =
         owner.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection);
@@ -2847,7 +2854,7 @@ fn prepare_launch_host(
     let runtime = if enrolled.is_some() {
         Some(
             crate::managed::verify_runtime(manifest, opts)
-                .map_err(RunError::InvalidServiceLaunch)?,
+                .map_err(LaunchError::InvalidServiceLaunch)?,
         )
     } else if let Some(capture) =
         owner.and_then(crate::managed::EnrolledProcessObserver::capture_projection)
@@ -2895,11 +2902,11 @@ fn prepare_launch_host(
 pub(crate) fn run_enrolled(
     manifest: &ManifestView,
     payload_root: &Path,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     services: &mut crate::services::EnrolledServiceContext,
     observer: &dyn crate::managed::EnrolledProcessObserver,
-) -> Result<ExitStatus, RunError> {
-    run_with_context(
+) -> Result<ExitStatus, LaunchError> {
+    launch_with_context(
         manifest,
         payload_root,
         opts,
@@ -2912,16 +2919,16 @@ pub(crate) fn run_enrolled(
     clippy::too_many_lines,
     reason = "one ordered launch pipeline; splitting it would scatter the policy checks that must precede spawn"
 )]
-pub(crate) fn run_with_context(
+pub(crate) fn launch_with_context(
     manifest: &ManifestView,
     payload_root: &Path,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     mut enrolled: Option<(
         &mut crate::services::EnrolledServiceContext,
         &dyn crate::managed::EnrolledProcessObserver,
     )>,
     native_owner: Option<&dyn crate::managed::EnrolledProcessObserver>,
-) -> Result<ExitStatus, RunError> {
+) -> Result<ExitStatus, LaunchError> {
     let retained_io =
         native_owner.and_then(crate::managed::EnrolledProcessObserver::retained_io_projection);
     let target_projection =
@@ -2929,7 +2936,7 @@ pub(crate) fn run_with_context(
     if (retained_io.is_some() || target_projection.is_some()) && enrolled.is_some()
         || retained_io.is_some() && target_projection.is_some()
     {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "Mixed retained/enrolled authority".into(),
         ));
     }
@@ -2943,7 +2950,7 @@ pub(crate) fn run_with_context(
                 .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
                 .is_some())
     {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "Mixed ordinary retained authority".into(),
         ));
     }
@@ -3000,7 +3007,7 @@ pub(crate) fn run_with_context(
             enrolled.as_ref().map(|(services, _)| &**services),
             native_owner,
         );
-        Ok::<_, RunError>((join_beside(dbus), host, join_beside(required)))
+        Ok::<_, LaunchError>((join_beside(dbus), host, join_beside(required)))
     })?;
     tilo_startup_metrics::handoff_mark("dbus-joined");
     let LaunchHost {
@@ -3020,7 +3027,7 @@ pub(crate) fn run_with_context(
         if hosts.iter().any(|host| {
             host.is_empty() || host.contains('*') || host.parse::<std::net::IpAddr>().is_ok()
         }) {
-            return Err(RunError::InvalidServiceLaunch(
+            return Err(LaunchError::InvalidServiceLaunch(
                 "owned service requires named reviewed hosts".into(),
             ));
         }
@@ -3038,7 +3045,7 @@ pub(crate) fn run_with_context(
         let binding = services.binding().clone();
         services
             .take_for_launch(&binding, &manifest.sandbox.services)
-            .map_err(RunError::InvalidServiceLaunch)?
+            .map_err(LaunchError::InvalidServiceLaunch)?
     } else {
         // A window whose instance a tilolang host runs holds none of the app's data: it gets no
         // collaboration connection (the host's instance has the app's own).
@@ -3176,7 +3183,7 @@ pub(crate) fn run_with_context(
             .iter()
             .any(|declared| declared == origin)
         {
-            return Err(RunError::InvalidServiceLaunch(format!(
+            return Err(LaunchError::InvalidServiceLaunch(format!(
                 "{} declares no `{origin}` origin to connect",
                 manifest.package_id
             )));
@@ -3196,7 +3203,7 @@ pub(crate) fn run_with_context(
                 "TILO_MANAGED_AGENT_CONTEXT".into(),
                 services
                     .agent_context_json()
-                    .map_err(RunError::InvalidServiceLaunch)?,
+                    .map_err(LaunchError::InvalidServiceLaunch)?,
             )),
         )?;
     }
@@ -3286,7 +3293,7 @@ pub(crate) fn run_with_context(
         let position = argv
             .iter()
             .position(|arg| arg == "__sandbox-exec")
-            .ok_or_else(|| RunError::InvalidServiceLaunch("Capture shim unavailable".into()))?;
+            .ok_or_else(|| LaunchError::InvalidServiceLaunch("Capture shim unavailable".into()))?;
         let insertion = position.saturating_add(1);
         argv.splice(
             insertion..insertion,
@@ -3401,10 +3408,10 @@ fn validated_tool_context_from_env() -> Option<String> {
 fn spawn_and_capture(
     mut argv: Vec<String>,
     passthrough: Vec<String>,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     seccomp_fds: SeccompFds,
     resolved: Vec<crate::services::ResolvedService>,
-) -> Result<(ExitStatus, Vec<u8>), RunError> {
+) -> Result<(ExitStatus, Vec<u8>), LaunchError> {
     SeccompFds::prepend_bwrap_args(&mut argv);
     let account_fd = stage_sandbox_account(&mut argv, None)?;
     let host_account_fd = account_fd.as_raw_fd();
@@ -3433,10 +3440,10 @@ fn spawn_and_capture(
         });
     }
 
-    let mut child = cmd.spawn().map_err(RunError::Spawn)?;
+    let mut child = cmd.spawn().map_err(LaunchError::Spawn)?;
     drop(seccomp_fds);
     drop(account_fd);
-    // As in `run_with`: the child has its own copies, so holding these open only keeps the service
+    // As in `launch_with`: the child has its own copies, so holding these open only keeps the service
     // from seeing the app end.
     drop(resolved);
     let mut buf = Vec::new();
@@ -3570,12 +3577,12 @@ mod captured_resource_tests {
 fn spawn_and_capture_bounded(
     mut argv: Vec<String>,
     passthrough: Vec<String>,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     seccomp_fds: SeccompFds,
     resolved: Vec<crate::services::ResolvedService>,
     plan: CapturedResourcePlan,
     cancellation: &CaptureCancellation,
-) -> Result<CapturedRunOutput, RunError> {
+) -> Result<CapturedLaunchOutput, LaunchError> {
     let plan = plan.validate()?;
     SeccompFds::prepend_bwrap_args(&mut argv);
     let account_fd = stage_sandbox_account(&mut argv, None)?;
@@ -3610,19 +3617,19 @@ fn spawn_and_capture_bounded(
         });
     }
 
-    let mut child = cmd.spawn().map_err(RunError::Spawn)?;
+    let mut child = cmd.spawn().map_err(LaunchError::Spawn)?;
     drop(seccomp_fds);
     drop(account_fd);
     drop(resolved);
     let used = Arc::new(AtomicUsize::new(0));
     let exceeded = Arc::new(AtomicBool::new(false));
     let stdout = child.stdout.take().ok_or_else(|| {
-        RunError::Io(std::io::Error::other(
+        LaunchError::Io(std::io::Error::other(
             "captured worker stdout was not piped",
         ))
     })?;
     let stderr = child.stderr.take().ok_or_else(|| {
-        RunError::Io(std::io::Error::other(
+        LaunchError::Io(std::io::Error::other(
             "captured worker stderr was not piped",
         ))
     })?;
@@ -3649,7 +3656,7 @@ fn spawn_and_capture_bounded(
 
     let deadline = Instant::now()
         .checked_add(plan.wall_time)
-        .ok_or(RunError::InvalidCapturePlan)?;
+        .ok_or(LaunchError::InvalidCapturePlan)?;
     let termination = loop {
         if let Some(status) = child.try_wait()? {
             break CapturedTermination::Exited(status);
@@ -3671,36 +3678,36 @@ fn spawn_and_capture_bounded(
     };
     let stdout = stdout_thread
         .join()
-        .map_err(|_| RunError::Io(std::io::Error::other("stdout capture thread panicked")))??;
+        .map_err(|_| LaunchError::Io(std::io::Error::other("stdout capture thread panicked")))??;
     let stderr = stderr_thread
         .join()
-        .map_err(|_| RunError::Io(std::io::Error::other("stderr capture thread panicked")))??;
-    Ok(CapturedRunOutput {
+        .map_err(|_| LaunchError::Io(std::io::Error::other("stderr capture thread panicked")))??;
+    Ok(CapturedLaunchOutput {
         termination,
         stdout,
         stderr,
     })
 }
 
-/// [`run_with`] sibling that captures the child's stdout instead of inheriting it.
-pub fn run_with_captured(
+/// [`launch_with`] sibling that captures the child's stdout instead of inheriting it.
+pub fn launch_with_captured(
     manifest: &ManifestView,
     payload_root: &Path,
-    opts: &RunOptions,
-) -> Result<(ExitStatus, Vec<u8>), RunError> {
-    run_with_capture_spawn(manifest, payload_root, opts, spawn_and_capture)
+    opts: &LaunchOptions,
+) -> Result<(ExitStatus, Vec<u8>), LaunchError> {
+    launch_with_capture_spawn(manifest, payload_root, opts, spawn_and_capture)
 }
 
 /// Captured sandbox launch with launcher-enforced resource limits and cancellation.
-pub fn run_with_captured_bounded(
+pub fn launch_with_captured_bounded(
     manifest: &ManifestView,
     payload_root: &Path,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     plan: CapturedResourcePlan,
     cancellation: CaptureCancellation,
-) -> Result<CapturedRunOutput, RunError> {
+) -> Result<CapturedLaunchOutput, LaunchError> {
     plan.validate()?;
-    run_with_capture_spawn(
+    launch_with_capture_spawn(
         manifest,
         payload_root,
         opts,
@@ -3720,32 +3727,32 @@ pub fn run_with_captured_bounded(
 
 #[expect(
     clippy::too_many_lines,
-    reason = "the captured launch mirrors `run_with_context`'s ordered pipeline step for step"
+    reason = "the captured launch mirrors `launch_with_context`'s ordered pipeline step for step"
 )]
-fn run_with_capture_spawn<T>(
+fn launch_with_capture_spawn<T>(
     manifest: &ManifestView,
     payload_root: &Path,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     spawn: impl FnOnce(
         Vec<String>,
         Vec<String>,
-        &RunOptions,
+        &LaunchOptions,
         SeccompFds,
         Vec<crate::services::ResolvedService>,
-    ) -> Result<T, RunError>,
-) -> Result<T, RunError> {
+    ) -> Result<T, LaunchError>,
+) -> Result<T, LaunchError> {
     if opts.expected_package_hash.is_some() {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "original signed package requires manifest-backed run".into(),
         ));
     }
     validate_open_uri(manifest, opts)?;
-    // Same refusals as `run_with`: this is a second entry into the sandbox builder, and a policy with
+    // Same refusals as `launch_with`: this is a second entry into the sandbox builder, and a policy with
     // one enforced route is a route beside it.
     validate_launch_mode(manifest, opts)?;
     validate_interfaces(manifest)?;
 
-    // Seccomp baseline resolved identically to `run_with` — two paths reaching different conclusions
+    // Seccomp baseline resolved identically to `launch_with` — two paths reaching different conclusions
     // would make capture a way around the filter.
     let capabilities = resolve_capabilities(manifest, opts);
     let seccomp_fds = stage_seccomp(
@@ -3763,7 +3770,7 @@ fn run_with_capture_spawn<T>(
         crate::system_stats::image_shipped(payload_root),
     );
 
-    // As in `run_with_context`: held from before the lookup until the sandbox has exited.
+    // As in `launch_with_context`: held from before the lookup until the sandbox has exited.
     let _leases = crate::lease::LaunchLeases::take(manifest, payload_root, opts)?;
     // Build the exact production sandbox shape.
     let resolved_runtime = resolve_runtime(manifest, opts)?;
@@ -3771,13 +3778,13 @@ fn run_with_capture_spawn<T>(
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
     preflight_runtime_libraries(manifest, payload_root, opts, runtime_arg)?;
-    // D-Bus plan (same decision path as `run_with`).
+    // D-Bus plan (same decision path as `launch_with`).
     let (dbus_plan, _dbus_guards) = resolve_dbus_bind(
         &manifest.sandbox.portals,
         opts.wayland_socket.is_some(),
         dbus_proxy::media_player_for(manifest).as_deref(),
     );
-    // As in `run_with_context`, cold runtime checks precede service handoff.
+    // As in `launch_with_context`, cold runtime checks precede service handoff.
     let egress = crate::sandbox::egress_decision(manifest, &capabilities, payload_root);
     let package_id = manifest.package_id.as_str();
     let mut resolved = resolve_service_binds_for_launch(
@@ -3837,10 +3844,10 @@ fn run_with_capture_spawn<T>(
     let binds = to_service_binds(&resolved);
 
     let keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
-    // Same egress decision as `run_with`: without the check spliced in here too, a host-scoped grant
+    // Same egress decision as `launch_with`: without the check spliced in here too, a host-scoped grant
     // would be silently offline.
     let (egress_proxy, _proxy_guard) = start_egress_proxy(&egress)?;
-    // Entrypoint + trailing arguments, resolved the same way `run_with` does — both entries must agree
+    // Entrypoint + trailing arguments, resolved the same way `launch_with` does — both entries must agree
     // on binary and arguments.
     let (mut argv, extra_setenv, passthrough) = build_initial_argv(
         manifest,
@@ -4277,15 +4284,15 @@ mod app_dir_tests {
         )
     }
 
-    fn opts_in(workspace: Option<&str>) -> RunOptions {
-        RunOptions {
+    fn opts_in(workspace: Option<&str>) -> LaunchOptions {
+        LaunchOptions {
             workspace_id: workspace.map(str::to_string),
-            ..RunOptions::default()
+            ..LaunchOptions::default()
         }
     }
 
-    fn opts_at(data_home: &Path, workspace: Option<&str>) -> RunOptions {
-        RunOptions {
+    fn opts_at(data_home: &Path, workspace: Option<&str>) -> LaunchOptions {
+        LaunchOptions {
             data_home: Some(data_home.to_path_buf()),
             ..opts_in(workspace)
         }
@@ -4323,7 +4330,7 @@ mod app_dir_tests {
                 .expect("written");
                 let authored = resolve_capabilities(
                     &m,
-                    &RunOptions {
+                    &LaunchOptions {
                         capabilities_path: Some(file),
                         ..opts_in(Some("workspace-a"))
                     },
@@ -4517,7 +4524,7 @@ mod managed_spawn_policy_tests {
                 let result = spawn_and_wait(
                     vec![],
                     vec![],
-                    &RunOptions {
+                    &LaunchOptions {
                         bwrap_bin: Some("/usr/bin/true".into()),
                         ..Default::default()
                     },
@@ -4542,7 +4549,7 @@ mod managed_spawn_policy_tests {
                 if allowed {
                     assert!(result.unwrap().success());
                 } else {
-                    assert!(matches!(result, Err(RunError::Spawn(error))
+                    assert!(matches!(result, Err(LaunchError::Spawn(error))
                         if error.kind() == std::io::ErrorKind::PermissionDenied));
                 }
             }
@@ -4570,7 +4577,7 @@ mod managed_spawn_policy_tests {
                 let result = spawn_and_wait(
                     flags,
                     vec![],
-                    &RunOptions {
+                    &LaunchOptions {
                         bwrap_bin: Some("/usr/bin/bwrap".into()),
                         ..Default::default()
                     },
@@ -4586,7 +4593,7 @@ mod managed_spawn_policy_tests {
                     None,
                     Some((&owner, None)),
                 );
-                assert!(matches!(result, Err(RunError::InvalidServiceLaunch(reason))
+                assert!(matches!(result, Err(LaunchError::InvalidServiceLaunch(reason))
                     if reason == "private service namespace missing"));
                 assert_eq!(owner.checked.load(AtomicOrdering::SeqCst), 0);
                 assert_eq!(owner.spawned.load(AtomicOrdering::SeqCst), 0);
@@ -4603,7 +4610,7 @@ mod managed_spawn_policy_tests {
                     checked: AtomicUsize::new(0),
                     spawned: AtomicUsize::new(0),
                 };
-                let options = RunOptions {
+                let options = LaunchOptions {
                     bwrap_bin: Some("/usr/bin/true".into()),
                     ..Default::default()
                 };
@@ -4636,7 +4643,7 @@ mod managed_spawn_policy_tests {
                     );
                 } else {
                     assert!(
-                        matches!(result, Err(RunError::Spawn(ref error)) if error.kind() == std::io::ErrorKind::PermissionDenied)
+                        matches!(result, Err(LaunchError::Spawn(ref error)) if error.kind() == std::io::ErrorKind::PermissionDenied)
                     );
                 }
             }
@@ -4698,12 +4705,12 @@ bin = \"store\"
             false,
         );
         std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
-        let opts = RunOptions {
+        let opts = LaunchOptions {
             workspace_id: Some("workspace-a".into()),
             action_authority_host_path: Some(path),
-            ..RunOptions::default()
+            ..LaunchOptions::default()
         };
-        let before = resolve_capabilities(&manifest, &RunOptions::default());
+        let before = resolve_capabilities(&manifest, &LaunchOptions::default());
         let after = resolve_capabilities(&manifest, &opts);
         assert_eq!(before.ro_paths, after.ro_paths);
         assert_eq!(before.rw_paths, after.rw_paths);
@@ -4773,7 +4780,7 @@ mod mesa_seed_software_tests {
                 "id = \"io.tilo.software-pin\"\nversion = \"0.1.0\"\nkind = \"app\"",
                 "[entrypoint]\nbin = \"bin/probe\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
             );
-            let opts = RunOptions::default();
+            let opts = LaunchOptions::default();
             let mut argv = vec!["/app/probe".to_owned()];
             let (gpu, _) = splice_gpu(
                 &mut argv,
@@ -4850,7 +4857,7 @@ mod mesa_seed_software_tests {
                 "id = \"io.tilo.seed-test\"\nversion = \"0.1.0\"\nkind = \"app\"",
                 "[entrypoint]\nbin = \"bin/probe\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
             );
-            let opts = RunOptions::default();
+            let opts = LaunchOptions::default();
             let mut argv = vec!["/app/probe".to_owned()];
             let (gpu, seed) = splice_gpu(
                 &mut argv,
@@ -4883,9 +4890,9 @@ mod mesa_seed_software_tests {
                     passthrough_argv: Vec::new(),
                 },
             ] {
-                let opts = RunOptions {
+                let opts = LaunchOptions {
                     mode,
-                    ..RunOptions::default()
+                    ..LaunchOptions::default()
                 };
                 let mut helper = vec!["/app/helper".to_owned()];
                 splice_gpu(
@@ -4936,9 +4943,9 @@ mod render_service_launch_tests {
                 &CapabilityPlan::empty(),
                 true
             ));
-            let opts = RunOptions {
+            let opts = LaunchOptions {
                 render_node: Some(PathBuf::from("/dev/dri/renderD128")),
-                ..RunOptions::default()
+                ..LaunchOptions::default()
             };
             let mut argv = vec!["/app/calculator".to_owned()];
             let (gpu, seed) = splice_gpu(
@@ -4974,7 +4981,7 @@ mod render_service_launch_tests {
                 true
             ));
             let mut argv = vec!["/app/browser".to_owned()];
-            splice_gpu(&mut argv, &manifest, &RunOptions::default(), true).unwrap();
+            splice_gpu(&mut argv, &manifest, &LaunchOptions::default(), true).unwrap();
             assert!(
                 argv.windows(3)
                     .any(|args| args == ["--dev-bind-try", "/dev/dri", "/dev/dri"]),
@@ -5000,25 +5007,25 @@ mod gui_argv_tests {
         // passthrough, and alongside the one a person opens with rather than instead of it.
         {
             {
-                let opts = RunOptions {
+                let opts = LaunchOptions {
                     gui_argv: vec!["--index".to_owned()],
-                    ..RunOptions::default()
+                    ..LaunchOptions::default()
                 };
                 assert_eq!(gui_open_args(&opts), ["--index"]);
             }
             {
                 // A document the person opened with comes first, then the app's own arguments; neither
                 // displaces the other.
-                let opts = RunOptions {
+                let opts = LaunchOptions {
                     open_document: Some(PathBuf::from("/workspace/a.note")),
                     gui_argv: vec!["--index".to_owned()],
-                    ..RunOptions::default()
+                    ..LaunchOptions::default()
                 };
                 assert_eq!(gui_open_args(&opts), ["/workspace/a.note", "--index"]);
             }
             {
                 // No argv at all is the ordinary launch, unchanged.
-                let opts = RunOptions::default();
+                let opts = LaunchOptions::default();
                 assert!(gui_open_args(&opts).is_empty());
             }
         }
@@ -5031,9 +5038,9 @@ mod gui_argv_tests {
                 "id = \"so.tilo.chat\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"",
                 "[entrypoint]\nbin = \"bin/chat\"\n",
             );
-            let opts = RunOptions {
+            let opts = LaunchOptions {
                 gui_argv: vec!["--index".to_owned()],
-                ..RunOptions::default()
+                ..LaunchOptions::default()
             };
             let (argv, _, tail) = build_initial_argv(
                 &manifest,
@@ -5079,18 +5086,18 @@ collab = "required@1"
 "#,
         );
         let missing_runtime = root.path().join("missing-runtime");
-        let options = RunOptions {
+        let options = LaunchOptions {
             runtime_root: Some(missing_runtime.clone()),
             workspace_id: Some("preflight-workspace".into()),
-            ..RunOptions::default()
+            ..LaunchOptions::default()
         };
         let error = if captured {
-            run_with_captured(&manifest, root.path(), &options).unwrap_err()
+            launch_with_captured(&manifest, root.path(), &options).unwrap_err()
         } else {
-            run_with(&manifest, root.path(), &options).unwrap_err()
+            launch_with(&manifest, root.path(), &options).unwrap_err()
         };
         assert!(
-            matches!(error, RunError::RuntimeBundleSignature { ref path, .. } if path == &missing_runtime),
+            matches!(error, LaunchError::RuntimeBundleSignature { ref path, .. } if path == &missing_runtime),
             "runtime verification must refuse the actual launch: {error}"
         );
         assert!(
@@ -5132,11 +5139,11 @@ mod retained_files_tests {
             let manifest: ManifestView = toml::from_str(
                 "[package]\nkind = \"app\"\nid = \"so.tilo.file-explorer\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"files\"\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n[sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n[sandbox.net]\nmode = \"off\"\n",
             ).unwrap();
-            let opts = RunOptions {
+            let opts = LaunchOptions {
                 retained_files_host_path: Some(path),
-                ..RunOptions::default()
+                ..LaunchOptions::default()
             };
-            let before = resolve_capabilities(&manifest, &RunOptions::default());
+            let before = resolve_capabilities(&manifest, &LaunchOptions::default());
             let after = resolve_capabilities(&manifest, &opts);
             assert_eq!(before.ro_paths, after.ro_paths);
             assert_eq!(before.rw_paths, after.rw_paths);
@@ -5156,7 +5163,7 @@ mod retained_files_tests {
                 ]
             );
             let mut shim = vec!["files".into()];
-            let enforced = RunOptions {
+            let enforced = LaunchOptions {
                 landlock_enforce: true,
                 ..opts.clone()
             };
@@ -5240,9 +5247,9 @@ mod retained_files_tests {
                 "[package]\nkind = \"app\"\nid = \"so.tilo.pdf-viewer\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"viewer\"\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n[sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n[sandbox.net]\nmode = \"off\"\n",
             )
             .unwrap();
-            let opts = RunOptions {
+            let opts = LaunchOptions {
                 landlock_enforce: true,
-                ..RunOptions::default()
+                ..LaunchOptions::default()
             };
             let capabilities = resolve_capabilities(&manifest, &opts);
             for documents in [true, false] {

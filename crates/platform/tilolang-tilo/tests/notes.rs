@@ -3,7 +3,7 @@
 //! person takes back at once, and a note's own follow their titles when the person asks it.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, ResourceRef, Value, ViewInstance};
 
 use crate::fixtures::{Replica, target};
 use crate::legibility::call;
@@ -288,14 +288,14 @@ tilo_test_env::scenario! {
         let groceries = note(&mut ada, &notebook, "Groceries");
         let mut window = ada.view(NOTES_APP);
         window.poll_patches().unwrap();
-        let tree = find(window.tree(), "ui.TreeView").expect("the notebook's tree");
+        let tree = window.tree().first_of_kind("ui.TreeView").expect("the notebook's tree");
         let list = tree.key.clone();
         // No row opens anything of the window's own: the page beside the tree is the view's.
         let len = window.list_len(&list).unwrap_or(0);
         assert!(len >= 2, "the tree shows the notebook's notes");
         for index in 0..len {
             let row = window.row(&list, index).unwrap().cloned().expect("a row");
-            let node = find(&row, "ui.TreeViewNode").expect("the row is a tree node");
+            let node = row.first_of_kind("ui.TreeViewNode").expect("the row is a tree node");
             assert!(
                 matches!(
                     node.props.get("navigates"),
@@ -308,7 +308,7 @@ tilo_test_env::scenario! {
         // The first note is open until a person chooses another, and the tree says so.
         let chosen = |window: &mut ViewInstance| {
             window.poll_patches().unwrap();
-            let tree = find(window.tree(), "ui.TreeView").expect("the notebook's tree");
+            let tree = window.tree().first_of_kind("ui.TreeView").expect("the notebook's tree");
             match tree.props.get("selection") {
                 Some(Value::List(items)) => items.iter().map(target).collect::<Vec<_>>(),
                 other => panic!("the tree says which note is chosen: {other:?}"),
@@ -358,14 +358,14 @@ tilo_test_env::scenario! {
         // Who the tree's row for the note says is at it, as the tree builds its rows.
         let presence_of = |window: &mut ViewInstance, at: &ResourceRef| {
             window.poll_patches().unwrap();
-            let tree = find(window.tree(), "ui.TreeView").expect("the notebook's tree");
+            let tree = window.tree().first_of_kind("ui.TreeView").expect("the notebook's tree");
             let key = tree.key.clone();
             let len = window.list_len(&key).unwrap_or(0);
             for index in 0..len {
                 let Some(row) = window.row(&key, index).unwrap().cloned() else {
                     continue;
                 };
-                if let Some(node) = find(&row, "ui.TreeViewNode")
+                if let Some(node) = row.first_of_kind("ui.TreeViewNode")
                     && matches!(node.props.get("item"), Some(Value::Ref(r)) if r.target.id_string() == at.id_string())
                 {
                     return node.props.get("presence").cloned();
@@ -388,12 +388,4 @@ tilo_test_env::scenario! {
             other => panic!("the row says who, as a person: {other:?}"),
         }
     }
-}
-
-/// The first node of `kind` in `tree`.
-fn find<'a>(tree: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
-    if tree.kind == kind {
-        return Some(tree);
-    }
-    tree.children.iter().find_map(|child| find(child, kind))
 }

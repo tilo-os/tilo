@@ -804,7 +804,9 @@ impl Core {
         let mut out = Vec::with_capacity(held.len());
         let mut first = true;
         for (field, before, after) in &held {
-            let said = crate::did::said(field, &field_of_sentence(&field.name), before, after);
+            let said = crate::did::renamed(info, &field.id).unwrap_or_else(|| {
+                crate::did::said(field, &field_of_sentence(&field.name), before, after)
+            });
             let args: Vec<(String, String)> = said
                 .field
                 .iter()

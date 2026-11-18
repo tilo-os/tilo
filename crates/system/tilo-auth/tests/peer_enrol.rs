@@ -66,12 +66,27 @@ struct Enrolling {
 }
 
 fn enrolling(root: &SigningKey, certs: &[DeviceCert]) -> Enrolling {
+    joined(root, certs, true)
+}
+
+/// A machine of the person's with no account of its own, as a server is: its
+/// enrollment put the person's fleet in its identity root, and no session or
+/// home directory of theirs exists to read one from.
+fn enrolled_server(root: &SigningKey, certs: &[DeviceCert]) -> Enrolling {
+    joined(root, certs, false)
+}
+
+fn joined(root: &SigningKey, certs: &[DeviceCert], personal: bool) -> Enrolling {
     let dir = tempfile::tempdir().expect("a directory for the identity");
     let config = dir.path().join("config");
     let system = dir.path().join("system");
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", &config)
-        .set("TILO_IDENTITY_ROOT", &system);
+    env.set("TILO_IDENTITY_ROOT", &system);
+    if personal {
+        env.set("XDG_CONFIG_HOME", &config);
+    } else {
+        env.remove("XDG_CONFIG_HOME").remove("HOME");
+    }
     let paths = IdentityPaths::under(&system);
     paths.ensure_directories().expect("the identity layout");
     let key = device_key(0x61);
@@ -81,14 +96,17 @@ fn enrolling(root: &SigningKey, certs: &[DeviceCert]) -> Enrolling {
         .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
         .expect("this device's certificate");
     persist::write_device_cert(&paths.device_cert, cert).expect("this device's certificate");
-    let identity_dir = config.join("tilo/identity");
     let fleet = DeviceFleet {
         schema_version: 1,
         identity_id: hex::encode(root.verifying_key().to_bytes()),
         certificates: certs.to_vec(),
         revocations: Vec::new(),
     };
-    let store = DeviceFleetStore::at(&identity_dir, paths);
+    let store = if personal {
+        DeviceFleetStore::at(config.join("tilo/identity"), paths)
+    } else {
+        DeviceFleetStore::of_device(paths, &fleet.identity_id)
+    };
     let file = store.fleet_file(&fleet.identity_id);
     std::fs::create_dir_all(file.parent().expect("the fleet's directory"))
         .expect("the fleet's directory");
@@ -354,6 +372,47 @@ fn a_device_without_the_root_enrols_by_asking_one_that_holds_it() {
         "the enrolment answered before the server was needed"
     );
     assert_eq!(response.cert.device_public_key, enrolled.pubkey);
+}
+
+/// A server nobody is signed in to holds the person's store, and no account of
+/// theirs to read one from: the enrollment that admitted it handed it the
+/// fleet there, and those devices are the ones it asks.
+#[test]
+fn a_server_that_holds_the_persons_store_finds_their_devices() {
+    let root = person();
+    let laptop = certify(&root, &device_key(0x31), "The laptop");
+    let phone = certify(&root, &device_key(0x41), "The phone");
+    let server = certify(&root, &device_key(0x61), "The server");
+    let enrolled = enrolled_server(&root, &[laptop, phone, server]);
+    let devices = Devices::new(&root, Answer::Enrol, Answer::NotKeyHolder);
+
+    let registrar = PeerRegistrar::find(None, Some(devices.relays.clone()))
+        .expect("this server knows the person's devices from its own store");
+    let (request, boot_key) = request();
+    let response = registrar
+        .register(&request)
+        .expect("the person's laptop enrols the server's boot key");
+    assert_eq!(response.cert.device_public_key, enrolled.pubkey);
+    assert_eq!(
+        response.cert.boot_public_key,
+        boot_key.verifying_key().to_bytes()
+    );
+    assert_eq!(response.cert.slot, request.slot);
+    response.cert.verify().expect("the person's root signed");
+    assert!(
+        !response.siblings.is_empty(),
+        "the token names devices to ask at boot"
+    );
+    assert_eq!(
+        devices.laptop.load(Ordering::SeqCst),
+        1,
+        "the laptop was asked"
+    );
+    assert_eq!(
+        devices.phone.load(Ordering::SeqCst),
+        0,
+        "the laptop answered for the person"
+    );
 }
 
 #[test]

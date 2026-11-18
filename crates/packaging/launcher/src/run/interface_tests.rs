@@ -25,7 +25,7 @@ fn a_build_speaking_another_interface_version_is_refused() {
     assert!(interfaces_unmet(&settings, Some(&os(2, 3))).is_empty());
     assert!(interfaces_unmet(&settings, None).is_empty());
 
-    let message = RunError::InterfacesUnmet {
+    let message = LaunchError::InterfacesUnmet {
         package: "so.tilo.settings".into(),
         unmet: tilo_app_package::interfaces::describe_unmet(&unmet),
     }

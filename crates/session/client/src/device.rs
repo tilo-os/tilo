@@ -7,8 +7,7 @@ use serde_json::{Map, Value};
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
-    RemoteActionTarget,
+    ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_server_client::login::Admission;
 #[cfg(not(target_arch = "wasm32"))]

@@ -4,7 +4,7 @@
 use crate::{
     ordinary_namespace::{ConnectedNamespace, Handoff, OrdinaryNamespaceOwner},
     owned_service::{ServiceAuthority, ServiceCancellation},
-    run::{RunError, RunOptions},
+    run::{LaunchError, LaunchOptions},
 };
 use getrandom::rand_core::TryRng as _;
 use runtime_portal::process_binding::{self, ExecutingPeer};
@@ -712,7 +712,7 @@ pub struct RetainedViewAdmission {
     manifest_path: PathBuf,
     payload_root: PathBuf,
     manifest: crate::manifest::ManifestView,
-    opts: RunOptions,
+    opts: LaunchOptions,
     original_home_alias: OriginalHomeAlias,
     alias_args: std::sync::Mutex<Option<File>>,
 }
@@ -722,9 +722,9 @@ impl RetainedViewAdmission {
         admission: RetainedLaunchAdmission,
         manifest_path: &Path,
         payload_root: &Path,
-        opts: &RunOptions,
+        opts: &LaunchOptions,
         cancellation: &ServiceCancellation,
-    ) -> Result<Arc<Self>, RunError> {
+    ) -> Result<Arc<Self>, LaunchError> {
         if !matches!(opts.mode, crate::run::LaunchMode::Gui)
             || !opts.landlock_enforce
             || opts.landlock_best_effort
@@ -736,18 +736,18 @@ impl RetainedViewAdmission {
                 .is_some_and(|path| path != Path::new("/usr/bin/bwrap"))
             || (rustix::process::getuid().as_raw() == 0 || rustix::process::geteuid().as_raw() == 0)
         {
-            return Err(RunError::InvalidServiceLaunch(
+            return Err(LaunchError::InvalidServiceLaunch(
                 "retained view requires ordinary confined non-root GUI".into(),
             ));
         }
         let _bwrap = protected_program("/usr/bin/bwrap")?;
         let package = opts.expected_package_hash.as_deref().ok_or_else(|| {
-            RunError::InvalidServiceLaunch("retained view requires signed package pin".into())
+            LaunchError::InvalidServiceLaunch("retained view requires signed package pin".into())
         })?;
         let manifest =
             crate::run::verified_original_manifest(manifest_path, payload_root, opts, package)?;
         if manifest.kind != "app" || manifest.entrypoint.gui_bin().is_none() {
-            return Err(RunError::InvalidServiceLaunch(
+            return Err(LaunchError::InvalidServiceLaunch(
                 "retained view requires signed GUI app".into(),
             ));
         }
@@ -759,7 +759,7 @@ impl RetainedViewAdmission {
             challenge.command.matches_current()?;
             let workspace = collab_types::personal_cluster(&challenge.person).to_string();
             if opts.workspace_id.as_deref() != Some(workspace.as_str()) {
-                return Err(RunError::InvalidServiceLaunch(
+                return Err(LaunchError::InvalidServiceLaunch(
                     "retained view requires certified personal cluster".into(),
                 ));
             }
@@ -903,7 +903,7 @@ impl ServiceAuthority for RetainedViewAdmission {
 
 fn binding_for(
     manifest: &crate::manifest::ManifestView,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
     challenge: &ConsumerChallenge,
     manifest_path: &Path,
     payload_root: &Path,
@@ -955,7 +955,7 @@ fn binding_for(
     binding.validate()?;
     Ok(binding)
 }
-fn policy_hash(opts: &RunOptions) -> io::Result<String> {
+fn policy_hash(opts: &LaunchOptions) -> io::Result<String> {
     let path = opts
         .capabilities_path
         .as_deref()
@@ -1347,7 +1347,7 @@ pub struct ReviewedViewIssue<'a> {
 fn normal_publisher(
     manifest_path: &Path,
     payload_root: &Path,
-    opts: &RunOptions,
+    opts: &LaunchOptions,
 ) -> io::Result<String> {
     let app = opts.app_id.as_deref().ok_or(io::ErrorKind::InvalidData)?;
     let expected = opts
@@ -1377,9 +1377,9 @@ fn normal_publisher(
 pub fn run_admitted_gui(
     admission: Arc<RetainedViewAdmission>,
     cancellation: ServiceCancellation,
-) -> Result<std::process::ExitStatus, RunError> {
+) -> Result<std::process::ExitStatus, LaunchError> {
     let owner = admission.namespace_owner(cancellation)?;
-    let result = crate::run::run_supervised_gui(
+    let result = crate::run::launch_supervised_gui(
         &admission.manifest_path,
         &admission.payload_root,
         &admission.opts,

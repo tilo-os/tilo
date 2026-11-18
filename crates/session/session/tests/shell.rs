@@ -471,11 +471,19 @@ fn the_workspaces_menu_stands_while_the_change_feed_under_it() {
         },
     );
     session.step(Duration::from_millis(16)).unwrap();
+    let controls: Vec<String> = session
+        .controls()
+        .into_iter()
+        .map(|control| control.name)
+        .filter(|name| name.to_lowercase().contains("work"))
+        .collect();
     assert!(
         session
             .shell_control("Workspace settings")
             .is_some_and(|(_, _, w, h)| w > 0.0 && h > 0.0),
-        "the menu stands while the shell changes under it: {:?}",
+        "the menu stands while the shell changes under it: the stack says {:?}; its controls \
+         naming a workspace are {controls:?}; the session says: {:?}",
+        session.read("desktop:overlays"),
         session.accessible_labels()
     );
     // And still chooses: the workspace in front is the one the person presses there.

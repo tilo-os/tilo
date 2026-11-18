@@ -2,7 +2,7 @@
 //! sends it, so two people typing in one conversation never overwrite each other.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{UiNode, Value, ViewInstance};
+use tilolang_runtime::{Value, ViewInstance};
 
 use crate::fixtures::Replica;
 
@@ -41,18 +41,8 @@ view talk(t: Talk) {
 }
 "#;
 
-fn of_kind<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
-    if node.kind == kind {
-        out.push(node);
-    }
-    for child in &node.children {
-        of_kind(child, kind, out);
-    }
-}
-
 fn key(view: &ViewInstance, kind: &str) -> String {
-    let mut found = Vec::new();
-    of_kind(view.tree(), kind, &mut found);
+    let found = view.tree().of_kind(kind);
     found
         .first()
         .unwrap_or_else(|| panic!("no {kind}"))
@@ -65,8 +55,7 @@ fn entry(view: &ViewInstance) -> Value {
 }
 
 fn lines(view: &ViewInstance) -> Vec<String> {
-    let mut found = Vec::new();
-    of_kind(view.tree(), "ui.Text", &mut found);
+    let found = view.tree().of_kind("ui.Text");
     found
         .iter()
         .filter_map(|n| match n.props.get("value") {

@@ -2009,7 +2009,7 @@ mod tests {
     }
 
     /// Build the argv the launcher would really produce for `app_id`, through the same production path
-    /// as `run_with`; only the device-node lookup is substituted.
+    /// as `launch_with`; only the device-node lookup is substituted.
     fn argv_with_caps(app_id: &str, caps: &[CapOverride], now: u64) -> Vec<String> {
         let mut m = mk_manifest("host");
         m.capabilities.push("camera".to_owned());

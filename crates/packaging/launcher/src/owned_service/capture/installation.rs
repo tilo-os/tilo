@@ -64,7 +64,7 @@ impl CaptureAdmission {
         manifest: &std::path::Path,
         payload: &std::path::Path,
         expected: &str,
-    ) -> Option<Result<crate::manifest::ManifestView, crate::run::RunError>> {
+    ) -> Option<Result<crate::manifest::ManifestView, crate::run::LaunchError>> {
         self.installation.as_ref().map(|installed| {
             crate::run::verified_launch_installation(installed, manifest, payload, expected)
         })

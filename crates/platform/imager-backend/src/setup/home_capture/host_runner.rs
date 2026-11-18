@@ -8,7 +8,7 @@ use super::{
 use crate::capture::{host_owner::CaptureHostOwner, host_session as host};
 use launcher::{
     owned_service::{self, CaptureOutputAdmission},
-    run::RunError,
+    run::LaunchError,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -121,7 +121,7 @@ fn admitted<T>(
     })
 }
 
-fn launcher_error_kind(error: &RunError) -> io::ErrorKind {
+fn launcher_error_kind(error: &LaunchError) -> io::ErrorKind {
     let mut source: &dyn std::error::Error = error;
     for _ in 0..8 {
         if let Some(error) = source.downcast_ref::<io::Error>() {
@@ -133,23 +133,23 @@ fn launcher_error_kind(error: &RunError) -> io::ErrorKind {
         source = next;
     }
     match error {
-        RunError::RuntimeBundleMissing { .. } | RunError::RuntimeLibraryMissing { .. } => {
+        LaunchError::RuntimeBundleMissing { .. } | LaunchError::RuntimeLibraryMissing { .. } => {
             io::ErrorKind::NotFound
         }
-        RunError::RuntimeBundleUnsigned { .. } | RunError::RuntimeBundleSignature { .. } => {
+        LaunchError::RuntimeBundleUnsigned { .. } | LaunchError::RuntimeBundleSignature { .. } => {
             io::ErrorKind::PermissionDenied
         }
-        RunError::InvalidServiceLaunch(_)
-        | RunError::AppIdMismatch { .. }
-        | RunError::InvalidCapturePlan
-        | RunError::ArgvInvariant => io::ErrorKind::InvalidData,
+        LaunchError::InvalidServiceLaunch(_)
+        | LaunchError::AppIdMismatch { .. }
+        | LaunchError::InvalidCapturePlan
+        | LaunchError::ArgvInvariant => io::ErrorKind::InvalidData,
         _ => io::ErrorKind::Other,
     }
 }
 
-fn launcher_failure_phase(error: &RunError) -> FailurePhase {
+fn launcher_failure_phase(error: &LaunchError) -> FailurePhase {
     match error {
-        RunError::Spawn(_) => {
+        LaunchError::Spawn(_) => {
             let mut source: &dyn std::error::Error = error;
             for _ in 0..8 {
                 if let Some(json) = source.downcast_ref::<serde_json::Error>() {
@@ -171,16 +171,18 @@ fn launcher_failure_phase(error: &RunError) -> FailurePhase {
             }
             FailurePhase::LauncherNamespaceExec
         }
-        RunError::Manifest(_) => FailurePhase::LauncherManifest,
-        RunError::AppDir { .. } | RunError::NoDataHome(_) => FailurePhase::LauncherWorkingDirectory,
-        RunError::Service(_) => FailurePhase::LauncherServices,
-        RunError::Seccomp(_) => FailurePhase::LauncherConfinement,
-        RunError::RuntimeLibraryMissing { .. } => FailurePhase::LauncherRuntimeLibraries,
-        RunError::RuntimeBundleMissing { .. }
-        | RunError::RuntimeReferenceMalformed(_)
-        | RunError::RuntimeBundleUnsigned { .. }
-        | RunError::RuntimeBundleSignature { .. } => FailurePhase::LauncherRuntimePolicy,
-        RunError::Io(_) => FailurePhase::LauncherPreparation,
+        LaunchError::Manifest(_) => FailurePhase::LauncherManifest,
+        LaunchError::AppDir { .. } | LaunchError::NoDataHome(_) => {
+            FailurePhase::LauncherWorkingDirectory
+        }
+        LaunchError::Service(_) => FailurePhase::LauncherServices,
+        LaunchError::Seccomp(_) => FailurePhase::LauncherConfinement,
+        LaunchError::RuntimeLibraryMissing { .. } => FailurePhase::LauncherRuntimeLibraries,
+        LaunchError::RuntimeBundleMissing { .. }
+        | LaunchError::RuntimeReferenceMalformed(_)
+        | LaunchError::RuntimeBundleUnsigned { .. }
+        | LaunchError::RuntimeBundleSignature { .. } => FailurePhase::LauncherRuntimePolicy,
+        LaunchError::Io(_) => FailurePhase::LauncherPreparation,
         _ => FailurePhase::LauncherPolicy,
     }
 }
@@ -534,7 +536,7 @@ mod tests {
 
         phase startup_failure_preserves_nested_io_class_without_error_text;
         {
-            let error = RunError::AppDir {
+            let error = LaunchError::AppDir {
                 package: "private package".into(),
                 path: "/private/path".into(),
                 source: io::Error::new(io::ErrorKind::PermissionDenied, "secret detail"),
@@ -545,14 +547,14 @@ mod tests {
         phase startup_boundary_distinguishes_namespace_info_without_private_error_text;
         {
             let empty = serde_json::from_slice::<serde_json::Value>(b"").unwrap_err();
-            let error = RunError::Spawn(io::Error::other(empty));
+            let error = LaunchError::Spawn(io::Error::other(empty));
             assert!(matches!(
                 launcher_failure_phase(&error),
                 FailurePhase::LauncherNamespaceInfoEof
             ));
             let invalid =
                 serde_json::from_slice::<serde_json::Value>(b"private-secret-path").unwrap_err();
-            let error = RunError::Spawn(io::Error::other(invalid));
+            let error = LaunchError::Spawn(io::Error::other(invalid));
             let (mut sender, mut receiver) = UnixStream::pair().unwrap();
             let operation = uuid::Uuid::new_v4().to_string();
             let result: io::Result<()> = admitted(
@@ -572,7 +574,7 @@ mod tests {
                     class: FailureClass::Other,
                 } if actual == operation
             ));
-            let private = RunError::AppDir {
+            let private = LaunchError::AppDir {
                 package: "private package".into(),
                 path: "/private/path".into(),
                 source: io::Error::new(io::ErrorKind::PermissionDenied, "private password"),
@@ -582,7 +584,7 @@ mod tests {
                 FailurePhase::LauncherWorkingDirectory
             ));
             assert!(matches!(
-                launcher_failure_phase(&RunError::Spawn(io::Error::from(
+                launcher_failure_phase(&LaunchError::Spawn(io::Error::from(
                     io::ErrorKind::PermissionDenied
                 ))),
                 FailurePhase::LauncherNamespaceExec

@@ -4,7 +4,8 @@
 //! A mark stays until the person deals with it, never on a timer, and showing a resource does
 //! not set it: the person does, by reviewing the run that made it (*Mark all seen*), by opening
 //! the resource in a window of its own, by editing it (their own version is the newest they
-//! have seen of it), or by undoing what made it.
+//! have seen of it), by undoing what made it, or by watching the change land where their window
+//! shows it, its live mark on screen ([`crate::Runtime::seen_live`]).
 //!
 //! The marks live under the person's entries of the workspace's record of them, kept by the
 //! host: the runtime holds them as state slots ([`seen_key`]), which the host fills

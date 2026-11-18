@@ -1,7 +1,6 @@
 //! The vault's rows and effects, published as a framework app.
 
 use ui::framework::{EffectStatus, Effected, Fixture, Publishes, ResourceApp, RunMode, ViewCx};
-use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 
 use crate::actions::PasswordsEffect;
@@ -11,25 +10,9 @@ use crate::window::PasswordsWindow;
 #[path = "credential_owner_tests.rs"]
 mod credential_owner_tests;
 
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Passwords {}
-
-impl Passwords {
-    /// What the resource holds: nothing — the vault is this device's encrypted store, and no
-    /// secret syncs.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "passwords.vault",
-    read_content = Passwords::read_document
-)]
-impl Passwords {}
+/// The vault's published document: its type lives in `passwords-model`, and it holds no
+/// secret material — the vault is this device's encrypted store.
+pub use passwords_model::Passwords;
 
 pub struct DemoVault;
 

@@ -194,8 +194,11 @@ pub struct Present {
     /// or a member's device for an agent its person admitted there. The agent
     /// says nothing itself.
     pub spoken_by: Option<Device>,
-    /// The run it is, as the device that speaks for it names it.
-    pub run: Option<String>,
+    /// The agent session it is, as the device that speaks for it names it.
+    pub session: Option<String>,
+    /// The workspace member the session is, which every surface names and colours the session by:
+    /// the agent it is a session of, never the session's own id.
+    pub member: Option<String>,
     pointer: Smoother,
     /// When this device last heard them say anything, on the clock the
     /// caller hands [`Board::hear`]: `None` while only the roster named them.
@@ -221,7 +224,8 @@ impl Present {
             here: false,
             epoch: 0,
             spoken_by: None,
-            run: None,
+            session: None,
+            member: None,
             pointer: Smoother::default(),
             heard_ms: None,
         }
@@ -415,7 +419,7 @@ impl Board {
     /// device that speaks for it, so nobody speaks for another device's runs.
     /// `None` for a word on a run from a device that is neither.
     fn speaker(&mut self, from: Device, frame: &Presence) -> Option<Device> {
-        let Some(run) = &frame.on_behalf else {
+        let Some(session) = &frame.on_behalf else {
             return Some(from);
         };
         let member_here = self
@@ -424,7 +428,7 @@ impl Board {
         if self.host != Some(from) && !member_here {
             return None;
         }
-        let stand_in = collab_types::presence::stand_in(from, run);
+        let stand_in = collab_types::presence::stand_in(from, session);
         if !self
             .presents
             .iter()
@@ -432,12 +436,19 @@ impl Board {
         {
             let mut member = Present::new(stand_in);
             member.spoken_by = Some(from);
-            member.run = Some(run.clone());
+            member.session = Some(session.clone());
             // The run is said on its speaker's device: it lists as that device.
             if let Some(speaker) = self.present(from) {
                 member.device.clone_from(&speaker.device);
             }
             self.presents.push(member);
+        }
+        if let Some(member) = self
+            .presents
+            .iter_mut()
+            .find(|member| member.publisher == stand_in)
+        {
+            member.member.clone_from(&frame.member);
         }
         Some(stand_in)
     }
@@ -447,24 +458,32 @@ impl Board {
     /// member of its own on this board, as another device's runs are, and is
     /// said on the presence track for everyone here; a run spoken for before
     /// and missing from `runs` leaves. Whether what is known here changed.
-    pub fn speak_for(&mut self, runs: &[(String, ShellPresence)]) -> bool {
+    pub fn speak_for(&mut self, sessions: &[(String, String, ShellPresence)]) -> bool {
         let own = Some(self.publisher);
         let gone: Vec<String> = self
             .presents
             .iter()
             .filter(|member| member.spoken_by == own)
-            .filter_map(|member| member.run.clone())
-            .filter(|run| runs.iter().all(|(held, _)| held != run))
+            .filter_map(|member| member.session.clone())
+            .filter(|session| sessions.iter().all(|(held, _, _)| held != session))
             .collect();
         let mut changed = !gone.is_empty();
-        for run in gone {
-            self.presents
-                .retain(|member| member.spoken_by != own || member.run.as_ref() != Some(&run));
-            self.schedule
-                .push(Presence::desktop(self.workspace.clone(), Payload::Left).spoken_for(run));
+        for session in gone {
+            let named = self
+                .presents
+                .iter()
+                .find(|member| member.spoken_by == own && member.session.as_ref() == Some(&session))
+                .and_then(|member| member.member.clone())
+                .unwrap_or_default();
+            self.presents.retain(|member| {
+                member.spoken_by != own || member.session.as_ref() != Some(&session)
+            });
+            self.schedule.push(
+                Presence::desktop(self.workspace.clone(), Payload::Left).spoken_for(session, named),
+            );
         }
-        for (run, view) in runs {
-            let stand_in = collab_types::presence::stand_in(self.publisher, run);
+        for (session, named, view) in sessions {
+            let stand_in = collab_types::presence::stand_in(self.publisher, session);
             if !self
                 .presents
                 .iter()
@@ -472,7 +491,7 @@ impl Board {
             {
                 let mut member = Present::new(stand_in);
                 member.spoken_by = own;
-                member.run = Some(run.clone());
+                member.session = Some(session.clone());
                 member.device.clone_from(&self.own.device);
                 // A run this device executes works for the person at this device: what a surface
                 // showing this person their own agent's work reads.
@@ -486,9 +505,11 @@ impl Board {
             else {
                 continue;
             };
+            member.member = Some(named.clone());
             if member.arrive() {
                 self.schedule.push(
-                    Presence::desktop(self.workspace.clone(), Payload::Arrived).spoken_for(run),
+                    Presence::desktop(self.workspace.clone(), Payload::Arrived)
+                        .spoken_for(session.clone(), named.clone()),
                 );
                 changed = true;
             }
@@ -498,7 +519,8 @@ impl Board {
                 view.seq = member.shell_seq;
                 member.shell = Some(view.clone());
                 self.schedule.push(
-                    Presence::desktop(self.workspace.clone(), Payload::Shell(view)).spoken_for(run),
+                    Presence::desktop(self.workspace.clone(), Payload::Shell(view))
+                        .spoken_for(session.clone(), named.clone()),
                 );
                 changed = true;
             }
@@ -650,16 +672,17 @@ impl Board {
             .iter()
             .filter(|member| member.spoken_by == own)
         {
-            let Some(run) = &member.run else {
+            let (Some(session), Some(named)) = (&member.session, &member.member) else {
                 continue;
             };
             self.schedule.push(
-                Presence::desktop(self.workspace.clone(), Payload::Arrived).spoken_for(run.clone()),
+                Presence::desktop(self.workspace.clone(), Payload::Arrived)
+                    .spoken_for(session.clone(), named.clone()),
             );
             if let Some(shell) = &member.shell {
                 self.schedule.push(
                     Presence::desktop(self.workspace.clone(), Payload::Shell(shell.clone()))
-                        .spoken_for(run.clone()),
+                        .spoken_for(session.clone(), named.clone()),
                 );
             }
         }

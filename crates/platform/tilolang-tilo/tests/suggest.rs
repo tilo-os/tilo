@@ -342,31 +342,8 @@ fn card_view(ada: &Replica, task: &Value) -> tilolang_runtime::ViewInstance {
         .unwrap()
 }
 
-/// Every node of a tree of `kind`, depth first.
-fn of_kind<'a>(
-    node: &'a tilolang_runtime::UiNode,
-    kind: &str,
-) -> Vec<&'a tilolang_runtime::UiNode> {
-    let mut out = Vec::new();
-    walk(node, kind, &mut out);
-    out
-}
-
-fn walk<'a>(
-    node: &'a tilolang_runtime::UiNode,
-    kind: &str,
-    out: &mut Vec<&'a tilolang_runtime::UiNode>,
-) {
-    if node.kind == kind {
-        out.push(node);
-    }
-    for child in &node.children {
-        walk(child, kind, out);
-    }
-}
-
 fn cards(tree: &tilolang_runtime::UiNode) -> Vec<&tilolang_runtime::UiNode> {
-    of_kind(tree, "invocation")
+    tree.of_kind("invocation")
         .into_iter()
         .filter(|node| node.props.get("proposed") == Some(&Value::Bool(true)))
         .collect()
@@ -375,7 +352,7 @@ fn cards(tree: &tilolang_runtime::UiNode) -> Vec<&tilolang_runtime::UiNode> {
 /// The lines the rows carry under their text: a row says nothing of its own when the line is
 /// empty.
 fn rows_with_note(tree: &tilolang_runtime::UiNode) -> Vec<String> {
-    of_kind(tree, "ui.ListRow")
+    tree.of_kind("ui.ListRow")
         .into_iter()
         .filter_map(|row| match row.props.get("note") {
             Some(Value::Text(note)) if !note.is_empty() => Some(note.clone()),
@@ -385,7 +362,7 @@ fn rows_with_note(tree: &tilolang_runtime::UiNode) -> Vec<String> {
 }
 
 fn texts(tree: &tilolang_runtime::UiNode) -> Vec<String> {
-    of_kind(tree, "ui.Text")
+    tree.of_kind("ui.Text")
         .into_iter()
         .filter_map(|node| match node.props.get("value") {
             Some(Value::Text(text)) => Some(text.clone()),

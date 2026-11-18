@@ -219,7 +219,11 @@ fn until(session: &mut Session, what: &str, mut done: impl FnMut(&mut Session) -
         }
         session.step(REFRESH).expect("a turn of the session");
     }
-    panic!("{what} never happened");
+    panic!(
+        "{what} never happened; the stack says {:?}; the shell's refusals: {:?}",
+        session.read("desktop:overlays"),
+        session.shell_refusals()
+    );
 }
 
 /// Whether the shell publishes the resource `id` now: the open search, say.
@@ -437,8 +441,19 @@ tilo_test_env::scenario! {
 fn a_tap_of_super_alone_opens_search_and_a_chord_does_not() {
     let _panel = panel_environment();
     let mut session = session_with(layout_tree());
-    key(&mut session, KEY_LEFT_META, true);
-    key(&mut session, KEY_LEFT_META, false);
+    // A tap is a press and a release with nothing between, offered before the loop takes a frame:
+    // the hold it is told apart from is measured on the clock, so a slow frame between the two
+    // would make the tap a hold.
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::Key {
+                keycode: KEY_LEFT_META,
+                pressed,
+            })
+            .expect("the key");
+    }
+    session.step(REFRESH).expect("a turn of the session");
     until(&mut session, "the search", |session| search_open(session));
 
     // Super+W: the chord of the second key, not a tap of Super.

@@ -5,8 +5,8 @@
 use tilolang_runtime::{Actor, UiNode, Value, ViewInstance};
 
 use crate::tasks::{
-    APP, ShownPlace, ShownSection, all, call, count, create, go_to, home_list_rows, key_of,
-    node_of, places, read, shown_count, shown_title, target, task, workspace,
+    APP, ShownPlace, ShownSection, call, count, create, go_to, home_list_rows, key_of, node_of,
+    places, read, shown_count, shown_title, target, task, workspace,
 };
 #[cfg(feature = "document")]
 use crate::tasks::{bound_key, task_page};
@@ -205,8 +205,8 @@ tilo_test_env::scenario! {
                 Some(place.as_str()),
                 "{place} is the page the window shows"
             );
-            let shown = !all(view.tree(), "ui.VirtualList").is_empty()
-                || all(view.tree(), "ui.EmptyState").into_iter().any(|node| {
+            let shown = !view.tree().of_kind("ui.VirtualList").is_empty()
+                || view.tree().of_kind("ui.EmptyState").into_iter().any(|node| {
                     node.props
                         .get("title")
                         .is_some_and(|title| *title != Value::text("No task selected"))
@@ -252,7 +252,7 @@ tilo_test_env::scenario! {
             "and the day's place says nothing open either"
         );
         go_to(&mut view, "Groceries");
-        let inline: Vec<&UiNode> = all(view.tree(), "ui.EmptyState")
+        let inline: Vec<&UiNode> = view.tree().of_kind("ui.EmptyState")
             .into_iter()
             .filter(|node| {
                 matches!(
@@ -293,7 +293,7 @@ tilo_test_env::scenario! {
         ada.commit();
         let mut view = ada.view(APP);
         go_to(&mut view, "Inbox");
-        let said: Vec<String> = all(view.tree(), "ui.EmptyState")
+        let said: Vec<String> = view.tree().of_kind("ui.EmptyState")
             .into_iter()
             .filter_map(|node| match node.props.get("title") {
                 Some(Value::Text(title)) => Some(title.clone()),

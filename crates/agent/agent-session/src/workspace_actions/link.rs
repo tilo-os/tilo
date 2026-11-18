@@ -294,6 +294,9 @@ pub trait AsksInConversation: Send + Sync {
 pub struct PackagedCall<'a> {
     /// The app's id, as its package and its resources name it.
     pub app: &'a str,
+    /// The resource kind the action is for: the app's model serves every
+    /// resource the app declares, and routes the action by this.
+    pub kind: &'a str,
     /// The resource's document id: `""` for what the app keeps per workspace.
     pub document: &'a str,
     /// The `.tapp` the workspace keeps for that app version.

@@ -490,13 +490,18 @@ impl CapsuleStore {
                     .and_then(|stem| stem.to_str())
                     .unwrap_or_default();
                 let lower = stem.to_ascii_lowercase();
+                let relative_lower = relative.to_string_lossy().to_ascii_lowercase();
                 if lower.starts_with("unins") || lower.contains("uninstall") {
-                    if uninstaller.is_none() {
+                    // Wine's own `C:\windows\system32\uninstaller.exe` is in every prefix; the
+                    // uninstaller is the one setup put beside what it installed.
+                    if uninstaller.is_none()
+                        && !relative_lower.starts_with("drive_c/windows/")
+                        && !is_wine_placeholder(&entry_path)
+                    {
                         uninstaller = Some(relative);
                     }
                     continue;
                 }
-                let relative_lower = relative.to_string_lossy().to_ascii_lowercase();
                 let installed_location = relative_lower.contains("program files")
                     || (relative_lower.contains("appdata") && relative_lower.contains("local"));
                 if !installed_location
@@ -1086,7 +1091,8 @@ mod tests {
         placeholder.extend_from_slice(b"Wine builtin DLL\0\0\0\0in DOS mode");
         for (folder, name, bytes) in [
             ("Internet Explorer", "iexplore.exe", placeholder.clone()),
-            ("Windows NT/Accessories", "wordpad.exe", placeholder),
+            ("Windows NT/Accessories", "wordpad.exe", placeholder.clone()),
+            ("../windows/system32", "uninstaller.exe", placeholder),
             (
                 "Notepad++",
                 "notepad++.exe",
@@ -1096,9 +1102,19 @@ mod tests {
             fs::create_dir_all(program_files.join(folder)).unwrap();
             fs::write(program_files.join(folder).join(name), bytes).unwrap();
         }
-        let (programs, _) = store
+        let (_, uninstaller) = store
             .discover_programs(&state.id, &ApplicationQuery::default())
             .unwrap();
+        assert_eq!(uninstaller, None, "Wine's own uninstaller is not the app's");
+        fs::write(
+            program_files.join("Notepad++/uninstall.exe"),
+            b"MZ its uninstaller",
+        )
+        .unwrap();
+        let (programs, uninstaller) = store
+            .discover_programs(&state.id, &ApplicationQuery::default())
+            .unwrap();
+        assert!(uninstaller.is_some_and(|path| path.ends_with("Notepad++/uninstall.exe")));
         let names: Vec<&str> = programs
             .iter()
             .map(|program| program.display_name.as_str())

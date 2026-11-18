@@ -24,11 +24,11 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use launcher::capture::{
-    CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination,
+    CaptureCancellation, CapturedLaunchOutput, CapturedResourcePlan, CapturedTermination,
 };
 use launcher::manifest::{ManifestView, read_manifest};
 #[cfg(target_os = "linux")]
-use launcher::run::{LaunchMode, RunOptions, run_with_captured_bounded};
+use launcher::run::{LaunchMode, LaunchOptions, launch_with_captured_bounded};
 use package_store::InstalledPackage;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -352,8 +352,10 @@ pub trait ComputeSandbox: Send + Sync {
     /// # Errors
     ///
     /// Returns an error when the sandbox cannot launch or supervise the worker.
-    fn launch(&self, invocation: ComputeSandboxInvocation<'_>)
-    -> Result<CapturedRunOutput, String>;
+    fn launch(
+        &self,
+        invocation: ComputeSandboxInvocation<'_>,
+    ) -> Result<CapturedLaunchOutput, String>;
 }
 
 /// A host shares one store, catalogue and sandbox with every job it runs.
@@ -385,7 +387,7 @@ impl<T: ComputeSandbox + ?Sized> ComputeSandbox for Arc<T> {
     fn launch(
         &self,
         invocation: ComputeSandboxInvocation<'_>,
-    ) -> Result<CapturedRunOutput, String> {
+    ) -> Result<CapturedLaunchOutput, String> {
         (**self).launch(invocation)
     }
 }
@@ -412,7 +414,7 @@ impl ComputeSandbox for LauncherComputeSandbox {
     fn launch(
         &self,
         invocation: ComputeSandboxInvocation<'_>,
-    ) -> Result<CapturedRunOutput, String> {
+    ) -> Result<CapturedLaunchOutput, String> {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = invocation;
@@ -435,7 +437,7 @@ impl ComputeSandbox for LauncherComputeSandbox {
             if mounted_dir != invocation.host_job_dir {
                 return Err("staged compute directory is not the launcher's mounted appdir".into());
             }
-            let opts = RunOptions {
+            let opts = LaunchOptions {
                 no_services: true,
                 mode: LaunchMode::Cli {
                     command: invocation.entrypoint.to_string(),
@@ -458,9 +460,9 @@ impl ComputeSandbox for LauncherComputeSandbox {
                 trusted_identities_host_path: None,
                 open_document: None,
                 open_uri: None,
-                ..RunOptions::default()
+                ..LaunchOptions::default()
             };
-            run_with_captured_bounded(
+            launch_with_captured_bounded(
                 invocation.manifest,
                 &invocation.package.payload_root,
                 &opts,
@@ -861,7 +863,7 @@ where
         &self,
         spec: &ComputeJobSpec,
         output_dir: &File,
-        captured: CapturedRunOutput,
+        captured: CapturedLaunchOutput,
     ) -> Result<ComputeJobResult, ComputeExecutionError> {
         let captured_bytes = captured.stdout.len().saturating_add(captured.stderr.len());
         if captured_bytes > usize::try_from(spec.limits.output_bytes).unwrap_or(usize::MAX) {
@@ -1422,7 +1424,7 @@ mod tests {
         fn launch(
             &self,
             invocation: ComputeSandboxInvocation<'_>,
-        ) -> Result<CapturedRunOutput, String> {
+        ) -> Result<CapturedLaunchOutput, String> {
             self.launches.fetch_add(1, Ordering::AcqRel);
             let request = invocation.host_job_dir.join(".tilo-compute/request.json");
             let value: serde_json::Value =
@@ -1451,7 +1453,7 @@ mod tests {
                 FakeTermination::Success => CapturedTermination::Exited(ExitStatus::from_raw(0)),
                 FakeTermination::Timeout => CapturedTermination::TimedOut,
             };
-            Ok(CapturedRunOutput {
+            Ok(CapturedLaunchOutput {
                 termination,
                 stdout: Vec::new(),
                 stderr: Vec::new(),

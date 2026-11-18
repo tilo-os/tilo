@@ -60,16 +60,6 @@ fn key_of(tree: &UiNode, kind: &str, prop: &str, value: &str) -> String {
     .clone()
 }
 
-/// Every node of `kind` under `node`.
-fn all_of<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
-    if node.kind == kind {
-        out.push(node);
-    }
-    for child in &node.children {
-        all_of(child, kind, out);
-    }
-}
-
 /// The nodes of the shell's part `name`.
 fn part_of<'a>(shell: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
     shell
@@ -87,7 +77,7 @@ fn part_of<'a>(shell: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
 fn buttons_in(shell: &UiNode, name: &str) -> Vec<String> {
     let mut buttons = Vec::new();
     for node in part_of(shell, name) {
-        all_of(node, "ui.Button", &mut buttons);
+        buttons.extend(node.of_kind("ui.Button"));
     }
     buttons
         .into_iter()
@@ -250,8 +240,7 @@ fn row(session: &mut Session, title: &str) -> UiNode {
 
 /// The marks the row shows beside its title, as the app drew them.
 fn marks(row: &UiNode) -> Vec<String> {
-    let mut drawn = Vec::new();
-    all_of(row, "ui.ListRow", &mut drawn);
+    let drawn = row.of_kind("ui.ListRow");
     drawn
         .into_iter()
         .filter_map(|row| row.props.get("mark").map(display))
@@ -260,8 +249,7 @@ fn marks(row: &UiNode) -> Vec<String> {
 
 /// The action the row offers when a person swipes it, and whether it destroys what it names.
 fn swipe(row: &UiNode) -> Option<(String, bool)> {
-    let mut actions = Vec::new();
-    all_of(row, "ui.SwipeAction", &mut actions);
+    let actions = row.of_kind("ui.SwipeAction");
     actions.first().map(|action| {
         (
             action.props.get("label").map(display).unwrap_or_default(),
@@ -405,8 +393,7 @@ fn a_notebook_is_its_tree_with_the_chosen_note_beside_it_naming_the_window() {
 fn an_empty_notebook_says_so_once_and_its_bar_makes_the_first_note() {
     let mut session = Session::notes();
     let shell_tree = composed(&mut session);
-    let mut empty = Vec::new();
-    all_of(&shell_tree, "ui.EmptyState", &mut empty);
+    let empty = shell_tree.of_kind("ui.EmptyState");
     assert_eq!(empty.len(), 1, "one state, once: {empty:?}");
     assert_eq!(prop(empty[0], "title").as_deref(), Some("No notes yet"));
     assert!(
@@ -752,8 +739,7 @@ fn typing_in_the_window_s_search_narrows_a_projects_tasks_to_what_matches() {
 
 /// The places of the sidebar under `node`, in order.
 fn places(node: &UiNode, out: &mut Vec<String>) {
-    let mut items = Vec::new();
-    all_of(node, "ui.NavItem", &mut items);
+    let items = node.of_kind("ui.NavItem");
     out.extend(
         items
             .into_iter()
@@ -763,8 +749,7 @@ fn places(node: &UiNode, out: &mut Vec<String>) {
 
 /// Each heading of the sidebar and its places.
 fn sections(node: &UiNode) -> Vec<(String, Vec<String>)> {
-    let mut found = Vec::new();
-    all_of(node, "ui.NavSection", &mut found);
+    let found = node.of_kind("ui.NavSection");
     found
         .into_iter()
         .map(|section| {
@@ -794,8 +779,7 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
         part_of(&shell, "sidebar").is_empty(),
         "the places draw no second state"
     );
-    let mut empty = Vec::new();
-    all_of(&shell, "ui.EmptyState", &mut empty);
+    let empty = shell.of_kind("ui.EmptyState");
     assert_eq!(empty.len(), 1, "one state, once: {empty:?}");
     assert_eq!(prop(empty[0], "title").as_deref(), Some("No channels yet"));
     assert!(

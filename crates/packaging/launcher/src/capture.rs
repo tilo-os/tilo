@@ -67,7 +67,7 @@ pub enum CapturedTermination {
 }
 
 #[derive(Debug)]
-pub struct CapturedRunOutput {
+pub struct CapturedLaunchOutput {
     pub termination: CapturedTermination,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,

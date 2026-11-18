@@ -60,6 +60,7 @@ pub mod permission_store;
 #[cfg(feature = "pipewire")]
 pub mod pipewire;
 pub mod print;
+pub mod reach;
 pub mod remote_desktop;
 pub mod reply;
 pub mod requester;
@@ -130,6 +131,11 @@ pub struct PortalCaller {
     /// given, so a file the person chooses for it is answered with a path in
     /// that store ([`doc_store`]) rather than a host path it cannot open.
     pub sandboxed: bool,
+    /// The portals the app's manifest lets it use (its `[sandbox.portals]`
+    /// entries that are not denied), when it is a package its manifest confines:
+    /// the backend refuses it every other portal ([`reach`]). `None` for an
+    /// app no manifest confines.
+    pub portals: Option<std::collections::BTreeSet<String>>,
 }
 
 impl PortalCaller {
@@ -139,7 +145,17 @@ impl PortalCaller {
             app_id: app_id.into(),
             workspace: None,
             sandboxed: false,
+            portals: None,
         }
+    }
+
+    /// Whether the app may call backend interface `interface`: always when
+    /// no manifest confines it, else only where [`reach::reaches`] says.
+    #[must_use]
+    pub fn reaches(&self, interface: &str) -> bool {
+        self.portals
+            .as_ref()
+            .is_none_or(|allowed| reach::reaches(allowed, interface))
     }
 }
 
@@ -447,8 +463,8 @@ impl Portal {
 
     /// End every capture whose device `ended` says the app may no longer use, asked of each by
     /// its app, its workspace and the device: a stream it holds of the screen, the camera or the
-    /// microphone, its input capture and the remote control of the desktop. The app keeps
-    /// running. Returns how many ended.
+    /// microphone, its input capture and the remote control of the desktop, and the shares it
+    /// keeps a restore key for. The app keeps running. Returns how many captures ended.
     pub fn end_captures(
         &self,
         ended: impl Fn(&str, Option<&str>, DeviceCap) -> bool + Copy,
@@ -481,6 +497,16 @@ impl Portal {
             ) && self.sessions.end(path)
         })
         .count();
+        // A remembered share is an answer of the same kind: once the app may no longer use
+        // the screen or the input it shares, its restore key asks the person again.
+        let forgotten = self.grants.forget_ended(|grant| {
+            let workspace = grant.workspace.as_deref();
+            (!grant.sources.is_empty() && ended(&grant.app_id, workspace, DeviceCap::Screen))
+                || (grant.devices != 0 && ended(&grant.app_id, workspace, DeviceCap::Input))
+        });
+        if forgotten {
+            self.sessions.changed();
+        }
         streams.saturating_add(sessions)
     }
 
@@ -698,13 +724,30 @@ impl Portal {
             .sender()
             .cloned()
             .map(zbus::names::OwnedUniqueName::from);
-        self.authenticator
+        let call = self
+            .authenticator
             .authenticate_request(sender.as_ref(), handle, app_id, parent_window)
             .await
             .map_err(|error| {
                 tracing::debug!(%error, app_id, "portal call refused");
                 reply::Ended::Failed
-            })
+            })?;
+        // A package reaches only the portals its manifest lets it use, whatever reached the
+        // frontend for it.
+        let interface = header.interface().map(|name| name.as_str().to_owned());
+        let reaches = match interface.as_deref() {
+            Some(interface) => call.caller.reaches(interface),
+            None => call.caller.portals.is_none(),
+        };
+        if !reaches {
+            tracing::debug!(
+                app_id = %call.caller.app_id,
+                ?interface,
+                "portal call refused: the app's manifest does not allow this portal"
+            );
+            return Err(reply::Ended::Failed);
+        }
+        Ok(call)
     }
 }
 

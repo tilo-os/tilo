@@ -53,26 +53,12 @@ fn texts(node: &UiNode, out: &mut Vec<String>) {
     }
 }
 
-fn find<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
-    if node.kind == kind {
-        return Some(node);
-    }
-    node.children.iter().find_map(|child| find(child, kind))
-}
-
-fn find_all<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
-    if node.kind == kind {
-        out.push(node);
-    }
-    for child in &node.children {
-        find_all(child, kind, out);
-    }
-}
-
 /// The transcript's rows as the list builds them: each row's node.
 fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
     view.poll_patches().unwrap();
-    let list = find(view.tree(), "ui.VirtualList")
+    let list = view
+        .tree()
+        .first_of_kind("ui.VirtualList")
         .expect("a transcript")
         .key
         .clone();
@@ -86,7 +72,10 @@ fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
 /// draws its "New messages" divider over the row that shows it. `None` when nothing is unseen.
 fn unseen_from(view: &mut ViewInstance) -> Option<String> {
     rows(view);
-    let list = find(view.tree(), "ui.VirtualList").expect("a transcript");
+    let list = view
+        .tree()
+        .first_of_kind("ui.VirtualList")
+        .expect("a transcript");
     match list.props.get("unseen_from") {
         Some(Value::Ref(unseen)) => unseen.target.item.clone(),
         _ => None,
@@ -106,8 +95,7 @@ fn said(view: &mut ViewInstance) -> Vec<String> {
     rows(view)
         .iter()
         .map(|row| {
-            let mut out = Vec::new();
-            find_all(row, "ui.BlockEditor", &mut out);
+            let out = row.of_kind("ui.BlockEditor");
             let mut text = Vec::new();
             for node in out {
                 texts(node, &mut text);
@@ -119,8 +107,7 @@ fn said(view: &mut ViewInstance) -> Vec<String> {
 
 /// The key of the button in `node` labelled `label`.
 fn button(node: &UiNode, label: &str) -> Option<String> {
-    let mut all = Vec::new();
-    find_all(node, "ui.Button", &mut all);
+    let all = node.of_kind("ui.Button");
     all.iter()
         .find(|b| b.props.get("label") == Some(&Value::text(label)))
         .map(|b| b.key.clone())
@@ -128,8 +115,7 @@ fn button(node: &UiNode, label: &str) -> Option<String> {
 
 /// The key of the menu item in `node` labelled `label`.
 fn menu_item(node: &UiNode, label: &str) -> String {
-    let mut all = Vec::new();
-    find_all(node, "ui.MenuItem", &mut all);
+    let all = node.of_kind("ui.MenuItem");
     all.iter()
         .find(|item| item.props.get("label") == Some(&Value::text(label)))
         .map_or_else(
@@ -140,7 +126,9 @@ fn menu_item(node: &UiNode, label: &str) -> String {
 
 /// Type `text` into the composer of `view` and press its send button, as a person does.
 fn post(r: &mut Replica, view: &ViewInstance, text: &str) {
-    let input = find(view.tree(), "ui.RichInput")
+    let input = view
+        .tree()
+        .first_of_kind("ui.RichInput")
         .expect("the composer")
         .key
         .clone();
@@ -174,7 +162,7 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     let mut shown = Vec::new();
     texts(sidebar.tree(), &mut shown);
     assert!(shown.contains(&"design".to_owned()), "{shown:?}");
-    let section = find(sidebar.tree(), "ui.NavSection").expect("the category's section");
+    let section = sidebar.tree().first_of_kind("ui.NavSection").unwrap();
     assert_eq!(section.props.get("title"), Some(&Value::text("Team")));
     let mut under = Vec::new();
     texts(section, &mut under);
@@ -198,8 +186,10 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
 
     // The composer is each person's own: it is empty again once sent, and nothing Ben typed
     // reached Ada's.
-    let input = find(ada_design.tree(), "ui.RichInput").unwrap().key.clone();
-    assert!(matches!(ada_design.bound_value(&input), Some(Value::Rich(r)) if r.is_empty()));
+    let input = ada_design.tree().first_of_kind("ui.RichInput").unwrap();
+    assert!(
+        matches!(ada_design.bound_value(&input.key.clone()), Some(Value::Rich(r)) if r.is_empty())
+    );
 
     // Ben answers Ada's message inline: Reply on her row puts it over his composer, and his
     // message quotes it in the channel, for both.
@@ -207,7 +197,7 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     let reply = button(&first, "Reply").expect("Reply on a message");
     ben_design.press(&reply).unwrap();
     ben_design.poll_patches().unwrap();
-    let banner = find(ben_design.tree(), "ui.Quote").expect("the reply banner");
+    let banner = ben_design.tree().first_of_kind("ui.Quote").unwrap();
     assert_eq!(
         banner.props.get("excerpt"),
         Some(&Value::text("Is the build on the test machines?"))
@@ -215,14 +205,16 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     post(&mut ben, &ben_design, "On all three.");
     ben_design.poll_patches().unwrap();
     assert!(
-        find(ben_design.tree(), "ui.Quote").is_none(),
+        ben_design.tree().first_of_kind("ui.Quote").is_none(),
         "the banner goes once the reply is sent"
     );
     ada.sync_with(&mut ben);
     for view in [&mut ada_design, &mut ben_design] {
         let rows = rows(view);
         assert_eq!(rows.len(), 3);
-        let quote = find(&rows[2], "ui.Quote").expect("the reply quotes what it answers");
+        let quote = rows[2]
+            .first_of_kind("ui.Quote")
+            .expect("the reply quotes what it answers");
         assert_eq!(
             quote.props.get("excerpt"),
             Some(&Value::text("Is the build on the test machines?"))
@@ -244,7 +236,7 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     ada.commit();
     ada.sync_with(&mut ben);
     let row = rows(&mut ben_design).remove(1);
-    let chip = find(&row, "ui.Chip").expect("the thread's chip");
+    let chip = row.first_of_kind("ui.Chip").expect("the thread's chip");
     let opened = ben_design
         .event_action(&chip.key, "press")
         .expect("the chip opens the thread");
@@ -260,7 +252,7 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
             "a thread's replies stay out of the channel"
         );
         let row = &rows(view)[1];
-        let chip = find(row, "ui.Chip").expect("the thread's chip");
+        let chip = row.first_of_kind("ui.Chip").expect("the thread's chip");
         let label = format!("{:?}", chip.props.get("label"));
         assert!(
             label.contains("tilolang-thread-replies") && label.contains(r#"\"1\""#),
@@ -271,7 +263,7 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
 
 /// Who reacted with each emoji, as the row's reactions show it.
 fn reactions(row: &UiNode) -> Vec<(String, Vec<Actor>)> {
-    let Some(node) = find(row, "ui.Reactions") else {
+    let Some(node) = row.first_of_kind("ui.Reactions") else {
         return Vec::new();
     };
     let Some(Value::Map(entries)) = node.props.get("reactions") else {
@@ -345,7 +337,10 @@ fn two_people_reacting_at_once_both_stay_and_a_second_press_takes_yours_back() {
         let mut want = both.clone();
         want.sort();
         assert_eq!(shown, want, "neither reaction is lost");
-        let node = find(&rows(view)[0], "ui.Reactions").cloned().unwrap();
+        let node = (rows(view)[0])
+            .first_of_kind("ui.Reactions")
+            .cloned()
+            .unwrap();
         assert!(node.events.contains_key("toggle"), "a pill toggles");
     }
 
@@ -385,7 +380,7 @@ tilo_test_env::scenario! {
         let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
         ada.commit();
         let mut view = ada.host.open_resource(&target(&design), None).unwrap();
-        let input = find(view.tree(), "ui.RichInput")
+        let input = view.tree().first_of_kind("ui.RichInput")
             .expect("the composer")
             .clone();
         assert!(
@@ -425,7 +420,7 @@ tilo_test_env::scenario! {
         let edit = button(&row, "Edit").expect("Edit on a message");
         ada_design.press(&edit).unwrap();
         let row = rows(&mut ada_design).remove(0);
-        let editor = find(&row, "ui.RichInput")
+        let editor = row.first_of_kind("ui.RichInput")
             .expect("the editor in the message's place")
             .key
             .clone();
@@ -447,7 +442,7 @@ tilo_test_env::scenario! {
         for view in [&mut ada_design, &mut ben_design] {
             assert_eq!(said(view), ["The build is on the test machines."]);
             let row = rows(view).remove(0);
-            assert!(find(&row, "ui.RichInput").is_none(), "the editor is gone");
+            assert!(row.first_of_kind("ui.RichInput").is_none(), "the editor is gone");
             assert!(
                 shown_in(&row).contains(&"edited".to_owned()),
                 "marked as edited: {:?}",
@@ -502,8 +497,7 @@ tilo_test_env::scenario! {
                 shown_in(&row).contains(&"edited".to_owned()),
                 "a pin after the edit keeps it marked as edited"
             );
-            let mut labels = Vec::new();
-            find_all(&row, "ui.Button", &mut labels);
+            let labels = row.of_kind("ui.Button");
             let labels: Vec<_> = labels
                 .iter()
                 .map(|b| format!("{:?}", b.props.get("label")))
@@ -551,8 +545,7 @@ tilo_test_env::scenario! {
         let mut ada_design = ada.host.open_resource(&target(&design), None).unwrap();
         let rows = rows(&mut ada_design);
         let labels: Vec<_> = {
-            let mut all = Vec::new();
-            find_all(&rows[1], "ui.MenuItem", &mut all);
+            let all = rows[1].of_kind("ui.MenuItem");
             all.iter()
                 .map(|i| {
                     (
@@ -725,8 +718,7 @@ tilo_test_env::scenario! {
         // Ada's sidebar says two are new in design, one in random, and the places stand out.
         let sidebar = ada.view(APP);
         let place = |key: &str| {
-            let mut all = Vec::new();
-            find_all(sidebar.tree(), "ui.NavItem", &mut all);
+            let all = sidebar.tree().of_kind("ui.NavItem");
             all.into_iter()
                 .find(|item| item.props.get("key") == Some(&Value::text(key)))
                 .unwrap_or_else(|| panic!("no place {key}"))
@@ -748,7 +740,7 @@ tilo_test_env::scenario! {
         let marked = |view: &mut ViewInstance| -> Vec<bool> {
             rows(view)
                 .iter()
-                .map(|row| find(row, "ui.ChangeMark").is_some())
+                .map(|row| row.first_of_kind("ui.ChangeMark").is_some())
                 .collect()
         };
         assert_eq!(marked(&mut channel), [false, false]);
@@ -774,8 +766,7 @@ tilo_test_env::scenario! {
             "opening the channel saw it, and no divider stands"
         );
         let sidebar = ada.view(APP);
-        let mut all = Vec::new();
-        find_all(sidebar.tree(), "ui.NavItem", &mut all);
+        let mut all = sidebar.tree().of_kind("ui.NavItem");
         let place = |all: &mut Vec<&UiNode>, key: &str| {
             all.iter()
                 .find(|item| item.props.get("key") == Some(&Value::text(key)))
@@ -929,8 +920,7 @@ tilo_test_env::scenario! {
 /// The number a place in the sidebar shows, on the row `key` names.
 fn badge_of(view: &mut ViewInstance, key: &str) -> Option<i64> {
     view.poll_patches().unwrap();
-    let mut places = Vec::new();
-    find_all(view.tree(), "ui.NavItem", &mut places);
+    let places = view.tree().of_kind("ui.NavItem");
     let place = places
         .into_iter()
         .find(|item| item.props.get("key") == Some(&Value::text(key)))
@@ -944,8 +934,7 @@ fn badge_of(view: &mut ViewInstance, key: &str) -> Option<i64> {
 /// The number a window's header says is new of what it shows, if it marks anything.
 fn header_count(view: &mut ViewInstance) -> Option<i64> {
     view.poll_patches().unwrap();
-    let mut marks = Vec::new();
-    find_all(view.tree(), "ui.ChangeMark", &mut marks);
+    let marks = view.tree().of_kind("ui.ChangeMark");
     let mark = marks
         .into_iter()
         .find(|mark| mark.props.get("window") == Some(&Value::Bool(true)))?;
@@ -1146,8 +1135,7 @@ tilo_test_env::scenario! {
         // membership rather than a copy Chat keeps.
         let sidebar = ada.view(APP);
         let section = {
-            let mut seen = Vec::new();
-            find_all(sidebar.tree(), "ui.NavSection", &mut seen);
+            let seen = sidebar.tree().of_kind("ui.NavSection");
             seen.into_iter()
                 .find(|s| s.props.get("title") == Some(&Value::text("Direct messages")))
                 .expect("the direct messages section")
@@ -1159,8 +1147,7 @@ tilo_test_env::scenario! {
 
         // Pressing them opens the conversation with Ben, once: a person has one.
         let person = {
-            let mut items = Vec::new();
-            find_all(&section, "ui.NavItem", &mut items);
+            let items = section.of_kind("ui.NavItem");
             items
                 .into_iter()
                 .find(|item| item.props.get("key") == Some(&Value::text("/person/ben")))
@@ -1296,15 +1283,13 @@ tilo_test_env::scenario! {
         // Everyone else in the workspace is a place that stands for them.
         let sidebar = ada.view(APP);
         let section = {
-            let mut seen = Vec::new();
-            find_all(sidebar.tree(), "ui.NavSection", &mut seen);
+            let seen = sidebar.tree().of_kind("ui.NavSection");
             seen.into_iter()
                 .find(|s| s.props.get("title") == Some(&Value::text("Direct messages")))
                 .expect("the direct messages section")
                 .clone()
         };
-        let mut places = Vec::new();
-        find_all(&section, "ui.NavItem", &mut places);
+        let places = section.of_kind("ui.NavItem");
         let ben = places
             .iter()
             .find(|item| item.props.get("key") == Some(&Value::text("/person/ben")))
@@ -1336,8 +1321,7 @@ tilo_test_env::scenario! {
         ada.commit();
         let sidebar = ada.view(APP);
         let notes_place = {
-            let mut items = Vec::new();
-            find_all(sidebar.tree(), "ui.NavItem", &mut items);
+            let items = sidebar.tree().of_kind("ui.NavItem");
             items
                 .iter()
                 .find(|item| item.props.get("label") == Some(&Value::text("Notes to self")))
@@ -1378,9 +1362,8 @@ fn an_empty_workspace_offers_one_new_channel_button() {
     // that repeats one the content or the sidebar offers, so a view offering this action once
     // offers it once at every width, on every screen of the stack.
     let offered = |view: &ViewInstance| -> Vec<String> {
-        let mut nodes: Vec<&UiNode> = Vec::new();
-        find_all(view.tree(), "ui.Button", &mut nodes);
-        find_all(view.tree(), "ui.EmptyState", &mut nodes);
+        let mut nodes = view.tree().of_kind("ui.Button");
+        nodes.extend(view.tree().of_kind("ui.EmptyState"));
         nodes
             .into_iter()
             .filter_map(|node| {
@@ -1403,8 +1386,7 @@ fn an_empty_workspace_offers_one_new_channel_button() {
             .count()
     };
     let sidebar = ada.view(APP);
-    let mut states = Vec::new();
-    find_all(sidebar.tree(), "ui.EmptyState", &mut states);
+    let states = sidebar.tree().of_kind("ui.EmptyState");
     assert_eq!(
         states.first().and_then(|state| state.props.get("title")),
         Some(&Value::text("No channels yet")),
@@ -1435,7 +1417,9 @@ fn an_empty_workspace_offers_one_new_channel_button() {
     ada.commit();
     let sidebar = ada.view(APP);
     assert!(
-        find(sidebar.tree(), "ui.EmptyState")
+        sidebar
+            .tree()
+            .first_of_kind("ui.EmptyState")
             .is_none_or(|state| state.props.get("title") != Some(&Value::text("No channels yet"))),
         "no empty state saying the workspace has no channels once one exists"
     );
