@@ -166,7 +166,12 @@ operate it. Companion to `docs/security/design-rationale.md`.
   `set-<fingerprint>-<arch>`, where the fingerprint hashes both architectures'
   package sets, `BASE_REF`, and the files that shape the snapshot
   (`os/dev/rpm-snapshot-fingerprint.py`), and the suffix says which
-  architecture's image the tag names. Builds call
+  architecture's image the tag names. The set a tree resolves is mirrored into
+  the registry by `rpms-mirror-<arch>` as soon as a main head first resolves it
+  (`dev-set-<fingerprint>-<arch>`, written once like the published tag, unsigned),
+  and the images copy whichever the registry holds by digest (`image-rpms-<arch>`);
+  an OS image build of an unchanged tree is then a copy, not another resolution.
+  Builds that install from the published set call
   `os/dev/resolve-rpm-snapshot.sh --arch <arch>`, which looks up that tag and
   verifies signature, provenance and the image's own architecture before printing
   the digest. Every `os/Containerfile` `dnf install` mounts that repo and installs
@@ -184,9 +189,10 @@ operate it. Companion to `docs/security/design-rationale.md`.
   published by a dispatch on a node of that architecture); a fingerprint already
   published is never published again. There is no hand-kept pin file
   and no pin pull request. The kernel does not build against this snapshot.
-  Until the matching tag exists the build fails `No match for argument: <pkg>`
-  (or resolve fails closed). The package list is auto-derived from
-  `os/Containerfile`, so there is no separate list to maintain.
+  Until the matching tag exists, images install from the mirrored development
+  snapshot of the same package set (unsigned), and a release tag publishes that
+  set under its own tag before anything derives from it. The package list is
+  auto-derived from `os/Containerfile`, so there is no separate list to maintain.
   Before publishing, the snapshot replays the image's erase of base packages it
   later needs again (the pkgconf family) and re-resolves the whole package set
   offline, so an incomplete snapshot fails in CI rather than in an image build.
