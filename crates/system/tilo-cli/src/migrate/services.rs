@@ -488,7 +488,7 @@ impl Landing<'_, '_> {
         } else {
             group.name.trim()
         };
-        let run = self.lander.run.id.clone();
+        let run = self.lander.invocation.id.clone();
         let (workspace, run_of) = self.lander.workspace()?;
         let made = workspace.act(run_of, CREATE_AREA, json!({"name": name, "kind": kind}))?;
         let id = created_id(&made).ok_or_else(|| {
@@ -602,7 +602,7 @@ impl Landing<'_, '_> {
     /// Each comment of `issue` on the Tasks issue `id`, by its author there and on its date.
     fn comment_all(
         workspace: &mut dyn super::workspace::Workspace,
-        run: &super::workspace::Run,
+        run: &super::workspace::Invocation,
         id: &str,
         issue: &IncomingIssue,
     ) -> Result<()> {
@@ -697,7 +697,7 @@ impl Landing<'_, '_> {
         self.kept.issues.insert(issue.url.clone(), id.clone());
         self.kept
             .issue_runs
-            .insert(issue.url.clone(), self.lander.run.id.clone());
+            .insert(issue.url.clone(), self.lander.invocation.id.clone());
         if let Some(parent) = issue
             .parent
             .as_ref()

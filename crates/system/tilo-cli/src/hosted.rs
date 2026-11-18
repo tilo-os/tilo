@@ -986,9 +986,9 @@ pub fn files(reach: Reach<'_>, workspace: &str, cmd: FilesCmd) -> ExitCode {
 
 /// One file to upload: where it is here, and the name it keeps in the
 /// workspace.
-struct Uploading {
-    path: PathBuf,
-    name: String,
+pub(crate) struct Uploading {
+    pub(crate) path: PathBuf,
+    pub(crate) name: String,
 }
 
 /// Upload `paths` into `workspace`'s file tree, in the folder `to` when one
@@ -1176,7 +1176,7 @@ fn hash_of(file: &Uploading) -> Result<String> {
 /// in pieces a few at a time. Tells a person at a terminal how far it is, and
 /// answers each with the `tilo.content:` reference it is kept by, in name
 /// order.
-async fn upload_all(
+pub(crate) async fn upload_all(
     client: &Client,
     workspace: &str,
     files: Vec<Uploading>,

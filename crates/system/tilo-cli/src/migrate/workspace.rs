@@ -43,7 +43,7 @@ pub trait Workspace {
     ///
     /// # Errors
     /// The workspace refused it ([`Refused`], by its code) or could not be reached.
-    fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<Answer>;
+    fn act(&mut self, run: &Invocation, action: &str, args: Value) -> Result<Answer>;
 
     /// Run `action` with `args` outside any run: a read, or taking a run back.
     ///
@@ -57,6 +57,40 @@ pub trait Workspace {
     /// # Errors
     /// The workspace refused them or could not be reached.
     fn put(&mut self, bytes: &[u8]) -> Result<String>;
+
+    /// Keep the files at `files` (a path here and the name each keeps) in the workspace's
+    /// content: each one's `tilo.content:` reference, in order.
+    ///
+    /// # Errors
+    /// A file could not be read, or the workspace refused it.
+    fn put_files(&mut self, files: &[(std::path::PathBuf, String)]) -> Result<Vec<String>> {
+        files
+            .iter()
+            .map(|(path, _)| {
+                let bytes =
+                    std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+                self.put(&bytes)
+            })
+            .collect()
+    }
+}
+
+/// No workspace: a run whose files go into the workspace's folder here needs no session, and
+/// asks it nothing.
+pub struct Offline;
+
+impl Workspace for Offline {
+    fn act(&mut self, _: &Invocation, action: &str, _: Value) -> Result<Answer> {
+        bail!("{action}: this run writes into the workspace's folder and reaches no session")
+    }
+
+    fn ask(&mut self, action: &str, _: Value) -> Result<Answer> {
+        bail!("{action}: this run writes into the workspace's folder and reaches no session")
+    }
+
+    fn put(&mut self, _: &[u8]) -> Result<String> {
+        bail!("this run writes into the workspace's folder and reaches no session")
+    }
 }
 
 /// What an action that ran answered: its value, and what it made, each item
@@ -91,12 +125,12 @@ impl Answer {
 
 /// One migration run: what History calls it, and the id every action of it names.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Run {
+pub struct Invocation {
     pub id: String,
     pub title: String,
 }
 
-impl Run {
+impl Invocation {
     /// The `_meta` an action of this run carries: the typed answer it asks for, and the group it is
     /// a step of.
     fn meta(&self) -> Value {
@@ -385,7 +419,7 @@ impl Refused {
 }
 
 impl Workspace for Held {
-    fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<Answer> {
+    fn act(&mut self, run: &Invocation, action: &str, args: Value) -> Result<Answer> {
         let wait = u64::try_from(ACTION_WAIT.as_millis()).unwrap_or(u64::MAX);
         // The same step of the same run is the same invocation, which the workspace never runs
         // twice: a step asked again after its answer was lost is answered, not repeated.
@@ -598,7 +632,7 @@ fn split(action: &str) -> Result<(&str, &str)> {
 }
 
 impl Workspace for Hosted {
-    fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<Answer> {
+    fn act(&mut self, run: &Invocation, action: &str, args: Value) -> Result<Answer> {
         let (resource, verb) = split(action)?;
         // The same step of the same run names the same invocation, which the workspace never runs
         // twice: a step asked again after its answer was lost is answered, not repeated.
@@ -659,6 +693,22 @@ impl Workspace for Hosted {
         }
     }
 
+    fn put_files(&mut self, files: &[(std::path::PathBuf, String)]) -> Result<Vec<String>> {
+        let uploading = files
+            .iter()
+            .map(|(path, name)| crate::hosted::Uploading {
+                path: path.clone(),
+                name: name.clone(),
+            })
+            .collect();
+        let uploaded = self.runtime.block_on(crate::hosted::upload_all(
+            &self.client,
+            &self.workspace,
+            uploading,
+        ))?;
+        Ok(uploaded.into_iter().map(|(_, content)| content).collect())
+    }
+
     fn put(&mut self, bytes: &[u8]) -> Result<String> {
         let answer = self
             .runtime
@@ -717,8 +767,8 @@ mod tests {
         (Held::over(ours).expect("the session"), calls)
     }
 
-    fn run() -> Run {
-        Run {
+    fn run() -> Invocation {
+        Invocation {
             id: "run-1".into(),
             title: "From Thunderbird".into(),
         }
@@ -847,8 +897,8 @@ mod tests {
         .expect("the workspace")
     }
 
-    fn hosted_run() -> Run {
-        Run {
+    fn hosted_run() -> Invocation {
+        Invocation {
             id: "migrate-linear-1".into(),
             title: "From Linear: Engineering".into(),
         }
