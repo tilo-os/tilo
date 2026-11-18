@@ -23897,6 +23897,7 @@ dependencies = [
  "tilo-history",
  "tilo-net",
  "tilo-paths",
+ "tilo-recurrence",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-startup-metrics",
