@@ -615,8 +615,9 @@ pub enum Administration {
     Unanswered(String),
 }
 
-/// How long the server's workspace administration has to answer.
-const ADMINISTERING: Duration = Duration::from_secs(20);
+/// How long the server's workspace administration has to answer: an agent's
+/// request may wait for its person's answer, which they have two minutes for.
+const ADMINISTERING: Duration = Duration::from_secs(150);
 
 impl Connection {
     /// Ask the server's workspace administration `request` over this session,

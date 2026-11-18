@@ -297,7 +297,9 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     }
     assert_eq!(workspaces.list().await.len(), 1, "nothing was created");
 
-    // An agent on the person's own key governs nothing.
+    // An agent no grant names, on the person's own key, is offered nothing
+    // and refused; one the laptop handed its session reads, and asks its
+    // person before it makes anything.
     let agent = Caller::delegated_agent("writer", laptop.user_public_key, laptop.device_public_key);
     assert!(offered(&host, &laptop, &agent).await.is_empty());
     let refused = settled(
@@ -305,7 +307,31 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
             .invoke(&agent, host_request(LIST_WORKSPACES, json!({}))),
     )
     .await;
-    assert_eq!(refused.unwrap_err(), ActionCallError::UnknownAction);
+    assert!(
+        matches!(refused, Err(ActionCallError::Refused { .. })),
+        "{refused:?}"
+    );
+    let handed = caller(&laptop).delegated_to("writer");
+    let offered_handed = offered(&host, &laptop, &handed).await;
+    assert!(
+        offered_handed
+            .iter()
+            .any(|action| action == LIST_WORKSPACES)
+            && offered_handed
+                .iter()
+                .any(|action| action == CREATE_WORKSPACE),
+        "{offered_handed:?}"
+    );
+    let unasked = settled(host.as_host(&laptop).invoke(
+        &handed,
+        host_request(CREATE_WORKSPACE, json!({ "name": "Its own" })),
+    ))
+    .await;
+    assert_eq!(
+        unasked.unwrap_err(),
+        ActionCallError::confirmation_required(),
+        "with nobody to ask, the person's answer is still wanted"
+    );
 
     // A certificate that is not the caller's speaks for nobody.
     let refused = settled(

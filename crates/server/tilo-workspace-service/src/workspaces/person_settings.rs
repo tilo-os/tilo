@@ -48,7 +48,6 @@ use tilo_actions::remote::{
 };
 use tilo_mail_session::{Attachment, Leaving};
 use tilo_net::proxy::host::Destinations;
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::person_models::kept_location;
@@ -390,7 +389,7 @@ impl Workspaces {
                         {
                             Ok(sent)
                         } else {
-                            self.ask_before_sending(person, agent.agent, caller, &shown)
+                            self.ask_person(person, shown.question(agent.agent, caller))
                                 .await?;
                             self.send_in_workspace(
                                 Some(agent.workspace),
@@ -406,33 +405,6 @@ impl Workspaces {
                 answer(&sent)
             }
             _ => Err(ActionCallError::UnknownAction),
-        }
-    }
-
-    /// Put a message an agent would send to its person and wait for their
-    /// answer: only their allowing it lets it leave. A host with nobody to
-    /// ask through, and a question nobody answered, say that the person's
-    /// confirmation is still wanted.
-    async fn ask_before_sending(
-        &self,
-        person: [u8; 32],
-        agent: &str,
-        caller: &Caller,
-        shown: &sending::Shown,
-    ) -> Result<(), ActionCallError> {
-        let asker = self
-            .inner
-            .asks_people
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .ok_or_else(ActionCallError::confirmation_required)?;
-        match asker.ask(person, shown.question(agent, caller)).await {
-            Ok(ConfirmationAnswer::AllowOnce) => Ok(()),
-            Ok(ConfirmationAnswer::Deny) => Err(ActionCallError::Refused {
-                reason: "the person did not allow it".into(),
-            }),
-            Err(_) => Err(ActionCallError::confirmation_required()),
         }
     }
 

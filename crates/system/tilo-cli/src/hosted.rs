@@ -229,9 +229,8 @@ pub enum PeopleCmd {
     #[command(
         after_help = "Example:\n  tilo workspace people invite --role editor --email ops@example.com -w Acme\n\n\
                       Following the link signs them in and lands them in the workspace. You invite \
-                      as an editor at most where you administer the workspace, and as an \
-                      administrator or owner where you may make one. No mail is sent: hand the \
-                      link over yourself."
+                      as far as your role in the workspace lets you, an administrator or owner \
+                      where you may make one. No mail is sent: hand the link over yourself."
     )]
     Invite {
         /// viewer, commenter, editor, administrator or owner.
@@ -1218,60 +1217,18 @@ pub(crate) async fn upload_all(
     use futures_util::StreamExt as _;
     let count = files.len();
     let total: u64 = files.iter().map(file_size).sum();
-    let name = if count == 1 {
-        files
-            .first()
-            .map_or_else(String::new, |file| file.name.clone())
-    } else {
-        format!("{count} files")
+    let name = match files.as_slice() {
+        [one] => one.name.clone(),
+        _ => format!("{count} files"),
     };
     let mut progress = Progress::new(&name);
     progress.told(0, total);
     // What the workspace already holds needs no upload.
     let hashes: Vec<String> = files.iter().map(hash_of).collect::<Result<_>>()?;
-    let mut held = vec![false; count];
-    for (at, asks) in hashes.chunks(HAVE_HASHES).enumerate() {
-        let answered = client
-            .have_contents(workspace, asks)
-            .await
-            .context("asking which files the workspace already holds")?;
-        for (offset, present) in answered.into_iter().enumerate() {
-            let index = at.saturating_mul(HAVE_HASHES).saturating_add(offset);
-            if let Some(held_here) = held.get_mut(index) {
-                *held_here = present;
-            }
-        }
-    }
+    let held = held_of(client, workspace, &hashes).await?;
     let mut contents: Vec<Option<String>> = (0..count).map(|_| None).collect();
-    let mut done = 0_u64;
-    let mut smalls: Vec<Vec<usize>> = Vec::new();
-    let mut larges: Vec<usize> = Vec::new();
-    let mut group: Vec<usize> = Vec::new();
-    let mut group_bytes = 0_usize;
-    for (index, file) in files.iter().enumerate() {
-        if held.get(index).copied().unwrap_or(false) {
-            if let (Some(kept), Some(hash)) = (contents.get_mut(index), hashes.get(index)) {
-                *kept = Some(format!("tilo.content:{hash}"));
-            }
-            done = done.saturating_add(file_size(file));
-            progress.told(done.min(total), total);
-            continue;
-        }
-        let len = usize::try_from(file_size(file)).unwrap_or(usize::MAX);
-        if len > MANY_BYTES {
-            larges.push(index);
-        } else {
-            if group_bytes.saturating_add(len) > MANY_BYTES && !group.is_empty() {
-                smalls.push(std::mem::take(&mut group));
-                group_bytes = 0;
-            }
-            group_bytes = group_bytes.saturating_add(len);
-            group.push(index);
-        }
-    }
-    if !group.is_empty() {
-        smalls.push(group);
-    }
+    let (mut done, smalls, larges) = plan(&files, &held, &hashes, &mut contents);
+    progress.told(done.min(total), total);
     // Small files go many to a call, a few calls at a time.
     let mut sending = futures_util::stream::iter(smalls)
         .map(|group| async {
@@ -1332,15 +1289,73 @@ pub(crate) async fn upload_all(
     progress.done();
     drop(sending);
     drop(big);
-    let mut uploaded = Vec::with_capacity(count);
-    for (index, file) in files.into_iter().enumerate() {
-        let content = contents
-            .get_mut(index)
-            .and_then(Option::take)
-            .ok_or_else(|| anyhow!("no content reference was answered for {}", file.name))?;
-        uploaded.push((file, content));
+    files
+        .into_iter()
+        .zip(contents)
+        .map(|(file, content)| {
+            let content = content
+                .ok_or_else(|| anyhow!("no content reference was answered for {}", file.name))?;
+            Ok((file, content))
+        })
+        .collect()
+}
+
+/// What of `files` goes up how: the bytes the workspace holds already, whose
+/// references are put in `contents`; the small files grouped many to a call;
+/// and the files too large for one.
+fn plan(
+    files: &[Uploading],
+    held: &[bool],
+    hashes: &[String],
+    contents: &mut [Option<String>],
+) -> (u64, Vec<Vec<usize>>, Vec<usize>) {
+    let mut done = 0_u64;
+    let mut smalls: Vec<Vec<usize>> = Vec::new();
+    let mut larges: Vec<usize> = Vec::new();
+    let mut group: Vec<usize> = Vec::new();
+    let mut group_bytes = 0_usize;
+    for (index, file) in files.iter().enumerate() {
+        if held.get(index).copied().unwrap_or(false) {
+            if let (Some(kept), Some(hash)) = (contents.get_mut(index), hashes.get(index)) {
+                *kept = Some(format!("tilo.content:{hash}"));
+            }
+            done = done.saturating_add(file_size(file));
+            continue;
+        }
+        let len = usize::try_from(file_size(file)).unwrap_or(usize::MAX);
+        if len > MANY_BYTES {
+            larges.push(index);
+        } else {
+            if group_bytes.saturating_add(len) > MANY_BYTES && !group.is_empty() {
+                smalls.push(std::mem::take(&mut group));
+                group_bytes = 0;
+            }
+            group_bytes = group_bytes.saturating_add(len);
+            group.push(index);
+        }
     }
-    Ok(uploaded)
+    if !group.is_empty() {
+        smalls.push(group);
+    }
+    (done, smalls, larges)
+}
+
+/// Which of the files hashed `hashes` the workspace holds already, in order.
+async fn held_of(client: &Client, workspace: &str, hashes: &[String]) -> Result<Vec<bool>> {
+    let mut held = vec![false; hashes.len()];
+    for (at, asks) in hashes.chunks(HAVE_HASHES).enumerate() {
+        let answered = client
+            .have_contents(workspace, asks)
+            .await
+            .context("asking which files the workspace already holds")?;
+        for (offset, present) in answered.into_iter().enumerate() {
+            let index = at.saturating_mul(HAVE_HASHES).saturating_add(offset);
+            if let Some(held_here) = held.get_mut(index) {
+                *held_here = present;
+            }
+        }
+    }
+    Ok(held)
 }
 
 /// `uploaded` in as few batches as the workspace takes: each a whole run and

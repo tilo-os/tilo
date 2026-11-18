@@ -17,8 +17,8 @@
 //! it holds the workspace.
 
 use serde_json::Value;
-use tilo_action_policy::roles;
-use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest};
+use tilo_action_policy::{Answer, roles};
+use tilo_actions::remote::{ActionCallError, Caller, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
 use tilo_server_session::workspaces::BRANCH_OWN_WORKSPACE;
@@ -32,8 +32,8 @@ use tilo_server_session::workspaces::{
 use tilo_user_identity::DeviceCert;
 
 use super::{
-    Args, DEFAULT_INVITATION_HOURS, HOUR_NS, Publisher, ROLES, SECOND_NS, Verb, invalid, refused,
-    request_id,
+    Args, DEFAULT_INVITATION_HOURS, HOUR_NS, Publisher, ROLES, SECOND_NS, Verb, agents, invalid,
+    refused, request_id,
 };
 use crate::host_authority::HostOperation;
 use crate::workspaces::authority::WorkspaceOp;
@@ -59,7 +59,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`HostOperation`] it is.
-const HOST_VERBS: [(Verb, HostOperation); 12] = [
+pub(super) const HOST_VERBS: [(Verb, HostOperation); 12] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -417,70 +417,49 @@ fn first_invitation(
     )))
 }
 
-/// How a caller asks the host's operations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Asking {
-    /// As the person its device is, or an agent's grant of theirs: what the
-    /// certificate allows.
-    AsPerson,
-    /// As an agent's run on a person's own device: only what reads what the
-    /// host keeps for the person (their workspaces, their list, the
-    /// revocations), never what changes anything.
-    Reading,
-}
-
-impl Asking {
-    fn reaches(self, operation: HostOperation) -> bool {
-        match self {
-            Self::AsPerson => true,
-            Self::Reading => matches!(
-                operation,
-                HostOperation::ListWorkspaces
-                    | HostOperation::ReadPersonalList
-                    | HostOperation::ListRevocations
-            ),
-        }
-    }
-}
-
 impl Workspaces {
-    /// The host's operations `device` may run, asked as `asking`.
-    pub(super) fn host_rows(&self, device: &DeviceCert, asking: Asking) -> Vec<CatalogueRow> {
+    /// The host's operations `caller`, on `device`, may run, asked in the
+    /// workspace `workspace_id` carries: what its person may, and of that
+    /// what the grants there do not refuse their agent.
+    pub(super) async fn host_rows(
+        &self,
+        workspace_id: Option<WorkspaceId>,
+        caller: &Caller,
+        device: &DeviceCert,
+    ) -> Vec<CatalogueRow> {
         let now = tilo_clock::unix_now_ns();
         let person = device.user_public_key == self.inner.host.cert.user_public_key;
-        HOST_VERBS
-            .iter()
-            .filter(|(_, operation)| {
-                asking.reaches(*operation)
-                    && (person || !operation.decided_by_its_workspace())
-                    && self.permits(device, None, WorkspaceOp::Host(*operation), now)
-            })
-            .map(|(verb, _)| verb.row(HOST, HOST_WORKSPACES_RESOURCE, LABEL))
-            .collect()
+        let mut rows = Vec::new();
+        for (verb, operation) in &HOST_VERBS {
+            let offered = (person || !operation.decided_by_its_workspace())
+                && self.permits(device, None, WorkspaceOp::Host(*operation), now)
+                && (agents::is_the_person(caller, device)
+                    || self
+                        .agent_answer_in(workspace_id, caller, &verb.operation(HOST))
+                        .await
+                        != Answer::Deny);
+            if offered {
+                rows.push(verb.row(HOST, HOST_WORKSPACES_RESOURCE, LABEL));
+            }
+        }
+        rows
     }
 
-    /// Run the host operation `request` names as `device`, the certificate
-    /// the server's handshake verified for the caller.
+    /// Run the host operation `request` names for `caller` on `device`, the
+    /// certificate the server's handshake verified for it, asked in the
+    /// workspace `workspace_id` carries: an agent's call as its grants there
+    /// answer ([`agents`]).
     pub(super) async fn host_invoke(
         &self,
+        workspace_id: Option<WorkspaceId>,
+        caller: &Caller,
         device: &DeviceCert,
-        asking: Asking,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        let address = &request.target.address;
+        let operation = self
+            .admit_host(workspace_id, caller, device, request)
+            .await?;
         let now = tilo_clock::unix_now_ns();
-        let operation = HOST_VERBS
-            .iter()
-            .find(|(verb, _)| verb.id == address.action)
-            .map(|(_, operation)| *operation)
-            .ok_or(ActionCallError::UnknownAction)?;
-        // Unknown and forbidden are the same answer.
-        if address.resource != HOST_WORKSPACES_RESOURCE
-            || !asking.reaches(operation)
-            || !self.permits(device, None, WorkspaceOp::Host(operation), now)
-        {
-            return Err(ActionCallError::UnknownAction);
-        }
         let args = Args::of(&request.argument)?;
         let request_id = request_id(&device.user_public_key, request.invocation);
         match operation {
@@ -564,6 +543,46 @@ impl Workspaces {
             }
             _ => Err(ActionCallError::UnknownAction),
         }
+    }
+
+    /// The host operation `request` names, once `caller` on `device` may run
+    /// it ([`Self::host_invoke`]).
+    async fn admit_host(
+        &self,
+        workspace_id: Option<WorkspaceId>,
+        caller: &Caller,
+        device: &DeviceCert,
+        request: &InvokeRequest,
+    ) -> Result<HostOperation, ActionCallError> {
+        let address = &request.target.address;
+        let (verb, operation) = HOST_VERBS
+            .iter()
+            .find(|(verb, _)| verb.id == address.action)
+            .ok_or(ActionCallError::UnknownAction)?;
+        // Unknown and forbidden are the same answer.
+        let now = tilo_clock::unix_now_ns();
+        if address.resource != HOST_WORKSPACES_RESOURCE
+            || !self.permits(device, None, WorkspaceOp::Host(*operation), now)
+        {
+            return Err(ActionCallError::UnknownAction);
+        }
+        let arguments = super::arguments_of(request);
+        // Asking for one's own workspace that is there already enters it, and
+        // makes nothing: what every key of the person's does to work in it.
+        let named = arguments
+            .get("workspace")
+            .and_then(Value::as_str)
+            .and_then(WorkspaceId::parse);
+        let entering = match named {
+            Some(id) if verb.id == CREATE_OWN_WORKSPACE => self.held(id).await.is_some(),
+            _ => false,
+        };
+        if !entering {
+            let asked = verb.operation(HOST);
+            self.admit_operation(workspace_id, caller, device, &asked, &arguments)
+                .await?;
+        }
+        Ok(*operation)
     }
 
     /// Read or keep `device`'s person's workspace list, already permitted to.

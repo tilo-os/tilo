@@ -210,26 +210,15 @@ impl Workspaces {
             own.set_unattended(&workspace, on).map_err(refused)?;
             return Ok(answer(on));
         }
-        let asker = self
-            .inner
-            .asks_people
-            .read_recover()
-            .clone()
-            .ok_or_else(|| refused("this host has nobody to ask whether it may"))?;
         let name = self
             .workspace_name(workspace_id)
             .await
             .unwrap_or_else(|| workspace.clone());
-        let question = question(caller, certificate, &name);
-        match asker.ask(person, question).await {
-            Ok(ConfirmationAnswer::AllowOnce) => {
-                own.set_unattended(&workspace, true).map_err(refused)?;
-                tracing::info!(%workspace, "a workspace runs commands unattended");
-                Ok(answer(true))
-            }
-            Ok(ConfirmationAnswer::Deny) => Err(refused("the person did not allow it")),
-            Err(_) => Err(refused("the person did not answer in time")),
-        }
+        self.ask_person(person, question(caller, certificate, &name))
+            .await?;
+        own.set_unattended(&workspace, true).map_err(refused)?;
+        tracing::info!(%workspace, "a workspace runs commands unattended");
+        Ok(answer(true))
     }
 }
 
@@ -237,11 +226,8 @@ impl Workspaces {
 /// alone would run commands in its machine without asking them each time, and
 /// that it holds for the branches made from it too.
 fn question(caller: &Caller, certificate: &DeviceCert, workspace: &str) -> PendingConfirmation {
-    let mut id = [0_u8; 32];
-    id[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    id[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
     PendingConfirmation {
-        id,
+        id: super::actions::agents::question_id(),
         agent_id: caller.acting().agent_id().unwrap_or_default().to_owned(),
         agent_label: certificate.device_label.clone(),
         title: String::new(),

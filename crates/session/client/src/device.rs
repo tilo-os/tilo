@@ -22,7 +22,7 @@ use tilo_user_identity::DeviceCert;
 use web_time::Duration as Wait;
 
 use crate::remote::SessionActions;
-use crate::session::{HOST_ITSELF, PeerConfig};
+use crate::session::PeerConfig;
 use crate::{Cmd, Link, Outbox, TransportPhase};
 use crate::{MemoryPeerStore, PeerStore};
 use tilo_server_protocol::WorkspaceId;
@@ -439,8 +439,10 @@ impl Device {
         self.host_action(KEEP_PERSONAL, arguments).await.map(drop)
     }
 
-    /// The host's own operation `action` with `arguments`, asked on the session itself: no
-    /// workspace decides it.
+    /// The host's own operation `action` with `arguments`, asked in the workspace this
+    /// device entered ([`crate::session::HOST_ITSELF`] before it entered one): no
+    /// workspace decides it, but an agent the session was handed to asks as its grants
+    /// there let it.
     ///
     /// # Errors
     /// The host did not answer, refused, or did not finish.
@@ -453,12 +455,12 @@ impl Device {
             provider: HOST_ACTIONS_PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(HOST_WORKSPACES_RESOURCE, action),
         };
-        self.ask_host(HOST_ITSELF, target, arguments).await
+        self.ask_host(self.workspace_id, target, arguments).await
     }
 
     /// What the host itself answers to `target` with `arguments`, asked in
-    /// `workspace_id` ([`HOST_ITSELF`] for none): one of its own operations, or the person's
-    /// account on it, asked as the person whose device this is.
+    /// `workspace_id` ([`crate::session::HOST_ITSELF`] for none): one of its own operations,
+    /// or the person's account on it, asked as the person whose device this is.
     ///
     /// # Errors
     /// The host did not answer, refused, or did not finish.

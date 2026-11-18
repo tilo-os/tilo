@@ -20,12 +20,9 @@
 //!    every governance action over every member who is not an administrator;
 //!    an Editor by role alone governs nothing.
 //!
-//! An agent's grant governs nothing, with one narrow exception: a person's
-//! server key brings people in for them into the workspaces they administer
-//! (`server_key_brings_people_in`): it invites, as an Editor at most unless
-//! its person may make administrators, and adds a person by their key at any
-//! role its person may give, an owner's included where its person owns the
-//! workspace.
+//! An agent's call is decided by its own grants first, where it is asked
+//! ([`super::actions::agents`]); here it is held to what its person may, as
+//! every key of theirs is.
 
 use tilo_action_policy::{Change, Context, Role, roles};
 use tilo_user_identity::DeviceCert;
@@ -154,18 +151,6 @@ impl Workspaces {
                 "workspace administration requires a person's device, not an agent's",
             ));
         }
-        // An agent's grant acts in workspaces through the person's runtime,
-        // never on their governance: it may do only what the host's own
-        // operations allow it. A person's server key alone also brings people
-        // in for them ([`server_key_brings_people_in`]).
-        if device.capabilities.agent.is_some()
-            && !matches!(op, WorkspaceOp::Host(_))
-            && !server_key_brings_people_in(device, op)
-        {
-            return Err(CollaborationError::new(
-                "workspace administration requires a person's device, not an agent's grant",
-            ));
-        }
         if self.revocations().refuses(device) {
             return Err(CollaborationError::new("device revoked"));
         }
@@ -204,47 +189,8 @@ impl Workspaces {
             return Ok(hex::encode(host));
         }
         let workspace = workspace.ok_or_else(|| CollaborationError::new(HOST_PERSON_ONLY))?;
-        if device.capabilities.server_key
-            && !is_administrator(workspace, device.user_public_key, now)?
-        {
-            return Err(CollaborationError::new(
-                "a server key brings people only into a workspace its person administers",
-            ));
-        }
         decide_by_governance(workspace, device, op, now)
     }
-}
-
-/// The highest role a person's server key invites anyone as.
-pub(super) const SERVER_KEY_INVITES_AT_MOST: Role = Role::Editor;
-
-/// Whether `device`, an agent's grant, may still do `op`: a person's server
-/// key (an all-workspaces key they made for their own backend, never the
-/// grant an agent gets through their consent nor a key minted for one
-/// workspace) brings people in for its person, into a workspace that person
-/// administers: it invites, never as more than [`SERVER_KEY_INVITES_AT_MOST`]
-/// nor above the person's own role, lists and cancels those invitations, and
-/// adds someone by their key at a role the person may give. Every other
-/// governance action stays the person's devices' own.
-fn server_key_brings_people_in(device: &DeviceCert, op: WorkspaceOp<'_>) -> bool {
-    device.capabilities.server_key
-        && match op {
-            WorkspaceOp::Invite(role) => role <= SERVER_KEY_INVITES_AT_MOST,
-            // An administrator's or owner's place is the person's own
-            // decision as much as a role is: their key makes one where they
-            // may make administrators or owners themselves, which the
-            // workspace decides.
-            WorkspaceOp::InviteAdministrator
-            | WorkspaceOp::MakeAdministrator
-            | WorkspaceOp::MakeOwner => true,
-            WorkspaceOp::Govern(action) => {
-                action == roles::governance::INVITE || action == roles::governance::ADD_MEMBER
-            }
-            WorkspaceOp::Change(change) => {
-                matches!(change, Change::AddMember { .. } | Change::SetRole { .. })
-            }
-            WorkspaceOp::Host(_) => false,
-        }
 }
 
 /// The owner's devices administer everything but the owner's own place.
@@ -290,7 +236,11 @@ fn decide_by_governance(
             "the device's certificate names another person than the workspace admitted",
         ));
     }
-    let authority = member.authority();
+    // Its person decides, whichever key of theirs asks: an agent's own
+    // grants were decided where it asked.
+    let authority = member
+        .policy
+        .person_on_device(person, member.acting.foreign_device);
     let cx = Context::at_time(system_time(now));
     // No person observed an approval here: an answer that asks first is a
     // refusal, never a pass.
@@ -375,22 +325,6 @@ impl Workspaces {
             .membership_log()
             .map_err(CollaborationError::new)
     }
-}
-
-/// Whether the person `user_public_key` administers `workspace`.
-fn is_administrator(
-    workspace: &GovernedWorkspace,
-    user_public_key: [u8; 32],
-    now: u64,
-) -> Result<bool, CollaborationError> {
-    Ok(workspace
-        .peer()
-        .governance()
-        .governed_members(system_time(now))
-        .map_err(CollaborationError::new)?
-        .members
-        .iter()
-        .any(|member| member.root() == Some(user_public_key) && member.administrator))
 }
 
 #[cfg(test)]

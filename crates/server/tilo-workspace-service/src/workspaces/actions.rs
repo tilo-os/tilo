@@ -53,6 +53,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{Map, Value, json};
+use tilo_action_policy::Answer;
 use tilo_action_policy::roles::{self, governance};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
@@ -71,6 +72,7 @@ use tilo_server_session::workspaces::HOST_ACTIONS_PROVIDER;
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
 
+pub(super) mod agents;
 #[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
 mod calendars;
 #[cfg(not(target_arch = "wasm32"))]
@@ -789,6 +791,17 @@ pub(super) fn governs(provider: &str) -> bool {
 }
 
 impl Verb {
+    /// This verb as the grants deciding an agent's call of it name it.
+    const fn operation(&self, publisher: Publisher) -> agents::Operation<'static> {
+        agents::Operation {
+            provider: publisher.provider,
+            kind: publisher.kind,
+            action: self.id,
+            effect: self.kind,
+            label: self.label,
+        }
+    }
+
     fn row(&self, publisher: Publisher, resource: &str, label: &str) -> CatalogueRow {
         let params = (self.params)();
         CatalogueRow {
@@ -849,6 +862,14 @@ fn check_of(action: &str) -> Option<&'static str> {
 fn unconfirmed(action: &str, args: &Args, owner: bool) -> bool {
     (OWNER_CONFIRMED.iter().any(|verb| verb.id == action) && !owner)
         || (action == governance::CALL && args.text("operation").ok().flatten() == Some(END_CALL))
+}
+
+/// The arguments `request` names, to show the person asked about it.
+fn arguments_of(request: &InvokeRequest) -> Map<String, Value> {
+    match &request.argument {
+        InvokeArgument::Json(arguments) => arguments.clone(),
+        _ => Map::new(),
+    }
 }
 
 fn invalid(reason: impl Into<String>) -> ActionCallError {
@@ -1089,50 +1110,12 @@ fn request_id(person: &[u8; 32], invocation: InvocationId) -> [u8; 32] {
 /// A governed workspace, locked.
 type Governed = Arc<AsyncMutex<GovernedWorkspace>>;
 
-/// Whether `caller` is a person acting themselves: an agent or a bot
-/// governs nothing and holds no workspace's business of its own.
-fn speaks_for_themselves(caller: &Caller) -> bool {
-    caller.acting().is_person()
-}
-
-/// Whether `caller` asks the holder's own operations as the person
-/// `certificate` names: the person themselves, or an agent's grant, which
-/// the holder's operations treat as its person within its scope
-/// ([`crate::service_authority`]) while every workspace takes it as their agent.
-fn asks_as_person(caller: &Caller, certificate: &DeviceCert) -> bool {
-    speaks_for_themselves(caller)
-        || (certificate.capabilities.agent.is_some()
-            && caller.is_session_delegated()
-            && caller.acting().is_agent())
-}
-
-/// How `caller`, on the device `certificate` names, asks the host's own
-/// operations: as its person ([`asks_as_person`]), every operation its
-/// certificate allows; as an agent's run on a person's own device (a
-/// computer the person logged in, whose session says it is their agent's
-/// run), only what reads what the host keeps for that person; `None`: not at
-/// all.
-fn asks_host(caller: &Caller, certificate: &DeviceCert) -> Option<host::Asking> {
-    if asks_as_person(caller, certificate) {
-        Some(host::Asking::AsPerson)
-    } else if certificate.capabilities.agent.is_none()
-        && caller.is_session_delegated()
-        && caller.acting().is_agent()
-    {
-        Some(host::Asking::Reading)
-    } else {
-        None
-    }
-}
-
 /// Whether `caller` is the person's server key `certificate` certifies,
 /// reaching every workspace of its person: what may read that person's
 /// account. An agent the person connected through consent does not.
 fn reaches_every_workspace(caller: &Caller, certificate: &DeviceCert) -> bool {
     certificate.capabilities.agent == Some(tilo_user_identity::AgentScope::AllWorkspaces)
-        && certificate.capabilities.server_key
-        && asks_as_person(caller, certificate)
-        && caller.device_public_key() == Some(&certificate.device_public_key)
+        && agents::is_the_person(caller, certificate)
         && caller.user_public_key() == Some(&certificate.user_public_key)
 }
 
@@ -1169,9 +1152,7 @@ impl Workspaces {
     /// The workspace `workspace_id` carries, and the certificate of `caller`'s
     /// device in it: the one the workspace's governance certified, or the server's
     /// own. `None` for a workspace that carries no governed workspace, a device
-    /// the workspace never certified, and any caller but a person acting
-    /// themselves or their server key: an agent or a bot governs nothing,
-    /// and a server key only invites (`authority::server_key_invites`).
+    /// the workspace never certified, and a caller acting for nobody: a bot.
     async fn governed_by(
         &self,
         workspace_id: WorkspaceId,
@@ -1188,9 +1169,8 @@ impl Workspaces {
             .find(|cert| cert.device_public_key == *device)
             .or_else(|| (host.device_public_key == *device).then(|| host.clone()))?;
         drop(workspace);
-        let asking = speaks_for_themselves(caller)
-            || (cert.capabilities.server_key && asks_as_person(caller, &cert));
-        (asking && cert.user_public_key == *user).then_some((governed, cert))
+        (agents::acts_for_its_person(caller) && cert.user_public_key == *user)
+            .then_some((governed, cert))
     }
 
     /// The workspace `workspace_id` carries and the certificate of `caller`'s
@@ -1245,6 +1225,24 @@ impl Workspaces {
             let resource = workspace_governance_resource(workspace.workspace());
             let owner = device.user_public_key == self.inner.host.cert.user_public_key;
             let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
+            // What an agent's grants here refuse it is not offered to it.
+            let person = agents::is_the_person(caller, &device);
+            let policy = workspace
+                .peer()
+                .permissions(device.device_public_key, super::system_time(now))
+                .ok()
+                .map(|member| member.policy);
+            let agent_may = |verb: &Verb| {
+                person
+                    || policy.as_ref().is_some_and(|policy| {
+                        agents::agent_answer(
+                            Some(&**policy),
+                            caller,
+                            &verb.operation(GOVERNANCE),
+                            now,
+                        ) != Answer::Deny
+                    })
+            };
             let rows: Vec<CatalogueRow> = VERBS
                 .iter()
                 .chain(confirmed)
@@ -1255,7 +1253,10 @@ impl Workspaces {
                     // it by asking for the verb by name, and no person is
                     // offered what only a key or the key that minted it can do.
                     if verb.check.is_empty() {
-                        return verb.id == NAME && speaks_for_themselves(caller);
+                        return verb.id == NAME && caller.acting().is_person();
+                    }
+                    if !agent_may(verb) {
+                        return false;
                     }
                     if verb.check == CHOOSES_SERVERS {
                         return Self::chooses_servers(&workspace, &device);
@@ -1273,9 +1274,10 @@ impl Workspaces {
         }
         if wants(HOST_ACTIONS_PROVIDER)
             && let Some(certificate) = certificate
-            && let Some(asking) = asks_host(caller, certificate)
+            && agents::acts_for_its_person(caller)
         {
-            offer.add(host::HOST, "", self.host_rows(certificate, asking));
+            let rows = self.host_rows(workspace_id, caller, certificate).await;
+            offer.add(host::HOST, "", rows);
         }
         // An agent its person named for a mail or a calendar account finds
         // what it may do with it here. A page asks directly, and is offered
@@ -1340,13 +1342,13 @@ impl Workspaces {
                 // Unknown and forbidden are the same answer.
                 let certificate = certificate
                     .filter(|certificate| {
-                        caller.device_public_key() == Some(&certificate.device_public_key)
+                        agents::acts_for_its_person(caller)
+                            && caller.device_public_key() == Some(&certificate.device_public_key)
                             && caller.user_public_key() == Some(&certificate.user_public_key)
                     })
                     .ok_or(ActionCallError::UnknownAction)?;
-                let asking =
-                    asks_host(caller, certificate).ok_or(ActionCallError::UnknownAction)?;
-                self.host_invoke(certificate, asking, request).await
+                self.host_invoke(workspace_id, caller, certificate, request)
+                    .await
             }
             (mcp_server::PROVIDER, _) => {
                 self.mcp_keeper(caller, certificate)?;
@@ -1428,7 +1430,7 @@ impl Workspaces {
                 let person = caller
                     .user_public_key()
                     .filter(|_| {
-                        speaks_for_themselves(caller)
+                        caller.acting().is_person()
                             || certificate.is_some_and(|certificate| {
                                 reaches_every_workspace(caller, certificate)
                             })
@@ -1456,7 +1458,7 @@ impl Workspaces {
         let host = &self.inner.host.cert;
         certificate
             .filter(|certificate| {
-                speaks_for_themselves(caller)
+                caller.acting().is_person()
                     && caller.device_public_key() == Some(&certificate.device_public_key)
                     && caller.user_public_key() == Some(&certificate.user_public_key)
                     && certificate.user_public_key == host.user_public_key
@@ -1528,6 +1530,23 @@ impl Workspaces {
             }
             workspace.workspace().to_owned()
         };
+        // A key's own grant is its own business; anything else an agent asks
+        // is decided by its grants here first.
+        if !listed_key
+            && let Some(verb) = VERBS
+                .iter()
+                .chain(&OWNER_CONFIRMED)
+                .find(|verb| verb.id == address.action)
+        {
+            self.admit_operation(
+                Some(workspace_id),
+                caller,
+                &device,
+                &verb.operation(GOVERNANCE),
+                &arguments_of(request),
+            )
+            .await?;
+        }
         let args = Args::of(&request.argument)?;
         let owner = device.user_public_key == self.inner.host.cert.user_public_key;
         if unconfirmed(&address.action, &args, owner) {

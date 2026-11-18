@@ -719,9 +719,9 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
 
 /// A computer the person logged in is one of their own devices, and its session is their agent's
 /// run: it reads the person's workspace list (its folders are named after their workspaces),
-/// and changes nothing of the person's account on the host.
+/// and asks its person before it changes anything of their account on the host.
 #[tokio::test]
-async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_changes_nothing() {
+async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_asks_before_changing_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -791,10 +791,13 @@ async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_changes_noth
         (CREATE_OWN_WORKSPACE, json!({"name": "Another"})),
         (KEEP_PERSONAL, json!({"list": {"workspaces": []}})),
     ] {
+        // Changing anything asks its person first, and with nobody to ask
+        // nothing changes.
         let refused = ask(action, argument).await;
-        assert!(
-            matches!(refused, Err(ActionCallError::UnknownAction)),
-            "{action}: {refused:?}"
+        assert_eq!(
+            refused.unwrap_err(),
+            ActionCallError::confirmation_required(),
+            "{action}"
         );
     }
     server.shutdown().await;

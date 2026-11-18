@@ -39,8 +39,9 @@ its own session with the server:
 
 - The server admits a grant as its person's agent in exactly the workspaces its
   scope reaches where it redeemed its person's invitation, holds it to an
-  agent's role (Editor at most), and lets it govern, invite or administer
-  nothing (`tilo_workspace_service::workspace_access`). Its certificate's expiry and
+  agent's role (Editor at most); what it governs, invites or administers its
+  grants in the workspace decide, asking its person first by default
+  (`tilo_workspace_service::workspace_access`). Its certificate's expiry and
   its person's revocations, a minted grant's issuer included, are checked at
   every handshake.
 - A grant reaching all workspaces enters through the site's entry to its home

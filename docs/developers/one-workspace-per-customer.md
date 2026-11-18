@@ -314,8 +314,8 @@ agent hands over open straight in the resource's app for them.
 A resource link is the one a person copies in the app, for example
 `https://tilo.sh/app/#/@eu1.tilo.sh/w/<workspace>/so.tilo.pdf-viewer/<record>`. It carries no secret: it
 opens only for the workspace's members, and anyone else meets the workspace's admission, so invite the
-reviewer first. Your key invites into the workspaces you administer, as an editor at most; a key minted for
-one workspace invites nobody. The reviewer then works with a key of their own: their account lists the
+reviewer first. Your key invites as you would, as far as your role in the workspace goes; an agent's key asks
+you first unless you allowed it in the workspace's settings. The reviewer then works with a key of their own: their account lists the
 workspace with the role they hold there (`tilo.workspaces.list()`, each row carrying `role`), so they reach
 it by name too.
 
