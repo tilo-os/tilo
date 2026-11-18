@@ -515,6 +515,25 @@ public enum EngineScript {
         },
         // Nothing is in front: the view shows Chat's own page, which nobody is shown.
         rest() { front(null); return true; },
+        // What a live thing draws now, for a check that has no eyes: its mount's own count of
+        // frames, the size its content asks for and the names its semantics hold. No picture:
+        // a canvas read out here gives a frame it drew before, not what is shown.
+        async drawn(id) {
+          const held = lives.get(id);
+          if (!held) return JSON.stringify({error: {code: 'not-open', reason: 'No such live thing is mounted'}});
+          try {
+            try { held.mount.requestSemantics?.(); } catch { /* not offered */ }
+            await new Promise(done => setTimeout(done, 400));
+            const state = held.mount.state?.() ?? {};
+            const words = [];
+            const node = n => { if (!n) return; if (n.name) words.push(String(n.name)); if (n.value) words.push(String(n.value)); (n.children || []).forEach(node); };
+            const walk = n => { if (!n) return; if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+            walk(state.semantics?.root);
+            const canvas = held.element.querySelector('canvas');
+            return JSON.stringify({ok: {phase: state.phase ?? null, frames: state.frames ?? null, size: state.logicalSize ?? null,
+              content: state.content ?? null, words, canvas: canvas ? [canvas.width, canvas.height] : null}});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
         async close(id) {
           const gone = lives.get(id);
           if (!gone) return false;
