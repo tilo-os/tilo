@@ -1198,9 +1198,7 @@ impl Workspaces {
                 #[cfg(not(target_arch = "wasm32"))]
                 models: Arc::clone(&models),
                 #[cfg(not(target_arch = "wasm32"))]
-                mail_session: std::sync::RwLock::new(Arc::new(
-                    tilo_mail_session::LiveMailSession::default().reaching(models.mail_reach()),
-                )),
+                mail_session: std::sync::RwLock::new(Arc::new(models.mail_session())),
                 #[cfg(not(target_arch = "wasm32"))]
                 vault_uses: hosted_use::Uses::proving_within(models.mail_reach()),
                 #[cfg(not(target_arch = "wasm32"))]
