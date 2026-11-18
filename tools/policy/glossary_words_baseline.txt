@@ -5,7 +5,7 @@ space 4632
 channel 19208
 subject 2956
 host 27592
-relay 3442
+relay 3441
 run 29506
 seat 1441
 record 56092
