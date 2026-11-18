@@ -203,3 +203,73 @@ async fn on_a_server_that_keeps_peoples_own_workspaces_a_persons_assistant_lists
     );
     kept.close();
 }
+
+/// Once somebody else is a member of the workspace a server keeps as a person's own, a turn of
+/// theirs that begins there is still named the list, and its call says why nothing is listed:
+/// whoever is in that workspace can read the conversation. It names no workspace of theirs. A
+/// turn the other member starts on the assistant is told of no list at all, in the words of
+/// something that does not exist.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn once_somebody_else_is_in_a_persons_own_workspace_their_assistant_says_why_it_lists_nothing()
+ {
+    let kept = Box::pin(Kept::start(Role::Viewer)).await;
+    // Cy joins the workspace Bo's assistant lives in.
+    let (cy, _) = tilo_user_identity::UserIdentity::generate("Cy", 1);
+    let cy_device = enrol(&cy, "browser", DeviceCapabilities::member());
+    admit_as(&kept.served, &kept.own.0, &cy_device, Role::Editor).await;
+
+    let calls = everything_then_the_list();
+    let shown = kept
+        .bo_asks("Which other workspaces am I in?", &calls)
+        .await;
+    assert_eq!(shown.len(), 2, "two tool calls were answered: {shown:?}");
+    assert!(
+        shown[0].contains(NAMED),
+        "a turn of his that begins now is still named the list: {}",
+        shown[0]
+    );
+    assert!(
+        shown[1].contains("has another member now"),
+        "and its call says why nothing is listed: {}",
+        shown[1]
+    );
+    assert!(
+        listed_in(&shown[1]).is_empty() && !shown[1].contains(&kept.shared.0),
+        "it names no workspace of his: {}",
+        shown[1]
+    );
+
+    // A turn Cy starts on Bo's assistant acts for Cy: it is told of no list, and nothing of why.
+    let nothing = "no-such-thing/workspaces#list";
+    let his = [
+        ("tilo_ls", serde_json::json!({})),
+        ("tilo_do", serde_json::json!({"path": LIST, "args": {}})),
+        ("tilo_do", serde_json::json!({"path": nothing, "args": {}})),
+    ];
+    let placed = server_of(&kept.served).environments();
+    let shown = asked_by(
+        &kept.served,
+        &kept.own.0,
+        (&cy, &cy_device),
+        ("Which other workspaces is Bo in?", &his),
+        Some(&placed),
+    )
+    .await;
+    assert_eq!(shown.len(), 3, "three tool calls were answered: {shown:?}");
+    assert!(
+        !shown[0].contains(NAMED),
+        "his turn's tools name no list of other workspaces: {}",
+        shown[0]
+    );
+    assert_eq!(
+        shown[1].replace(NAMED, "no-such-thing"),
+        shown[2],
+        "nothing tells the list apart from something that does not exist"
+    );
+    assert!(
+        !shown[1].contains(&kept.shared.0) && !shown[1].contains("another member"),
+        "{}",
+        shown[1]
+    );
+    kept.close();
+}
