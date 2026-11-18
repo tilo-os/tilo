@@ -112,7 +112,7 @@ const LETTERS: [(&str, &str); 3] = [
 /// An invocation is taken back by a key other than the one that ran it, on
 /// a connection of its own, by the id the invocation's answer named; after the server
 /// restarted, when no call of an invocation is remembered, by the step the listing
-/// names it by, as history keeps it.
+/// names it by and by the id its answer named, as history keeps both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_invocation_is_taken_back_after_a_reconnect_and_a_restart() {
     Box::pin(taken_back_after_a_restart()).await;
@@ -131,6 +131,7 @@ async fn taken_back_after_a_restart() {
     };
     let ws = workspace(&person, "Applicant: Jane Doe").await;
     let later = workspace(&person, "Applicant: John Doe").await;
+    let third = workspace(&person, "Applicant: Max Doe").await;
     let agent = Key {
         api: &on_server.api,
         token: person.mint(&ws, "Jane Doe's agent").await,
@@ -139,8 +140,13 @@ async fn taken_back_after_a_restart() {
         api: &on_server.api,
         token: person.mint(&later, "John Doe's agent").await,
     };
+    let another = Key {
+        api: &on_server.api,
+        token: person.mint(&third, "Max Doe's agent").await,
+    };
     let letter = write_letter(&agent, &ws, "Dear Visa Officer,", "Cover letter").await;
     write_letter(&other, &later, "Yours faithfully", "Closing").await;
+    let postscript = write_letter(&another, &third, "P.S. Enclosed", "Postscript").await;
 
     let (status, undone) = person
         .post(
@@ -154,13 +160,28 @@ async fn taken_back_after_a_restart() {
     assert_eq!(taken["status"], "undone", "{listed}");
     assert_eq!(taken["undone"], taken["changes"], "{taken}");
 
-    drop((agent, other, person));
+    drop((agent, other, another, person));
     let on_server = on_server.restart(false).await;
     let page = enrol(&ada, "Ada's browser again", DeviceCapabilities::member());
     let person = Key {
         api: &on_server.api,
         token: Box::pin(approved_key(&on_server, &ada, &page, "Visa backend")).await,
     };
+    let listed = invocations(&person, &third, "").await;
+    let postscript_run = titled(&listed, "Postscript");
+    assert_eq!(postscript_run["remembered"], false, "{postscript_run}");
+    let (status, undone) = person
+        .post(
+            &format!("/v1/workspaces/{third}/invocations/{postscript}/undo"),
+            &json!({}),
+        )
+        .await;
+    assert_eq!(status, 200, "{undone}");
+    let listed = invocations(&person, &third, "").await;
+    let taken = titled(&listed, "Postscript");
+    assert_eq!(taken["status"], "undone", "{listed}");
+    assert_eq!(taken["undone"], taken["changes"], "{taken}");
+
     let listed = invocations(&person, &later, "").await;
     let closing = titled(&listed, "Closing");
     assert_eq!(closing["remembered"], false, "{closing}");

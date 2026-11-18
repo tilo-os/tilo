@@ -39,7 +39,7 @@
 //! types, never renamed or removed, so both sides move independently.
 //!
 //! The other half, what this device has, is [`apps`]: each installed package read through the
-//! signed manifest it was admitted with, for the session, the runtime and app-process.
+//! signed manifest it was admitted with, for the session, the runtime and package-service.
 
 pub mod apps;
 pub mod appstream;

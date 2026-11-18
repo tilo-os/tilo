@@ -59,7 +59,7 @@ use crate::workspace_keys::KeyLink;
 #[cfg(target_os = "linux")]
 use tilo_endpoint_reachability::{Need, Reachability};
 #[cfg(target_os = "linux")]
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 #[cfg(target_os = "linux")]
 use tilo_network_actor::{WorkspaceId, native_ingress};
 #[cfg(target_os = "linux")]
@@ -1318,7 +1318,7 @@ pub struct Entry {
     /// This device's collaboration identity, on whose key the endpoint runs: with it, every
     /// workspace is told which device and which person is here. Without one — a test, a stand-in
     /// session — the session is a device nobody certified and stays anonymous in workspaces.
-    pub identity: Option<HostIdentity>,
+    pub identity: Option<DeviceIdentity>,
     /// What the person's settings say this device says of them here.
     pub own: OwnPresence,
     /// The hosts the person points this device at.
@@ -2070,7 +2070,7 @@ impl Local {
 /// and stays anonymous until the person sets a device up.
 #[must_use]
 #[cfg(target_os = "linux")]
-pub fn device_identity() -> Option<HostIdentity> {
+pub fn device_identity() -> Option<DeviceIdentity> {
     tilo_session_client::identity::device_identity()
 }
 
@@ -2118,7 +2118,7 @@ fn host_addr(value: &str) -> Option<EndpointAddr> {
 /// named says no name: the stand-in its certificate carries is no word of theirs, and every reader
 /// says which device it is in its own language.
 #[cfg(target_os = "linux")]
-fn certified_as(identity: Option<&HostIdentity>) -> (Option<[u8; 32]>, String) {
+fn certified_as(identity: Option<&DeviceIdentity>) -> (Option<[u8; 32]>, String) {
     identity.map_or_else(
         || (None, String::new()),
         |identity| {
@@ -2139,7 +2139,7 @@ fn certified_as(identity: Option<&HostIdentity>) -> (Option<[u8; 32]>, String) {
 /// something else at, and refuse.
 #[cfg(target_os = "linux")]
 fn restored_fabric(
-    identity: Option<&HostIdentity>,
+    identity: Option<&DeviceIdentity>,
     outgoing: HostOutbox,
     continuity: Continuity,
     state: Option<std::path::PathBuf>,
@@ -2184,7 +2184,7 @@ pub(crate) fn fabric_checkpoint(state: &std::path::Path, device: &DeviceId) -> s
 /// takes part as nobody and stays on this machine's loopback.
 #[cfg(target_os = "linux")]
 fn endpoint_for(
-    identity: Option<&HostIdentity>,
+    identity: Option<&DeviceIdentity>,
     relays: &tilo_endpoint_reachability::EndpointRelays,
     lan: &tilo_endpoint_reachability::Nearby,
 ) -> Result<(iroh::endpoint::Builder, iroh::RelayMap), String> {

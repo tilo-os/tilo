@@ -134,6 +134,9 @@ tilo-content = { path = "../../system/content", default-features = false }
 zeroize.workspace = true
 blake3.workspace = true
 hex.workspace = true
+# A server's rollback floor moves by approvals the person's floor key signs.
+tilo-rollback = { path = "../../system/tilo-rollback" }
+tilo-crypto = { path = "../../system/tilo-crypto", default-features = false }
 uuid.workspace = true
 # A bot's calendar schedules fire on this host's wall clock.
 jiff.workspace = true
@@ -179,7 +182,7 @@ tilo-agent-session = { path = "../../agent/agent-session", optional = true }
 # The workspaces' shells a host serving their records runs: ush's own
 # commands here, Linux programs in the workspace's hosted VM.
 ush = { path = "../../runtime/ush", optional = true }
-legacy-vm = { path = "../../runtime/legacy-vm", optional = true }
+legacy-vm = { path = "../../runtime/legacy-vm", optional = true, default-features = false }
 # What the host's account standing is read from: its plans file and the
 # log of the Browser page actions this host ran for it.
 tilo-server-account = { path = "../tilo-server-account", optional = true }

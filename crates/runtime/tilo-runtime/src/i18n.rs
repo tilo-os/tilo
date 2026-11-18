@@ -13,7 +13,13 @@ pub(crate) fn device_args(
     app: &str,
     device: tilo_capture::DeviceKind,
 ) -> [(&'static str, ArgValue); 2] {
-    [("app", app.into()), ("device", device.name().into())]
+    [
+        ("app", app.into()),
+        (
+            "device",
+            crate::device_grants::device_cap(device).name().into(),
+        ),
+    ]
 }
 
 #[cfg(test)]

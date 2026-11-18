@@ -217,7 +217,7 @@ pub fn nss_cbc_ciphertext(
     })
 }
 
-/// Encrypt `plaintext` as Linux OSCrypt does one value, without its `v10`/`v11` prefix: what
+/// Encrypt `plaintext` as Linux `OSCrypt` does one value, without its `v10`/`v11` prefix: what
 /// writes a sample browser profile for tests and proofs, never Tilo's own ownership.
 ///
 /// # Errors

@@ -484,9 +484,7 @@ async fn on_session_bus(
     // What shares the session's screens, drives its seat and passes its selection.
     .with_streams(side.streams())
     .with_input(side.input())
-    .with_clipboard(side.clipboard())
-    // A workspace already granting an app what it asks for answers for the person.
-    .with_consent_grants(side.grants());
+    .with_clipboard(side.clipboard());
     // The desktop's selection moves when the person copies outside any portal ask: the apps holding
     // its clipboard hear of the move, and the offer a remote session made ends.
     let clipboards = portal.clipboards().clone();

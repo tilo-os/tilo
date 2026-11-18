@@ -49,7 +49,7 @@ pub trait IdentityStore: MaybeSendSync {
 
 /// Device certificate chain used to authenticate to a Tilo workspace host.
 #[derive(Clone)]
-pub struct HostIdentity {
+pub struct DeviceIdentity {
     /// The certificate this device was issued, as it was read.
     pub device_cert: DeviceCert,
     /// Signs with the key that certificate names; the key stays in identity store.
@@ -126,7 +126,7 @@ impl std::fmt::Debug for Kept {
     }
 }
 
-impl HostIdentity {
+impl DeviceIdentity {
     /// This device's identity as `identity store` keeps it, when this host holds one: the certificate it
     /// presents and the key it signs with.
     #[must_use]

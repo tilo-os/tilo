@@ -92,7 +92,6 @@ impl PresenceCtx {
             Some(person) => self.acting_for.insert(user.clone(), person),
             None => self.acting_for.remove(&user),
         };
-        self.relabel_cursor(&user);
     }
 
     /// The person `user` acts for, if it is an agent or a bot acting for one.

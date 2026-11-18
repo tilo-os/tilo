@@ -11,13 +11,12 @@
 //! through an agent and have not kept their root with a passkey yet) would
 //! lose every way to add a device if that tab's storage were cleared. So the
 //! tab has the host it uses make a key the host holds — the *stand-in* — and
-//! certifies it with the root ([`DeviceCapabilities::stand_in`],
-//! [`DEVCERT_V5_PREIMAGE_TAG`]).
+//! certifies it with the root ([`DeviceCapabilities::stand_in`]).
 //!
 //! What a stand-in can do: sign a [`DeviceCert`] for a new device of that one
 //! person ([`sign_device_cert`] with the stand-in's key), carrying the
-//! stand-in's own root-signed certificate as its [`DeviceCert::issuer`]
-//! ([`DEVCERT_V6_PREIMAGE_TAG`]). [`verify_device_cert`] accepts such a
+//! stand-in's own root-signed certificate as its [`DeviceCert::issuer`].
+//! [`verify_device_cert`] accepts such a
 //! certificate only when it grants at most what a browser is granted
 //! ([`crate::CertificationPolicy::browser`]: a member, for 30 days), names the
 //! stand-in's person, was issued while the stand-in's certificate was valid,
@@ -45,39 +44,10 @@ use thiserror::Error;
 use crate::canonical::{CanonicalError, signing_digest};
 use crate::sign::StatementSigner;
 
-/// Signing-domain tag for `DeviceCert`. Frozen wire ABI:
-/// `tilo-devcert-v1` + NUL. Any change breaks in-field
-/// certificates.
+/// Signing-domain tag for every `DeviceCert`: `tilo-devcert-v1` + NUL. The
+/// capabilities and, for a certificate an issuer signed, the issuer's whole
+/// certificate are part of the signed bytes, so one tag covers every kind.
 pub const DEVCERT_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v1\0";
-
-/// Signing-domain tag for a certificate whose capabilities mark a foreign
-/// device (see [`DeviceCapabilities::foreign`]). A foreign certificate never
-/// verifies under [`DEVCERT_PREIMAGE_TAG`], so a verifier that predates the
-/// marker cannot accept it as native.
-pub const DEVCERT_V2_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v2\0";
-
-/// Signing-domain tag for a certificate that grants administration (see
-/// [`DeviceCapabilities::can_administer_devices`]), foreign or not. It never
-/// verifies under the v1 or v2 tags, so no older verifier can take it for a
-/// certificate that grants less.
-pub const DEVCERT_V3_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v3\0";
-
-/// Signing-domain tag for a certificate a person gave an agent's grant (see
-/// [`DeviceCapabilities::agent`]). It never verifies under an older tag, so
-/// no verifier that predates grants can take one for a device of the person.
-pub const DEVCERT_V4_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v4\0";
-
-/// Signing-domain tag for a person's stand-in approver's certificate (see
-/// [`DeviceCapabilities::stand_in`]). It never verifies under an older tag,
-/// so no verifier that predates stand-ins can take one for a device.
-pub const DEVCERT_V5_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v5\0";
-
-/// Signing-domain tag for a certificate a stand-in or a grant issued (see
-/// [`DeviceCert::issuer`]). Its preimage binds the stand-in's whole
-/// certificate, signature included, so the certificate cannot be moved to
-/// another issuer; no verifier that predates it takes it, as its binary
-/// encoding carries a marker they refuse.
-pub const DEVCERT_V6_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v6\0";
 
 /// The longest a stand-in approver's certificate may last.
 pub const STAND_IN_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
@@ -97,9 +67,7 @@ pub const STAND_IN_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
 /// The keys a server key mints for one workspace stay within this bound.
 pub const MAX_AGENT_GRANT_LIFETIME_NS: u64 = 90 * 24 * 60 * 60 * 1_000_000_000;
 
-/// First byte of a foreign device's capabilities in binary encodings. A
-/// verifier that predates the marker decodes that position as a `bool` and
-/// refuses any byte other than 0 or 1.
+/// First byte of a foreign device's capabilities in binary encodings.
 const FOREIGN_BINARY_MARKER: u8 = 2;
 
 /// First byte of capabilities that grant administration or an agent's grant
@@ -108,8 +76,7 @@ const FOREIGN_BINARY_MARKER: u8 = 2;
 /// [`EXTENDED_ISSUED`] | [`EXTENDED_SERVER_KEY`], the agent's scope when
 /// [`EXTENDED_AGENT`] is set (a
 /// tag byte, then a workspace's 16 bytes for one workspace), and then the
-/// four flags. Verifiers that predate it refuse the byte, as they refuse
-/// [`FOREIGN_BINARY_MARKER`]; verifiers that predate a bit refuse it too.
+/// four flags. A bit this build does not know is refused.
 const EXTENDED_BINARY_MARKER: u8 = 3;
 const EXTENDED_FOREIGN: u8 = 1;
 const EXTENDED_ADMINISTER: u8 = 2;
@@ -301,17 +268,12 @@ pub struct DeviceCapabilities {
 
     /// The device runs a Tilo runtime on an operating system Tilo does not
     /// control (stock macOS, another Linux desktop). Workspace policy caps
-    /// the role such a device may act with. A foreign certificate is signed
-    /// under [`DEVCERT_V2_PREIMAGE_TAG`] and encoded so that verifiers which
-    /// predate this field reject it; a native one keeps the v1 encoding.
+    /// the role such a device may act with.
     pub foreign: bool,
 
     /// May administer the person's other devices: open their device-admin
     /// route (`tilo-device-admin/1`) and drive the dev daemon behind it.
-    /// Granted on purpose to a developer's machine, never by a preset. A
-    /// certificate that grants it is signed under
-    /// [`DEVCERT_V3_PREIMAGE_TAG`] and encoded so that verifiers which predate
-    /// this field reject it; every other certificate keeps its encoding.
+    /// Granted on purpose to a developer's machine, never by a preset.
     pub can_administer_devices: bool,
 
     /// The key belongs to an agent's grant, not to a machine of the person:
@@ -320,8 +282,7 @@ pub struct DeviceCapabilities {
     /// scope names and nowhere else. Such a certificate grants none of the
     /// flags above, expires within [`MAX_AGENT_GRANT_LIFETIME_NS`] unless it
     /// is a server key ([`Self::server_key`]), governs no workspace, and is
-    /// revoked like any device. It is signed under [`DEVCERT_V4_PREIMAGE_TAG`]
-    /// and encoded so that verifiers which predate this field reject it.
+    /// revoked like any device.
     pub agent: Option<AgentScope>,
 
     /// The key is a person's stand-in approver, held by a host for a person
@@ -330,8 +291,7 @@ pub struct DeviceCapabilities {
     /// Such a certificate grants none of the flags above and no agent's
     /// grant, always expires (within [`STAND_IN_LIFETIME_NS`]), and is no
     /// device: [`verify_device_cert`] refuses it, [`verify_stand_in_cert`]
-    /// takes it. It is signed under [`DEVCERT_V5_PREIMAGE_TAG`] and encoded so
-    /// that verifiers which predate this field reject it.
+    /// takes it.
     pub stand_in: bool,
 
     /// The agent's grant is a server key the person created for their own
@@ -339,44 +299,16 @@ pub struct DeviceCapabilities {
     /// or until an expiry they chose (see [`MAX_AGENT_GRANT_LIFETIME_NS`]).
     /// Only an all-workspaces grant is one; the grant an agent gets through
     /// a person's consent never is. The marker is part of the signed
-    /// encoding, so a certificate cannot gain or lose it, and verifiers that
-    /// predate it reject it.
+    /// encoding, so a certificate cannot gain or lose it.
     pub server_key: bool,
 
     /// The key may operate web pages in Browser: navigate, fill, select,
     /// click, press, scroll, point and drag on the pages of its workspaces'
     /// Browser windows without asking the person each time. Submitting a
     /// page, and every other action Browser holds for the person, still asks
-    /// them. Only an agent's grant carries it, it is part of the signed
-    /// encoding, and verifiers that predate it reject it.
+    /// them. Only an agent's grant carries it, and it is part of the signed
+    /// encoding.
     pub browser_pages: bool,
-
-    /// Grants a certificate signed before they were retired may carry, which
-    /// mean nothing now (see [`RetiredFlags`]). New certificates set none.
-    pub retired: RetiredFlags,
-}
-
-/// Two grants certificates carried until they were retired: acting as an
-/// always-on host, and reading every workspace of the person. Which device
-/// serves a workspace, and what it holds of it, is the workspace's and the
-/// device's setting now, so neither grants anything. A certificate signed
-/// with one set keeps it, read and written exactly as signed: its bytes are
-/// the ones every device and host already stores, and its signature covers
-/// them. Nothing outside this module sets one.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct RetiredFlags {
-    act_as_host: bool,
-    read_all_workspaces: bool,
-}
-
-impl RetiredFlags {
-    /// Whether the certificate was signed with either retired grant: one
-    /// that may carry nothing else (an agent's grant, a stand-in) is refused
-    /// with one, as it was before they were retired.
-    #[must_use]
-    pub const fn any(self) -> bool {
-        self.act_as_host || self.read_all_workspaces
-    }
 }
 
 /// The v1 JSON shape plus the optional foreign marker, omitted when false so
@@ -390,12 +322,6 @@ impl RetiredFlags {
 struct CapabilitiesJson {
     can_own_workspaces: bool,
     can_admit_devices: bool,
-    /// Retired ([`RetiredFlags`]), still written: every peer reads the v1
-    /// fields, and refuses a certificate without them.
-    #[serde(default)]
-    can_act_as_host: bool,
-    #[serde(default)]
-    can_read_all_workspaces: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     foreign: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -416,8 +342,6 @@ impl Serialize for DeviceCapabilities {
             return CapabilitiesJson {
                 can_own_workspaces: self.can_own_workspaces,
                 can_admit_devices: self.can_admit_devices,
-                can_act_as_host: self.retired.act_as_host,
-                can_read_all_workspaces: self.retired.read_all_workspaces,
                 foreign: self.foreign,
                 can_administer_devices: self.can_administer_devices,
                 agent: self.agent,
@@ -442,13 +366,12 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
     // Positional binary formats (postcard) encode each bool as one byte;
     // a foreign device prefixes the four flags with the marker byte, and
     // anything more with the extended marker and its byte. The last two
-    // flags are the retired ones, kept where every stored certificate has
-    // them.
+    // flags are always clear.
     let flags = [
         capabilities.can_own_workspaces,
         capabilities.can_admit_devices,
-        capabilities.retired.act_as_host,
-        capabilities.retired.read_all_workspaces,
+        false,
+        false,
     ];
     let scope: Vec<u8> = match capabilities.agent {
         None => Vec::new(),
@@ -495,10 +418,6 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
                 can_own_workspaces: json.can_own_workspaces,
                 can_admit_devices: json.can_admit_devices,
                 foreign: json.foreign,
-                retired: RetiredFlags {
-                    act_as_host: json.can_act_as_host,
-                    read_all_workspaces: json.can_read_all_workspaces,
-                },
                 can_administer_devices: json.can_administer_devices,
                 agent: json.agent,
                 stand_in: json.stand_in,
@@ -613,6 +532,12 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 &"a capability flag byte of 0 or 1",
             )),
         };
+        if flags[2] != 0 || flags[3] != 0 {
+            return Err(A::Error::invalid_value(
+                serde::de::Unexpected::Bytes(&flags[2..]),
+                &"two clear flags after the first two",
+            ));
+        }
         Ok(BinaryCapabilitiesOf(
             DeviceCapabilities {
                 can_own_workspaces: flag(flags[0])?,
@@ -623,10 +548,6 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 stand_in: extended & EXTENDED_STAND_IN != 0,
                 server_key: extended & EXTENDED_SERVER_KEY != 0,
                 browser_pages: extended & EXTENDED_BROWSER_PAGES != 0,
-                retired: RetiredFlags {
-                    act_as_host: flag(flags[2])?,
-                    read_all_workspaces: flag(flags[3])?,
-                },
             },
             extended & EXTENDED_ISSUED != 0,
         ))
@@ -647,10 +568,6 @@ impl DeviceCapabilities {
             stand_in: false,
             server_key: false,
             browser_pages: false,
-            retired: RetiredFlags {
-                act_as_host: false,
-                read_all_workspaces: false,
-            },
         }
     }
 
@@ -714,8 +631,7 @@ impl DeviceCapabilities {
                 || self.can_admit_devices
                 || self.foreign
                 || self.can_administer_devices
-                || self.stand_in
-                || self.retired.any())
+                || self.stand_in)
     }
 
     /// The capabilities of a person's stand-in approver: nothing but being
@@ -801,10 +717,8 @@ pub fn device_name(label: &str) -> Option<&str> {
 ///
 /// The signature is Ed25519, produced by the *user root* signing
 /// key over `blake3(DEVCERT_PREIMAGE_TAG || postcard(view))`, where
-/// `view` is the `DeviceCertView` omitting the `signature` field. A
-/// foreign device's certificate uses [`DEVCERT_V2_PREIMAGE_TAG`] instead,
-/// and so on for the later tags (see [`device_cert_signing_digest`]). A
-/// certificate a person's stand-in issued is signed by the stand-in's key
+/// `view` is the `DeviceCertView` omitting the `signature` field (see
+/// [`device_cert_signing_digest`]). A certificate a person's stand-in issued is signed by the stand-in's key
 /// instead, and carries the stand-in's certificate as its [`Self::issuer`].
 ///
 /// Cert chain: for anything the device does to be trusted by a
@@ -848,8 +762,8 @@ pub struct DeviceCert {
     /// the root signed itself: a person's stand-in approver (see the module),
     /// or an all-workspaces agent's grant that minted a grant for one
     /// workspace ([`prepare_minted_grant`]).
-    /// Encoded only when present, so every other certificate encodes and
-    /// signs exactly as before; signed under [`DEVCERT_V6_PREIMAGE_TAG`].
+    /// Encoded only when present; its signed bytes include the issuer's whole
+    /// certificate.
     pub issuer: Option<Box<DeviceCert>>,
 }
 
@@ -1447,28 +1361,17 @@ fn prepare_cert_signature(
 /// Returns [`DeviceCertError::Canonical`] if the cert cannot be
 /// canonically encoded (effectively unreachable).
 pub fn device_cert_signing_digest(cert: &DeviceCert) -> Result<[u8; 32], DeviceCertError> {
-    if let Some(issuer) = &cert.issuer {
-        return signing_digest(
-            DEVCERT_V6_PREIMAGE_TAG,
+    match &cert.issuer {
+        Some(issuer) => signing_digest(
+            DEVCERT_PREIMAGE_TAG,
             &IssuedCertView {
                 cert: cert.view(),
                 issuer,
             },
-        )
-        .map_err(Into::into);
+        ),
+        None => signing_digest(DEVCERT_PREIMAGE_TAG, &cert.view()),
     }
-    let tag = if cert.capabilities.stand_in {
-        DEVCERT_V5_PREIMAGE_TAG
-    } else if cert.capabilities.agent.is_some() {
-        DEVCERT_V4_PREIMAGE_TAG
-    } else if cert.capabilities.can_administer_devices {
-        DEVCERT_V3_PREIMAGE_TAG
-    } else if cert.capabilities.foreign {
-        DEVCERT_V2_PREIMAGE_TAG
-    } else {
-        DEVCERT_PREIMAGE_TAG
-    };
-    signing_digest(tag, &cert.view()).map_err(Into::into)
+    .map_err(Into::into)
 }
 
 /// Verify a device cert: its root's signature, or — for one a person's

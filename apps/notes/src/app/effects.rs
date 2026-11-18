@@ -110,20 +110,6 @@ impl NotesApp {
             ))),
             NotesEffect::ImportMarkdownFile => Ok(self.choose_markdown(cx)?),
             NotesEffect::ImportNotionExport => Ok(self.choose_notion_export(cx)?),
-            NotesEffect::ImportMarkdownContent { title, body } => {
-                let title = title.trim();
-                let fallback = CATALOG.t("notes-imported-untitled");
-                let title = if title.is_empty() { &fallback } else { title };
-                let body = crate::markdown::strip_matching_title_heading(&body, title);
-                let mut done = Vec::new();
-                let chain = chain.ok_or("this notebook is open to view only")?;
-                let page = import_note(title, &body, &chain, false, &mut done);
-                self.complete(done);
-                let page = page?;
-                Ok(Effected::value(serde_json::json!({
-                    "resource": actions::page_resource_id(page),
-                })))
-            }
             NotesEffect::ExportMarkdown { page } => self.export_markdown(&state, page, cx),
             NotesEffect::ExportMarkdownContent { page, title } => self
                 .export_markdown_content(&state, page, title.as_deref())
@@ -204,7 +190,7 @@ impl NotesApp {
         self.workspace
             .get(page)
             .ok_or("the note no longer exists")?;
-        self.open_page(page);
+        self.navigate_to(page);
         Ok(())
     }
 
@@ -224,7 +210,7 @@ impl NotesApp {
             return Err("the block no longer exists".into());
         }
         state.get(page).ok_or("the note no longer exists")?;
-        self.open_page(page);
+        self.navigate_to(page);
         self.pending_block_range = None;
         if let Some(block) = block {
             self.pending_block_reveal = Some((page, block));
@@ -444,7 +430,7 @@ impl NotesApp {
                 .map_or_else(|| CATALOG.t("notes-imported-untitled"), str::to_owned);
             let mut done = Vec::new();
             let imported = match markdown {
-                Ok(markdown) => import_note(&title, &markdown, &chain, true, &mut done),
+                Ok(markdown) => import_note(&title, &markdown, &chain, &mut done),
                 Err(error) => {
                     done.push(import_failed(&error));
                     Err(error)
@@ -563,10 +549,7 @@ impl NotesApp {
                 return Ok(Effected::done());
             };
             if let Err(error) = super::check_image(&file.bytes) {
-                completions.push(Completed::Notify(
-                    format!("Image import failed: {error}"),
-                    ToastKind::Error,
-                ));
+                completions.push(image_not_added(&error));
                 return Err(error);
             }
             let alt = std::path::Path::new(&file.name)
@@ -609,6 +592,9 @@ impl NotesApp {
 
 /// The change adding image `bytes` to `page`, after block `after`, else at
 /// its end ([`NotesApp::image_anchor`]).
+///
+/// # Errors
+/// Why the picture could not be kept for the note.
 pub(super) fn image_insertion(
     page: PageId,
     after: Option<String>,
@@ -628,13 +614,25 @@ pub(super) fn image_insertion(
     Ok(actions::show_image(page, picture, edit))
 }
 
+/// The window's word that a chosen picture was not added, with `error`.
+pub(super) fn image_not_added(error: &str) -> Completed {
+    Completed::Notify(image_not_added_text(error), ToastKind::Error)
+}
+
+/// What the window says about a chosen picture that was not added.
+pub(super) fn image_not_added_text(error: &str) -> String {
+    CATALOG.t_args(
+        "notes-image-import-failed",
+        &[("error", ui::i18n::ArgValue::from(error.to_owned()))],
+    )
+}
+
 /// Add `markdown` to the notebook as a note titled `title`, leaving in
 /// `done` that the window shows it and says so, or that it was refused.
 fn import_note(
     title: &str,
     markdown: &str,
     chain: &ui::framework::Chain<crate::part::PagePart>,
-    submitted: bool,
     done: &mut Vec<Completed>,
 ) -> Result<PageId, String> {
     if let Err(error) = crate::notebook::check_markdown_import(markdown) {
@@ -649,16 +647,10 @@ fn import_note(
         &markdown,
         assets.into_iter().map(|(_, bytes)| bytes).collect(),
     );
-    if submitted {
-        // A file the host hands over arrives while the window's records are
-        // in use: submitted, and written after. The note's id is chosen
-        // here, so it opens once it is written.
-        chain.dispatcher().apply(&action);
-    } else if let Err(error) = chain.apply(&action) {
-        let error = error.to_string();
-        done.push(import_failed(&error));
-        return Err(error);
-    }
+    // A file the host hands over arrives while the window reads its
+    // documents: submitted, and written after. The note's id is chosen here,
+    // so it opens once it is written.
+    chain.dispatcher().apply(&action);
     done.push(Completed::Open(page));
     done.push(Completed::Notify(
         crate::metadata::CATALOG.t_args(

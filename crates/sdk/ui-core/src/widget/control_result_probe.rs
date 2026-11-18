@@ -222,7 +222,7 @@ fn factory(
     ))
 }
 pub(crate) fn component(
-    host: &crate::application_test_support::ProbeHost,
+    host: &crate::application_test_support::ProbeHarness,
     instance: u64,
     accepted: bool,
 ) -> (crate::application::AppComponent, Observed) {

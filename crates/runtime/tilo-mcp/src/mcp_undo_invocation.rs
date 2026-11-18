@@ -8,7 +8,8 @@
 //! takes back exactly that step (`step`), as the caller may change the document.
 //! A change someone else made on top of the invocation's in a document refuses
 //! the whole undo before anything is taken back: undoing under their work would
-//! change what they see without their say.
+//! change what they see without their say. An undo of a later step is no such
+//! change ([`edited_after`]).
 
 use std::fmt::Write as _;
 
@@ -16,7 +17,9 @@ use super::watch::history_entries;
 use super::{
     ActionProvider, Addressed, Failure, McpServer, OneCall, ParsedPath, Reply, Value, json,
 };
-use tilo_actions::remote::workspace_invocations::{InvocationChange, InvocationsQuery};
+use tilo_actions::remote::workspace_invocations::{
+    InvocationChange, InvocationsQuery, edited_after,
+};
 use tilo_lock::MutexRecover as _;
 
 /// How many of a document's changes are read to find an invocation's.
@@ -273,8 +276,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 }
 
 /// What a document's history `entries` (oldest first, each whole) say of the invocation whose changes
-/// `of_invocation` tells: its changes still in effect, and a change someone else made after its last
-/// one that is still in effect.
+/// `of_invocation` tells: its changes still in effect, and the change that holds its undo back.
 fn effect(entries: &[Value], of_invocation: impl Fn(&Value) -> bool) -> Effect {
     let in_effect = |entry: &&Value| entry.get("undone").and_then(Value::as_bool) != Some(true);
     let changes: Vec<String> = entries
@@ -288,19 +290,7 @@ fn effect(entries: &[Value], of_invocation: impl Fn(&Value) -> bool) -> Effect {
                 .map(str::to_owned)
         })
         .collect();
-    let last = entries
-        .iter()
-        .rposition(|entry| of_invocation(entry) && in_effect(&entry));
-    let over = last.and_then(|last| {
-        entries
-            .iter()
-            .skip(last.saturating_add(1))
-            .filter(in_effect)
-            // Housekeeping (naming a checkpoint) changes nothing the invocation wrote.
-            .filter(|entry| entry.get("change_kind").is_none())
-            .find(|entry| !of_invocation(entry))
-            .cloned()
-    });
+    let over = edited_after(entries, &of_invocation).cloned();
     let whose = entries
         .iter()
         .find(|entry| of_invocation(entry))

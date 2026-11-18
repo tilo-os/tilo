@@ -53,7 +53,7 @@ pub(super) async fn the_assistant_rewords(hosted: &Hosted, message: &Id, words: 
 }
 
 /// How the answer to the one question about an action ended, once the server says so.
-async fn ended(hosted: &Hosted) -> String {
+pub(super) async fn ended(hosted: &Hosted) -> String {
     hosted.agents.look(&hosted.workspace).await.unwrap();
     let deadline = tilo_test_env::hang_deadline();
     loop {

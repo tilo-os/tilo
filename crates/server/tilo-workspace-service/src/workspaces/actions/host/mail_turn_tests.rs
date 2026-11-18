@@ -24,7 +24,7 @@ use tilo_actions::remote::person_asking::Words;
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_user_identity::DeviceCert;
 
-use super::super::HostWorkspaceActions as HolderActions;
+use super::super::ServiceWorkspaceActions as HolderActions;
 use super::super::tests::{admit, caller, governed};
 use super::accounts_tests::asking;
 use super::mail_assistant_tests::{asked_of, lunch, lunch_with};

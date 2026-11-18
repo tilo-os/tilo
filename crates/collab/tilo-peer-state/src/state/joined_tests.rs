@@ -105,6 +105,48 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_joined_replica_takes_the_workspaces_owner_from_its_governance;
+    // The device that answers a join need not be a device of the owner's: the
+    // workspace's governance names who owns it, and every device that holds
+    // the workspace settles it there.
+    {
+        let now = SystemTime::now();
+        let owner = certificate(
+            &SigningKey::from_bytes(&[11; 32]),
+            &SigningKey::from_bytes(&[12; 32]),
+            None,
+        );
+        let member = certificate(
+            &SigningKey::from_bytes(&[13; 32]),
+            &SigningKey::from_bytes(&[14; 32]),
+            None,
+        );
+        let roster = vec![owner.clone(), member.clone()];
+        let changes = crate::seed_workspace(WORKSPACE, &owner, &roster).unwrap();
+        let mut peer = StatePeer::joined(
+            WORKSPACE,
+            member.clone(),
+            roster,
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        peer.receive_from(
+            TransportOrigin::RetainedServerDelta(member.device_public_key),
+            NeighbourMsg::SyncResp {
+                changes,
+                workspace: WORKSPACE.into(),
+            },
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            peer.governance().owner_user_public_key(),
+            owner.user_public_key,
+            "the workspace's owner is the one its governance names"
+        );
+    }
+
     phase a_relayed_document_is_decided_by_the_workspaces_governance_without_being_taken_in;
     {
         let (mut peer, _, member, _, now) = crate::admission_tests::seeded();

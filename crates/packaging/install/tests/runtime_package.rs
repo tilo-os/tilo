@@ -419,7 +419,7 @@ tilo_test_env::scenario! {
         assert!(!env.installed_bundle(forged_version).exists());
     }
 
-    phase app_process_unit_covers_the_canonical_signed_runtime_destination;
+    phase package_service_unit_covers_the_canonical_signed_runtime_destination;
     {
         let env = Env::new();
         let (runtime_key, runtime_identity) = identity_file(&env, "host-runtime-publisher");
@@ -473,8 +473,8 @@ tilo_test_env::scenario! {
                 .starts_with(".install-")
         }));
 
-        let unit = include_str!("../../app-process/systemd/tilo-app-process.service");
-        let shipped = include_str!("../../../../os/usr/lib/systemd/user/tilo-app-process.service");
+        let unit = include_str!("../../package-service/systemd/tilo-package-service.service");
+        let shipped = include_str!("../../../../os/usr/lib/systemd/user/tilo-package-service.service");
         assert_eq!(unit, shipped, "maintained and shipped host units differ");
         let paths = unit
             .lines()
@@ -659,7 +659,7 @@ tilo_test_env::scenario! {
     {
         use std::os::unix::fs::PermissionsExt as _;
         let env = Env::new();
-        let unit = include_str!("../../app-process/systemd/tilo-app-process.service");
+        let unit = include_str!("../../package-service/systemd/tilo-package-service.service");
         let setup: Vec<_> = unit
             .lines()
             .filter_map(|line| line.strip_prefix("ExecStartPre=+"))

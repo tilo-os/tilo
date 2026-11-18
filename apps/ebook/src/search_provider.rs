@@ -771,12 +771,6 @@ impl BookSearchProvider {
         self.books.shares_prose_index_with(&other.books)
     }
 
-    /// The exact resource the hit anchored at `id` resolves to, as the
-    /// palette resolves a hit's address.
-    pub(crate) fn resolve(&self, id: &str) -> Option<LiveRow> {
-        self.books.resolve(id)
-    }
-
     /// [`BookSearch::resolve_published`] for the hit anchored at `id`.
     #[cfg(test)]
     pub(crate) fn resolve_published(&self, id: &str) -> Option<ResourceSpec> {

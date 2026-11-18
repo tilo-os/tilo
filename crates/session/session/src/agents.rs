@@ -408,7 +408,8 @@ impl crate::Shared {
         people.chain(agents).collect()
     }
 
-    /// The person's agent member for the MCP client `client` in `workspace`, as the MCP server
+    /// The person's agent member for the MCP client `client` in `workspace`, by id and by the name
+    /// the workspace calls it, as the MCP server
     /// admits a connection ([`crate::mcp_server::Members`]): the one the workspace's record of its
     /// agents lists, else a new one ([`crate::workspace_settings::Feeding::mcp_agent`]), listed
     /// for the broker as the record names it. The server tells the connection it may join on this
@@ -418,7 +419,11 @@ impl crate::Shared {
     /// # Errors
     /// The member could not be found or added: the client is refused here, told so, and not at its
     /// join.
-    pub(crate) fn mcp_member(&self, workspace: &str, client: &str) -> Result<String, String> {
+    pub(crate) fn mcp_member(
+        &self,
+        workspace: &str,
+        client: &str,
+    ) -> Result<(String, String), String> {
         let (agent, name) = self
             .workspace_settings_feed()
             .mcp_agent(workspace, client)?;
@@ -426,11 +431,11 @@ impl crate::Shared {
             workspace,
             tilo_broker_core::services::ListedAgent {
                 id: agent.clone(),
-                name,
+                name: name.clone(),
                 keeper: self.person.clone(),
             },
         );
-        Ok(agent)
+        Ok((agent, name))
     }
 }
 
@@ -507,7 +512,7 @@ mod tests {
 
         // Before any pass: what the MCP server answers is all the broker has when the
         // connection joins.
-        let member = session
+        let (member, name) = session
             .shared
             .mcp_member(STUDIO, "claude-code")
             .expect("the person's agent member for the client is added");
@@ -521,7 +526,7 @@ mod tests {
         // The same client again is the same member, found and still listed: no second one.
         assert_eq!(
             session.shared.mcp_member(STUDIO, "claude-code"),
-            Ok(member.clone())
+            Ok((member.clone(), name))
         );
         assert_eq!(
             roster.listed(STUDIO).len(),

@@ -20,7 +20,7 @@ use tilo_server::placed_shells::{Member, Members, PlacedShells};
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Hosted, TestUser, device_endpoint, host_on};
+use crate::common::{Hosted, TestUser, device_endpoint, serve_on};
 
 /// The VM host the placer names, as the operator's `StatefulSet` calls it.
 const VM_HOST: &str = "tilo-vm-host-0";
@@ -78,6 +78,11 @@ fn hosted_service(dir: &std::path::Path) -> (std::path::PathBuf, Arc<Opened>) {
                     }
                 }
                 Request::StopBrowser { .. } => Reply::Done,
+                // The member looks at which VMs it keeps, whose leases it holds.
+                Request::Status => Reply::Status {
+                    vms: Vec::new(),
+                    load: legacy_vm::hosted::control::HostLoad::default(),
+                },
                 other => panic!("Browser's service is asked about it: {other:?}"),
             };
             let _ = control::FRAMING.write_value(&mut stream, &reply);
@@ -135,7 +140,7 @@ async fn placed() -> Placed {
     let operator = TestUser::fresh("operator");
     let shell = operator.enrol("host", DeviceCapabilities::primary());
     let vm_host = operator.enrol(VM_HOST, DeviceCapabilities::member());
-    let hosted = host_on(&operator, &shell, WorkSetting::own_person()).await;
+    let hosted = serve_on(&operator, &shell, WorkSetting::own_person()).await;
     let workspace = hosted
         .host
         .workspaces()

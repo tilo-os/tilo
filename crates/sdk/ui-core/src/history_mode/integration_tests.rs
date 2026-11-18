@@ -1,7 +1,7 @@
 use super::*;
 use crate::application::{LaunchTarget, RestoreInput};
 use crate::application_test_support::{
-    APP, ProbeHost, runner_permissions, runner_probe_definition,
+    APP, ProbeHarness, runner_permissions, runner_probe_definition,
 };
 use crate::widget::{AppModel, ModelPath};
 use crate::{
@@ -28,7 +28,7 @@ tilo_test_env::scenario! {
 
     phase managed_bound_history_resolves_real_owner_instead_of_outer_state;
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = runner_probe_definition();
         let context = host
             .prepare_with_permissions(definition, 904, &LaunchTarget::New, runner_permissions())
@@ -368,8 +368,8 @@ fn grant(actor: &str, app: &str, until: Option<u64>) -> crate::permissions::Perm
     .at_unix_time(100)
 }
 
-pub(crate) fn component_with_history() -> (ProbeHost, crate::application::AppComponent) {
-    let host = ProbeHost::new();
+pub(crate) fn component_with_history() -> (ProbeHarness, crate::application::AppComponent) {
+    let host = ProbeHarness::new();
     let definition = runner_probe_definition();
     let context = host
         .prepare_with_permissions(definition, 950, &LaunchTarget::New, runner_permissions())
@@ -670,7 +670,7 @@ impl crate::widget::controls::ActionControls for RetainedLifecycleProbe {
 
 #[test]
 fn hidden_canonical_component_updates_once_per_ordinary_host_pass() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let definition = runner_probe_definition();
     let context = host
         .prepare_with_permissions(definition, 717, &LaunchTarget::New, runner_permissions())

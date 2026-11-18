@@ -82,23 +82,6 @@ impl Device {
         self.changes.note(WORKSPACE, app, route, true);
     }
 
-    /// `app`'s index names `route` as a record of `kind`, as its app writes it.
-    fn kind(&self, app: &str, route: &str, kind: &str) {
-        let mut doc = AutoCommit::new();
-        let named = ui::resource::index::reference(
-            &mut doc,
-            &DocumentId::parse(route).expect("a record id"),
-            &ResourceType::new(kind),
-        );
-        assert!(named, "{route} is named in {app}'s index");
-        doc.commit();
-        Self::write_doc(
-            &self.store,
-            &StorageKey::workspace_index(app, WORKSPACE),
-            &mut doc,
-        );
-    }
-
     fn write_through(store: &Store, app: &str, route: &str, doc: &mut AutoCommit) {
         let key = crate::platform::records::storage_key(app, WORKSPACE, route).expect("a route");
         Self::write_doc(store, &key, doc);
@@ -448,6 +431,7 @@ tilo_test_env::scenario! {
             &Look {
                 app: NOTES,
                 record: NOTE,
+                place: NOTE,
                 kind: "notes.notebook",
                 doc: &written,
                 tree: None,
@@ -462,9 +446,42 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A chat part whose message mentions Bea, its mark's value written by `write_value` into the
-/// span: the part names no kind of its own beyond its chain's, and the chain none at all.
+/// Chat's surface as this test names it: its own record's kind first, then its parts'.
+const CHAT_SURFACE: &[u8] = b"format = 2\n\n[[resources]]\nkind = \"chat.workspace\"\nlabel = \"Chat\"\nversion = 1\n\n[[resources]]\nkind = \"chat.messages\"\nlabel = \"Messages\"\nversion = 1\n";
+
+/// Post message `id` by Ada in #general into `part`, a paragraph whose mark span names Bea, its
+/// value written by `write_value`.
+fn post(
+    part: &mut AutoCommit,
+    id: &str,
+    text: &str,
+    write_value: &dyn Fn(&mut AutoCommit, &ObjId),
+) {
+    let messages = match part.get(ROOT, "messages").unwrap() {
+        Some((_, messages)) => messages,
+        None => part.put_object(ROOT, "messages", ObjType::Map).unwrap(),
+    };
+    let entry = part.put_object(&messages, id, ObjType::Map).unwrap();
+    let message = part.put_object(&entry, "v", ObjType::Map).unwrap();
+    part.put(&message, "author", member_value(ADA)).unwrap();
+    part.put(&message, "channel", "c_general").unwrap();
+    let body = part.put_object(&message, "body", ObjType::List).unwrap();
+    let block = part.insert_object(&body, 0, ObjType::Map).unwrap();
+    part.put(&block, "text", text).unwrap();
+    let marks = part.put_object(&block, "marks", ObjType::List).unwrap();
+    let span = part.insert_object(&marks, 0, ObjType::Map).unwrap();
+    part.put(&span, "start", 0_i64).unwrap();
+    part.put(&span, "end", 4_i64).unwrap();
+    part.put(&span, "name", MARK).unwrap();
+    write_value(part, &span);
+    part.commit();
+}
+
+/// Chat as it keeps a workspace: its own record, which names no kind, with its conversations, and a
+/// part of the chain of messages derived from it. Each message that mentions Bea is one notice,
+/// opening that message in the chat's own record as a search hit on it does.
 fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
+    ui::app_surface::register_built_in(CHAT, CHAT_SURFACE);
     let mut chat = AutoCommit::new();
     let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
     let entry = chat
@@ -472,60 +489,49 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
         .unwrap();
     let channel = chat.put_object(&entry, "v", ObjType::Map).unwrap();
     chat.put(&channel, "name", "general").unwrap();
+    chat.commit();
 
+    let part_id = DocumentId::derived("messages", &DocumentId::workspace_default()).part(0);
+    let part_route = part_id.as_str().to_owned();
     let mut part = AutoCommit::new();
-    // The chat's own record, and the part of it a page of messages is kept in.
-    let chat_route = "tab:00000000000000c1".to_owned();
-    let part_route = DocumentId::parse(&chat_route)
-        .expect("a record id")
-        .part(0)
-        .as_str()
-        .to_owned();
     ui::resource::init(
         &mut part,
-        &DocumentId::parse(&part_route).expect("a record id"),
-        &ResourceType::new("chat.part"),
+        &part_id,
+        &ResourceType::new("chat.messages"),
         "workspace",
     );
-    let messages = part.put_object(ROOT, "messages", ObjType::Map).unwrap();
-    let entry = part.put_object(&messages, "m1", ObjType::Map).unwrap();
-    let message = part.put_object(&entry, "v", ObjType::Map).unwrap();
-    part.put(&message, "author", member_value(ADA)).unwrap();
-    part.put(&message, "channel", "c_general").unwrap();
-    let body = part.put_object(&message, "body", ObjType::List).unwrap();
-    let block = part.insert_object(&body, 0, ObjType::Map).unwrap();
-    part.put(&block, "text", "@Bea can you look?").unwrap();
-    let marks = part.put_object(&block, "marks", ObjType::List).unwrap();
-    let span = part.insert_object(&marks, 0, ObjType::Map).unwrap();
-    part.put(&span, "start", 0_i64).unwrap();
-    part.put(&span, "end", 4_i64).unwrap();
-    part.put(&span, "name", MARK).unwrap();
-    write_value(&mut part, &span);
+    post(&mut part, "m1", "@Bea can you look?", write_value);
 
-    let device = Device::holding(&[
-        (CHAT, &part_route, &part),
-        (CHAT, &chat_route, &chat),
-        (CHAT, &part_route, &part),
-    ]);
-    // The kind a part does not name itself: its app's index names the records it keeps.
-    device.kind(CHAT, &chat_route, "chat.workspace");
+    let device = Device::holding(&[(CHAT, "", &chat), (CHAT, &part_route, &part)]);
     let shown = Rc::new(Shown::default());
-    device.role(&shown).step();
+    let mentions = device.role(&shown);
+    mentions.step();
+    let opens = |id: &str| Place {
+        app: CHAT.into(),
+        record: String::new(),
+        resource: "chat.workspace".into(),
+        anchor: format!("chat.workspace/messages/{id}"),
+    };
+    {
+        let up = shown.up.borrow();
+        assert_eq!(up.len(), 1, "{up:?}");
+        let notice = up.values().next().unwrap();
+        assert_eq!(notice.title, "Ada mentioned you in #general");
+        assert_eq!(notice.body, "@Bea can you look?");
+        assert_eq!(notice.place, Some(opens("m1")));
+    }
 
+    // A second message in the same part is news of its own: its place is its message.
+    post(&mut part, "m2", "@Bea and this one", write_value);
+    device.writes(CHAT, &part_route, &mut part);
+    look_again(&mentions);
     let up = shown.up.borrow();
-    assert_eq!(up.len(), 1, "{up:?}");
-    let notice = up.values().next().unwrap();
-    assert_eq!(notice.title, "Ada mentioned you in #general");
-    assert_eq!(notice.body, "@Bea can you look?");
-    assert_eq!(
-        notice.place.clone().expect("it opens what it names"),
-        Place {
-            app: CHAT.into(),
-            record: chat_route,
-            resource: "chat.workspace".into(),
-            anchor: "chat.workspace/messages/m1".into(),
-        }
-    );
+    let mut places: Vec<Place> = up
+        .values()
+        .filter_map(|notice| notice.place.clone())
+        .collect();
+    places.sort();
+    assert_eq!(places, vec![opens("m1"), opens("m2")], "{up:?}");
 }
 
 /// A device's records as a page reads them: what changed of a record since some heads, apart from

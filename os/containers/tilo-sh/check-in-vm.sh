@@ -31,6 +31,13 @@ chown "$user:$user" "$work"
 state=${TILO_SH_STATE:?}
 mkdir -p "$state"
 chown "$user:$user" "$state"
+# The keys of people's sealed stores are kept beside it, and whichever run made
+# that folder owns what is inside it: the server writes there as this user, so
+# it is theirs. A fresh stack starts with it empty, as its state does.
+people_keys=${TILO_SH_PEOPLE_KEYS:-$state-keys}
+[[ ${TILO_SH_FRESH:-0} != 1 ]] || rm -rf "$people_keys"
+install -d -m 0700 -o "$user" -g "$user" "$people_keys"
+chown -R "$user:$user" "$people_keys"
 
 # The image's Chromium is Playwright's, in root's cache: named for the user,
 # whose own home has none, and made reachable.

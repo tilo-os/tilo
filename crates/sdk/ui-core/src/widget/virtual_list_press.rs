@@ -2,13 +2,13 @@
 //! menu.
 
 use super::Choosing;
-use super::{ListModel, VirtualList};
 
+use super::{ListKey, VirtualRows};
 use vello::kurbo::Point;
 use winit::keyboard::{Key, NamedKey};
 
-impl<M: ListModel> VirtualList<M> {
-    pub(super) fn click_row(&mut self, key: M::Key, modifiers: winit::event::Modifiers) {
+impl VirtualRows {
+    pub(super) fn click_row(&mut self, key: ListKey, modifiers: winit::event::Modifiers) {
         let state = modifiers.state();
         let toggle = state.control_key() || state.super_key();
         let extend = state.shift_key();
@@ -40,7 +40,7 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    pub(super) fn activate_key(&mut self, key: M::Key) {
+    pub(super) fn activate_key(&mut self, key: ListKey) {
         // A row that opens where it stands opens there, whether or not anything else listens:
         // the list holds the item open, the row grows into its document, and the host hears
         // nothing it must show itself.

@@ -27,7 +27,7 @@ use tilo_clock::time::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;
 use tilo_desktop_model::WorkspaceId;
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::join::Role;
@@ -197,7 +197,7 @@ impl Admission {
 pub struct Engine {
     owner: NativeWorkspaceOwner,
     shown: Arc<Shown>,
-    identity: HostIdentity,
+    identity: DeviceIdentity,
     /// Where the workspaces' channels find this device's keys, once the channel service is running:
     /// the session opens the workspaces before it opens the service, and every reader of a sealed
     /// record goes through this.
@@ -234,6 +234,23 @@ pub struct Engine {
     /// Where a workspace this device makes is founded: its own workspace service, once it is open
     /// ([`Self::serve_founding`]).
     founder: std::sync::OnceLock<Arc<dyn Founder>>,
+}
+
+/// One holder of a workspace, as a member's device reads it off the holder's
+/// own signed address ([`Engine::holders`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Holder {
+    /// Its device key, hex.
+    pub device: String,
+    /// What it calls itself: its server's name from its person's admin
+    /// workspace, or its site's name; its device's label when it names none.
+    pub label: String,
+    /// Whether it holds the workspace's keys: it reads the workspace. A store
+    /// holds its ciphertext and reads none of it.
+    pub reads: bool,
+    /// Whether the machine under it is rented from a cloud provider, whose
+    /// operator can read what it holds.
+    pub cloud: bool,
 }
 
 /// What this device's own workspace service answers an ask, once it has.
@@ -419,7 +436,7 @@ impl Engine {
     pub fn holding(
         owner: NativeWorkspaceOwner,
         shown: Arc<Shown>,
-        identity: HostIdentity,
+        identity: DeviceIdentity,
         ownership: Arc<dyn MembershipCheck>,
     ) -> Self {
         let keys = KeyProvider::default();
@@ -454,7 +471,7 @@ impl Engine {
     /// The record holds no valid state, or the file cannot be written.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open(
-        identity: HostIdentity,
+        identity: DeviceIdentity,
         state: Option<&Path>,
         workspaces: impl IntoIterator<Item = WorkspaceId>,
         ownership: Arc<dyn MembershipCheck>,
@@ -1589,22 +1606,61 @@ impl Engine {
             .ok()
     }
 
-    /// Where the hosts of the workspaces this device holds are reached, by workspace id, postcard
-    /// encoded: what the person's other devices need to enter a workspace listed here at the device
-    /// that hosts it.
+    /// The holders of `workspace`, each as its own signed address names it:
+    /// what a member reads of who keeps their workspace and which of them can
+    /// read it. Empty while this device holds no governance for the workspace.
+    pub fn holders(&self, workspace: &str) -> Vec<Holder> {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return Vec::new();
+        };
+        let Ok(hints) = self.owner.with_current(workspace, |view| {
+            Ok(view.peer().governance().keeping_devices())
+        }) else {
+            return Vec::new();
+        };
+        let mut holders: Vec<Holder> = hints
+            .into_iter()
+            .filter_map(|hint| {
+                let payload = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(&hint).ok()?;
+                let label = payload.label.trim();
+                Some(Holder {
+                    device: hex::encode(hint.host.device_public_key),
+                    label: if label.is_empty() {
+                        hint.host.device_label
+                    } else {
+                        label.to_owned()
+                    },
+                    reads: payload.holds_keys,
+                    cloud: payload.cloud,
+                })
+            })
+            .collect();
+        holders.sort_by(|a, b| a.label.cmp(&b.label));
+        holders
+    }
+
+    /// Where the holders of the workspaces this device holds are reached, one entry per holder, by
+    /// workspace id, postcard encoded: what the person's other devices need to enter a workspace
+    /// listed here at any of the devices that keep it.
     pub fn host_hints(&self) -> Vec<(String, Vec<u8>)> {
         self.owner
             .workspaces()
             .into_iter()
-            .filter_map(|workspace| {
+            .flat_map(|workspace| {
                 // The hint itself, as the device that reads it decodes it: not the answer
                 // whether this device has one, whose tag would lead the bytes.
-                let hint = self
+                let hints = self
                     .owner
-                    .with_current(workspace, |view| view.transport_hint().cloned())
-                    .ok()?;
-                let bytes = postcard::to_stdvec(&hint).ok()?;
-                Some((workspace.to_string(), bytes))
+                    .with_current(workspace, |view| Ok(view.keeping_devices()))
+                    .unwrap_or_default();
+                let named = workspace.to_string();
+                hints
+                    .into_iter()
+                    .filter_map(move |hint| {
+                        let bytes = postcard::to_stdvec(&hint).ok()?;
+                        Some((named.clone(), bytes))
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect()
     }
@@ -1640,7 +1696,7 @@ impl Engine {
 
     /// This device's collaboration identity: the key its endpoint and its channels sign with, and
     /// the certificate that says whose it is.
-    pub fn identity(&self) -> &HostIdentity {
+    pub fn identity(&self) -> &DeviceIdentity {
         &self.identity
     }
 
@@ -1856,12 +1912,12 @@ mod tests {
 
     /// A device of a person, certified for their root, with `capabilities`,
     /// and the person's root key.
-    fn identity(capabilities: DeviceCapabilities) -> (HostIdentity, [u8; 32]) {
+    fn identity(capabilities: DeviceCapabilities) -> (DeviceIdentity, [u8; 32]) {
         device_of(tilo_test_env::node_key(), capabilities)
     }
 
     /// The person's device whose key is `device`.
-    fn device_of(device: [u8; 32], capabilities: DeviceCapabilities) -> (HostIdentity, [u8; 32]) {
+    fn device_of(device: [u8; 32], capabilities: DeviceCapabilities) -> (DeviceIdentity, [u8; 32]) {
         let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&device);
         let root = person.verifying_key().to_bytes();
@@ -1876,7 +1932,7 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-        let identity = HostIdentity::kept(cert, device);
+        let identity = DeviceIdentity::kept(cert, device);
         (identity, root)
     }
 
@@ -1889,14 +1945,14 @@ mod tests {
             &self,
             _owner: &NativeWorkspaceOwner,
             _workspace: WorkspaceId,
-            _identity: &HostIdentity,
+            _identity: &DeviceIdentity,
         ) -> Result<(), String> {
             Ok(())
         }
     }
 
     /// This device's engine, kept in `state` .
-    fn engine(state: &Path, identity: HostIdentity) -> Engine {
+    fn engine(state: &Path, identity: DeviceIdentity) -> Engine {
         Engine::open(identity, Some(state), Vec::new(), Arc::new(Kept)).expect("an engine")
     }
 

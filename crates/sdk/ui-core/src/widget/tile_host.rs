@@ -1500,10 +1500,10 @@ impl FloatingSurfaceProvider for TileHost {
         }
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+    fn take_pip_area_request(&mut self) -> bool {
         match &mut self.content {
-            TileContent::App(widget) => widget.take_capture_studio_request(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
+            TileContent::App(widget) => widget.take_pip_area_request(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         }
     }
 

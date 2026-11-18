@@ -89,15 +89,15 @@ tilo_test_env::scenario! {
         let (taffy, node) = lay_out(&mut list, 300.0);
         list.set_focus(true);
 
-        list.activate_key(0);
+        list.activate_key(ListKey::new(0u64));
         assert_eq!(*opens.borrow(), vec![0], "the host hears the item open");
         assert_eq!(closes.get(), 0);
 
-        list.activate_key(0);
+        list.activate_key(ListKey::new(0u64));
         assert_eq!(list.open_row(), None);
         assert_eq!(closes.get(), 1);
 
-        list.activate_key(2);
+        list.activate_key(ListKey::new(2u64));
         assert_eq!(*opens.borrow(), vec![0, 2]);
         assert!(
             Dispatch::new()
@@ -136,7 +136,7 @@ tilo_test_env::scenario! {
         let (taffy, node) = lay_out(&mut list, 300.0);
         list.set_focus(true);
 
-        list.activate_key(0);
+        list.activate_key(ListKey::new(0u64));
         assert_eq!(list.open_row(), Some(&0), "the row opened where it stands");
         assert!(
             opened.borrow().is_empty(),
@@ -144,7 +144,7 @@ tilo_test_env::scenario! {
         );
 
         // A row without a document opens elsewhere: it is not the list's to open.
-        list.activate_key(1);
+        list.activate_key(ListKey::new(1u64));
         assert_eq!(*opened.borrow(), vec![1]);
         assert_eq!(
             list.open_row(),
@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
             "a row that opens elsewhere leaves the open one open"
         );
 
-        list.activate_key(2);
+        list.activate_key(ListKey::new(2u64));
         assert_eq!(list.open_row(), Some(&2));
 
         assert!(
@@ -172,7 +172,7 @@ tilo_test_env::scenario! {
         let opened = Rc::new(RefCell::new(Vec::new()));
         let mut list = list(Rc::clone(&opened));
         let _ = lay_out(&mut list, 300.0);
-        list.activate_key(2);
+        list.activate_key(ListKey::new(2u64));
         assert_eq!(list.open_row(), Some(&2));
 
         // The place switched, and the item the person was reading is not a row of it: the
@@ -187,7 +187,7 @@ tilo_test_env::scenario! {
     {
         let (mut list, _opens, closes) = heard_list();
         let _ = lay_out(&mut list, 300.0);
-        list.activate_key(2);
+        list.activate_key(ListKey::new(2u64));
         assert_eq!(closes.get(), 0);
         list.update_model(|model| {
             model.rows.retain(|row| *row != 2);
@@ -258,7 +258,7 @@ tilo_test_env::scenario! {
             None,
             "a list too narrow for the item keeps no row open"
         );
-        narrow.activate_key(0);
+        narrow.activate_key(ListKey::new(0u64));
         assert_eq!(narrow.open_row(), None);
         assert_eq!(
             *opened.borrow(),
@@ -268,7 +268,7 @@ tilo_test_env::scenario! {
         let opened = Rc::new(RefCell::new(Vec::new()));
         let mut reserved = list(Rc::clone(&opened));
         let _ = lay_out(&mut reserved, 300.0);
-        reserved.activate_key(0);
+        reserved.activate_key(ListKey::new(0u64));
         assert_eq!(reserved.open_row(), Some(&0));
         assert!(opened.borrow().is_empty());
     }
@@ -313,7 +313,7 @@ fn the_row_that_opens_grows_into_its_document_and_keeps_the_list_laying_out() {
     );
 
     crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-    list.activate_key(0);
+    list.activate_key(ListKey::new(0u64));
     let _ = lay_out(&mut list, 300.0);
     let on_the_way = list.viewport.item_height(0).unwrap_or_default();
     assert!(

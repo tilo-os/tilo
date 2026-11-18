@@ -60,7 +60,8 @@ final class WordingTests: XCTestCase {
         typealias Line = Wording.Line
         XCTAssertEqual(wording.model(facts), Line(first: "Claude Opus 5.5",
                                                   second: "From your Tilo providers · sub-agents may use a smaller one"))
-        XCTAssertEqual(wording.tokens(facts.usage.tokensToday), "1.8M")
+        XCTAssertEqual(wording.messages(facts.usage), "42")
+        XCTAssertEqual(wording.tokens(facts.usage), "1.8M")
         XCTAssertEqual(wording.spent(facts.usage), Line(first: "3.12 $", second: "Of 10 $ a day"))
         XCTAssertEqual(wording.connections(facts), Line(first: "Linear · added 17 Nov · 23 commands",
                                                         second: "Affinity · added 12 Nov · 14 commands"))
@@ -86,6 +87,9 @@ final class WordingTests: XCTestCase {
         let facts = Supervision()
         XCTAssertEqual(wording.model(facts).first, "No model yet")
         XCTAssertEqual(wording.spent(facts.usage), Wording.Line(first: "0 $", second: "Spent today"))
+        // What nobody counted is not said as nought.
+        XCTAssertEqual(wording.messages(facts.usage), "Not counted yet")
+        XCTAssertEqual(wording.tokens(facts.usage), "Not counted yet")
         for line in [wording.connections(facts), wording.logins(facts), wording.importance(facts),
                      wording.learned(facts), wording.places(facts), wording.workspaces(facts)] {
             XCTAssertEqual(line, Wording.Line(first: "Nothing yet", second: nil))

@@ -194,7 +194,7 @@ fn pump(compositor: &mut Compositor, tool: &mut Tool, done: impl FnMut(&Seen) ->
     );
 }
 
-/// A hosted square in one colour (B, G, R).
+/// A surface square in one colour (B, G, R).
 fn square(rect: (i32, i32, i32, i32), bgr: [u8; 3]) -> Rc<RefCell<Square>> {
     Rc::new(RefCell::new(Square::new(
         rect,
@@ -209,7 +209,7 @@ fn compositor() -> Compositor {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 64, 48))
         .expect("output");
-    compositor.add_host(square((8, 8, 16, 16), RED));
+    compositor.add_surface(square((8, 8, 16, 16), RED));
     compositor
 }
 
@@ -358,7 +358,7 @@ fn a_copy_with_damage_waits_until_the_output_changes() {
         !pump_until(&mut compositor, &mut tool, 20, |seen| seen.ready),
         "nothing changed, nothing is copied"
     );
-    compositor.add_host(square((40, 30, 8, 8), GREEN));
+    compositor.add_surface(square((40, 30, 8, 8), GREEN));
     pump(&mut compositor, &mut tool, |seen| seen.ready);
     // The new square is damaged (and the one it moved down in the stack),
     // not the whole output.
@@ -435,7 +435,7 @@ fn a_trusted_tool_copies_an_output_through_image_copy_capture() {
     frame.attach_buffer(&small);
     frame.damage_buffer(0, 0, 16, 16);
     frame.capture();
-    compositor.add_host(square((40, 30, 8, 8), GREEN));
+    compositor.add_surface(square((40, 30, 8, 8), GREEN));
     pump(&mut compositor, &mut tool, |seen| seen.ready || seen.failed);
     assert!(tool.seen.failed);
 }

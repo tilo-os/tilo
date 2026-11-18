@@ -33,6 +33,46 @@ pub(crate) fn document_on_disk(path: &std::path::Path) -> Vec<(std::path::PathBu
 pub const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 pub use tilo_app_id::apps::CHAT as APP;
 
+/// Where `certificate`'s device keeps a workspace it founds on itself:
+/// `workspace`'s own host, reached at `endpoint`, signed by the device.
+pub fn own_host_hint(
+    workspace: WorkspaceId,
+    endpoint: iroh_base::EndpointAddr,
+    certificate: &DeviceCert,
+    key: &SigningKey,
+) -> join::TransportHint {
+    WorkspaceDeviceHintV1 {
+        version: 1,
+        holds_keys: true,
+        runs_work: false,
+        label: String::new(),
+        cloud: false,
+        workspace_id: workspace,
+        endpoint_addr: endpoint,
+        user_public_key: certificate.user_public_key,
+        device_certificate: certificate.clone(),
+        packet_relay_url: "iroh:direct".into(),
+    }
+    .transport_hint(key)
+    .unwrap()
+}
+
+/// [`own_host_hint`] for a device reached at its own endpoint id.
+pub fn own_host_hint_here(
+    workspace: WorkspaceId,
+    certificate: &DeviceCert,
+    key: &SigningKey,
+) -> join::TransportHint {
+    own_host_hint(
+        workspace,
+        iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(&certificate.device_public_key).unwrap(),
+        ),
+        certificate,
+        key,
+    )
+}
+
 /// Start `app`'s record `record` empty in `workspace` as `key`'s device: the
 /// genesis the record's first write carries, admitted whole as any other write
 /// of the record is. A workspace that seals its records refuses the cleartext,
@@ -247,6 +287,8 @@ fn seeded(now: SystemTime) -> Seeded {
         version: 1,
         holds_keys: true,
         runs_work: false,
+        label: String::new(),
+        cloud: false,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),

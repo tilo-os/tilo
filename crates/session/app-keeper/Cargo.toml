@@ -46,7 +46,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # pid of 0, which rustix's credentials type cannot hold.
 libc.workspace = true
 # The descriptor the session hands with Attach (SCM_RIGHTS).
-rustix = { workspace = true, features = ["net", "fs", "process", "event", "rand"] }
+rustix = { workspace = true, features = ["net", "fs", "process", "event", "rand", "pipe"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 # The registry: where keepers live, and a fresh directory's name.

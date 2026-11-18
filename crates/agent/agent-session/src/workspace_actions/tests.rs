@@ -911,3 +911,33 @@ fn a_write_answered_pending_is_done_only_once_it_is_saved() {
         "a refused save is failed, never done"
     );
 }
+
+/// A write the session never confirms is answered failed once its watch passed, with what the
+/// session says it keeps and waits for: whoever asked reads why, not only that it is not saved.
+#[test]
+fn a_write_not_saved_within_its_watch_fails_with_what_the_session_keeps() {
+    let (_answer, saved) = tilo_session_client::answer();
+    let (settled, heard) = tilo_session_client::answer();
+    super::publish::Unsaved::waiting(saved)
+        .asked_by(|| {
+            Some((
+                "so.tilo.chat/agents, which waits for the document it changes, for 61 s".to_owned(),
+                true,
+            ))
+        })
+        .settle_within(std::time::Duration::from_millis(50), move |saved| {
+            let _ = settled.send(saved);
+        });
+    let failure = heard
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the watch settles the write")
+        .expect_err("a write nobody confirmed is not saved");
+    assert_eq!(failure.code, "save_unconfirmed");
+    assert!(!failure.retryable, "it may still be saved");
+    assert!(
+        failure
+            .message
+            .ends_with(": the session keeps so.tilo.chat/agents, which waits for the document it changes, for 61 s"),
+        "{failure:?}"
+    );
+}

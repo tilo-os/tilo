@@ -500,7 +500,7 @@ mod tests {
             .expiring(Expiry::EndOfSession);
             let device_only = CapOverride::grant(
                 Grantee::person(PERSON),
-                Scope::Device("camera".into()),
+                Scope::Device(collab_types::caps::DeviceCap::Camera),
                 Access::Read,
             )
             .through("so.tilo.notes");

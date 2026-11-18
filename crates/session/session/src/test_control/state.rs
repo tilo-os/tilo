@@ -27,6 +27,8 @@ pub(super) fn owner_shown(who: Audience, dump: Json) -> Json {
     // Who is here is session state like the rest: a locked session names nobody.
     state.insert("peers".into(), Json::Null);
     state.insert("sharing".into(), Json::Null);
+    // What people and apps told the person is theirs: a locked session says none of it.
+    state.insert("notifications".into(), Json::Null);
     if let Some(open) = state
         .get_mut("chrome")
         .and_then(|chrome| chrome.get_mut("overlays"))
@@ -72,6 +74,8 @@ fn only_workspace(mut dump: Json, scope: &Scope) -> Json {
     }
     // The window shares are the session's, of every workspace it holds: an app reads none of them.
     state.insert("sharing".into(), Json::Null);
+    // What the person was told is the person's: an app reads none of it.
+    state.insert("notifications".into(), Json::Null);
     dump
 }
 
@@ -122,8 +126,9 @@ fn shares_shown(session: &Session<'_>) -> Json {
 }
 
 /// The session as it is now: its tree without its history, the workspaces this computer holds, what
-/// stands over it, whether the screen is locked and what the session shares of its windows — the
-/// shape the tools that drive a desktop read, and the line a `watch` streams as it changes.
+/// stands over it, whether the screen is locked, what the session shares of its windows and what it
+/// was told — the shape the tools that drive a desktop read, and the line a `watch` streams as it
+/// changes.
 pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
     let held: BTreeSet<String> = session
         .engine
@@ -205,6 +210,9 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
         },
         "peers": presence(session),
         "sharing": shares_shown(session),
+        // What the person was told: the banners up and what the centre keeps, so a tool driving a
+        // session reads a notice as the person does, and chooses it by the id it is shown under.
+        "notifications": notices_shown(session),
         // The person's keyboard and pointer across their devices: where the pointer is here, the
         // device it drives, and what the devices driving this one sent.
         "shared_input": session.shared_input.map_or_else(
@@ -246,6 +254,36 @@ pub(super) fn keeping_devices(tree: &Layout, session: &Session<'_>, ctx: &Contex
             .collect()
     };
     json!({"answer": {"workspaces": rows}})
+}
+
+/// What the person was told, as the banners and the centre show it: oldest first, one row per
+/// notification, each with the words it says, the app it came from, the actions it offers and
+/// whether the person has seen it. The id is the one [the notifications' own `act` and `open-notice`
+/// verbs](crate::notifications::RESOURCE) take, so a tool chooses a notice as the person does.
+fn notices_shown(session: &Session<'_>) -> Json {
+    let desktop = &session.notifications;
+    let log = desktop.log();
+    Json::Array(
+        log.history()
+            .iter()
+            .chain(log.active())
+            .map(|notification| {
+                json!({
+                    "id": notification.id,
+                    "app": notification.app_name,
+                    "app_id": notification.app_id,
+                    "title": notification.title,
+                    "body": notification.body,
+                    "actions": notification
+                        .actions
+                        .iter()
+                        .map(|(key, label)| json!({"key": key, "label": label}))
+                        .collect::<Vec<Json>>(),
+                    "unread": desktop.is_unread(notification.id),
+                })
+            })
+            .collect(),
+    )
 }
 
 /// Who is here, as every surface here draws them: this device's own row, and each workspace this

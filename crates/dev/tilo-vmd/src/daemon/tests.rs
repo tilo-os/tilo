@@ -463,7 +463,7 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn a_swap_is_refused_when_its_readers_would_not_read_the_declaration;
 
-    phase a_swap_that_leaves_the_app_process_unable_to_read_the_declaration_is_refused;
+    phase a_swap_that_leaves_the_package_service_unable_to_read_the_declaration_is_refused;
     // A shell layer from main ships its one-version-per-interface declaration over an image whose app
     // host reads lists of versions. The swap is refused before anything is activated, naming the
     // image's components to swap with it, and the desktop keeps running on the generation it had.
@@ -490,7 +490,7 @@ tilo_test_env::scenario! {
                 "image": "composefs:1c9ab8",
                 "recorded_at": "2026-10-19T19:32:21Z",
                 "interfaces": tilo_vm_protocol::Declaration::parse(
-                    "[interfaces]\nsystem = [1]\napp-process = [1]\nshell-ui = [1]\n"
+                    "[interfaces]\nsystem = [1]\npackage-service = [1]\nshell-ui = [1]\n"
                 ),
             }))
             .unwrap(),
@@ -524,7 +524,7 @@ tilo_test_env::scenario! {
             .unwrap_err()
             .to_string();
 
-        assert!(refused.contains("app-process"), "{refused}");
+        assert!(refused.contains("package-service"), "{refused}");
         assert!(refused.contains("ush"), "{refused}");
         assert!(refused.contains("tilo-vm swap userspace"), "{refused}");
         assert_eq!(

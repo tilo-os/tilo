@@ -1,14 +1,20 @@
-//! Coverage for [`Capability`] / [`GrantScope`] / [`FsMode`] and the
-//! workspace capability store. Pure schema tests — no portal plumbing is
-//! exercised here.
-
-use std::path::PathBuf;
+//! Coverage for the workspace capability store. Pure schema tests — no
+//! portal plumbing is exercised here.
 
 /// The clock these fixtures run at, Unix seconds.
 const NOW: u64 = 1_800_000_000;
 
-use collab_types::caps::{Access, CapDecision, ResourceRef};
+use collab_types::caps::{
+    Access, CapDecision, CapOverride, DeviceCap, Effect, Expiry, ResourceRef, Scope,
+};
+use tilo_action_policy::Grantee;
 use tilo_desktop_model::*;
+
+fn grant(app: &str, scope: Scope, access: Access, expiry: Expiry) -> CapOverride {
+    CapOverride::grant(Grantee::person("ada"), scope, access)
+        .through(app)
+        .expiring(expiry)
+}
 
 tilo_test_env::scenario! {
     #[allow(
@@ -31,8 +37,6 @@ tilo_test_env::scenario! {
             Workspace::new(WorkspaceId::from_u128(1), "Demo"),
         ] {
             assert!(ws.sandbox.is_empty());
-            assert!(ws.app_grants_snapshot_at(NOW).is_empty());
-            assert!(!ws.has_app_grants_at(NOW));
             assert!(
                 !ws.may_govern_at(
                     "anyone",
@@ -57,40 +61,23 @@ tilo_test_env::scenario! {
     phase grants_round_trip_via_serde_json;
     {
         let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Demo");
-        ws.grant_app(
-            "ada",
+        ws.grant_sandbox(grant(
             "org.gnome.gedit",
-            &Capability::Filesystem {
-                path: PathBuf::from("/home/u/work"),
-                mode: FsMode::ReadWrite,
-                scope: GRANT_ALWAYS,
-            },
-        );
-        ws.grant_app(
-            "ada",
+            Scope::FsPath("/home/u/work".into()),
+            Access::Write,
+            Expiry::Never,
+        ));
+        ws.grant_sandbox(grant(
             "org.gnome.gedit",
-            &Capability::Network {
-                hosts: Some(vec!["github.com".into()]),
-                scope: GRANT_SESSION,
-            },
-        );
+            Scope::NetHost("github.com".into()),
+            Access::Write,
+            Expiry::EndOfSession,
+        ));
 
         let json = serde_json::to_string(&ws).expect("serialize");
         let round: Workspace = serde_json::from_str(&json).expect("deserialize");
-
-        let view = round.app_grants_snapshot_at(NOW);
-        assert_eq!(view.len(), 1);
-        let caps = view.get("org.gnome.gedit").expect("app present");
-        assert_eq!(caps.len(), 2);
-        assert!(caps.contains(&Capability::Filesystem {
-            path: PathBuf::from("/home/u/work"),
-            mode: FsMode::ReadWrite,
-            scope: GRANT_ALWAYS,
-        }));
-        assert!(caps.contains(&Capability::Network {
-            hosts: Some(vec!["github.com".into()]),
-            scope: GRANT_SESSION,
-        }));
+        assert_eq!(round.sandbox, ws.sandbox);
+        assert_eq!(round.app_capabilities_at("org.gnome.gedit", NOW).len(), 2);
 
         // And the decision function agrees after the round-trip.
         let app = "org.gnome.gedit";
@@ -134,31 +121,15 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase all_capability_variants_round_trip_through_serde;
+    phase every_device_round_trips_through_serde_under_its_name;
     {
-        // Pin the wire shape of every variant so a downstream change
-        // breaks loudly here rather than silently in the portal backend.
-        let caps = vec![
-            Capability::Filesystem {
-                path: PathBuf::from("/tmp/ws"),
-                mode: FsMode::Read,
-                scope: GRANT_ONCE,
-            },
-            Capability::Camera {
-                scope: GRANT_SESSION,
-            },
-            Capability::Microphone {
-                scope: GRANT_ALWAYS,
-            },
-            Capability::Screencast { scope: GRANT_ONCE },
-            Capability::Network {
-                hosts: None,
-                scope: GRANT_ALWAYS,
-            },
-        ];
-        let json = serde_json::to_string(&caps).expect("serialize caps");
-        let round: Vec<Capability> = serde_json::from_str(&json).expect("deserialize caps");
-        assert_eq!(round, caps);
+        for device in DeviceCap::ALL {
+            let json = serde_json::to_string(&Scope::Device(device)).expect("serialize");
+            assert_eq!(json, format!("{{\"Device\":\"{}\"}}", device.name()));
+            let round: Scope = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(round, Scope::Device(device));
+            assert_eq!(DeviceCap::from_name(device.name()), Some(device));
+        }
     }
 
     phase the_next_grant_expiry_is_the_earliest_one_still_ahead;
@@ -210,31 +181,47 @@ tilo_test_env::scenario! {
     // app's other grants are none of its business.
     {
         const TERMINAL: &str = "org.example.terminal";
+        let control = ResourceRef::Device(DeviceCap::DesktopControl);
+        let holds = |ws: &Workspace, app: &str| {
+            ws.sandbox_decide_at(app, &control, DeviceCap::DesktopControl.access(), NOW)
+                == CapDecision::Allow
+        };
         let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Work");
-        assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
+        assert!(!holds(&ws, TERMINAL));
         assert!(!ws.stop_desktop_control(TERMINAL), "nothing to take back");
-        ws.grant_app(
-            "ada",
+        ws.grant_sandbox(grant(
             TERMINAL,
-            &Capability::DesktopControl {
-                scope: GRANT_ALWAYS,
-            },
-        );
-        ws.grant_app(
-            "ada",
+            Scope::Device(DeviceCap::DesktopControl),
+            Access::Write,
+            Expiry::Never,
+        ));
+        ws.grant_sandbox(grant(
             TERMINAL,
-            &Capability::Network {
-                hosts: None,
-                scope: GRANT_ALWAYS,
-            },
-        );
-        assert!(ws.holds_desktop_control_at(TERMINAL, NOW));
+            Scope::NetHost("*".into()),
+            Access::Write,
+            Expiry::Never,
+        ));
+        assert!(holds(&ws, TERMINAL));
         assert!(
-            !ws.holds_desktop_control_at("org.example.other", NOW),
+            !holds(&ws, "org.example.other"),
             "one app's grant is not another's"
         );
+
+        // A restriction to reading takes desktop control away while the grant stays.
+        let mut restricted = ws.clone();
+        restricted.grant_sandbox(
+            CapOverride::new(
+                Grantee::person("ada"),
+                Scope::Device(DeviceCap::DesktopControl),
+                Effect::Restrict,
+                Access::Read,
+            )
+            .through(TERMINAL),
+        );
+        assert!(!holds(&restricted, TERMINAL), "a restriction counts");
+
         assert!(ws.stop_desktop_control(TERMINAL));
-        assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
+        assert!(!holds(&ws, TERMINAL));
         assert_eq!(
             ws.app_capabilities_at(TERMINAL, NOW).len(),
             1,

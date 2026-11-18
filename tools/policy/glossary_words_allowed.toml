@@ -5,6 +5,17 @@
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "The hosted-VM service's load of the machine running its VMs, which the glossary keeps as host."
+words = ["host"]
+identifiers = ["HostLoad"]
+
+[[allow]]
+reason = "The launcher's name for the machine an application Tilo did not package is installed on: its module and the errors of starting such an application."
+words = ["host"]
+identifiers = ["host", "HostError"]
+paths = ["crates/packaging/launcher/src/host.rs", "crates/packaging/launcher/src/main.rs"]
+
+[[allow]]
 reason = "Generated from sources the check already reads."
 words = ["*"]
 paths = [
@@ -36,7 +47,7 @@ identifiers = ["wl_seat", "WlSeat", "seat0", "XDG_SEAT", "libseat", "LibSeat", "
 [[allow]]
 reason = "A Wayland or logind seat: a set of input devices and the session on them."
 words = ["seat"]
-paths = ["crates/session/compositor/*", "crates/session/greeter/*", "crates/platform/tilo-clipboard/*"]
+paths = ["crates/session/compositor/*", "crates/session/greeter/*", "crates/platform/tilo-clipboard/*", "crates/session/app-keeper/*"]
 
 [[allow]]
 reason = "A seat at a poker table."
@@ -165,6 +176,12 @@ words = ["collaborator"]
 paths = ["apps/music/*"]
 
 [[allow]]
+reason = "A queue of messages between threads: std's mpsc and calloop's."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/session/app-keeper/*"]
+
+[[allow]]
 reason = "Chat's channels, and the mentions read from a chat's messages."
 words = ["channel"]
 paths = [
@@ -237,7 +254,7 @@ paths = [
     "crates/session/render-service/src/service.rs",
     "crates/session/render-service/tests/service.rs",
     "crates/session/session/examples/latency_client.rs",
-    "crates/session/surface-host/src/frames.rs",
+    "crates/session/shell-surface/src/frames.rs",
     "crates/session/window-share/src/encoder/mod.rs",
     "crates/session/window-share/src/encoder/nv12.rs",
     "crates/session/window-share/src/flatpak_share.rs",
@@ -390,6 +407,15 @@ paths = [
 ]
 
 [[allow]]
+reason = "The applications provider's launch id for a machine application, `host:<desktop-id>`: an id the desktop reads back, not a Tilo concept."
+words = ["host"]
+paths = [
+    "scripts/vm-acceptance/acceptance/checks/apps.py",
+    "scripts/vm-acceptance/acceptance/checks/daily_apps.py",
+    "scripts/vm-acceptance/acceptance/checks/kept_apps.py",
+]
+
+[[allow]]
 reason = "The module an action's edited-field constant is declared in."
 words = ["run"]
 identifiers = ["run"]
@@ -462,6 +488,75 @@ identifiers = ["record"]
 paths = [
     "crates/session/desktop/src/here.rs",
     "crates/browser/tilo-browser-runtime/src/browser/agent_notices.rs",
+]
+
+[[allow]]
+reason = "The launcher's `--dry-run`, the common command-line name for planning a launch without making it, which a test hands the launcher."
+words = ["run"]
+identifiers = ["run"]
+paths = ["crates/session/session/tests/kept_apps.rs"]
+
+[[allow]]
+reason = "The update policy's own unit names and verbs, which tilo-update-policy-set reads (channel-dev, channel-stable); the request the server writes names no channel."
+words = ["channel"]
+paths = ["os/usr/libexec/tilo-server-update-policy", "os/tests/server_update_policy_test.sh"]
+
+[[allow]]
+reason = "These files apply and test the workspace-serving API main already names with it: attach_host, detach_host, hosts, host_on, test_host and HostJobs, and their prose describes that API."
+words = ["host"]
+identifiers = ["host", "hosts", "attach_host", "detach_host", "host_on", "test_host", "tilo_workspace_host", "HostJobs", "HostOffering", "host_image"]
+paths = [
+    "crates/server/tilo-server/src/servers.rs",
+    "crates/server/tilo-server/src/servers/applied.rs",
+    "crates/server/tilo-server/src/servers/policy.rs",
+    "crates/server/tilo-server/src/servers/tests.rs",
+    "crates/server/tilo-server/src/daemon.rs",
+    "crates/server/tilo-server/tests/servers_document.rs",
+    "crates/server/tilo-workspace-service/src/workspaces.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/device_actions.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/device_actions_tests.rs",
+    "docs/architecture/workspace.md",
+    "os/tests/host_image.sh",
+    "os/tests/server_update_policy_test.sh"
+]
+
+[[allow]]
+# A device runs its workspaces' work; the API main already names that with it.
+words = ["run"]
+identifiers = ["run", "runs", "run_jobs", "runner"]
+paths = [
+    "crates/server/tilo-server/src/servers.rs",
+    "crates/server/tilo-server/src/servers/applied.rs",
+    "crates/server/tilo-server/src/servers/policy.rs",
+    "crates/server/tilo-server/src/servers/tests.rs",
+    "crates/server/tilo-server/src/daemon.rs",
+    "crates/server/tilo-server/tests/servers_document.rs",
+    "crates/server/tilo-workspace-service/src/workspaces.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/device_actions.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/device_actions_tests.rs",
+    "docs/architecture/workspace.md",
+    "os/tests/host_image.sh",
+    "os/tests/server_update_policy_test.sh"
+]
+
+[[allow]]
+reason = "A network host name: what an app's manifest declares it may reach and a network grant allows."
+words = ["host"]
+paths = [
+    "crates/collab/collab-types/src/caps/net.rs",
+    "crates/packaging/launcher/signal-provider.toml",
+    "crates/packaging/launcher/src/egress_proxy.rs",
+    "crates/packaging/launcher/src/sandbox.rs",
+    "crates/packaging/launcher/src/services.rs",
+    "crates/packaging/launcher/tests/egress_proxy.rs",
+    "crates/packaging/launcher/src/run/shell_ui_tests.rs",
+    "crates/windows/compat-service/src/plan.rs",
+    "crates/session/app-launch/src/workspace.rs",
+    "crates/session/session/src/apps/reach.rs",
+    "crates/session/session/src/network_reach.rs",
+    "crates/session/session/src/questions.rs",
+    "crates/session/sheets/locales/*",
+    "tools/apps/signal_provider_release.py",
 ]
 
 [[allow]]

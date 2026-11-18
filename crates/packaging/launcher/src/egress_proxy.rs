@@ -62,50 +62,37 @@ impl EgressDecision {
         }
     }
 
-    /// Resolve the packager's declaration and the user's grants into one decision.
-    pub fn resolve(net_mode: &str, manifest_hosts: &[String], granted_hosts: &[String]) -> Self {
-        let declared = || EgressPolicy::from_grants(manifest_hosts.iter().map(String::as_str));
-
-        if granted_hosts.is_empty() {
-            return match net_mode {
-                "off" | "dns-only" => EgressDecision::Blocked,
-                "allowlist" => decision_of(declared()),
-                "host" => EgressDecision::Unrestricted,
-                // A spelling this launcher does not know is not a policy it can enforce.
-                other => {
-                    tracing::warn!(
-                        mode = other,
-                        "unknown [sandbox.net].mode; the app gets no network"
-                    );
-                    EgressDecision::Blocked
-                }
-            };
+    /// Resolve the packager's declaration and the person's grants into one decision: what both
+    /// allow. The manifest names the most an app may ask for (`host` asks for anything) and a
+    /// `NetHost` grant is what allows it, so neither reaches the network alone. The one exception
+    /// is the image's own apps (`image_shipped`), reviewed with the image: until a person narrows
+    /// one with a grant, its declaration stands.
+    pub fn resolve(
+        net_mode: &str,
+        manifest_hosts: &[String],
+        granted_hosts: &[String],
+        image_shipped: bool,
+    ) -> Self {
+        let declared = match net_mode {
+            "allowlist" => EgressPolicy::from_grants(manifest_hosts.iter().map(String::as_str)),
+            "host" => EgressPolicy::Any,
+            "off" | "dns-only" => return EgressDecision::Blocked,
+            // A spelling this launcher does not know is not a policy it can enforce.
+            other => {
+                tracing::warn!(
+                    mode = other,
+                    "unknown [sandbox.net].mode; the app gets no network"
+                );
+                return EgressDecision::Blocked;
+            }
+        };
+        if image_shipped && granted_hosts.is_empty() {
+            return decision_of(declared);
         }
-
         // Read through the one grammar: a grant that is not a host (an IP literal, junk) is dropped
         // with a warning, so it narrows.
         let granted = EgressPolicy::from_grants(granted_hosts.iter().map(String::as_str));
-
-        if net_mode == "allowlist" {
-            let EgressPolicy::Hosts(declared) = declared() else {
-                return decision_of(granted);
-            };
-            let mut kept = Vec::new();
-            for pattern in declared {
-                if EgressPolicy::hosts(vec![pattern.clone()]).within(&granted) {
-                    kept.push(pattern);
-                } else {
-                    tracing::info!(
-                        host = %pattern,
-                        "endpoint declared by the package is not covered by the user's network \
-                         grant; the app cannot reach it"
-                    );
-                }
-            }
-            return decision_of(EgressPolicy::hosts(kept));
-        }
-
-        decision_of(granted)
+        decision_of(declared.intersect(&granted))
     }
 }
 
@@ -993,7 +980,7 @@ mod tests {
     fn grants_narrow_but_never_widen_the_manifest_allowlist() {
         {
             // A user who granted one host to an app that asks for `host` gets one host.
-            let decision = EgressDecision::resolve("host", &[], &v(&["mail.example.com"]));
+            let decision = EgressDecision::resolve("host", &[], &v(&["mail.example.com"]), false);
             let policy = decision.policy().expect("a named host must be filtered");
             assert!(policy.permits("mail.example.com"));
             assert!(!policy.permits("github.com"));
@@ -1004,19 +991,20 @@ mod tests {
         }
         {
             assert_eq!(
-                EgressDecision::resolve("host", &[], &v(&["*"])),
+                EgressDecision::resolve("host", &[], &v(&["*"]), false),
                 EgressDecision::Unrestricted
             );
+            // A grant never opens what the manifest asks none of.
             assert_eq!(
-                EgressDecision::resolve("off", &[], &v(&["*"])),
-                EgressDecision::Unrestricted
+                EgressDecision::resolve("off", &[], &v(&["*"]), false),
+                EgressDecision::Blocked
             );
         }
         {
             // "Allow everything this app asks for" means its declared endpoints, not the whole
             // internet.
             let weather = v(&["api.open-meteo.com", "geocoding-api.open-meteo.com"]);
-            let decision = EgressDecision::resolve("allowlist", &weather, &v(&["*"]));
+            let decision = EgressDecision::resolve("allowlist", &weather, &v(&["*"]), false);
             let policy = decision
                 .policy()
                 .unwrap_or_else(|| panic!("expected the declared endpoints, got {decision:?}"));
@@ -1032,7 +1020,8 @@ mod tests {
                 "nominatim.openstreetmap.org",
                 "overpass-api.de",
             ]);
-            let decision = EgressDecision::resolve("allowlist", &maps, &v(&[".openstreetmap.org"]));
+            let decision =
+                EgressDecision::resolve("allowlist", &maps, &v(&[".openstreetmap.org"]), false);
             let policy = decision.policy().expect("filtered");
             assert_eq!(
                 policy.describe(),
@@ -1048,6 +1037,7 @@ mod tests {
                 "allowlist",
                 &v(&["api.open-meteo.com"]),
                 &v(&["api.open-meteo.com", "exfil.example.com"]),
+                false,
             );
             let policy = decision.policy().expect("filtered");
             assert!(policy.permits("api.open-meteo.com"));
@@ -1062,6 +1052,7 @@ mod tests {
                 "allowlist",
                 &v(&["api.open-meteo.com"]),
                 &v(&["exfil.example.com"]),
+                false,
             );
             assert_eq!(decision, EgressDecision::Blocked);
         }
@@ -1251,17 +1242,30 @@ mod tests {
     tilo_test_env::scenario! {
         fn egress_follows_the_manifest_narrowed_by_grants;
 
-        phase egress_policy_without_grants_follows_the_manifest;
+        phase without_a_grant_only_the_image_s_own_apps_reach_the_network;
         {
+            let maps = v(&[
+                "tile.openstreetmap.org",
+                "nominatim.openstreetmap.org",
+                "overpass-api.de",
+                "router.project-osrm.org",
+                "api.transitous.org",
+            ]);
             {
-                let maps = v(&[
-                    "tile.openstreetmap.org",
-                    "nominatim.openstreetmap.org",
-                    "overpass-api.de",
-                    "router.project-osrm.org",
-                    "api.transitous.org",
-                ]);
-                let decision = EgressDecision::resolve("allowlist", &maps, &[]);
+                // An app the person installed has no network until they grant it, whatever its
+                // manifest declares.
+                assert_eq!(
+                    EgressDecision::resolve("allowlist", &maps, &[], false),
+                    EgressDecision::Blocked
+                );
+                assert_eq!(
+                    EgressDecision::resolve("host", &[], &[], false),
+                    EgressDecision::Blocked
+                );
+            }
+            {
+                // The image's own copy reaches what it declares.
+                let decision = EgressDecision::resolve("allowlist", &maps, &[], true);
                 let policy = decision.policy().expect("an allowlist must be filtered");
                 assert!(policy.permits("tile.openstreetmap.org"));
                 assert!(
@@ -1272,34 +1276,62 @@ mod tests {
                     !decision.shares_host_network(),
                     "a filtered decision must not share the host network: {decision:?}"
                 );
-            }
-            {
-                // An app whose endpoint is user data keeps working when the user granted nothing.
+                // An image app whose endpoint is user data (a mail server) keeps working.
                 assert_eq!(
-                    EgressDecision::resolve("host", &[], &[]),
+                    EgressDecision::resolve("host", &[], &[], true),
                     EgressDecision::Unrestricted
                 );
-            }
-            {
-                for spelling in ["allow-list", "Off", "none", "allowlist ", ""] {
-                    assert_eq!(
-                        EgressDecision::resolve(spelling, &["a.example".into()], &[]),
-                        EgressDecision::Blocked,
-                        "{spelling:?} is not a policy this launcher knows; it must not share the host network"
-                    );
-                }
-            }
-            {
+                // A person's grant still narrows it.
+                let narrowed = EgressDecision::resolve("host", &[], &v(&["imap.example.com"]), true);
                 assert_eq!(
-                    EgressDecision::resolve("off", &[], &[]),
-                    EgressDecision::Blocked
+                    narrowed.policy().map(EgressPolicy::describe),
+                    Some(vec!["imap.example.com".to_owned()])
                 );
             }
             {
-                // `dns-only` is answered explicitly, not as "not off means unrestricted".
+                for image in [false, true] {
+                    for spelling in ["allow-list", "Off", "none", "allowlist ", ""] {
+                        assert_eq!(
+                            EgressDecision::resolve(spelling, &["a.example".into()], &v(&["*"]), image),
+                            EgressDecision::Blocked,
+                            "{spelling:?} is not a policy this launcher knows; it must not share the host network"
+                        );
+                    }
+                    // `off` and `dns-only` are answered explicitly, and no grant opens them.
+                    for mode in ["off", "dns-only"] {
+                        assert_eq!(
+                            EgressDecision::resolve(mode, &[], &v(&["*"]), image),
+                            EgressDecision::Blocked
+                        );
+                    }
+                }
+            }
+        }
+
+        phase a_grant_and_the_declaration_meet;
+        {
+            // A domain grant narrower than a declared domain: what both allow is the grant.
+            let decision = EgressDecision::resolve(
+                "allowlist",
+                &v(&["*.discord.media", "discord.com"]),
+                &v(&["eu.discord.media"]),
+                false,
+            );
+            assert_eq!(
+                decision.policy().map(EgressPolicy::describe),
+                Some(vec!["eu.discord.media".to_owned()])
+            );
+            // A grant can't widen past the declaration, for an image app either.
+            for image in [false, true] {
+                let decision = EgressDecision::resolve(
+                    "allowlist",
+                    &v(&["speed.cloudflare.com"]),
+                    &v(&["speed.cloudflare.com", ".example.com"]),
+                    image,
+                );
                 assert_eq!(
-                    EgressDecision::resolve("dns-only", &[], &[]),
-                    EgressDecision::Blocked
+                    decision.policy().map(EgressPolicy::describe),
+                    Some(vec!["speed.cloudflare.com".to_owned()])
                 );
             }
         }
@@ -1307,7 +1339,7 @@ mod tests {
         phase a_star_dot_grant_covers_the_domain_for_apps;
         {
             // `*.example.com` is how environments, the permissions UI and users spell a domain grant.
-            let decision = EgressDecision::resolve("host", &[], &v(&["*.example.com"]));
+            let decision = EgressDecision::resolve("host", &[], &v(&["*.example.com"]), false);
             let policy = decision
                 .policy()
                 .unwrap_or_else(|| panic!("a domain grant must be filtered, got {decision:?}"));
@@ -1318,13 +1350,13 @@ mod tests {
             let decision = EgressDecision::resolve(
                 "allowlist",
                 &v(&["imap.fastmail.com", "evil.example"]),
-                &v(&["*.fastmail.com"]),
+                &v(&["*.fastmail.com"]), false,
             );
             let policy = decision
                 .policy()
                 .unwrap_or_else(|| panic!("expected the covered endpoint, got {decision:?}"));
             assert_eq!(policy.describe(), ["imap.fastmail.com"]);
-            let decision = EgressDecision::resolve("off", &[], &v(&["Example.COM."]));
+            let decision = EgressDecision::resolve("host", &[], &v(&["Example.COM."]), false);
             assert!(decision.policy().is_some_and(|p| p.permits("example.com")));
         }
 
@@ -1333,17 +1365,17 @@ mod tests {
             // Hosts are granted by name: an IP literal grant is ignored with a warning, so it narrows.
             for mode in ["off", "host"] {
                 assert_eq!(
-                    EgressDecision::resolve(mode, &[], &v(&["10.0.0.5"])),
+                    EgressDecision::resolve(mode, &[], &v(&["10.0.0.5"]), false),
                     EgressDecision::Blocked,
                     "manifest {mode}"
                 );
                 assert_eq!(
-                    EgressDecision::resolve(mode, &[], &v(&["[::1]"])),
+                    EgressDecision::resolve(mode, &[], &v(&["[::1]"]), false),
                     EgressDecision::Blocked,
                     "manifest {mode}"
                 );
             }
-            let decision = EgressDecision::resolve("off", &[], &v(&["192.168.1.1", "example.com"]));
+            let decision = EgressDecision::resolve("host", &[], &v(&["192.168.1.1", "example.com"]), false);
             let policy = decision
                 .policy()
                 .unwrap_or_else(|| panic!("the named grant must survive, got {decision:?}"));
@@ -1355,7 +1387,7 @@ mod tests {
         // The one place apps and environments differ: `*` keeps `--share-net` for an app, so it reaches
         // this device's loopback.
         {
-            let decision = EgressDecision::resolve("off", &[], &v(&["*"]));
+            let decision = EgressDecision::resolve("host", &[], &v(&["*"]), false);
             assert_eq!(decision, EgressDecision::Unrestricted);
             assert!(decision.shares_host_network());
             assert_eq!(EgressPolicy::from_grants(["*"]), EgressPolicy::Any);
@@ -1381,7 +1413,7 @@ mod tests {
                 .collect();
             assert!(rows.len() > 20, "the vector file was read: {rows:?}");
             for (grant, host, covered) in rows {
-                let decision = EgressDecision::resolve("off", &[], &v(&[grant]));
+                let decision = EgressDecision::resolve("host", &[], &v(&[grant]), false);
                 let reaches = match &decision {
                     EgressDecision::Blocked => false,
                     EgressDecision::Unrestricted => true,

@@ -170,7 +170,8 @@ builds it with its function names kept, for profiling the page
 Already-built inputs, which a check hands the stack so its bring-up compiles
 and lays out nothing (see docs/testing-tilo-sh.md):
   TILO_SH_PROGRAMS  a directory of the programs the other services run
-                    (tilo-api, and fake-discord for --discord)
+                    (tilo-api with tilolang-process beside it, which a task's
+                    tilolang programs start in, and fake-discord for --discord)
   TILO_SH_LOUNGE    the server's laid-out context, as lounge-context.sh makes it
                     (bin/, bots/, fonts/, surfaces/, entrypoint.sh)
   TILO_SH_SITE      the web entry's laid-out site, as web-entry-context.sh makes
@@ -1096,6 +1097,10 @@ build_programs() {
     # Every service's own start says what it is missing; the API server is the one
     # this stack always runs from here.
     [[ -x $programs/tilo-api ]] || die "TILO_SH_PROGRAMS names $programs, which holds no tilo-api"
+    # The API server starts a task's tilolang programs in the program beside it. A caller's
+    # build without one still comes up; its `tilo` tool then answers that none is installed.
+    [[ -x $programs/tilolang-process ]] \
+      || say "$programs holds no tilolang-process beside tilo-api: a task's tilolang programs will not start"
     say "programs given ($programs, built by the caller)"
     return
   fi
@@ -1112,8 +1117,9 @@ build_programs() {
   else
     say "building the programs ($cargo build --profile $profile; only what changed compiles)"
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
-      -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli \
-      --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo >&2) \
+      -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli -p tilolang-process \
+      --bin tilo-server --bin discord-worker --bin tilo-api --bin fake-discord --bin tilo \
+      --bin tilolang-process >&2) \
       || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
   fi
   copy_programs "$from"
@@ -1172,7 +1178,7 @@ bundle_stage() {
 copy_programs() {
   local from=$1 file
   mkdir -p "$programs"
-  for file in tilo-server discord-worker tilo-api fake-discord tilo; do
+  for file in tilo-server discord-worker tilo-api fake-discord tilo tilolang-process; do
     [[ -x $from/$file ]] || die "the build left no $from/$file; TILO_SH_CARGO names another cargo drop-in to build with"
     cmp -s "$from/$file" "$programs/$file" && continue
     cp --reflink=auto "$from/$file" "$programs/.$file.next" || die "could not copy $file"

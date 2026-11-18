@@ -116,9 +116,9 @@ pub struct WorkspaceRuntime {
     /// The watched generation `membership` was last loaded at. `None` until a
     /// live watch vouched for a load, so every read goes to the disk.
     pub(crate) loaded_generation: Option<u64>,
-    /// How the workspace admits devices beyond its exact membership: explicitly,
-    /// the server owner's devices on a same-owner home host, or under native
-    /// governance. Read only through [`crate::workspace_access::decide`].
+    /// How the workspace admits devices beyond its exact membership:
+    /// explicitly, or under native governance. Read only through
+    /// [`crate::workspace_access::decide`].
     pub(crate) admission: crate::workspace_access::AdmissionMode,
     /// The people this native-governed workspace has as members, by their
     /// roots, whatever devices of theirs it lists now: the one answer to
@@ -137,10 +137,6 @@ pub struct WorkspaceRuntime {
     /// another, and it carries its members' changes under the members' own
     /// keys.
     pub attached_hosts: HashSet<[u8; 32]>,
-    /// The session each attached host that dialed here last opened, by its
-    /// device: what ends it, so an answer to it ends with it
-    /// ([`crate::attach::HostDialer::answer`]).
-    pub(crate) attach_sessions: HashMap<[u8; 32], mpsc::Sender<()>>,
     /// What services beside the session stack keep for this workspace (a
     /// server's compute routing), one value per type.
     pub extensions: Extensions,
@@ -297,14 +293,11 @@ pub(crate) fn is_automerge_chunk(bytes: &[u8]) -> bool {
 
 impl WorkspaceRuntime {
     /// Whether the person whose root is `user` is admitted to this workspace as
-    /// a person of its own, on a server whose owner is `own_user`: a member
-    /// its governance names, or the server owner in a workspace of their own
-    /// devices. What [`crate::workspace_access`] admits their devices by.
+    /// a member its governance names. What [`crate::workspace_access`] admits
+    /// their devices by.
     #[must_use]
-    pub fn admits_person(&self, user: &[u8; 32], own_user: &[u8; 32]) -> bool {
+    pub fn admits_person(&self, user: &[u8; 32]) -> bool {
         self.governed_user_roots.contains(user)
-            || (self.admission == crate::workspace_access::AdmissionMode::SameOwner
-                && user == own_user)
     }
 
     /// Build a runtime for a bound workspace. Loads the snapshot
@@ -346,8 +339,8 @@ impl WorkspaceRuntime {
         let store = WorkspaceStore::open_with_payloads(state_root, workspace_id, pinned, payloads)?;
         let governed_access_record = store.load_governed_access()?;
         // A record governance owns keeps the workspace governed; one that
-        // only lists the devices this host enrolled leaves the host's own rule
-        // (a same-owner home host's) deciding who else joins.
+        // only lists the devices this host admitted leaves explicit
+        // membership deciding who else joins.
         let admission = if governed_access_record
             .as_ref()
             .is_some_and(|access| access.governed)
@@ -396,7 +389,6 @@ impl WorkspaceRuntime {
             governed_user_roots,
             subscribers: HashMap::new(),
             attached_hosts: HashSet::new(),
-            attach_sessions: HashMap::new(),
             extensions: Extensions::default(),
             content_work: Arc::default(),
             state_sessions: HashMap::new(),

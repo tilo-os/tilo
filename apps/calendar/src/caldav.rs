@@ -707,7 +707,11 @@ mod live {
                     } else {
                         None
                     };
-                    request.body = ics::kept_beside(&request.body, held.as_deref());
+                    request.body = match held.as_deref() {
+                        // Whom the server holds and an event here cannot hold stays as held.
+                        Some(held) => ics::exported_beside(&request.body, held),
+                        None => ics::kept_text(&request.body),
+                    };
                 }
                 let precondition = match &request.if_match {
                     Some(etag) => Precondition::IfMatch(etag),
@@ -1706,6 +1710,189 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                 assert!(text.contains("Standup shortened"), "{text}");
                 assert_eq!(uid_lines(&text), [uid, uid], "{text}");
                 assert_eq!(server.mailed(), NOBODY);
+            }
+        }
+
+        tilo_test_env::scenario! {
+            /// The live client against the same server: whom an entry's server holds and an
+            /// event here cannot hold stays as held when the event goes up. A line that is
+            /// gone is somebody taken out, and the server tells them the event is off (RFC
+            /// 6638, 3.2.1.2, column `<Removed>`).
+            fn whom_an_event_here_cannot_hold_stays_as_its_server_holds_them;
+
+            phase somebody_named_by_another_address_than_a_mail_address_stays;
+            {
+                let (server, account, work) = adas();
+                // Another program stored it and left its lines to the server: Bo by his
+                // mail address, Fay by an address that is none.
+                let fay = "ATTENDEE;CN=Fay Ops:urn:uuid:fay-4";
+                let stored = held_entry(
+                    "review-5@example.org",
+                    ADA,
+                    &["bo@example.test"],
+                    LEFT_TO_SERVER,
+                )
+                .replace("END:VEVENT\r\n", &format!("{fay}\r\nEND:VEVENT\r\n"));
+                server.put("work", "review.ics", &stored);
+                let mut job = as_pulled(&account, &work);
+                assert_eq!(
+                    job.event.attendees.iter().count(),
+                    2,
+                    "Ada and Bo are read, Fay is not"
+                );
+                job.event.title = "Review moved".into();
+                let upload = push_jobs_live(std::slice::from_ref(&job));
+                assert_eq!(
+                    upload.confirmed,
+                    vec![job.event.id],
+                    "{:?} {:?}",
+                    upload.conflicts,
+                    upload.failures
+                );
+                // The table's row SERVER, column SERVER, for both. Its column <Removed>
+                // has the server tell Fay that the review is off.
+                assert_eq!(
+                    server.mailed(),
+                    ["REQUEST to bo@example.test", "REQUEST to urn:uuid:fay-4"],
+                    "her calendar server called the event off for somebody this calendar \
+                     cannot hold"
+                );
+                let text = held_text(&server);
+                assert!(text.contains("Review moved"), "{text}");
+                assert!(
+                    naming_lines(&text).iter().any(|line| line == fay),
+                    "{text}"
+                );
+            }
+
+            phase somebody_named_on_one_occurrence_only_stays;
+            {
+                let (server, account, work) = adas();
+                // Every week with Bo, and with Dan too on the one occurrence that was moved.
+                let people =
+                    format!("ORGANIZER:mailto:{ADA}\r\nATTENDEE:mailto:bo@example.test\r\n");
+                let dan = "ATTENDEE;RSVP=TRUE:mailto:dan@example.test";
+                let stored = format!(
+                    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Example//Elsewhere//EN\r\n\
+                     BEGIN:VEVENT\r\nUID:standup-7@example.org\r\nSUMMARY:Standup\r\n\
+                     DTSTART:20261116T090000Z\r\nDTEND:20261116T091500Z\r\nRRULE:FREQ=WEEKLY\r\n\
+                     {people}END:VEVENT\r\n\
+                     BEGIN:VEVENT\r\nUID:standup-7@example.org\r\n\
+                     RECURRENCE-ID:20261123T090000Z\r\nSUMMARY:Standup\r\n\
+                     DTSTART:20261123T100000Z\r\nDTEND:20261123T101500Z\r\n\
+                     {people}{dan}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+                );
+                server.put("work", "standup.ics", &stored);
+                let mut job = as_pulled(&account, &work);
+                job.event.title = "Standup shortened".into();
+                let upload = push_jobs_live(std::slice::from_ref(&job));
+                assert_eq!(
+                    upload.confirmed,
+                    vec![job.event.id],
+                    "{:?} {:?}",
+                    upload.conflicts,
+                    upload.failures
+                );
+                assert_eq!(
+                    server.mailed(),
+                    ["REQUEST to bo@example.test", "REQUEST to dan@example.test"],
+                    "her calendar server called the event off for somebody invited to one \
+                     occurrence of it"
+                );
+                let text = held_text(&server);
+                assert!(text.contains("Standup shortened"), "{text}");
+                let moved = text.split("RECURRENCE-ID").nth(1).unwrap_or_default();
+                assert!(
+                    naming_lines(moved).iter().any(|line| line == dan),
+                    "{text}"
+                );
+            }
+
+            phase a_line_its_server_writes_for_nobody_stays_as_held_too;
+            {
+                let (server, account, work) = adas();
+                // Nobody is written to for Fay, by the server or by anybody: taken out,
+                // she is sent nothing, and she is still not this calendar's to take out.
+                let fay = "ATTENDEE;SCHEDULE-AGENT=NONE;CN=Fay Ops:urn:uuid:fay-4";
+                let stored = held_entry(
+                    "review-6@example.org",
+                    ADA,
+                    &["bo@example.test"],
+                    CLIENT,
+                )
+                .replace("END:VEVENT\r\n", &format!("{fay}\r\nEND:VEVENT\r\n"));
+                server.put("work", "review.ics", &stored);
+                let mut job = as_pulled(&account, &work);
+                job.event.title = "Review moved".into();
+                let upload = push_jobs_live(std::slice::from_ref(&job));
+                assert_eq!(
+                    upload.confirmed,
+                    vec![job.event.id],
+                    "{:?} {:?}",
+                    upload.conflicts,
+                    upload.failures
+                );
+                assert_eq!(server.mailed(), NOBODY);
+                let text = held_text(&server);
+                assert!(text.contains("Review moved"), "{text}");
+                assert!(
+                    naming_lines(&text).iter().any(|line| line == fay),
+                    "{text}"
+                );
+            }
+
+            phase an_occurrence_moved_here_names_whom_its_event_names;
+            {
+                let (server, account, work) = adas();
+                // Every week with Bo, as another program stored it. Here one occurrence
+                // of it is moved an hour.
+                let stored = held_entry(
+                    "weekly-8@example.org",
+                    ADA,
+                    &["bo@example.test"],
+                    LEFT_TO_SERVER,
+                )
+                .replace("END:VEVENT\r\n", "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n");
+                server.put("work", "weekly.ics", &stored);
+                let mut job = as_pulled(&account, &work);
+                let day = jiff::civil::date(2026, 11, 26);
+                job.event
+                    .occurrence_overrides
+                    .push(crate::model::OccurrenceOverride {
+                        original_date: day,
+                        original_time: Some(jiff::civil::time(19, 0, 0, 0)),
+                        cancelled: false,
+                        start: Some(day.at(20, 0, 0, 0)),
+                        end: Some(day.at(21, 0, 0, 0)),
+                        end_later_fold: false,
+                        title: None,
+                        location: None,
+                    });
+                let upload = push_jobs_live(std::slice::from_ref(&job));
+                assert_eq!(
+                    upload.confirmed,
+                    vec![job.event.id],
+                    "{:?} {:?}",
+                    upload.conflicts,
+                    upload.failures
+                );
+                // RFC 6638, 3.1: an entry is one its server schedules where each of its
+                // parts says who organises it. An occurrence that names nobody ends that:
+                // the server takes the entry for removed and tells Bo all of it is off.
+                assert_eq!(
+                    server.mailed(),
+                    ["REQUEST to bo@example.test"],
+                    "her calendar server called the whole event off when one occurrence of \
+                     it was moved"
+                );
+                let text = held_text(&server);
+                let moved = naming_lines(text.split("RECURRENCE-ID").nth(1).unwrap_or_default());
+                for line in naming_lines(&stored) {
+                    assert!(
+                        moved.contains(&line),
+                        "the moved occurrence does not say {line}: {text}"
+                    );
+                }
             }
         }
     }

@@ -26,6 +26,12 @@ toolkit nor the media stack; either one compiled back in is megabytes a
 ``tilo mcp`` holds for as long as an agent keeps it. A task's programs go to
 the tilolang host's own program, which ``tilo`` starts and does not link.
 
+``tilo-agent-session`` drives a workspace's apps on a server, and its
+``api-on-server`` example is the program a server serves them with. Its whole
+graph, an example's dev-dependencies included, stays clear of the compositor
+and the keyboard stack: either one compiled in is a Wayland server and
+libxkbcommon that no server has.
+
 Each graph is resolved the way a build of the crate alone resolves it
 (``cargo tree -p``), for both Linux architectures and for
 ``wasm32-unknown-unknown``, so a
@@ -61,6 +67,9 @@ class Boundary:
     # Never a direct dependency of the package itself.
     not_direct: frozenset[str] = frozenset()
     targets: tuple[str, ...] = NATIVE
+    # Which of the package's dependencies count: its own, and an example's
+    # dev-dependencies, are one program's.
+    edges: tuple[str, ...] = ("normal",)
 
 
 BOUNDARIES = (
@@ -98,6 +107,16 @@ BOUNDARIES = (
         why="it draws nothing and plays nothing: the toolkit and the media stack are the apps'",
         targets=NATIVE,
     ),
+    Boundary(
+        package="tilo-agent-session",
+        manifest="crates/agent/agent-session/Cargo.toml",
+        forbidden=frozenset({"smithay", "tilo-app-keeper", "xkbcommon"}),
+        why=(
+            "it drives apps on a server, which has no desktop: the compositor and the "
+            "keyboard stack are a device's"
+        ),
+        edges=("normal", "dev"),
+    ),
 )
 
 
@@ -106,6 +125,7 @@ def reached_packages(
     target: str | None = None,
     depth: int | None = None,
     root: Path = ROOT,
+    edges: tuple[str, ...] = ("normal",),
 ) -> set[str]:
     command = [
         "cargo",
@@ -114,7 +134,7 @@ def reached_packages(
         "--package",
         package,
         "--edges",
-        "normal",
+        ",".join(edges),
         "--prefix",
         "none",
         "--format",
@@ -135,7 +155,7 @@ def reached_packages(
 
 def violations(boundary: Boundary, target: str | None) -> list[str]:
     where = target or "the host"
-    packages = reached_packages(boundary.package, target)
+    packages = reached_packages(boundary.package, target, edges=boundary.edges)
     if boundary.package not in packages:
         raise RuntimeError(f"cargo tree did not describe {boundary.package} for {where}")
     found = []
@@ -146,7 +166,7 @@ def violations(boundary: Boundary, target: str | None) -> list[str]:
             + boundary.why
         )
     if boundary.not_direct:
-        direct = reached_packages(boundary.package, target, depth=1)
+        direct = reached_packages(boundary.package, target, depth=1, edges=boundary.edges)
         reached = sorted(direct & boundary.not_direct)
         if reached:
             found.append(

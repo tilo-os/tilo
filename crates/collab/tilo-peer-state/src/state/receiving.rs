@@ -491,6 +491,16 @@ impl StatePeer {
             },
             workspace_changes,
         )?;
+        // The workspace's owner is the person its governance names, not the
+        // person of the device this replica was joined through: a member's
+        // device admits its person's further device too, and the workspace
+        // stays its own owner's ([`Self::from_join`] names the admitting
+        // device until the governance arrives).
+        if self.core.workspace_doc.is_none()
+            && let Some(owner) = owner_named_by(&candidate, &self.core.workspace)
+        {
+            self.core.owner = owner;
+        }
         // Receipts this peer admitted earlier stay immutable even once
         // the workspace document omits them.
         let mut receipts = self.core.receipts.clone();
@@ -545,4 +555,16 @@ impl StatePeer {
         self.retry_held(&mut outcome, now, strict_report)?;
         Ok(outcome)
     }
+}
+
+/// The owner `document`'s governance names, as their root key.
+pub(super) fn owner_named_by(
+    document: &automerge::AutoCommit,
+    workspace: &str,
+) -> Option<[u8; 32]> {
+    let owner: [u8; 32] = hex::decode(workspace::policy_of(document, workspace).owner()?)
+        .ok()?
+        .try_into()
+        .ok()?;
+    Some(owner)
 }

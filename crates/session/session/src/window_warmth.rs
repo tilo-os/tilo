@@ -139,7 +139,7 @@ fn workspace_sync(
                 workspace.tabs().any(|shown| {
                     shown.id == instance
                         && tilo_desktop_model::apps::canonical_app_id(&shown.tile)
-                            .is_some_and(|id| tilo_desktop_policy::app_ids_match(&id, app))
+                            .is_some_and(|id| tilo_desktop_model::apps::app_ids_match(&id, app))
                 })
             })
         })

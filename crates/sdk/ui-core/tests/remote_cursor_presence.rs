@@ -81,7 +81,7 @@ fn remote_cursor_moves_populate_and_update_presence() {
 
         assert_eq!(
             app.presence_ctx().remote_cursors[0].label,
-            "Release assistant · Agent",
+            "Release assistant",
         );
     }
 }

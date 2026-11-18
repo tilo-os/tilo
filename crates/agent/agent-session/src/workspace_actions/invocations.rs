@@ -37,6 +37,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde_json::Value;
 use tilo_actions::remote::workspace_invocations::{
     Invocation, InvocationBy, InvocationChange, InvocationStatus, Invocations, InvocationsQuery,
+    edited_after,
 };
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
@@ -240,9 +241,7 @@ fn shares(app_id: &str, record: &str, entries: &[Value]) -> Vec<(String, Share)>
     let mut shares: Vec<(String, Share)> = Vec::new();
     // Where in `shares` each step is.
     let mut places: HashMap<String, usize> = HashMap::new();
-    // Where in `changes` each step's last edit still in effect is.
-    let mut access: HashMap<String, usize> = HashMap::new();
-    for (at, entry) in changes.iter().enumerate() {
+    for entry in &changes {
         let Some(step) = text(entry, "step") else {
             continue;
         };
@@ -288,22 +287,13 @@ fn shares(app_id: &str, record: &str, entries: &[Value]) -> Vec<(String, Share)>
             continue;
         }
         share.edits = share.edits.saturating_add(1);
-        if in_effect(entry) {
-            access.insert(step.to_owned(), at);
-        } else {
+        if !in_effect(entry) {
             share.undone = share.undone.saturating_add(1);
         }
     }
-    // Someone's edit after a run's last edit in effect, in effect too, holds
-    // the run's undo back, as the undo itself finds it.
+    // What holds each step's undo back, as the undo itself finds it.
     for (step, share) in &mut shares {
-        let Some(&last) = access.get(step.as_str()) else {
-            continue;
-        };
-        share.over = changes
-            .iter()
-            .skip(last.saturating_add(1))
-            .find(|entry| in_effect(entry) && is_content(entry))
+        share.over = edited_after(entries, |entry| text(entry, "step") == Some(step.as_str()))
             .map(|entry| author(entry).0.name);
     }
     shares
@@ -334,17 +324,14 @@ pub(super) struct Call {
 /// lists it.
 fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
     let context = super::caller_context(&entry.caller, &entry.request);
-    let step = context.as_ref().and_then(|context| {
-        let gesture = context.gesture?;
+    let step = context.gesture.map(|gesture| {
         let run = context
             .group
             .as_ref()
             .map(|group| (group.kind.as_str(), group.id.as_str()));
-        Some(
-            tilo_actions::context::recorded_gesture(gesture, run)
-                .0
-                .to_string(),
-        )
+        tilo_actions::context::recorded_gesture(gesture, run)
+            .0
+            .to_string()
     });
     let caller = &entry.caller;
     let acting = caller.acting();

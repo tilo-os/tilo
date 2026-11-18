@@ -88,6 +88,22 @@ impl Page {
         Self::open_at(&hosted.server, device, host, cluster_id).await
     }
 
+    /// A session of `device` with `server`, whose own device is `served_by`, in no workspace
+    /// yet: what a page starts before it joins one, and what a device asks its server over
+    /// for a workspace of its person's own.
+    pub fn session(
+        server: &tilo_server::daemon::Server,
+        device: &Device,
+        served_by: &Device,
+    ) -> Link {
+        start_peer(
+            Host::at(server.node_addr()),
+            device.cert.clone(),
+            served_by.cert.clone(),
+            device.key.clone(),
+        )
+    }
+
     /// [`Self::open_workspace`] on any host `server` runs, whatever serves
     /// its records.
     pub async fn open_at(
@@ -97,12 +113,7 @@ impl Page {
         cluster_id: &str,
     ) -> Self {
         let workspace = tilo_server_protocol::WorkspaceId::parse(cluster_id).unwrap();
-        let peer = start_peer(
-            Host::at(server.node_addr()),
-            device.cert.clone(),
-            host.cert.clone(),
-            device.key.clone(),
-        );
+        let peer = Self::session(server, device, host);
         let events = peer.events();
         if cluster_id == WORKSPACE {
             // The page asks its host to govern its person's workspace and

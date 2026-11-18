@@ -16,16 +16,15 @@
 //! times: rows name the trigger they answered, and one that does not match the
 //! installed trigger is not an answer to it.
 
-use super::ROOT;
 use super::SystemTime;
+use super::device_rows;
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
-use automerge::transaction::Transactable as _;
-use automerge::{ObjType, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
-/// Key of the bots' answered fire times in the workspace's own document: a map
-/// from each installation to a map from each trigger index to a map from each
-/// key holder's device key (hex) to its answer.
+/// Key of the bots' answered fire times in the workspace's own document: a
+/// map, there from the workspace's founding, from
+/// `<installation>/<trigger index>/<key holder's device key hex>` to its
+/// answer ([`device_rows`]).
 pub const BOT_SCHEDULES_KEY: &str = "bot_schedules_v1";
 
 /// What one device answered for one trigger: which trigger it answered, and
@@ -45,6 +44,11 @@ pub fn trigger_mark(trigger: &tilo_automation::TriggerSpec) -> String {
     hex::encode(blake3::hash(&bytes).as_bytes())
 }
 
+/// The scope a device's answer for `trigger` of `installation` sits under.
+fn scope(installation: &str, trigger: usize) -> String {
+    format!("{installation}/{trigger}")
+}
+
 /// The latest fire time any device answered for `trigger` of `installation`,
 /// if any did.
 fn answered_of(
@@ -53,29 +57,10 @@ fn answered_of(
     trigger: usize,
     mark: &str,
 ) -> Option<i64> {
-    let doc = doc?;
-    let (Value::Object(ObjType::Map), installations) = doc.get(ROOT, BOT_SCHEDULES_KEY).ok()??
-    else {
-        return None;
-    };
-    let (Value::Object(ObjType::Map), triggers) = doc.get(&installations, installation).ok()??
-    else {
-        return None;
-    };
-    let (Value::Object(ObjType::Map), devices) =
-        doc.get(&triggers, trigger.to_string().as_str()).ok()??
-    else {
-        return None;
-    };
-    doc.keys(&devices)
-        .filter_map(|device| {
-            let (Value::Scalar(value), _) = doc.get(&devices, device.as_str()).ok()?? else {
-                return None;
-            };
-            let ScalarValue::Str(json) = value.as_ref() else {
-                return None;
-            };
-            let answer: StoredAnswer = serde_json::from_str(json).ok()?;
+    device_rows::rows_of(doc, BOT_SCHEDULES_KEY, &scope(installation, trigger))
+        .into_iter()
+        .filter_map(|(_, json)| {
+            let answer: StoredAnswer = serde_json::from_str(&json).ok()?;
             (answer.trigger == mark).then_some(answer.answered_ms)
         })
         .max()
@@ -135,57 +120,13 @@ impl PeerWorkspaceMut<'_> {
             answered_ms,
         })
         .map_err(|error| error.to_string())?;
-        let actor = self.peer.workspace_actor_for(&device.device_public_key);
-        let workspace = self
-            .peer
-            .core
-            .workspace_doc
-            .as_deref()
-            .ok_or("schedule workspace is absent")?;
-        let mut candidate = workspace.clone();
-        candidate.set_actor(actor);
-        let installations = match candidate.get(ROOT, BOT_SCHEDULES_KEY).map_err(message)? {
-            Some((Value::Object(ObjType::Map), installations)) => installations,
-            Some(_) => return Err("the workspace's bot schedules are malformed".into()),
-            None => candidate
-                .put_object(ROOT, BOT_SCHEDULES_KEY, ObjType::Map)
-                .map_err(message)?,
-        };
-        let triggers = match candidate
-            .get(&installations, installation)
-            .map_err(message)?
-        {
-            Some((Value::Object(ObjType::Map), triggers)) => triggers,
-            Some(_) => return Err(format!("bot `{installation}`'s schedules are malformed")),
-            None => candidate
-                .put_object(&installations, installation, ObjType::Map)
-                .map_err(message)?,
-        };
-        let trigger = trigger.to_string();
-        let devices = match candidate
-            .get(&triggers, trigger.as_str())
-            .map_err(message)?
-        {
-            Some((Value::Object(ObjType::Map), devices)) => devices,
-            Some(_) => return Err(format!("schedule {trigger} is malformed")),
-            None => candidate
-                .put_object(&triggers, trigger.as_str(), ObjType::Map)
-                .map_err(message)?,
-        };
-        candidate
-            .put(
-                &devices,
-                hex::encode(device.device_public_key).as_str(),
-                json.as_str(),
-            )
-            .map_err(message)?;
-        candidate.commit();
-        self.peer.core.workspace_doc = Some(candidate.into());
+        let key = device_rows::row_key(&scope(installation, trigger), &device.device_public_key);
+        self.write_row(
+            BOT_SCHEDULES_KEY,
+            &key,
+            &device.device_public_key,
+            Some(&json),
+        )?;
         Ok(true)
     }
-}
-
-/// A document operation's error as text.
-fn message(error: impl std::fmt::Display) -> String {
-    error.to_string()
 }

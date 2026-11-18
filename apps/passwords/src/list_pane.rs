@@ -153,11 +153,7 @@ impl ListPane {
             core.selected.as_ref().map(|id| id.0.clone())
         };
         if let Body::List(list) = &mut self.body {
-            let selection = list.selection_mut();
-            selection.clear();
-            if let Some(open) = &open {
-                selection.select_only(open.clone());
-            }
+            list.select_only(open.clone());
         }
         if reveal || !same_place {
             self.reveal = open;

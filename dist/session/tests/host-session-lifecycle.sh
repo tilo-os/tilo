@@ -162,15 +162,15 @@ test "$(stat -c %a "$flight_dir/frame-trace.csv")" = 600
 test "$(stat -c %a "$flight_dir/previous-frame-trace.csv")" = 600
 grep -Fqx 'old frame trace' "$flight_dir/previous-frame-trace.csv"
 grep -Fqx '0,0,0,1,2,3,4,5,0,6,7,1,1,8,9,0,10' "$flight_dir/frame-trace.csv"
-grep -Fq 'tilo-flight-record-v1 start=' "$flight_dir/latest.log"
+grep -Fq 'tilo-flight-entry-v1 start=' "$flight_dir/latest.log"
 grep -Fq 'DRM render phase summary' "$flight_dir/latest.log"
-grep -Fq 'tilo-flight-record-v1 end=' "$flight_dir/latest.log"
+grep -Fq 'tilo-flight-entry-v1 end=' "$flight_dir/latest.log"
 # The log events are kept, and rotated, beside the full record.
 test "$(stat -c %a "$flight_dir/events.log")" = 600
 test "$(stat -c %a "$flight_dir/previous-events.log")" = 600
 grep -Fqx 'prior log event' "$flight_dir/previous-events.log"
-head -n 1 "$flight_dir/events.log" | grep -Fq 'tilo-flight-record-v1 start='
-tail -n 1 "$flight_dir/events.log" | grep -Fq 'tilo-flight-record-v1 end='
+head -n 1 "$flight_dir/events.log" | grep -Fq 'tilo-flight-entry-v1 start='
+tail -n 1 "$flight_dir/events.log" | grep -Fq 'tilo-flight-entry-v1 end='
 cat >"$work/expected" <<EOF
 systemctl --user is-active --quiet tilo-graphical-session.target
 systemctl --user is-active --quiet graphical-session.target

@@ -295,6 +295,50 @@ impl SettingsDocument {
         })?;
         store.edit_document(name, origin, edit)
     }
+
+    /// Change both documents (`Holder::Person`'s and `Holder::Device`'s) through `edit`,
+    /// as one change made by `origin`: one step they are undone together with, for a
+    /// choice kept half on each (which model the agent answers with). `edit` refused, the
+    /// write failed, or this process holds only the values of the settings.
+    pub fn edit_documents(
+        &self,
+        origin: &settings_store::ChangeOrigin,
+        edit: impl Fn(
+            &mut automerge::AutoCommit,
+            settings_store::placement::Holder,
+        ) -> Result<(), String>,
+    ) -> std::io::Result<()> {
+        let source = self
+            .source()
+            .ok_or_else(|| std::io::Error::other("no config directory available"))?;
+        let store = source.store().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "the settings' history is kept by the session",
+            )
+        })?;
+        store.edit_documents(origin, edit)
+    }
+
+    /// Merge `sections` into the document as one change made by `origin`: a choice whose
+    /// leaves are held by this device's document and the person's both (which model the
+    /// agent answers with) is one step history takes back together.
+    pub fn update_sections(
+        &self,
+        sections: Vec<(String, Map<String, Value>)>,
+        origin: &settings_store::ChangeOrigin,
+    ) -> std::io::Result<()> {
+        let source = self
+            .source()
+            .ok_or_else(|| std::io::Error::other("no config directory available"))?;
+        let store = source.store().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "the settings' history is kept by the session",
+            )
+        })?;
+        store.update_sections(sections, origin)
+    }
 }
 
 /// Make every settings change stored before going on, which the native runner does before

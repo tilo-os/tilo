@@ -34,11 +34,11 @@ fn window_and_engine() -> (Compositor, TestClient, TestClient) {
     (compositor, client, engine)
 }
 
-/// A hosted surface drawing a text field at `caret` , with `size` .
-fn hosted_field(compositor: &mut Compositor, caret: (f64, f64, f64, f64)) -> Rc<RefCell<HostLog>> {
+/// A surface drawing a text field at `caret` , with `size` .
+fn surface_field(compositor: &mut Compositor, caret: (f64, f64, f64, f64)) -> Rc<RefCell<HostLog>> {
     let log = Rc::new(RefCell::new(HostLog::default()));
     log.borrow_mut().wants_keyboard = true;
-    log.borrow_mut().field = Some(HostTextInput {
+    log.borrow_mut().field = Some(SurfaceTextInput {
         hint: 0,
         purpose: 0,
         x: caret.0,
@@ -46,7 +46,7 @@ fn hosted_field(compositor: &mut Compositor, caret: (f64, f64, f64, f64)) -> Rc<
         width: caret.2,
         height: caret.3,
     });
-    compositor.add_host(Rc::new(RefCell::new(Square::new(
+    compositor.add_surface(Rc::new(RefCell::new(Square::new(
         (0, 0, 10, 10),
         [0, 255, 0, 255],
         Rc::clone(&log),
@@ -102,7 +102,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_engine_composes_into_a_hosted_field;
+    phase the_engine_composes_into_a_surface_field;
     {
         let mut compositor = headless(Box::new(StackPolicy));
         let mut client = mapped_client(&mut compositor, "form", (200, 100), [0, 255, 0, 255]);
@@ -110,7 +110,7 @@ tilo_test_env::scenario! {
         pump(&mut compositor, &mut [&mut client], |_, clients| {
             clients[0].seen.keyboard_focused && clients[0].seen.keymap.is_some()
         });
-        let log = hosted_field(&mut compositor, (120.0, 50.0, 2.0, 20.0));
+        let log = surface_field(&mut compositor, (120.0, 50.0, 2.0, 20.0));
         let mut engine = TestClient::connect_trusted(&mut compositor);
         pump(
             &mut compositor,
@@ -127,7 +127,7 @@ tilo_test_env::scenario! {
         });
 
         // The field was told an engine composes in it, and where its caret is.
-        assert_eq!(log.borrow().ime, vec![HostIme::Enabled]);
+        assert_eq!(log.borrow().ime, vec![SurfaceIme::Enabled]);
 
         // The composition in progress reaches the field, then the text chosen.
         engine.preedit_with_input_method("ㅎ", Some((3, 3)));
@@ -139,14 +139,14 @@ tilo_test_env::scenario! {
             log.borrow()
                 .ime
                 .iter()
-                .any(|event| matches!(event, HostIme::Commit(_)))
+                .any(|event| matches!(event, SurfaceIme::Commit(_)))
         });
         assert_eq!(
             log.borrow().ime,
             vec![
-                HostIme::Enabled,
-                HostIme::Preedit("ㅎ".to_owned(), Some((3, 3))),
-                HostIme::Commit("한".to_owned()),
+                SurfaceIme::Enabled,
+                SurfaceIme::Preedit("ㅎ".to_owned(), Some((3, 3))),
+                SurfaceIme::Commit("한".to_owned()),
             ]
         );
 
@@ -191,7 +191,7 @@ tilo_test_env::scenario! {
     phase the_candidate_window_stands_under_the_caret;
     {
         let mut compositor = headless(Box::new(StackPolicy));
-        let log = hosted_field(&mut compositor, (120.0, 50.0, 2.0, 20.0));
+        let log = surface_field(&mut compositor, (120.0, 50.0, 2.0, 20.0));
         let mut engine = TestClient::connect_trusted(&mut compositor);
         pump(&mut compositor, &mut [&mut engine], |_, clients| {
             clients[0].seen.input_method_manager.is_some() && clients[0].seen.seat.is_some()
@@ -220,7 +220,7 @@ tilo_test_env::scenario! {
         let frame = compositor.screenshot("HEADLESS-1").unwrap();
         assert_eq!(frame.pixel(130, 80), Some([255, 0, 255, 255]));
         assert!(
-            log.borrow().ime.contains(&HostIme::Enabled),
+            log.borrow().ime.contains(&SurfaceIme::Enabled),
             "it is the field's candidate window"
         );
     }
@@ -229,10 +229,10 @@ tilo_test_env::scenario! {
     {
         let mut compositor = headless(Box::new(StackPolicy));
         let chords = Rc::new(RefCell::new(HostLog::default()));
-        compositor.add_host(Rc::new(RefCell::new(Chords {
+        compositor.add_surface(Rc::new(RefCell::new(Chords {
             log: Rc::clone(&chords),
         })));
-        let log = hosted_field(&mut compositor, (120.0, 50.0, 2.0, 20.0));
+        let log = surface_field(&mut compositor, (120.0, 50.0, 2.0, 20.0));
         let mut engine = TestClient::connect_trusted(&mut compositor);
         pump(&mut compositor, &mut [&mut engine], |_, clients| {
             clients[0].seen.input_method_manager.is_some() && clients[0].seen.seat.is_some()

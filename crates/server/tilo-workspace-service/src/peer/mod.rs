@@ -81,12 +81,12 @@ use dispatch::handle_inbound_frame;
 use dispatch::{handle_envelope, unserved_private};
 pub use fetch::FetchGrants;
 use hello::handle_host_hello;
+pub(crate) use live::answer_content;
 use live::{
     handle_content_want, handle_host_said, handle_live_join, handle_presence, handle_voice,
     route_document_content,
 };
 use records::handle_open_document;
-pub use subscribe::get_or_autobind_workspace;
 use subscribe::{Subscribed, Subscription, handle_subscribe, handle_unsubscribe, subscribe};
 use sync::handle_sync_request;
 
@@ -137,46 +137,26 @@ pub enum PeerError {
     /// subscriber slot while its replay capture was queued.
     #[error("superseded by a newer connection for this device")]
     Superseded,
+    /// The server does not admit this device, which holds no workspace here:
+    /// its refusal went out and the session ended with it. A refusal, not a
+    /// protocol violation.
+    #[error("not admitted")]
+    NotAdmitted,
 }
 
 /// Handle to the set of workspaces the daemon owns.
 pub type WorkspaceRegistry = Arc<AsyncMutex<HashMap<WorkspaceId, SharedWorkspace>>>;
-pub(crate) const MAX_AUTOBOUND_WORKSPACES: usize = 4096;
-
-#[cfg(test)]
-const fn autobind_has_capacity(current: usize) -> bool {
-    current < MAX_AUTOBOUND_WORKSPACES
-}
-
-/// Optional on-demand workspace creation used by a same-owner home host.
-/// Shared/provider hosts leave this disabled and pre-bind their tenant
-/// workspaces explicitly.
-#[derive(Clone)]
-pub struct WorkspaceAutobind {
-    pub state_root: std::path::PathBuf,
-    /// The adapter a newly seen workspace's store classifies co-edit bodies
-    /// with: the one the server was started with.
-    pub shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
-}
-
-impl std::fmt::Debug for WorkspaceAutobind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WorkspaceAutobind")
-            .field("state_root", &self.state_root)
-            .finish_non_exhaustive()
-    }
-}
+/// The most workspaces a host holds at once, each with its own state on disk.
+pub(crate) const MAX_HELD_WORKSPACES: usize = 4096;
 
 /// Server-wide state a peer session needs for its whole lifetime — the
-/// workspace registry, autobind policy, live revocation list, own
-/// user chain, and metrics. Bundled into one struct so [`run_peer`]'s
-/// argument count stays reasonable; see `SessionCtx` for the subset
-/// `handle_envelope` reads on every message.
+/// workspace registry, live revocation list, own user chain, and metrics.
+/// Bundled into one struct so the peer entry point's argument count stays
+/// reasonable; see `SessionCtx` for the subset `handle_envelope` reads on
+/// every message.
 pub struct PeerContext {
     /// Handle to the set of workspaces the daemon owns.
     pub workspaces: WorkspaceRegistry,
-    /// Optional on-demand workspace creation (same-owner home host).
-    pub autobind: Option<WorkspaceAutobind>,
     /// Live revocation list, refreshed independently of this session.
     pub revocations: Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     /// Live signed-workspace-derived member admission policy.
@@ -234,7 +214,6 @@ pub type AgentRegistry = Arc<
 /// session's own outbound / disconnect channels.
 struct SessionCtx<'a> {
     workspaces: &'a WorkspaceRegistry,
-    autobind: Option<&'a WorkspaceAutobind>,
     outbound: &'a mpsc::Sender<Envelope>,
     /// This connection's queue for content its outbound channel could not
     /// take yet, one queue per sender ([`crate::content_queue`]).

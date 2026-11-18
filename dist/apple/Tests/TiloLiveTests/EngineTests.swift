@@ -353,6 +353,40 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(kept, "m7")
     }
 
+    /// A message's view is Chat mounted with no document named, and such a mount says it opened
+    /// `@tilo:package-primary`. The page spells an app's own document of the workspace with no
+    /// document at all: `route so.tilo.chat/: ready;`. Both texts stand here as the tour's page
+    /// on the build server said them. Compared as they stand they never matched, so every
+    /// mount for a message's view was put away again and none could be shown.
+    func testAnAppsOwnDocumentHasJoinedWhereThePageNamesItWithNoDocument() async throws {
+        let said = """
+            workspace 69c55f12-02b3-49f6-be5f-4b18425329ba: joined through 456635f7
+            workspace adf5993d-91ce-40c8-a2af-3cf3eddbd095: joined through 456635f7
+            route so.tilo.activity/: ready;
+            route so.tilo.browser-desktop/desktop: ready;
+            route so.tilo.calendar/: ready;
+            route so.tilo.canvas/derived:default@tab:0000000000000000: ready;
+            route so.tilo.chat/: ready;
+            """
+        func joined(_ app: String, _ opened: Any, _ routes: String) async throws -> Bool? {
+            try await engine.view.callAsyncJavaScript("return (\(EngineScript.joined))(app, opened, routes)",
+                arguments: ["app": app, "opened": opened, "routes": routes], in: nil, contentWorld: .page) as? Bool
+        }
+        let chat = try await joined("so.tilo.chat", "@tilo:package-primary", said)
+        XCTAssertEqual(chat, true, "Chat's own document of the workspace, as a mount with no document named says it")
+        // A document with a name of its own has joined under that name, and only under it.
+        let canvas = try await joined("so.tilo.canvas", "derived:default@tab:0000000000000000", said)
+        XCTAssertEqual(canvas, true)
+        let another = try await joined("so.tilo.canvas", "derived:default@tab:0000000000000001", said)
+        XCTAssertEqual(another, false)
+        // An app the page names nothing of has not joined, whatever its mount says.
+        let tasks = try await joined("so.tilo.tasks", "@tilo:package-primary", said)
+        XCTAssertEqual(tasks, false)
+        // A mount that names nothing it opened has nothing to wait for.
+        let nothing = try await joined("so.tilo.chat", NSNull(), said)
+        XCTAssertEqual(nothing, true)
+    }
+
     func testAPageThatSaysItsOwnChangesIsListenedTo() async throws {
         try await run("location.hash = '#/w/ws-1/so.tilo.chat'; offerChanges(); enter()")
         try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
@@ -470,7 +504,7 @@ final class EngineTests: XCTestCase {
     func testAProviderOffTheEnginesListIsRefusedBeforeThePageIsAsked() async throws {
         try await enterAsADevice()
         XCTAssertEqual(PersonProvider.allCases.map(\.rawValue),
-                       ["tilo.models", "tilo.vault", "tilo.events", "tilo.telling", "tilo.initiative", "tilo.asking", "tilo.learned"])
+                       ["tilo.models", "tilo.vault", "tilo.events", "tilo.telling", "tilo.initiative", "tilo.asking", "tilo.learned", "tilo.connections"])
         // With the engine's own pass: what the device could ask its host, and the engine does not.
         let refused = try await engine.view.callAsyncJavaScript(#"""
             const said = [];
@@ -875,6 +909,29 @@ final class EngineTests: XCTestCase {
         XCTFail("waited ten seconds for \(what)")
         throw CancellationError()
     }
+
+    /// As on a slow connection: the page fetches a thing's app the first time it mounts one.
+    func testMountingALiveThingMayTakeLongerThanAnAskOfAServerAndIsNotEndedByThatBound() async throws {
+        try await inPage("""
+            location.hash = '#/w/ws-1/so.tilo.chat'; offerBeside();
+            const mounts = globalThis.tiloOpen;
+            globalThis.tiloOpen = async (element, what) => { await new Promise(on => setTimeout(on, 1200)); return mounts(element, what); };
+            enter()
+            """)
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
+        engine.askPatience = .milliseconds(300)
+        let shown = try await engine.show(live: "draft", .new(app: "so.tilo.word-processor"))
+        XCTAssertEqual(shown, "uuid:made-now")
+    }
+
+    /// Tilo's page ends an ask of a person's server after thirty seconds, looked at every half
+    /// second, and follows the making of a person's own workspace for 160 seconds: the engine's
+    /// own bounds are longer, so that the page's word comes first.
+    func testTheEnginesBoundsAreLongerThanThePagesOwn() {
+        XCTAssertGreaterThan(engine.askPatience, .seconds(30.5))
+        XCTAssertGreaterThan(engine.ownPatience, .seconds(160))
+        XCTAssertGreaterThanOrEqual(engine.mountPatience, engine.askPatience)
+    }
 }
 
 final class EngineAddressTests: XCTestCase {
@@ -895,6 +952,50 @@ final class EngineAddressTests: XCTestCase {
                      "https://tilo.sh/docs/#/w/1f0e?pair=\(secret)", "https://tilo.sh/#/settings?pair=\(secret)"] {
             XCTAssertNil(EngineAddress.pairing(URL(string: text)!, of: settings), text)
         }
+    }
+
+    func testAPairingLinkTheSitesOwnComputerMadeIsOpenedUnderTheNameTheAppReachesItBy() throws {
+        // The page a person has open on the computer that serves the site writes its code and
+        // its link under a name only that computer can use. A phone's app reaches the same site
+        // by the name other devices use, and reads the link as that site's.
+        let phone = try ShellSettings(site: "https://tilo.wifi.example:24520")
+        let made = URL(string: "http://tilo.localhost:24520/#/@127.0.0.1:24500/w/1f0e?pair=\(secret)")!
+        XCTAssertEqual(EngineAddress.pairing(made, of: phone)?.absoluteString,
+                       "https://tilo.wifi.example:24520/app/#/@tilo.wifi.example:24500/w/1f0e/so.tilo.chat?pair=\(secret)")
+        let own = URL(string: "http://localhost:24520/#/me?pair=\(secret)")!
+        XCTAssertEqual(EngineAddress.pairing(own, of: phone)?.absoluteString,
+                       "https://tilo.wifi.example:24520/app/#/me/so.tilo.chat?pair=\(secret)")
+        // Another port is some other program on someone's computer, and another site stays another site.
+        for text in ["http://tilo.localhost:24120/#/w/1f0e?pair=\(secret)", "http://tilo.localhost/#/w/1f0e?pair=\(secret)",
+                     "https://other.example:24520/#/w/1f0e?pair=\(secret)"] {
+            XCTAssertNil(EngineAddress.pairing(URL(string: text)!, of: phone), text)
+        }
+    }
+
+    func testNothingALinkSaysMakesAnotherSiteThisOne() throws {
+        // The site's policy knows the one site the build was given, and the names that site's own
+        // computer has for itself on the site's port. A link is judged whole, by where it leads:
+        // what it carries inside (a name in its route, a second address, a sign-in before its
+        // name) adds no name.
+        let phone = try ShellSettings(site: "https://tilo.wifi.example:24520")
+        let inside = "https://tilo.wifi.example:24520/#/w/1f0e?pair=\(secret)"
+        let own = "http://tilo.localhost:24520/#/w/1f0e?pair=\(secret)"
+        for text in ["https://other.example:24520/#/@tilo.wifi.example:24500/w/1f0e?pair=\(secret)",
+                     "https://other.example/?next=\(inside)", "HTTPS://other.example/?next=\(inside)",
+                     "HTTPS://other.example/?next=\(own)",
+                     "tilo-assistant://open?link=\(inside)", "tilo-assistant://open?link=\(own)",
+                     "http://tilo.localhost.other.example:24520/#/w/1f0e?pair=\(secret)",
+                     "https://tilo.wifi.example:24520@other.example/#/w/1f0e?pair=\(secret)",
+                     "http://other.example@tilo.localhost:24520/#/w/1f0e?pair=\(secret)",
+                     "https://tilo.wifi.example.other.example:24520/#/w/1f0e?pair=\(secret)"] {
+            let link = try XCTUnwrap(URL(string: text), text)
+            XCTAssertNil(EngineAddress.pairing(link, of: phone), text)
+        }
+        // On the site's own computer nothing changes: its own name is its site, another site is not.
+        let mac = try ShellSettings(site: "http://tilo.localhost:24520")
+        XCTAssertEqual(EngineAddress.pairing(URL(string: own)!, of: mac)?.absoluteString,
+                       "http://tilo.localhost:24520/app/#/w/1f0e/so.tilo.chat?pair=\(secret)")
+        XCTAssertNil(EngineAddress.pairing(URL(string: inside)!, of: mac), inside)
     }
 
     func testAPageStandsElsewhereOnlyInAnotherWorkspace() {

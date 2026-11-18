@@ -42,6 +42,13 @@ public struct ConversationView: View {
                             RowView(row: row, chat: chat, picturedSecret: picturedSecret).id(row.id)
                         }
                         if let since, sinceRow == nil, conversation.isLoaded { SinceLeftCard(since: since) }
+                        // Her message stands and no turn has taken it up for a while: one quiet line
+                        // says so under it. Where a step of the first start is shown, that step says why.
+                        if model.isNotTakenUp(chat), !setsUp {
+                            Fine(words: AssistantWords.notTakenUp.said)
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                                .padding(.trailing, 14)
+                        }
                         // What stands between the person and a first answer is said where that answer would stand.
                         if chat == .main { SetupStep() }
                         if conversation.isAnswering {
@@ -81,7 +88,7 @@ public struct ConversationView: View {
         guard chat == .main else { return false }
         switch model.setup {
         case .unknown, .ready: return false
-        case .findingAssistant, .noAssistant, .needsProvider, .needsModel: return true
+        case .findingAssistant, .makingWorkspace, .noAssistant, .needsProvider, .needsModel: return true
         }
     }
 
@@ -227,10 +234,10 @@ private struct MessageView: View {
                             if let file = await model.file(of: attachment.id) { openURL(file) }
                         }
                     } label: {
-                        Tag(words: attachment.name)
+                        Tag(words: attachment.words())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(AssistantWords.attachment.said): \(attachment.name)")
+                    .accessibilityLabel("\(AssistantWords.attachment.said): \(attachment.words())")
                 }
             }
             .frame(maxWidth: .infinity, alignment: message.author == .person ? .trailing : .leading)

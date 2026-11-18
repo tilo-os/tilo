@@ -1,6 +1,6 @@
 use super::*;
 use crate::application::{LaunchTarget, RestoreInput};
-use crate::application_test_support::{ProbeHost, instantiate_probe};
+use crate::application_test_support::{ProbeHarness, instantiate_probe};
 use crate::history_mode::restore::{PreparedContentRestore, prepare_content_restore};
 use crate::state::owned_restore::{ConfirmedRestore, OwnedRestoreError};
 use crate::state::owned_restore_tests::{SCHEMA, context, value};
@@ -57,7 +57,7 @@ tilo_test_env::scenario! {
     phase owned_restore_bound_applies_exact_spans_once_with_one_undo_boundary;
     {
         {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let component =
                 instantiate_probe(&host, 77, LaunchTarget::New, RestoreInput::None).unwrap();
             let binding = component.callback_binding();
@@ -114,7 +114,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let component =
                 instantiate_probe(&host, 77, LaunchTarget::New, RestoreInput::None).unwrap();
             let binding = component.callback_binding();
@@ -155,7 +155,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let component =
                 instantiate_probe(&host, 77, LaunchTarget::New, RestoreInput::None).unwrap();
             let binding = component.callback_binding();
@@ -205,7 +205,7 @@ tilo_test_env::scenario! {
     {
         {
             for case in 0..5 {
-                let host = ProbeHost::new();
+                let host = ProbeHarness::new();
                 let component =
                     instantiate_probe(&host, 77, LaunchTarget::New, RestoreInput::None).unwrap();
                 let binding = component.callback_binding();
@@ -259,7 +259,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let component =
                 instantiate_probe(&host, 77, LaunchTarget::New, RestoreInput::None).unwrap();
             let binding = component.callback_binding();

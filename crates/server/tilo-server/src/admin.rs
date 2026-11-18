@@ -139,6 +139,24 @@ enum RolloutAsk {
     /// This machine booted IMAGE and passed its health verdict; the update lease
     /// goes to the person's next server.
     Booted { image: String },
+    /// After a healthy boot of GENERATION (IMAGE, from UPDATES): ask the
+    /// person's other devices to approve this machine's rollback floor moving,
+    /// and keep the approvals they signed in APPROVALS. Exits 0 once some are
+    /// kept, 75 while none are.
+    Floor {
+        generation: u64,
+        image: String,
+        updates: String,
+        /// The public key (PEM) this machine's floor counter takes approvals from.
+        #[arg(long)]
+        authority: PathBuf,
+        /// What `tilo-rollback floor-request` stated.
+        #[arg(long)]
+        request: PathBuf,
+        /// Where `tilo-rollback confirm` finds approvals.
+        #[arg(long)]
+        approvals: PathBuf,
+    },
 }
 
 fn load(path: &std::path::Path) -> anyhow::Result<ServerConfig> {
@@ -180,9 +198,30 @@ fn cmd_rollout(
 ) -> anyhow::Result<std::process::ExitCode> {
     use tilo_server::rollout::{Answer, Request};
     let cfg = load(config)?;
+    let mut keep = None;
     let request = match ask {
         RolloutAsk::Prepare { target } => Request::Prepare { target },
         RolloutAsk::Booted { image } => Request::Booted { image },
+        RolloutAsk::Floor {
+            generation,
+            image,
+            updates,
+            authority,
+            request,
+            approvals,
+        } => {
+            let read = |path: &std::path::Path| {
+                std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
+            };
+            keep = Some(approvals);
+            Request::Floor(tilo_server::servers::floor::Asked {
+                generation,
+                image,
+                updates,
+                authority: read(&authority)?,
+                request: read(&request)?,
+            })
+        }
     };
     let answer = match tilo_server::rollout::ask(&cfg.state_root, &request) {
         Ok(answer) => answer,
@@ -205,6 +244,18 @@ fn cmd_rollout(
             0,
         ),
         Answer::Nothing => ("nothing: no update was under way".to_owned(), 0),
+        Answer::Floor { approvals, why } if approvals.is_empty() => (format!("floor: {why}"), 75),
+        Answer::Floor { approvals, .. } => {
+            let dir = keep.context("approvals answer only a floor request")?;
+            tilo_rollback::approval::store(&dir, approvals)?;
+            (
+                format!(
+                    "floor: kept {} approval(s) another of the person's devices signed",
+                    approvals.len()
+                ),
+                0,
+            )
+        }
     };
     println!("{said}");
     Ok(std::process::ExitCode::from(code))

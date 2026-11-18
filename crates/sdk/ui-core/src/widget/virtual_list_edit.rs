@@ -5,7 +5,7 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use super::{ListModel, VirtualList};
+use super::{ListKey, VirtualRows};
 use crate::widget::Widget;
 
 pub(super) type RenameCallback<K> = Box<dyn FnMut(K, String)>;
@@ -36,9 +36,9 @@ pub trait RowRenameField {
     fn rename_field(&self) -> Option<(Rect, crate::tokens::TextRole)>;
 }
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     #[must_use]
-    pub fn on_rename(mut self, f: impl FnMut(M::Key, String) + 'static) -> Self {
+    pub fn on_rename(mut self, f: impl FnMut(ListKey, String) + 'static) -> Self {
         self.on_rename = Some(Box::new(f));
         self
     }
@@ -54,12 +54,12 @@ impl<M: ListModel> VirtualList<M> {
     /// Receive `Delete` on the focused row. The list never removes a row itself; the host
     /// decides.
     #[must_use]
-    pub fn on_delete(mut self, f: impl FnMut(M::Key) + 'static) -> Self {
+    pub fn on_delete(mut self, f: impl FnMut(ListKey) + 'static) -> Self {
         self.on_delete = Some(Box::new(f));
         self
     }
 
-    pub fn begin_rename(&mut self, key: &M::Key) -> bool {
+    pub fn begin_rename(&mut self, key: &ListKey) -> bool {
         if self.on_rename.is_none() {
             return false;
         }
@@ -92,7 +92,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     #[must_use]
-    pub fn renaming(&self) -> Option<&M::Key> {
+    pub fn renaming(&self) -> Option<&ListKey> {
         self.rename.as_ref().map(|field| &field.key)
     }
 
@@ -118,7 +118,7 @@ impl<M: ListModel> VirtualList<M> {
         self.rename = None;
     }
 
-    fn rename_rect(&self, index: usize, key: &M::Key) -> Option<(Rect, crate::tokens::TextRole)> {
+    fn rename_rect(&self, index: usize, key: &ListKey) -> Option<(Rect, crate::tokens::TextRole)> {
         if let Some(placed) = self
             .mounted
             .iter()

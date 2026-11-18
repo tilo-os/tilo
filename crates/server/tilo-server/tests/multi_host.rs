@@ -87,13 +87,8 @@ async fn connect_both_to_relay1(
     })
     .unwrap();
     for cli in [&c1, &c2] {
-        let env = tilo_test_env::within("Ready timeout", cli.recv())
-            .await
-            .expect("closed");
-        match env {
-            Envelope::Ready { .. } => {}
-            other => panic!("expected Ready, got {other:?}"),
-        }
+        // A held workspace sends its own state before it is ready.
+        crate::common::next(cli, |env| matches!(env, Envelope::Ready { .. })).await;
     }
     (c1, c2)
 }
@@ -158,19 +153,21 @@ async fn p2_returns_and_drains(
             .await
             .unwrap();
         match env {
-            Envelope::Delta { delta, .. } if delta == b"queued-on-relay1" => {
+            Envelope::Delta { delta, .. } if delta == b"queued-on-server1" => {
                 assert!(!got_delta, "the queued delta was delivered twice");
                 got_delta = true;
             }
-            Envelope::Delta { delta, .. } if delta == b"via-relay1" => {
+            Envelope::Delta { delta, .. } if delta == b"via-server1" => {
                 redelivered = redelivered.saturating_add(1);
                 assert_eq!(redelivered, 1, "an already-delivered delta repeated");
             }
+            // The workspace's own state, queued for the offline member.
+            Envelope::Delta { .. } | Envelope::WorkspaceBootstrap { .. } => {}
             Envelope::Ready {
                 workspace_id: WORKSPACE,
                 pending_deltas,
-                documents_when_opened: false,
-            } if pending_deltas == 1 || pending_deltas == 2 => ready = true,
+                ..
+            } if pending_deltas >= 1 => ready = true,
             other => panic!("unexpected: {other:?}"),
         }
     }
@@ -191,7 +188,7 @@ async fn peers_use_several_relays_and_fail_over() {
         let p1 = user.enrol("laptop", DeviceCapabilities::primary());
         let p2 = user.enrol("phone", DeviceCapabilities::member());
 
-        let members = vec![p1.device_pubkey(), p2.device_pubkey()];
+        let members = vec![&p1.cert, &p2.cert];
 
         let relay1 = Box::pin(spawn_server(&user, server_dev_1, &[WORKSPACE], &members)).await;
         let relay2 = Box::pin(spawn_server(&user, server_dev_2, &[WORKSPACE], &members)).await;
@@ -206,16 +203,20 @@ async fn peers_use_several_relays_and_fail_over() {
             workspace_id: WORKSPACE,
             author_device_public_key: p1.device_pubkey(),
             authored_at_ns: 100,
-            delta: b"via-relay1".to_vec(),
+            delta: b"via-server1".to_vec(),
             signature: [1u8; 64],
         };
         c1_r1.send(d1).unwrap();
-        let got = tilo_test_env::within("a message on c2_r1", c2_r1.recv())
-            .await
-            .unwrap();
-        match got {
+        match crate::common::next(&c2_r1, |env| {
+            matches!(
+                env,
+                Envelope::Delta { delta, .. } if delta == b"via-server1"
+            )
+        })
+        .await
+        {
             Envelope::Delta { delta, .. } => {
-                assert_eq!(delta, b"via-relay1".to_vec());
+                assert_eq!(delta, b"via-server1".to_vec());
             }
             other => panic!("expected Delta, got {other:?}"),
         }
@@ -238,16 +239,13 @@ async fn peers_use_several_relays_and_fail_over() {
                 workspace_id: WORKSPACE,
             })
             .unwrap();
-        let ready = tilo_test_env::within("a message on c2_r2", c2_r2.recv())
-            .await
-            .unwrap();
+        let ready = crate::common::next(&c2_r2, |env| matches!(env, Envelope::Ready { .. })).await;
         match ready {
             Envelope::Ready {
                 workspace_id: WORKSPACE,
-                pending_deltas: 0,
-                documents_when_opened: false,
+                ..
             } => {}
-            other => panic!("expected empty Ready on relay2, got {other:?}"),
+            other => panic!("expected Ready on the second server, got {other:?}"),
         }
 
         // p1 publishes another delta via relay1. Since p2 is on
@@ -257,7 +255,7 @@ async fn peers_use_several_relays_and_fail_over() {
             workspace_id: WORKSPACE,
             author_device_public_key: p1.device_pubkey(),
             authored_at_ns: 200,
-            delta: b"queued-on-relay1".to_vec(),
+            delta: b"queued-on-server1".to_vec(),
             signature: [2u8; 64],
         };
         c1_r1.send(d2).unwrap();
@@ -297,16 +295,16 @@ async fn peers_use_several_relays_and_fail_over() {
         // Wait for the write rather than guessing how long it takes: a fixed sleep
         // is a race that fails on a loaded machine and proves nothing on a fast one.
         wait_until("relay1 to queue the delta for offline p2", || {
-            queued(&pending_r1, b"queued-on-relay1") > 0
+            queued(&pending_r1, b"queued-on-server1") > 0
         })
         .await;
         assert_eq!(
-            queued(&pending_r1, b"queued-on-relay1"),
+            queued(&pending_r1, b"queued-on-server1"),
             1,
             "relay1 should hold the delta for offline p2 once"
         );
         assert_eq!(
-            queue(&pending_r2).len(),
+            queued(&pending_r2, b"queued-on-server1"),
             0,
             "relay2 should not have seen the delta"
         );
@@ -328,7 +326,7 @@ async fn peers_use_several_relays_and_fail_over() {
             &user,
             server_dev,
             &[OTHER_WORKSPACE],
-            &[a.device_pubkey()],
+            &[&a.cert],
         ))
         .await;
         let real_addr = server.server.node_addr();

@@ -9,12 +9,13 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
+use super::RowSelection;
+use super::VirtualRows;
 use super::remount::row_kept;
 use super::shown::ListShown;
-use super::{ListModel, RowSelection, VirtualList};
 use crate::widget::DrawChild;
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     pub(super) fn paint(
         &mut self,
         scene: &mut Scene,
@@ -177,7 +178,7 @@ impl<M: ListModel> VirtualList<M> {
             if let Some(place) = self
                 .row_presence
                 .as_ref()
-                .and_then(|place| place(&self.model, row.index, &row.key))
+                .and_then(|place| place(&*self.model, row.index, &row.key))
             {
                 let device = transform.transform_rect_bbox(row_rect);
                 for user in presence.peers_on(&place) {

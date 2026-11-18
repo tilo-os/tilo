@@ -98,7 +98,7 @@ impl Apps {
         }
         self.answer_in_tabs(|policy| {
             let name = policy.name_of(asked);
-            let answer = Outcome::from_before_update(&name, service).under_way();
+            let answer = Outcome::from_before_update(&name, service).restarting(service);
             policy.failed_at(tab, asked, answer);
         });
         true

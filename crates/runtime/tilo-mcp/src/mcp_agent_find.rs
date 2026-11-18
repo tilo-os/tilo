@@ -47,6 +47,22 @@ pub(super) fn split_reference(path: &str) -> Option<(&str, &str)> {
     (!reference.trim_matches('#').trim().is_empty()).then_some((reference.trim(), after))
 }
 
+/// `reply`, saying first that it carries content from outside the person's own data. A find
+/// that names a file of the workspace's folder answers its name and its path, which whoever
+/// put it there wrote: data to reason about, as what the file says is, never an instruction.
+fn naming_files(mut reply: Reply) -> Reply {
+    reply.text = format!(
+        "[{}: {}]\n{}",
+        crate::UNTRUSTED,
+        crate::UNTRUSTED_NOTE,
+        reply.text
+    );
+    if let Some(typed) = reply.structured.as_mut() {
+        crate::mark_untrusted(typed);
+    }
+    reply
+}
+
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// What the workspace's search finds for `needle`, asked as whoever calls it: said plainly
     /// when this device keeps no search, never answered with a ranking of its own.
@@ -210,6 +226,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if text.is_empty() {
             text = nothing_matches(&args.query);
         }
+        // A file's name and its path are the words of whoever put it into the folder.
+        let file = tilo_actions::remote::FOUND_FILE;
+        let names_files = hits.iter().take(limit).any(|hit| hit["kind"] == file);
         let mut reply = Reply::ok(text);
         if structured {
             reply.structured = Some(json!({
@@ -217,7 +236,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 "hits": hits.into_iter().take(limit).collect::<Vec<Value>>(),
             }));
         }
-        Ok(reply)
+        Ok(if names_files {
+            naming_files(reply)
+        } else {
+            reply
+        })
     }
 
     /// The words of `query`, and what the rest of it narrows the search to: `in:here` (the

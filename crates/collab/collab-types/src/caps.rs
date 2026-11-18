@@ -55,26 +55,157 @@ impl Access {
 pub enum Scope {
     /// A filesystem path and everything below it.
     FsPath(String),
-    /// A device class (`camera`, `microphone`, `printer`, ...), or `*` for
-    /// every device.
-    Device(String),
+    /// A device of the machine the app is on.
+    Device(DeviceCap),
     /// A network host pattern; see [`net`].
     NetHost(String),
     /// A stable collaborative-file record id, or `*` for every record.
     FsResource(String),
 }
 
-/// The scope pattern a [`Scope::Device`] or [`Scope::FsResource`] uses for
+/// The scope pattern a [`Scope::NetHost`] or [`Scope::FsResource`] uses for
 /// every one.
 pub const EVERY: &str = "*";
+
+/// A device of the machine an app is on, as a sandbox capability names it.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    tilo_resource::Model,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeviceCap {
+    /// The cameras (`/dev/video*`).
+    Camera,
+    /// The microphones (the `PipeWire` socket and `/dev/snd`).
+    Microphone,
+    /// The picture of the screen: a screenshot or a screen share.
+    Screen,
+    /// The keyboard and pointer: injecting input, or capturing it.
+    Input,
+    /// The sound the machine plays.
+    SystemAudio,
+    /// Printing through the `Print` portal. Brokered, never bound: the CUPS
+    /// socket never appears in a sandbox.
+    Printer,
+    /// The device's own login shell, unconfined, as a terminal's Host target.
+    HostShell,
+    /// How busy the device is, from the session's system information service.
+    SystemInfo,
+    /// The programs running on the device, and ending the person's own.
+    Processes,
+    /// The command lines of those programs, which can name files, hosts or
+    /// tokens.
+    ProcessCommands,
+    /// The kernel's `io_uring` interface, which the sandbox's syscall filter
+    /// otherwise refuses.
+    IoUring,
+    /// The GPU itself, rather than through the compositor.
+    Gpu,
+    /// The clipboard of the person's desktop, as a Windows app's remote
+    /// session redirects it.
+    Clipboard,
+    /// The desktop's actions beyond the app's own workspace. Kept here until
+    /// it becomes an action grant.
+    DesktopControl,
+}
+
+impl DeviceCap {
+    /// Every device, in the order a prompt lists them.
+    pub const ALL: [Self; 14] = [
+        Self::Camera,
+        Self::Microphone,
+        Self::Screen,
+        Self::Input,
+        Self::SystemAudio,
+        Self::Printer,
+        Self::HostShell,
+        Self::SystemInfo,
+        Self::Processes,
+        Self::ProcessCommands,
+        Self::IoUring,
+        Self::Gpu,
+        Self::Clipboard,
+        Self::DesktopControl,
+    ];
+
+    /// The name a capability is stored and shown under.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Camera => "camera",
+            Self::Microphone => "microphone",
+            Self::Screen => "screen",
+            Self::Input => "input",
+            Self::SystemAudio => "system-audio",
+            Self::Printer => "printer",
+            Self::HostShell => "host-shell",
+            Self::SystemInfo => "system-info",
+            Self::Processes => "processes",
+            Self::ProcessCommands => "process-commands",
+            Self::IoUring => "io-uring",
+            Self::Gpu => "gpu",
+            Self::Clipboard => "clipboard",
+            Self::DesktopControl => "desktop-control",
+        }
+    }
+
+    /// The device named `name`, as [`Self::name`] spells it.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|device| device.name() == name)
+    }
+
+    /// The access a grant of this device gives: driving input, printing, the
+    /// clipboard, a host shell and desktop control change things, the rest
+    /// observe.
+    #[must_use]
+    pub const fn access(self) -> Access {
+        match self {
+            Self::Input
+            | Self::Printer
+            | Self::HostShell
+            | Self::Clipboard
+            | Self::DesktopControl => Access::Write,
+            _ => Access::Read,
+        }
+    }
+
+    /// The `[capabilities]` entry an app's manifest declares to be given this
+    /// device, or `None` for one no manifest asks for: those are reached
+    /// through a portal or the desktop, never bound into a sandbox.
+    #[must_use]
+    pub const fn declaration(self) -> Option<&'static str> {
+        match self {
+            Self::Camera => Some("camera"),
+            Self::Microphone => Some("microphone"),
+            Self::Screen => Some("screen-capture"),
+            Self::Printer => Some("print"),
+            Self::SystemInfo => Some("system-info"),
+            Self::Processes | Self::ProcessCommands => Some("processes"),
+            Self::IoUring => Some("io-uring"),
+            Self::Gpu => Some("gpu"),
+            Self::Clipboard => Some("clipboard"),
+            _ => None,
+        }
+    }
+}
 
 impl Scope {
     /// Does this scope cover `resource`?
     pub fn matches_resource(&self, resource: &ResourceRef) -> bool {
         match (self, resource) {
             (Scope::FsPath(prefix), ResourceRef::FsPath(path)) => path_covers(prefix, path),
-            (Scope::Device(d), ResourceRef::Device(e))
-            | (Scope::FsResource(d), ResourceRef::FsResource(e)) => d == EVERY || d == e,
+            (Scope::Device(d), ResourceRef::Device(e)) => d == e,
+            (Scope::FsResource(d), ResourceRef::FsResource(e)) => d == EVERY || d == e,
             (Scope::NetHost(h), ResourceRef::NetHost(target)) => host_covers(h, target),
             (Scope::FsPath(_) | Scope::Device(_) | Scope::NetHost(_) | Scope::FsResource(_), _) => {
                 false
@@ -158,7 +289,7 @@ pub fn path_covers(prefix: &str, path: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResourceRef {
     FsPath(String),
-    Device(String),
+    Device(DeviceCap),
     NetHost(String),
     FsResource(String),
 }

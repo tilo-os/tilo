@@ -48,6 +48,30 @@ pub struct PeopleContent {
     /// What an empty list says instead: its title and detail.
     pub empty: (String, String),
     pub note: Option<String>,
+    /// The holders of the workspace, under their own heading.
+    pub holders_header: String,
+    pub holders: Vec<Holder>,
+}
+
+/// One holder of the workspace, in the viewer's words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Holder {
+    /// What it goes by: its server's name, its site's name, or its device's
+    /// label.
+    pub name: String,
+    /// What it can read of the workspace.
+    pub can_read: String,
+}
+
+/// One holder of a workspace, as the viewer's device learns it from the
+/// holder's own signed address: what it calls itself and what it can read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberHolder {
+    pub name: String,
+    /// Whether it holds the workspace's keys: it reads the workspace.
+    pub reads: bool,
+    /// Whether the machine under it is rented from a cloud provider.
+    pub cloud: bool,
 }
 
 /// One member as the People tab reads them, from wherever the viewer's device learns of its
@@ -96,13 +120,19 @@ pub fn content(
     names: &PeopleNames,
     viewer: &UserId,
     is_owner: bool,
+    holders: &[MemberHolder],
 ) -> PeopleContent {
-    content_of(&members(ws, names, viewer), viewer, is_owner)
+    content_of(&members(ws, names, viewer), viewer, is_owner, holders)
 }
 
 /// What the People tab shows of `members`, in their order, to `viewer` .
 #[must_use]
-pub fn content_of(members: &[Member], viewer: &UserId, is_owner: bool) -> PeopleContent {
+pub fn content_of(
+    members: &[Member],
+    viewer: &UserId,
+    is_owner: bool,
+    holders: &[MemberHolder],
+) -> PeopleContent {
     // An administrator governs every member who is not one; only the owner governs them too.
     let administers = is_owner
         || members
@@ -159,6 +189,22 @@ pub fn content_of(members: &[Member], viewer: &UserId, is_owner: bool) -> People
             t("workspace-settings-members-empty-detail"),
         ),
         note: members_authority_note(administers),
+        holders_header: t("workspace-settings-kept-header"),
+        holders: holders
+            .iter()
+            .map(|holder| Holder {
+                name: if holder.name.trim().is_empty() {
+                    t("workspace-settings-kept-unnamed")
+                } else {
+                    holder.name.clone()
+                },
+                can_read: match (holder.reads, holder.cloud) {
+                    (false, _) => t("workspace-settings-kept-stores"),
+                    (true, true) => t("workspace-settings-kept-reads-cloud"),
+                    (true, false) => t("workspace-settings-kept-reads"),
+                },
+            })
+            .collect(),
     }
 }
 
@@ -186,6 +232,46 @@ mod tests {
     }
 
     #[test]
+    fn each_holder_says_what_it_can_read_of_the_workspace() {
+        let members = [member("owner", CapRole::Owner, true, false)];
+        let holders = [
+            MemberHolder {
+                name: "Kitchen NAS".to_owned(),
+                reads: true,
+                cloud: false,
+            },
+            MemberHolder {
+                name: "tilo.sh".to_owned(),
+                reads: true,
+                cloud: true,
+            },
+            MemberHolder {
+                name: "Backup box".to_owned(),
+                reads: false,
+                cloud: false,
+            },
+        ];
+        let content = content_of(&members, &"owner".to_owned(), true, &holders);
+        assert_eq!(content.holders_header, "Where it is kept");
+        let said: Vec<(&str, &str)> = content
+            .holders
+            .iter()
+            .map(|holder| (holder.name.as_str(), holder.can_read.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                ("Kitchen NAS", "Reads the workspace"),
+                (
+                    "tilo.sh",
+                    "Reads the workspace, and so can the cloud provider"
+                ),
+                ("Backup box", "Keeps an encrypted copy and reads none of it"),
+            ]
+        );
+    }
+
+    #[test]
     fn who_may_change_whom_follows_the_workspace_rules() {
         let members = [
             member("owner", CapRole::Owner, true, false),
@@ -193,14 +279,14 @@ mod tests {
             member("eve", CapRole::Editor, false, false),
         ];
         // The owner governs everyone but themselves.
-        let owner = content_of(&members, &"owner".to_owned(), true);
+        let owner = content_of(&members, &"owner".to_owned(), true, &[]);
         assert_eq!(
             manages(&owner),
             [("owner", false), ("admin", true), ("eve", true)]
         );
         assert_eq!(owner.note, None);
         // An administrator governs every member who is not one, never the owner.
-        let admin = content_of(&members, &"admin".to_owned(), false);
+        let admin = content_of(&members, &"admin".to_owned(), false, &[]);
         assert_eq!(
             manages(&admin),
             [("owner", false), ("admin", false), ("eve", true)]
@@ -211,7 +297,7 @@ mod tests {
             crate::workspace_settings::administrator_label()
         );
         // Anyone else governs nobody, and is told who does.
-        let eve = content_of(&members, &"eve".to_owned(), false);
+        let eve = content_of(&members, &"eve".to_owned(), false, &[]);
         assert!(manages(&eve).iter().all(|(_, may)| !may));
         assert!(eve.note.is_some());
         assert_eq!(eve.people[2].role_key, "editor");

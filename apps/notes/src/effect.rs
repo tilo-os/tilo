@@ -79,16 +79,6 @@ pub enum NotesEffect {
     #[effect(attended, job, cancellable)]
     #[effect(icon = "download")]
     ImportNotionExport,
-    /// Import Markdown content
-    ///
-    /// Add Markdown text to the notebook as a note, with no file to choose.
-    #[effect(returns, kind = "undoable", audience = "agents")]
-    ImportMarkdownContent {
-        #[param("Note title")]
-        title: String,
-        #[param("Markdown content")]
-        body: String,
-    },
     /// Export Markdown
     ///
     /// Save a note as a Markdown file, its images inside it.

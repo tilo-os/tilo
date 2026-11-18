@@ -1,8 +1,8 @@
 //! Native-host adapter. The persistence/decision path is independent of the
 //! OS event loop; Windows and macOS use this same admission boundary.
 use super::{App, BrokerReply, ResourceInvocation};
+use crate::app_core::{AppCore as _, KeyCore as _};
 use crate::close_admission::{Choice, Command, OPERATION};
-use crate::host_core::{HostCore as _, KeyHost as _};
 use crate::widget::Widget;
 
 // Compile the actual native Quit routing state in portable host tests. The

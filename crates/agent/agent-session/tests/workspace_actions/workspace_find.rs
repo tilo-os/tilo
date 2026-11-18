@@ -110,11 +110,13 @@ async fn an_agent_finds_a_note_by_its_title_and_by_its_words_and_reads_that_note
     write_body(&server, &handbook, "Welcome to the team.").await;
 
     // By what is written in it: the note holding the words, named by the
-    // path the notebook lists it at, with its title, ahead of the notebook.
+    // path the notes' directory takes to it, with its title, ahead of the
+    // notebook that holds it.
+    let page = hello.rsplit('/').next().unwrap_or_default().to_owned();
     let (lines, took) = find(&server, "net 30").await;
     let first = lines.first().cloned().unwrap_or_default();
     assert!(
-        first.starts_with(&format!("{hello}  ")),
+        first.starts_with("notes/") && first.contains(&format!("/{page}  ")),
         "the note holding net 30 leads: {lines:?}"
     );
     eprintln!("tilo_find \"net 30\" answered in {took:?}: {lines:?}");
@@ -136,8 +138,8 @@ async fn an_agent_finds_a_note_by_its_title_and_by_its_words_and_reads_that_note
     assert!(!line.contains('\\'), "nothing is escaped: {line}");
     let path = line.split("  ").next().unwrap_or_default();
     assert!(
-        path.starts_with(&format!("notes/{notebook}/")),
-        "the note itself is named, not its notebook: {line}"
+        path.starts_with("notes/") && line.ends_with("files/notes/handbook.md"),
+        "the note itself is named, its title whole beside the path: {line}"
     );
     let read = call(&server, "tilo_read", json!({"path": path})).await;
     assert!(read.contains("Welcome to the team."), "{read}");

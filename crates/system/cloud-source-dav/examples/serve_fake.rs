@@ -1,5 +1,5 @@
-//! The fake WebDAV server ([`cloud_source_dav::fake::FakeDav`]) on its own, holding a copy of a
-//! folder, for trying a WebDAV client (`tilo migrate connect webdav`) end to end without a real
+//! The fake `WebDAV` server ([`cloud_source_dav::fake::FakeDav`]) on its own, holding a copy of a
+//! folder, for trying a `WebDAV` client (`tilo migrate connect webdav`) end to end without a real
 //! server:
 //!
 //! ```text
@@ -35,7 +35,7 @@ fn main() {
                 walking.push(path);
             } else if let Ok(bytes) = std::fs::read(&path) {
                 server.put(&name, &bytes);
-                files += 1;
+                files = files.saturating_add(1);
             }
         }
     }

@@ -13,7 +13,7 @@ use std::{
     time::SystemTime,
 };
 use tilo_desktop_model::{Workspace, WorkspaceId};
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::direct::{DirectSync, Heard};
 use tilo_peer_state::join::TransportHint;
 use tilo_peer_state::owner::{
@@ -50,7 +50,7 @@ pub(super) use mcp_admission::{Refusal, SessionAdmission};
 pub(super) struct Joined {
     executions: Arc<super::execution::ExecutionPins>,
     owner: NativeWorkspaceOwner,
-    identity: HostIdentity,
+    identity: DeviceIdentity,
     endpoint: iroh::Endpoint,
     /// Workspaces this profile must not enroll in, whose writes are refused
     /// here: those the desktop session governs or enrolled this device in.
@@ -69,6 +69,8 @@ pub(super) struct Joined {
     keys: KeyProvider,
     /// The workspace host this profile runs, once it runs.
     own_host: std::sync::OnceLock<hosted::OwnHost>,
+    /// Told each time this profile starts holding a workspace.
+    entered: Arc<Notify>,
     /// This value, for the futures its commits answer with.
     this: std::sync::Weak<Self>,
 }
@@ -124,7 +126,7 @@ impl Joined {
     /// each. `endpoint` is keyed by this device's key, as hosts require.
     pub(super) fn open(
         profile: &Path,
-        identity: HostIdentity,
+        identity: DeviceIdentity,
         endpoint: iroh::Endpoint,
         refused: BTreeSet<WorkspaceId>,
         broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
@@ -150,6 +152,7 @@ impl Joined {
             governance_wake: Arc::default(),
             keys,
             own_host: std::sync::OnceLock::new(),
+            entered: Arc::default(),
             this: this.clone(),
         });
         for workspace in joined.owner.workspaces() {
@@ -168,7 +171,7 @@ impl Joined {
     /// starts with, as a member device that takes its workspaces' work does.
     pub(in crate::standalone) fn from_profile(
         profile: &Path,
-        identity: HostIdentity,
+        identity: DeviceIdentity,
         endpoint: iroh::Endpoint,
     ) -> io::Result<Arc<Self>> {
         let broker = (
@@ -187,6 +190,49 @@ impl Joined {
     /// The device certificate this profile's ownership holds.
     pub(in crate::standalone) fn device_cert(&self) -> &tilo_user_identity::DeviceCert {
         &self.identity.device_cert
+    }
+
+    /// What is told each time this profile starts holding a workspace.
+    pub(in crate::standalone) fn entered(&self) -> Arc<Notify> {
+        Arc::clone(&self.entered)
+    }
+
+    /// Whether this profile holds `workspace`.
+    pub(in crate::standalone) fn holds(&self, workspace: WorkspaceId) -> bool {
+        self.owner.contains_workspace(workspace)
+    }
+
+    /// Claim, or renew, `workspace`'s lease `id` for this device for `ttl`,
+    /// ranked by `rank`, as this member's own write, which leaves for the
+    /// workspace's other devices at once.
+    pub(in crate::standalone) async fn claim_lease(
+        &self,
+        workspace: WorkspaceId,
+        id: String,
+        ttl: std::time::Duration,
+        rank: neighbour_wire::placement::Rank,
+    ) -> Result<(), String> {
+        let request = OwnerCommitRequest {
+            workspace: workspace.to_string(),
+            operation: tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                invocation: uuid::Uuid::new_v4(),
+                caller: self.identity.device_cert.clone(),
+                command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Lease {
+                    id,
+                    ttl_ms: u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX),
+                    rank,
+                },
+            },
+        };
+        self.owner
+            .commit_workspace_membership_command(
+                request,
+                self.identity.signer.as_ref(),
+                SystemTime::now(),
+            )
+            .await?;
+        self.wake(workspace);
+        Ok(())
     }
 
     /// The person this device belongs to: whose devices may ask it for work.
@@ -413,6 +459,7 @@ impl Joined {
         if sessions.contains_key(&workspace) {
             return;
         }
+        self.entered.notify_one();
         let wake = Arc::new(Notify::new());
         sessions.insert(
             workspace,

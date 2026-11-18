@@ -21,21 +21,10 @@
 use tilo_server::{Envelope, ServerClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_server};
+use crate::common::{TestUser, client_endpoint, next, spawn_server};
 use tilo_server::WorkspaceId;
 
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(7);
-
-/// Take the next envelope or fail loudly. A dropped endpoint shows up
-/// here as a timeout, so the message has to name the suspect.
-async fn next_envelope(client: &ServerClient, what: &str) -> Envelope {
-    tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
-        .await
-        .unwrap_or_else(|_| {
-            panic!("timed out waiting for {what} — the session's endpoint went away")
-        })
-        .unwrap_or_else(|| panic!("session closed before {what}"))
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_survives_the_caller_handing_over_its_only_endpoint() {
@@ -47,7 +36,7 @@ async fn session_survives_the_caller_handing_over_its_only_endpoint() {
         &user,
         server_dev,
         &[WORKSPACE],
-        &[device.device_pubkey()],
+        &[&device.cert],
     ))
     .await;
 
@@ -69,13 +58,13 @@ async fn session_survives_the_caller_handing_over_its_only_endpoint() {
             workspace_id: WORKSPACE,
         })
         .expect("the session must still accept a subscribe");
-    match next_envelope(&client, "the Ready that answers Subscribe").await {
+    // A held workspace sends its own state before it is ready.
+    match next(&client, |env| matches!(env, Envelope::Ready { .. })).await {
         Envelope::Ready {
             workspace_id: WORKSPACE,
-            pending_deltas: 0,
-            documents_when_opened: false,
+            ..
         } => {}
-        other => panic!("expected Ready(7, 0), got {other:?}"),
+        other => panic!("expected Ready(7), got {other:?}"),
     }
 
     // A second exchange, after the subscribe: proves the wire is still
@@ -83,7 +72,7 @@ async fn session_survives_the_caller_handing_over_its_only_endpoint() {
     client
         .send(Envelope::Ping)
         .expect("the session must still accept a ping");
-    match next_envelope(&client, "the Pong that answers Ping").await {
+    match next(&client, |env| matches!(env, Envelope::Pong)).await {
         Envelope::Pong => {}
         other => panic!("expected Pong, got {other:?}"),
     }

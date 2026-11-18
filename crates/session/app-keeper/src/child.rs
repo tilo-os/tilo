@@ -2,11 +2,14 @@
 //! the keeper (a kept app without a display is worse than a closed one).
 
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, Read, Write as _};
 use std::os::fd::{FromRawFd as _, OwnedFd};
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
-use std::path::Path;
-use std::process::{Child, Command};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::wire::End;
 
@@ -27,11 +30,19 @@ pub(crate) struct App {
     pub started_at: Option<u64>,
     /// Readable once the process ended.
     pub pidfd: OwnedFd,
+    /// Set by each of the readers of what the app wrote, once it read the stream to its end.
+    streams: Vec<Arc<AtomicBool>>,
 }
 
 impl App {
-    /// Start `argv` with `socket` as its Wayland display, and `x11` as its X11 one.
-    pub(crate) fn spawn(argv: &[OsString], socket: &Path, x11: X11) -> io::Result<Self> {
+    /// Start `argv` with `socket` as its Wayland display, and `x11` as its X11 one, keeping what
+    /// it writes in `dir` for the desktop that follows a restart.
+    pub(crate) fn spawn(
+        argv: &[OsString],
+        socket: &Path,
+        x11: X11,
+        dir: &Path,
+    ) -> io::Result<Self> {
         let Some((program, rest)) = argv.split_first() else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -46,7 +57,11 @@ impl App {
             // app (or the sandbox it starts) sees.
             .env("WAYLAND_DISPLAY", socket)
             .env_remove("WAYLAND_SOCKET")
-            .process_group(0);
+            .process_group(0)
+            // Read here, never left to a desktop: the session reading the keeper's own streams
+            // goes away in a restart, and the app must not block on a pipe nobody drains.
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         match x11 {
             X11::Display(number, authority) => {
                 command
@@ -75,20 +90,28 @@ impl App {
                 Ok(())
             });
         }
-        let child = command.spawn()?;
+        let mut child = command.spawn()?;
         let pid = child.id();
         let pidfd = pidfd_open(pid)?;
+        let mut streams = Vec::new();
+        if let Some(pipe) = child.stdout.take() {
+            keep_stream(pipe, Stream::Out, dir, &mut streams);
+        }
+        if let Some(pipe) = child.stderr.take() {
+            keep_stream(pipe, Stream::Err, dir, &mut streams);
+        }
         Ok(Self {
             started_at: start_time(pid),
             child,
             pid,
             pidfd,
+            streams,
         })
     }
 
     /// How the process ended, once it did.
     pub(crate) fn try_end(&mut self) -> Option<End> {
-        match self.child.try_wait() {
+        let end = match self.child.try_wait() {
             Ok(Some(status)) => Some(match status.signal() {
                 Some(signal) => End::Signalled { signal },
                 None => End::Exited {
@@ -99,6 +122,23 @@ impl App {
             Err(error) => {
                 tracing::warn!(%error, "the app's process could not be waited for");
                 None
+            }
+        }?;
+        // The session that follows hears how the app ended only once what it wrote in its last
+        // instant is in the keeper's file.
+        self.drain(Duration::from_millis(500));
+        Some(end)
+    }
+
+    /// Wait for the readers to reach the end of their streams, or `within` passes: a program of
+    /// the app's still holding a stream open keeps its reader waiting longer than the report can.
+    fn drain(&self, within: Duration) {
+        let deadline = Instant::now().checked_add(within);
+        for stream in &self.streams {
+            while !stream.load(Ordering::Acquire)
+                && deadline.is_none_or(|deadline| Instant::now() < deadline)
+            {
+                std::thread::sleep(Duration::from_millis(1));
             }
         }
     }
@@ -133,4 +173,111 @@ pub(crate) fn start_time(pid: u32) -> Option<u64> {
     // The command name is in parentheses and may hold spaces; the fields after it are plain.
     let (_, rest) = stat.rsplit_once(')')?;
     rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// One of the app's standard streams, as the keeper passes it on.
+#[derive(Clone, Copy)]
+enum Stream {
+    Out,
+    Err,
+}
+
+impl Stream {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Out => "stdout",
+            Self::Err => "stderr",
+        }
+    }
+
+    /// Write what the app wrote on this stream of the keeper's, which the launcher passes to the
+    /// session. A session that is going away reads nothing; the write ends in a broken pipe,
+    /// which is no reason to stop reading what the app says.
+    fn write(self, bytes: &[u8]) {
+        match self {
+            Self::Out => {
+                let mut out = io::stdout().lock();
+                let _ = out.write_all(bytes);
+                let _ = out.flush();
+            }
+            Self::Err => {
+                let mut err = io::stderr().lock();
+                let _ = err.write_all(bytes);
+                let _ = err.flush();
+            }
+        }
+    }
+}
+
+/// Read the app's `stream` from `pipe`, or say why nobody reads it: an app blocks when the pipe
+/// fills.
+fn keep_stream(
+    pipe: impl Read + Send + 'static,
+    stream: Stream,
+    dir: &Path,
+    streams: &mut Vec<Arc<AtomicBool>>,
+) {
+    match pass_on(pipe, stream, crate::output::path(dir, stream.name())) {
+        Ok(ended) => streams.push(ended),
+        Err(error) => tracing::warn!(
+            %error,
+            stream = stream.name(),
+            "an app's stream is read by no one: it blocks when the pipe fills"
+        ),
+    }
+}
+
+/// Read `from` to its end: what the app wrote goes on `to` and into the bounded file at `path`,
+/// which a desktop that comes after a restart reads. The returned flag is set once the stream
+/// ended.
+fn pass_on(
+    mut from: impl Read + Send + 'static,
+    to: Stream,
+    path: PathBuf,
+) -> io::Result<Arc<AtomicBool>> {
+    let ended = Arc::new(AtomicBool::new(false));
+    let finished = Arc::clone(&ended);
+    std::thread::Builder::new()
+        .name(format!("app-{}", to.name()))
+        .spawn(move || {
+            let mut kept = match crate::output::Ring::create(&path) {
+                Ok(ring) => Some(ring),
+                Err(error) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        %error,
+                        "what the app writes is not kept for the desktop that follows"
+                    );
+                    None
+                }
+            };
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match from.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        let bytes = buffer.get(..read).unwrap_or_default();
+                        let written = kept.as_mut().is_none_or(|ring| match ring.write(bytes) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    %error,
+                                    "what the app writes is not kept"
+                                );
+                                false
+                            }
+                        });
+                        if !written {
+                            kept = None;
+                        }
+                        to.write(bytes);
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
+            finished.store(true, Ordering::Release);
+        })?;
+    Ok(ended)
 }

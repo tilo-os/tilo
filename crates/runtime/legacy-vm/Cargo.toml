@@ -10,9 +10,17 @@ description = "Per-user legacy VMs: one unprivileged libvirt domain per guest OS
 name = "legacy_vm"
 path = "src/lib.rs"
 
+[features]
+# Waking a domain and keeping its windows behind an app keeper, in the program a VM machine
+# serves with. A server that places sessions on those machines reads only their control
+# requests, so it leaves this off and links no Wayland server.
+default = ["supervisor"]
+supervisor = ["dep:tilo-app-keeper"]
+
 [[bin]]
 name = "tilo-legacy"
 path = "src/main.rs"
+required-features = ["supervisor"]
 
 # The privileged helper of a hosted-VM host (`hosted::jail`).
 [[bin]]
@@ -65,7 +73,7 @@ rustix = { workspace = true, features = ["fs", "process"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The VM's window forwarder runs behind an app keeper, written into the keepers' registry.
-tilo-app-keeper = { path = "../../session/app-keeper" }
+tilo-app-keeper = { path = "../../session/app-keeper", optional = true }
 # The VM network's bridge filter, over the same nf_tables encoder as a
 # sandbox's egress filter.
 tilo-egress = { path = "../egress" }

@@ -123,7 +123,7 @@ pub(super) fn unread_mentions(messages: &[Message], unread: usize, me: &[&Member
     reason = "the bools split across unrelated concerns (attachment-picker/emoji-popover open flags, layout/render bookkeeping, and --shots-only staging), so grouping them would need a real design pass rather than a mechanical lint fix"
 )]
 pub struct ChatApp {
-    pub(crate) host_model: crate::host_model::HostModel,
+    pub(crate) model_stream: crate::model_stream::ModelStream,
     pub(crate) expanded_agent: std::collections::HashSet<String>,
     // CRDT projection (rebuilt every sync / after a mutation).
     pub(crate) channels: Vec<Channel>,
@@ -392,8 +392,6 @@ pub struct ChatApp {
     pub(crate) motion_reduced: bool,
     pub(crate) input_floating_surface: Option<String>,
 
-    /// The person each agent here acts for, as presence knows it.
-    pub(crate) agent_people: HashMap<MemberId, MemberId>,
     /// What the workspace's host keeps of the files members post, as it says:
     /// a file it would not take is refused here, in plain words.
     pub(crate) workspace_files: crate::chat::WorkspaceFiles,
@@ -760,7 +758,6 @@ impl ChatApp {
             recorded_channels: std::collections::HashSet::new(),
             motion_reduced: false,
             input_floating_surface: None,
-            agent_people: HashMap::new(),
             workspace_files: crate::chat::WorkspaceFiles::default(),
             body_views: std::cell::RefCell::new(HashMap::new()),
             body_text_inset: std::cell::Cell::new(0.0),
@@ -771,7 +768,7 @@ impl ChatApp {
             // (`ChatApp::new`) upgrades to the real transport. This keeps
             // `--shots`/tests from binding a real iroh endpoint per instance.
             perms: ChatPermissions::permissive(),
-            host_model: crate::host_model::HostModel::default(),
+            model_stream: crate::model_stream::ModelStream::default(),
             expanded_agent: std::collections::HashSet::new(),
             dispatch: None,
             send_action: None,
@@ -2511,7 +2508,7 @@ impl Widget for ChatApp {
 
     fn needs_animation_frame(&self) -> bool {
         self.read_on_present
-            || self.host_model.needs_frame()
+            || self.model_stream.needs_frame()
             || self.resource_navigation.pending()
             || (self.thread_open.is_some() && self.thread_scroll.needs_animation_frame())
             || self.flap_animating

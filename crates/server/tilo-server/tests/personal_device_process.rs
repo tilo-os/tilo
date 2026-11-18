@@ -306,13 +306,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         transferred[0].server_node_id,
         "the transferred registration names the actual home-peer service"
     );
-    crate::common::admit_members(
-        &server,
-        FILE_WORKSPACE,
-        &[member_cert.device_public_key],
-        state.path(),
-    )
-    .await;
+    crate::common::hold_workspace(&server, FILE_WORKSPACE, &[&member_cert]).await;
     let transferred_addr = transferred[0]
         .server_endpoint
         .clone()
@@ -333,11 +327,11 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         })
         .unwrap();
     assert!(matches!(
-        tilo_test_env::within("the file workspace's Ready", client.recv()).await,
-        Some(Envelope::Ready {
+        crate::common::next(&client, |env| matches!(env, Envelope::Ready { .. })).await,
+        Envelope::Ready {
             workspace_id: FILE_WORKSPACE,
             ..
-        })
+        }
     ));
 }
 

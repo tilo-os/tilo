@@ -1160,7 +1160,7 @@ impl ChatApp {
         // hovered and to assistive technology.
         parts.service = line
             .badge
-            .zip(self.message_author(m, "", "", None).service_tip());
+            .zip(self.message_author(m, "", None).service_tip());
         parts.time = Some((
             Rect::new(
                 clock_x,

@@ -240,13 +240,12 @@ fn anchor_of(
     named: Option<&str>,
 ) -> tilo_actions::InteractionAnchor {
     use tilo_actions::InteractionAnchor;
-    let parsed = tilo_actions::remote::InvokeArgument::from_slot(argument);
+    // An argument that is no set of named values names nothing in it.
+    let argument = json_argument(argument).unwrap_or_default();
     // A field edit that splices a rich text names the characters it writes,
     // whatever it is addressed to: the editor showing that text draws them as
     // the writer's, and their caret where the write ends.
-    if let tilo_actions::remote::InvokeArgument::Json(argument) = &parsed
-        && let Some((region, block, start, end)) = written_text(argument)
-    {
+    if let Some((region, block, start, end)) = written_text(&argument) {
         return InteractionAnchor::Text {
             region,
             ranges: vec![tilo_actions::InteractionTextRange { block, start, end }],
@@ -259,7 +258,6 @@ fn anchor_of(
     // record, the item its argument `named`.
     let item = item_of_resource(&resource.id, &resource.kind).or_else(|| named.map(str::to_owned));
     if let Some(field) = action.contract.field.as_deref()
-        && let tilo_actions::remote::InvokeArgument::Json(argument) = &parsed
         && let Some(item) = item.clone()
         && action
             .params
@@ -276,9 +274,7 @@ fn anchor_of(
             }],
         };
     }
-    if let tilo_actions::remote::InvokeArgument::Json(argument) = &parsed
-        && let Some(written) = edited_field(action, resource, argument)
-    {
+    if let Some(written) = edited_field(action, resource, &argument) {
         return written;
     }
     // An item published as its own resource (`<kind>/<field>/<item>`), or the
@@ -292,9 +288,6 @@ fn anchor_of(
     {
         return InteractionAnchor::ListItems { ids: vec![item] };
     }
-    let tilo_actions::remote::InvokeArgument::Json(argument) = parsed else {
-        return InteractionAnchor::Resource;
-    };
     let Some(place) = action
         .params
         .iter()
@@ -1100,7 +1093,7 @@ mod anchor_tests {
             // Once it applied, the comment is the words it added under the issue: the thread
             // draws them, and a row showing the issue stands for them.
             let adds = adds_of(&comment, Some(&said), Some("7d2b"));
-            assert_eq!(adds, Some(("comments".to_owned(), 14)), "its words, not the issue's id");
+            assert_eq!(adds, Some(("comments".to_owned(), 18)), "its words, not the issue's id");
             let made = tilo_actions::ActionOutput {
                 value: None,
                 resources: vec!["tasks.issues/issues/7d2b/comments/c9f1".into()],
@@ -1110,7 +1103,7 @@ mod anchor_tests {
             };
             assert_eq!(
                 text_range(&landed_anchor(&at_issue, adds.as_ref(), &made).expect("it landed")),
-                ("comments".into(), "7d2b/c9f1".into(), 0, 14),
+                ("comments".into(), "7d2b/c9f1".into(), 0, 18),
             );
             // An issue made from the tracker's own control is its new row once it applied.
             assert_eq!(

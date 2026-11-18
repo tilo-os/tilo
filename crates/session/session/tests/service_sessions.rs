@@ -651,30 +651,52 @@ fn settings_seals_an_account_secret_in_the_persons_vault() {
 }
 
 /// Mail's own call on a connection admitted as Mail: the account secret it keeps.
-fn mail_app(
+fn app_asks(
     socket: &Path,
-    device: &ed25519_dalek::SigningKey,
-    cert: &DeviceCert,
-    seen: &std::sync::mpsc::Sender<Result<Reply, String>>,
+    app: &str,
+    commands: Vec<Command>,
+    keys: &Keys,
+    seen: &std::sync::mpsc::Sender<Vec<Result<Reply, String>>>,
 ) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a runtime for the app");
     runtime.block_on(async {
-        let client = connect(socket, MAIL);
+        let client = connect(socket, app);
         let handle = client
-            .join_channel(&channel(MAIL), &presentation(device, cert))
+            .join_channel(&channel(app), &presentation(&keys.device, &keys.cert))
             .await
             .expect("the app the session launched joins its workspace's channel");
-        let released = handle
-            .browser_service_session_command(&Command::ReleaseAccountSecret {
-                account: ACCOUNT.to_owned(),
-            })
-            .await
-            .map_err(|error| error.to_string());
-        let _ = seen.send(released);
+        let mut replies = Vec::new();
+        for command in commands {
+            replies.push(
+                handle
+                    .browser_service_session_command(&command)
+                    .await
+                    .map_err(|error| error.to_string()),
+            );
+        }
+        let _ = seen.send(replies);
     });
+}
+
+/// What `app` is answered for each of `commands`, in order, by the session that serves
+/// `fixture`'s person, on a connection admitted as `app`.
+fn asked_of_the_session(
+    fixture: &Fixture,
+    app: &'static str,
+    commands: Vec<Command>,
+) -> Vec<Result<Reply, String>> {
+    let (_root, socket) = private_socket();
+    let mut session = session(&socket, fixture, app);
+
+    let (seen, received) = std::sync::mpsc::channel();
+    let keys = fixture.keys.clone();
+    let asking = std::thread::spawn(move || app_asks(&socket, app, commands, &keys, &seen));
+    let replies = until_the_app_is_done(&mut session, &received);
+    asking.join().expect("the app's thread");
+    replies
 }
 
 #[test]
@@ -701,17 +723,73 @@ fn mail_is_released_the_account_secret_it_keeps() {
         backend_on(Keyring::Answers),
         "the keyring keeps the person's vault key, not a file beside it"
     );
-    let (_root, socket) = private_socket();
-    let mut session = session(&socket, &fixture, MAIL);
-
-    let (seen, received) = std::sync::mpsc::channel();
-    let Keys { device, cert, .. } = fixture.keys;
-    let app = std::thread::spawn(move || mail_app(&socket, &device, &cert, &seen));
-    let released = until_the_app_is_done(&mut session, &received);
-    app.join().expect("the app's thread");
+    let released = asked_of_the_session(
+        &fixture,
+        MAIL,
+        vec![Command::ReleaseAccountSecret {
+            account: ACCOUNT.to_owned(),
+        }],
+    )
+    .remove(0);
     let Ok(Reply::AccountSecret { account, password }) = &released else {
         panic!("Mail is released the account's secret: {released:?}");
     };
     assert_eq!(account, ACCOUNT);
     assert_eq!(password.as_str(), PASSWORD);
+}
+
+/// A vault item's reference, made up.
+const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
+
+/// What an app asks about vault items: whether its session has any used for a page, and the
+/// text of one for the page action `fill`.
+fn item_asks(fill: tilo_actions::InvocationId) -> Vec<Command> {
+    vec![
+        Command::LendsItems {},
+        Command::UseItem {
+            invocation: fill,
+            item: ITEM.to_owned(),
+            origin: "https://login.example.test".to_owned(),
+        },
+    ]
+}
+
+/// A person's own session keeps no vault a page is filled from: Browser is told so when it
+/// asks whether items are lent, and an ask for one is refused with its reason.
+#[test]
+fn a_persons_own_session_has_no_vault_item_used_for_a_page_and_says_why() {
+    let fill = tilo_actions::InvocationId::new();
+    let replies = asked_of_the_session(&fixture(Keyring::Answers), BROWSER, item_asks(fill));
+    assert!(
+        matches!(&replies[0], Ok(Reply::ItemsLent { lent: false })),
+        "{:?}",
+        replies[0]
+    );
+    assert!(
+        matches!(
+            &replies[1],
+            Ok(Reply::ItemRefused { invocation, reason })
+                if *invocation == fill && reason.contains("holds no Browser of that workspace")
+        ),
+        "{:?}",
+        replies[1]
+    );
+}
+
+/// Only Browser asks about vault items: another app's question is refused, and its ask for
+/// an item's text is answered with that reason.
+#[test]
+fn an_app_that_is_not_browser_is_told_that_only_browser_has_a_page_filled() {
+    let fill = tilo_actions::InvocationId::new();
+    let replies = asked_of_the_session(&fixture(Keyring::Answers), MAIL, item_asks(fill));
+    assert!(replies[0].is_err(), "{:?}", replies[0]);
+    assert!(
+        matches!(
+            &replies[1],
+            Ok(Reply::ItemRefused { invocation, reason })
+                if *invocation == fill && reason.contains("Only Browser")
+        ),
+        "{:?}",
+        replies[1]
+    );
 }

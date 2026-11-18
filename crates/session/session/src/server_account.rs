@@ -14,7 +14,7 @@
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::Pending;
-use tilo_actions::remote::server_account::{self as wire, HostKind, ServerAccount};
+use tilo_actions::remote::server_account::{self as wire, ServerAccount, ServerKind};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind,
 };
@@ -71,7 +71,7 @@ impl ServerAccountApi {
     fn read(&self) -> ServerAccount {
         match &self.source {
             Source::Hosted(hosted) => hosted.read(tilo_clock::unix_now_ms()),
-            Source::Device(name) => ServerAccount::sells_nothing(name.clone(), HostKind::Device),
+            Source::Device(name) => ServerAccount::sells_nothing(name.clone(), ServerKind::Device),
         }
     }
 }
@@ -159,7 +159,7 @@ impl HostStepServices for ServerAccountApi {
             Source::Device(name) => {
                 let account = answer(&ServerAccount::sells_nothing(
                     name.clone(),
-                    HostKind::Device,
+                    ServerKind::Device,
                 ));
                 Box::new(move || Pending::ready(Ok(account.clone())))
             }
@@ -192,7 +192,8 @@ fn followed() -> Option<&'static Followed> {
                     || std::path::PathBuf::from("."),
                     std::path::Path::to_path_buf,
                 );
-                let unread = ServerAccount::sells_nothing(hosted.name.clone(), HostKind::Provider);
+                let unread =
+                    ServerAccount::sells_nothing(hosted.name.clone(), ServerKind::Provider);
                 tilo_files::native::Watched::start_unread(
                     "host-account",
                     vec![dir],
@@ -200,7 +201,7 @@ fn followed() -> Option<&'static Followed> {
                     move || hosted.read(tilo_clock::unix_now_ms()),
                 )
             } else {
-                let device = ServerAccount::sells_nothing(device_name(), HostKind::Device);
+                let device = ServerAccount::sells_nothing(device_name(), ServerKind::Device);
                 tilo_files::native::Watched::start_unread(
                     "host-account",
                     Vec::new(),

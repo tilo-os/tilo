@@ -9,7 +9,7 @@ use crate::join_transport::{LocalJoinService, WorkspaceJoinClient};
 use collab_types::signer::DeviceSigner;
 use std::{sync::Arc, time::Duration};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 
 /// This device's own workspace host, running in this process: a workspace placed on
 /// this device is linked through it, as an endpoint cannot dial itself.
@@ -130,7 +130,11 @@ impl Reach {
     /// of the certificate its record holds, when ownership holds one
     /// ([`crate::owner::enroll::renew_membership`]). Answers whether it
     /// renewed.
-    pub async fn renew(&self, connect: &Connect, identity: &HostIdentity) -> Result<bool, String> {
+    pub async fn renew(
+        &self,
+        connect: &Connect,
+        identity: &DeviceIdentity,
+    ) -> Result<bool, String> {
         let workspace = connect.workspace();
         let own = identity.device_cert.device_public_key;
         let hosted_here = connect.owner().with_current(workspace, |view| {

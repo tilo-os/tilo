@@ -125,7 +125,7 @@ impl Seats {
             && !self.button_holders.contains_key(&button)
         {
             // A button nobody here pressed is let go: a drop the desktop ends on a release it never
-            // saw pressed, as a hosted app's drag does.
+            // saw pressed, as a surface app's drag does.
             return true;
         }
         let Self {
@@ -228,7 +228,7 @@ impl State {
 
     /// Deliver one event as `seat`: a pointer and a keyboard, in its window,
     /// with none of the desktop's own rules (a press focuses nothing, a
-    /// gesture resizes nothing, no hosted surface takes it).
+    /// gesture resizes nothing, no surface takes it).
     pub(crate) fn seat_deliver(&mut self, seat: Seat, event: &InputEvent) {
         if !self.seats.has(seat) {
             return;
@@ -332,7 +332,7 @@ impl State {
         self.seats.close(seat);
     }
 
-    /// The pointer at `at` in the layout, delivered to the surface under it and to no hosted
+    /// The pointer at `at` in the layout, delivered to the surface under it and to no other surface
     /// surface.
     fn seat_pointer(&mut self, at: (f64, f64), serial: Serial, time: u32) {
         let location = self.clamp_to_outputs(Point::from(at));

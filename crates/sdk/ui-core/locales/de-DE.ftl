@@ -525,9 +525,7 @@ relative-compact-years = { $count } J.
 
 # Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
 history-invocation-step-separator = {", "}
-member-agent = { $name } · Agent
 member-shortcut = { $name } · Kurzbefehl
-member-bot = { $name } · Bot
 # Zwei oder mehr Personen in einem Arbeitsbereich tragen denselben Namen: jede
 # wird nummeriert, für alle im Arbeitsbereich gleich.
 member-numbered = { $name } ({ $number })
@@ -774,6 +772,8 @@ author-persona-suffix = { $name }, über { $service }
 history-writer-agent = Externer Agent
 history-writer-app = App
 history-writer-program = Programm
+history-acted-for = Für { $person }
+history-acted-for-you = Für dich
 author-spoken-writer = { $person }, mit { $writer }
 author-spoken-device = { $who }, auf { $device }
 
@@ -1244,3 +1244,6 @@ settings-text-assistance = Rechtschreibung und Text
 
 # One change to a file, described from what the content diff shows: no model
 # is involved, so these are the words a row shows by default.
+
+# What a screen reader says for an agent's name beside its mark.
+member-agent-spoken = { $name }, Agent

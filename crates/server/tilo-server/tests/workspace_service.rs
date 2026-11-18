@@ -9,7 +9,7 @@ use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteA
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::ServedWorkspace;
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
-use tilo_server::service::{HostConfig, HostIdentity, WorkspaceService};
+use tilo_server::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::{
     ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
@@ -18,7 +18,7 @@ use tilo_server::workspaces::{
 use tilo_server::{Envelope, ServerClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, host_on, next_delta};
+use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, receives, serve_on};
 use tilo_server::WorkspaceId;
 
 /// A workspace the person's devices hold on the host before any other.
@@ -150,7 +150,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let bob = TestUser::fresh("Bob");
     let bobs_phone = bob.enrol("phone", DeviceCapabilities::member());
-    let hosted = host_on(&alice, &laptop, tilo_server_protocol::WorkSetting::none()).await;
+    let hosted = serve_on(&alice, &laptop, tilo_server_protocol::WorkSetting::none()).await;
     let workspace = hosted.host.workspaces().create("Plans").await.unwrap();
 
     // The laptop governs and serves the workspace itself: its join answers name
@@ -254,7 +254,7 @@ async fn an_in_process_member_shares_deltas_with_a_remote_one() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
-    let hosted = host_on(&alice, &laptop, tilo_server_protocol::WorkSetting::none()).await;
+    let hosted = serve_on(&alice, &laptop, tilo_server_protocol::WorkSetting::none()).await;
     let local = hosted
         .host
         .connect_local(
@@ -280,9 +280,9 @@ async fn an_in_process_member_shares_deltas_with_a_remote_one() {
         signature: [0; 64],
     };
     local.send(delta(&laptop, 1, b"from the laptop")).unwrap();
-    assert_eq!(next_delta(&remote).await, b"from the laptop");
+    receives(&remote, b"from the laptop").await;
     remote.send(delta(&phone, 2, b"from the phone")).unwrap();
-    assert_eq!(next_delta(&local).await, b"from the phone");
+    receives(&local, b"from the phone").await;
     assert!(
         hosted
             .host
@@ -321,11 +321,11 @@ async fn a_router_built_before_any_workspace_refuses_until_its_host_is_installed
 
     let state = tempfile::tempdir().unwrap();
     let host = WorkspaceService::open(
-        HostConfig::new(
+        ServiceConfig::new(
             state.path().to_path_buf(),
             tilo_server_protocol::WorkSetting::none(),
         ),
-        HostIdentity {
+        ServiceIdentity {
             user_public_key: alice.user_pk,
             device_signing_key: laptop.sk.clone(),
             device_cert: laptop.cert.clone(),

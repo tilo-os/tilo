@@ -4,7 +4,7 @@
 use serde_json::{Map, Value};
 use ui::framework::{EffectStatus, LiveRow};
 use ui::i18n::ArgValue;
-use ui::tilo_actions::{ActionOutput, ActionSpec, ResourcePresentation, ResourceSpec};
+use ui::tilo_actions::{ActionOutput, ActionSpec, ResourcePresentation};
 use ui::tilo_resource::Effect as _;
 use zeroize::Zeroizing;
 

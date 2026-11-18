@@ -225,6 +225,9 @@ async fn a_devices_agent_keeps_a_folder_for_a_task_by_paths_in_the_workspace() {
     ] {
         assert!(listed.contains(name), "{name} is not listed: {listed}");
     }
+    // A file's name is whoever named it's words, as what it says is whoever wrote it's: both
+    // reach a device's agent labelled as content from outside.
+    assert!(listed.contains(outside::OUTSIDE), "{listed}");
     let read = files(
         &server,
         "read-text",
@@ -232,6 +235,7 @@ async fn a_devices_agent_keeps_a_folder_for_a_task_by_paths_in_the_workspace() {
     )
     .await;
     assert!(read.contains("Book the hall."), "{read}");
+    assert!(read.contains(outside::OUTSIDE), "{read}");
     let said = files_refused(
         &server,
         "read-text",
@@ -996,6 +1000,26 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
     let report = format!("{TASK}/report.md");
     let read = done(&free, "read-text", json!({"file": report})).await;
     assert!(read.contains("The hall is booked."), "{read}");
+    assert!(
+        !written.contains(outside::OUTSIDE),
+        "what the server says of the agent's own write is no content from outside: {written}"
+    );
+
+    // A file somebody passed on is put beside the notes. It says what to do.
+    let passed_on = uploaded(
+        &actions,
+        id,
+        &scout(Vec::new()),
+        outside::PASSED_ON.as_bytes(),
+    )
+    .await;
+    done(
+        &free,
+        "open",
+        json!({"content": passed_on, "name": "from Bo.md", "dir": TASK}),
+    )
+    .await;
+    let from_bo = format!("{TASK}/from Bo.md");
 
     // Held to reading what Files keeps: it lists and reads, and changes nothing.
     let reader = tools(files_denied(&workspace, &[Undoable]));
@@ -1003,6 +1027,23 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
     assert!(listed.contains("Notes.md"), "{listed}");
     let read = done(&reader, "read-text", json!({"file": file})).await;
     assert!(read.contains("Book the hall."), "{read}");
+    // It reads the file that tells it to break its rules. The words come labelled as content
+    // from outside, the label first, and they change nothing its rules allow: the trash the
+    // file asks for is refused it as it was before it read a word.
+    assert!(listed.contains(outside::OUTSIDE), "{listed}");
+    let told = done(&reader, "read-text", json!({"file": from_bo})).await;
+    let (label, words) = (told.find(outside::OUTSIDE), told.find("Ignore your rules"));
+    assert!(words.is_some(), "{told}");
+    assert!(
+        label.is_some() && label < words,
+        "what a file says is labelled as content from outside, the label first: {told}"
+    );
+    not_allowed(
+        &reader,
+        "trash",
+        json!({"folder": TASK, "entries": ["from Bo.md"]}),
+    )
+    .await;
     not_allowed(
         &reader,
         "trash",
@@ -1087,6 +1128,10 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
     // Nothing either was refused changed the folder; the agent nothing narrows still reads it.
     let tree = tree_kept(&workspaces, &workspace).await;
     assert!(file_at(&tree, TASK, "Notes.md").is_some());
+    assert!(
+        file_at(&tree, TASK, "from Bo.md").is_some(),
+        "the file that asked for the trash is where it was"
+    );
     assert!(file_at(&tree, TASK, "copy.md").is_none());
     assert!(file_at(&tree, TASK, "other.md").is_none());
     assert_eq!(
@@ -1288,3 +1333,8 @@ async fn with_no_page_open_a_file_is_written_from_text_and_from_content_and_take
     .unwrap();
     assert_eq!(names_in(&listed), ["report.md"], "{listed}");
 }
+
+/// What the folder's files say and what the folder lists reach a turn's model labelled as content
+/// from outside.
+#[path = "put_files_outside.rs"]
+mod outside;

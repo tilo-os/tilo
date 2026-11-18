@@ -32,24 +32,10 @@ const MAX_PERMISSIONS: usize = 64;
 const MAX_VALUE: usize = 16 * 1024;
 const MAX_ENTRIES: usize = 4096;
 
-#[allow(
-    dead_code,
-    reason = "the scalar variants are no longer written but stay readable in stores an earlier \
-              build wrote"
-)]
+/// A value's complete D-Bus variant encoding, which keeps bounded portal
+/// restore tuples and dictionaries whole; empty for an entry without one.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-enum StoredValue {
-    #[default]
-    Empty,
-    /// Complete D-Bus variant encoding. This preserves arbitrary bounded
-    /// portal restore tuples/dictionaries instead of narrowing the standard
-    /// `v` field to a handful of scalar types.
-    Wire(Vec<u8>),
-    Bool(bool),
-    Unsigned(u32),
-    Text(String),
-    Texts(Vec<String>),
-}
+struct StoredValue(Vec<u8>);
 
 impl StoredValue {
     fn from_value(value: OwnedValue) -> zbus::fdo::Result<Self> {
@@ -64,29 +50,19 @@ impl StoredValue {
         if encoded.len() > MAX_VALUE {
             return Err(invalid("permission-store value is too large"));
         }
-        Ok(Self::Wire(encoded.bytes().to_vec()))
+        Ok(Self(encoded.bytes().to_vec()))
     }
 
     fn to_value(&self) -> OwnedValue {
-        match self {
-            Self::Empty => OwnedValue::from(Str::from("")),
-            Self::Wire(bytes) => {
-                let context = zbus::zvariant::serialized::Context::new_dbus(zbus::zvariant::LE, 0);
-                let data = zbus::zvariant::serialized::Data::new_borrowed_fds(
-                    bytes.as_slice(),
-                    context,
-                    std::iter::empty::<zbus::zvariant::Fd<'_>>(),
-                );
-                data.deserialize::<OwnedValue>()
-                    .ok()
-                    .map_or_else(|| OwnedValue::from(Str::from("")), |(value, _)| value)
-            }
-            Self::Bool(value) => OwnedValue::from(*value),
-            Self::Unsigned(value) => OwnedValue::from(*value),
-            Self::Text(value) => OwnedValue::from(Str::from(value.as_str())),
-            Self::Texts(values) => OwnedValue::try_from(zbus::zvariant::Value::new(values.clone()))
-                .unwrap_or_else(|_| OwnedValue::from(Str::from(""))),
-        }
+        let context = zbus::zvariant::serialized::Context::new_dbus(zbus::zvariant::LE, 0);
+        let data = zbus::zvariant::serialized::Data::new_borrowed_fds(
+            self.0.as_slice(),
+            context,
+            std::iter::empty::<zbus::zvariant::Fd<'_>>(),
+        );
+        data.deserialize::<OwnedValue>()
+            .ok()
+            .map_or_else(|| OwnedValue::from(Str::from("")), |(value, _)| value)
     }
 }
 

@@ -195,6 +195,22 @@ impl TurnProvider for TurnConnections {
         target.provider == person_connections::PROVIDER
     }
 
+    /// What a service its person connected says was written by that service: what a command
+    /// of it answers, and what it says of itself and of its commands where a turn lists its
+    /// person's connections, looks at an address or reads a connection's commands again. The
+    /// turn's tools are told so with the answer. Where a call is not made because its person
+    /// is asked first, what ends it is this server's own words, and the tools label no call
+    /// that was not made.
+    fn carries_untrusted(&self, target: &RemoteActionTarget) -> bool {
+        matches!(
+            target.address.action.as_str(),
+            person_connections::CALL
+                | person_connections::LIST
+                | person_connections::LOOK
+                | person_connections::REFRESH
+        )
+    }
+
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending {
         Box::pin(async move { self.take(&caller, &request).await })
     }

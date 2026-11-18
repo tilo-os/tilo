@@ -127,7 +127,7 @@ pub(crate) struct Adoption {
 pub(crate) struct Personal {
     /// This device's collaboration identity: its certificate names the device to the person's
     /// others.
-    identity: tilo_network_actor::HostIdentity,
+    identity: tilo_network_actor::DeviceIdentity,
     directory: WorkspaceDirectory,
     /// The person's store's revision and this list's heads when the two were last brought together:
     /// while neither moved, there is nothing to take in or to write.
@@ -295,7 +295,7 @@ impl Personal {
     /// only when there is no state directory.
     /// A file this build cannot read starts empty: the first pass lists this device's workspaces
     /// again, and the person's other devices answer with theirs.
-    pub(crate) fn open(identity: tilo_network_actor::HostIdentity, state: Option<&Path>) -> Self {
+    pub(crate) fn open(identity: tilo_network_actor::DeviceIdentity, state: Option<&Path>) -> Self {
         let user = identity.device_cert.user_public_key;
         let device = identity.device_cert.device_public_key;
         let store = state.map(|state| state.join("tilo").join(FILE));
@@ -1782,7 +1782,7 @@ mod tests {
 
     /// The list as a later session opens it: a session flushes its writes before it ends, and
     /// opening here stands for that start.
-    fn open(identity: tilo_network_actor::HostIdentity, state: Option<&Path>) -> Personal {
+    fn open(identity: tilo_network_actor::DeviceIdentity, state: Option<&Path>) -> Personal {
         written();
         Personal::open(identity, state)
     }
@@ -1793,7 +1793,7 @@ mod tests {
     }
 
     /// A device of the person's, certified for their own root key.
-    fn identity(user: u8, device: u8, label: &str) -> tilo_network_actor::HostIdentity {
+    fn identity(user: u8, device: u8, label: &str) -> tilo_network_actor::DeviceIdentity {
         let person = ed25519_dalek::SigningKey::from_bytes(&[user; 32]);
         let this = ed25519_dalek::SigningKey::from_bytes(&[device; 32]);
         let mut cert = DeviceCert {
@@ -1807,7 +1807,7 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-        tilo_network_actor::HostIdentity::kept(cert, this)
+        tilo_network_actor::DeviceIdentity::kept(cert, this)
     }
 
     /// The session a fresh device starts from.
@@ -1917,6 +1917,8 @@ mod tests {
                 version: 1,
                 holds_keys: true,
                 runs_work: false,
+                label: String::new(),
+                cloud: false,
                 workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).expect("an id"),
                 endpoint_addr: iroh::EndpointAddr::new(
                     iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)
@@ -2358,7 +2360,7 @@ mod tests {
 
     /// Where `identity` is reached for a workspace, as it signed it: `opaque` says which address.
     fn host_hint(
-        identity: &tilo_network_actor::HostIdentity,
+        identity: &tilo_network_actor::DeviceIdentity,
         opaque: &str,
     ) -> tilo_peer_state::join::TransportHint {
         tilo_peer_state::join::sign_transport_hint(

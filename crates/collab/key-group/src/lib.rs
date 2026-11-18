@@ -70,6 +70,7 @@ pub mod errors;
 pub mod group;
 pub mod peer;
 pub mod persistence;
+pub mod released_text;
 pub mod seal_check;
 pub mod signer;
 pub mod welcome;
@@ -83,6 +84,7 @@ pub use group::{KeyGroup, MemberAddition};
 pub use peer::Files;
 pub use peer::{Access, GroupPeer, PeerEvent, PeerStates, Reconciled, backs};
 pub use persistence::VaultKey;
+pub use released_text::{MAX_RELEASED_TEXT, ReleasedFor, open_released_text, seal_released_text};
 pub use seal_check::SealCheck;
 pub use signer::{DeviceSigner, SignFuture};
 // Re-exported so callers can take/return KeyPackage values without

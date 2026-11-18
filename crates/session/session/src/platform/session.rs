@@ -19,7 +19,7 @@ use tilo_desktop_surface::DesktopHandle;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::surfaces::Surfaces;
-use tilo_surface_host::{DesktopHost, WidgetHost};
+use tilo_shell_surface::{ShellDesktop, WidgetSurface};
 use ui::host_operation::ResourceOperationStart;
 
 use crate::assembly::{Session, Shared};
@@ -591,7 +591,7 @@ impl Session {
         crate::a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(crate::display_settings::PanelBacklight::find()));
         let machine = crate::power::install(&mut compositor, &options);
-        compositor.add_host(crate::shell::under(options.shell, desktop.clone()));
+        compositor.add_surface(crate::shell::under(options.shell, desktop.clone()));
         // The shell draws every window whole — its card, the lift under it
         // and its edge, in the theme's colours, brighter on the window in
         // use. The compositor shapes a window's corners to that card and
@@ -897,7 +897,7 @@ impl Session {
             &overlays,
             &switcher,
         )));
-        compositor.add_host(crate::shell::under(options.shell, Rc::clone(&chrome)));
+        compositor.add_surface(crate::shell::under(options.shell, Rc::clone(&chrome)));
         // Search's code is asked for as the session starts, so it is in by the
         // time someone searches; a search asked for before then opens now,
         // and the shell publishes it on its next pass.
@@ -1226,11 +1226,7 @@ impl Session {
         // loop when the server answers, and what the broker admits of its window's page.
         if let Some(hosted) = &mut options.hosted_browser {
             hosted.waking(options.wake.handle());
-            hosted.watching(
-                app_wire.as_ref().and_then(AppWire::agent_broker).as_ref(),
-                app_wire.as_ref().and_then(AppWire::hosted_workspaces),
-                &options.person,
-            );
+            hosted.wired(app_wire.as_ref(), &options.person);
         }
         // What Files may read, and where a received file may land, is what
         // this session's workspaces grant it: read off the shell the broker
@@ -1260,10 +1256,9 @@ impl Session {
                 std::sync::Arc::clone(&agent_sessions),
             )));
         }
-        // Every service this session serves, from the one table that says
-        // who serves each: the identity an app signs in through, the
-        // machine's readings an app the launcher connects reads, and the
-        // data this device used. They start here, before any app does.
+        // Every service this session serves, from the one table that says who serves each: the
+        // identity an app signs in through, the machine's readings, the data this device used and
+        // Windows programs. They start here, before any app does.
         let table = crate::services::start(crate::services::Serving {
             shell: app_wire
                 .as_ref()
@@ -1281,6 +1276,7 @@ impl Session {
                 .cloned(),
             tools: Some(tools),
             wake: options.wake.handle(),
+            windows: crate::windows_compat::serving(&mut options),
         });
         tilo_startup_metrics::mark("published-done");
         // The control API `tilo-control` reaches: the development socket and the device admin's,
@@ -1701,14 +1697,7 @@ impl Session {
             controller_keys,
             app_sheets,
         };
-        // An app of a workspace this device waits for its host to admit it to is not started:
-        // whoever asked hears why at once (`Apps::spawn`).
-        if let (Some(launch), Some(engine)) = (&shared.launch, &shared.engine) {
-            let (engine, handle) = (std::sync::Arc::clone(engine), shared.handle.clone());
-            launch.lend_admission(Rc::new(move |workspace: &str| {
-                crate::mcp_server::awaited_reason(&engine, &handle, workspace)
-            }));
-        }
+        shared.lend_to_apps();
         shared.start_search();
         // What the person copied is personal: the clipboard publishes the
         // copies itself, as a reading only a caller the workspace grants reads.
@@ -2230,7 +2219,7 @@ impl Session {
 
     /// The desktop under the windows and its policy.
     #[must_use]
-    pub fn desktop(&self) -> &DesktopHost {
+    pub fn desktop(&self) -> &ShellDesktop {
         &self.shared.desktop
     }
 
@@ -2664,7 +2653,7 @@ impl Session {
             // What ran may have queued desktop commands on the shared
             // handle (the chrome switching workspace): the shell carries
             // them out on its next pass.
-            self.shared.desktop.with_widgets(WidgetHost::relayout);
+            self.shared.desktop.with_widgets(WidgetSurface::relayout);
         }
         Ok(())
     }

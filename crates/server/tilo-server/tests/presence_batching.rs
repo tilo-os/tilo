@@ -40,10 +40,14 @@ use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_server::{AttributedPresence, Envelope, ServerCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestServer, TestUser, client_endpoint, publisher, spawn_server};
+use crate::common::{
+    TestDevice, TestServer, TestUser, client_endpoint, found_documents, publisher, spawn_server,
+};
 use tilo_server::WorkspaceId;
 
-const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(710);
+const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(0x5e11_f00d_7110_4625_8000_0000_0000_0710);
+/// [`WORKSPACE`] as its members' replicas name it: a write names the
+/// workspace it is sent to, and the server refuses one naming another.
 const SEEDED_WORKSPACE: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;
 
@@ -245,7 +249,7 @@ async fn presence_reaches_a_member_in_order() {
     let user = TestUser::fresh("Presence cost");
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let reader = user.enrol("member", DeviceCapabilities::member());
-    let members = [author.device_pubkey(), reader.device_pubkey()];
+    let members = [&author.cert, &reader.cert];
     let server = Box::pin(spawn_server(
         &user,
         user.enrol("server", DeviceCapabilities::member()),
@@ -285,7 +289,7 @@ async fn presence_reaches_a_member_in_order() {
 }
 
 const APP: &str = "so.tilo.word-processor";
-const RECORD: &str = "tab:0000000000000001";
+const DOCUMENT: &str = "tab:0000000000000001";
 const KEYSTROKES: u64 = 21;
 
 impl Member {
@@ -345,7 +349,7 @@ fn seeded_workspace(author: &TestDevice, reader: &TestDevice) -> (StatePeer, Aut
                     .unwrap(),
                 documents: vec![SeedDocument {
                     app_id: APP.into(),
-                    document_id: RECORD.into(),
+                    document_id: DOCUMENT.into(),
                     kind: "text".into(),
                     bytes: seed.save(),
                 }],
@@ -354,7 +358,7 @@ fn seeded_workspace(author: &TestDevice, reader: &TestDevice) -> (StatePeer, Aut
             now,
         )
         .unwrap();
-    let mut doc = AutoCommit::load(&owner.document(APP, RECORD).unwrap()).unwrap();
+    let mut doc = AutoCommit::load(&owner.document(APP, DOCUMENT).unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(author.device_pubkey().to_vec()));
     (owner, doc)
 }
@@ -364,7 +368,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
     let user = TestUser::fresh("Keystroke writes");
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let reader = user.enrol("tilo-server/7 peer", DeviceCapabilities::member());
-    let members = [author.device_pubkey(), reader.device_pubkey()];
+    let members = [&author.cert, &reader.cert];
     let server = Box::pin(spawn_server(
         &user,
         user.enrol("server", DeviceCapabilities::member()),
@@ -376,8 +380,18 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
     let (mut owner, mut doc) = seeded_workspace(&author, &reader);
     let body = doc.get(ROOT, "body").unwrap().unwrap().1;
 
-    let mut member = Member::open(&server, &reader).await;
+    // The document is the workspace's before the author types in it.
     let publisher = publisher(&server, &user, &author, WORKSPACE).await;
+    found_documents(
+        &server,
+        &publisher,
+        &mut owner,
+        &author,
+        WORKSPACE,
+        &[(APP, DOCUMENT)],
+    )
+    .await;
+    let mut member = Member::open(&server, &reader).await;
 
     let mut writes = Vec::new();
     let mut delta_first = 0usize;
@@ -392,7 +406,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
             .publication_mut()
             .publish_incremental(
                 APP,
-                RECORD,
+                DOCUMENT,
                 doc.save_after(&heads),
                 &author.sk,
                 SystemTime::now(),
@@ -458,7 +472,7 @@ async fn a_clients_resting_pointer_arrives_without_another_message() {
     let user = TestUser::fresh("Pointer pacing");
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let reader = user.enrol("tilo-server/7 peer", DeviceCapabilities::member());
-    let members = [author.device_pubkey(), reader.device_pubkey()];
+    let members = [&author.cert, &reader.cert];
     let server = Box::pin(spawn_server(
         &user,
         user.enrol("server", DeviceCapabilities::member()),

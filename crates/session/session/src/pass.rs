@@ -910,5 +910,6 @@ fn session<'a>(
         pointer_shown: compositor.pointer_shown(),
         clipboard: &shared.clipboard,
         shared_input: shared.keyboard_and_pointer.as_deref(),
+        notifications: shared.notifications.borrow().desktop(),
     }
 }

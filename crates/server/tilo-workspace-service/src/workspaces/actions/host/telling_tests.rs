@@ -21,7 +21,7 @@ use tilo_actions::remote::{
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
-use super::super::HostWorkspaceActions;
+use super::super::ServiceWorkspaceActions;
 use super::super::tests::{caller, settled};
 use super::own_tests::{create_own, let_in, open};
 use crate::workspaces::Workspaces;
@@ -34,7 +34,7 @@ pub(super) const ASSISTANT: &str = "assistant";
 /// hers, the workspace that is her own, and one she shares with others.
 pub(super) struct Setup {
     pub(super) workspaces: Workspaces,
-    pub(super) host: HostWorkspaceActions,
+    pub(super) host: ServiceWorkspaceActions,
     pub(super) ada: DeviceCert,
     pub(super) own: WorkspaceId,
     pub(super) shared: WorkspaceId,
@@ -48,7 +48,7 @@ impl Setup {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
-        let host = HostWorkspaceActions::new();
+        let host = ServiceWorkspaceActions::new();
         host.attach(workspaces.clone());
         let (_, ada) = guest_device();
         let home = open(&workspaces).await;

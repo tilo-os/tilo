@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use crate::platform::surfaces::{DesktopHost, WidgetHost};
+use crate::platform::surfaces::{ShellDesktop, WidgetSurface};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
     RemoteActionTarget, application_open_target, application_provider, provider_workspace,
@@ -30,8 +30,12 @@ use tilo_desktop_surface::outcome::{Closed, Outcome};
 use tilo_workspace_service::apps::collab_app_broker::AppBrokerState;
 
 mod launch;
+mod reach;
+pub(crate) use reach::ReachFirst;
 #[cfg(target_os = "linux")]
 mod outdated;
+#[cfg(target_os = "linux")]
+mod windows;
 
 use crate::agents::Kept;
 use crate::search::AppActions;
@@ -70,10 +74,12 @@ fn refusal_said(error: &tilo_app_launch::PlanError) -> String {
 pub struct Apps {
     /// The desktop the launches come from, once the session has mounted it: what a launch reads its
     /// workspace from, and where a stopped app's notice goes.
-    desktop: RefCell<Option<DesktopHost>>,
+    desktop: RefCell<Option<ShellDesktop>>,
     state: RefCell<State>,
     /// Why a workspace's apps may not start yet, once the session lent it ([`Self::lend_admission`]).
     admission: RefCell<Option<Admission>>,
+    /// What the person is asked about an app's network before it first starts ([`reach`]).
+    reach: reach::Reach,
     /// The deliveries whose answer a caller waits for, admitted and not settled yet: the broker
     /// answers a person's action as soon as it is admitted, and the action's own answer is read
     /// from its state once it settles ([`AppActions::poll_answers`]).
@@ -116,6 +122,9 @@ struct State {
     authority_at: Option<u64>,
     /// The GPU the compositor renders on, for an app to render on the same.
     render_node: Option<PathBuf>,
+    /// The same display and GPU, as a Windows program started by the compatibility service is
+    /// given them.
+    windows_display: Arc<crate::windows_compat::Display>,
     /// The compositor drew its first frame with no GPU to import from: its apps were pinned to the
     /// software renderer it draws with ([`Apps::follow_render_node`]).
     software: bool,
@@ -272,6 +281,7 @@ impl Apps {
         Self {
             desktop: RefCell::new(None),
             admission: RefCell::new(None),
+            reach: reach::Reach::default(),
             awaited: Arc::default(),
             state: RefCell::new(State {
                 environment,
@@ -284,6 +294,7 @@ impl Apps {
                 authority: Authority::new(),
                 authority_at: None,
                 render_node: None,
+                windows_display: Arc::default(),
                 software: false,
                 launches: None,
                 links: None,
@@ -315,6 +326,7 @@ impl Apps {
         session_bus: Option<String>,
     ) {
         let mut state = self.state.borrow_mut();
+        state.windows_display.bound(socket.clone());
         state.environment.wayland_socket = Some(socket);
         state.x11 = x11;
         state.environment.session_bus = session_bus;
@@ -324,7 +336,19 @@ impl Apps {
     /// pinned to it, as it is pinned to the same driver, instead of choosing whichever GPU wgpu
     /// offers it.
     pub fn set_render_node(&self, node: Option<PathBuf>) {
-        self.state.borrow_mut().render_node = node;
+        let mut state = self.state.borrow_mut();
+        state.windows_display.drawn_on(node.clone());
+        state.render_node = node;
+    }
+
+    /// The display and GPU a Windows program is given, kept current as the compositor binds them.
+    pub(crate) fn windows_display(&self) -> Arc<crate::windows_compat::Display> {
+        Arc::clone(&self.state.borrow().windows_display)
+    }
+
+    /// The `tilo-launcher` every app starts through, when one is installed.
+    pub(crate) fn launcher(&self) -> Option<PathBuf> {
+        self.state.borrow().launcher.clone()
     }
 
     /// Take the compositor's render node once it has one: its backend names the GPU clients
@@ -344,6 +368,8 @@ impl Apps {
             return;
         }
         state.render_node = node();
+        let node = state.render_node.clone();
+        state.windows_display.drawn_on(node);
         if state.render_node.is_none() && drawn {
             state.software = true;
             #[cfg(target_os = "linux")]
@@ -678,7 +704,7 @@ impl Apps {
     }
 
     /// The desktop the person works on, which the launches come from.
-    pub fn attach(&self, desktop: DesktopHost) {
+    pub fn attach(&self, desktop: ShellDesktop) {
         *self.desktop.borrow_mut() = Some(desktop);
     }
 
@@ -687,15 +713,7 @@ impl Apps {
     /// when nothing is known about what is in view.
     pub fn windows_in_view(&self) -> Option<Vec<u64>> {
         let desktop = self.desktop.borrow().clone()?;
-        let layout = desktop.with_policy(|policy| policy.placement());
-        Some(
-            layout
-                .shown
-                .into_iter()
-                .chain(layout.floating)
-                .map(|(window, _)| window)
-                .collect(),
-        )
+        Some(desktop.with_policy(|policy| policy.in_view()))
     }
 
     /// Put every cgroup a launch of this session runs in in its tier: `on_screen` is the process of
@@ -718,6 +736,7 @@ impl Apps {
     #[cfg(target_os = "linux")]
     pub fn keep_behind(&self, keeping: tilo_app_launch::kept::Keeping) {
         self.state.borrow_mut().spawner.keep_behind(keeping);
+        self.keep_windows_programs();
     }
 
     /// Take up what the keepers' registry holds as this run starts: after an in-place restart the
@@ -746,6 +765,7 @@ impl Apps {
     /// windows are claimed.
     #[cfg(target_os = "linux")]
     fn took_up(&self, adopted: Vec<tilo_app_launch::Adopted>, claim: bool) {
+        self.take_back_windows_programs(&adopted);
         let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
         for kept in adopted {
@@ -796,10 +816,11 @@ impl Apps {
         }
     }
 
-    /// Show the windows of the kept apps this run took back: once their saved tabs wait for them.
+    /// Show the windows of the kept app whose keeper is `keeper`: once its saved tabs wait for
+    /// them.
     #[cfg(target_os = "linux")]
-    pub(crate) fn attach_kept(&self) {
-        self.state.borrow().spawner.attach_kept();
+    pub(crate) fn attach_kept(&self, keeper: u32) {
+        self.state.borrow().spawner.attach_kept(keeper);
     }
 
     /// Start what the desktop queued since the last pass, show what stopped, and start what a
@@ -810,6 +831,8 @@ impl Apps {
         self.follow_policy();
         #[cfg(target_os = "linux")]
         self.follow_kept();
+        #[cfg(target_os = "linux")]
+        self.follow_windows_programs();
     }
 
     /// Start what the desktop and anything waiting on a launch asked for: a launch's answer, and
@@ -1169,7 +1192,7 @@ impl Apps {
             return;
         };
         desktop.with_policy(answer);
-        desktop.with_widgets(WidgetHost::relayout);
+        desktop.with_widgets(WidgetSurface::relayout);
     }
 
     /// Start `launch` on the workspace in front, which is where what the session itself
@@ -1267,7 +1290,7 @@ impl Apps {
         if let Answer::Raise { tab } = answer
             && desktop.with_policy(|policy| policy.focus_tab(tab))
         {
-            desktop.with_widgets(WidgetHost::relayout);
+            desktop.with_widgets(WidgetSurface::relayout);
             tracing::info!(
                 app = %app.id,
                 tab,
@@ -1549,6 +1572,9 @@ impl Apps {
         reveal: Option<&str>,
     ) -> Result<bool, ApiError> {
         self.admitted(&workspace.id)?;
+        if self.held_for_reach(launch, workspace, new_window, instance, reveal) {
+            return Ok(true);
+        }
         self.start_launched_window(launch, workspace, new_window, instance, reveal)
     }
 
@@ -1866,104 +1892,6 @@ impl Apps {
                 }
             })
         })
-    }
-
-    /// Start `planned` with the link `link` , which the launch holds until it ends, and write it
-    /// down as a launch of this session before the app can reach a service of it. A service asked
-    /// as nothing has no window to offer again. `instance` is the tab the shell held for its
-    /// window, when it held one. `timed` is the launch timing of the request that led here, which
-    /// an agent start of no person's ask begins for itself.
-    fn spawn(
-        &self,
-        planned: &Planned,
-        asked: Option<&str>,
-        workspace: &str,
-        instance: Option<u64>,
-        link: Option<HeldLink>,
-        timed: Option<u64>,
-    ) -> Result<u64, ApiError> {
-        // An app of a workspace this device is not admitted to yet would take part in nothing
-        // there, and would not join once the host admits the device: it is not started, and
-        // whoever asked is told why at once.
-        self.admitted(workspace)?;
-        let launches = self.state.borrow().launches.clone();
-        let mut state = self.state.borrow_mut();
-        let windowless = planned.env.contains_key(ui::window_link::WINDOWLESS_ENV);
-        // The launch's share in the launch-latency log runs from the request to the first presented
-        // frame: the launcher's and the app's in this log, the surface's in the compositor's. A
-        // launch with no window presents none.
-        let timed = (!windowless)
-            .then(|| timed.unwrap_or_else(|| tilo_startup_metrics::launch_requested(&planned.app)));
-        let started = state.spawner.start_with(
-            planned,
-            link,
-            &|pid| {
-                if let Some(launches) = &launches {
-                    // The launcher binds the session's documents store into a package's sandbox and
-                    // into nothing else, so a package is the launch whose files are answered with paths
-                    // in the store.
-                    if windowless {
-                        launches.started_windowless(pid, &planned.app, workspace);
-                    } else {
-                        launches.started(pid, &planned.app, workspace, !planned.kind.is_host());
-                    }
-                }
-            },
-            workspace,
-            asked,
-        );
-        let started = match started {
-            Ok(started) => started,
-            Err(error) => {
-                if let Some(timed) = timed {
-                    tilo_startup_metrics::launch_failed(timed);
-                }
-                tracing::warn!(app = %planned.app, %workspace, %error, "a launch did not start");
-                return Err(ApiError::Failed(error.to_string()));
-            }
-        };
-        let (started, link) = started;
-        if let Some(timed) = timed {
-            tilo_startup_metrics::launch_spawned(timed, started.pid);
-        }
-        if let Some(asked) = asked {
-            // This launch's ask replaces the last one of the same app in the same workspace, once
-            // that one ended: what a caller reads is how the app's latest launch went.
-            state.launched.retain(|_, launch| {
-                !(launch.app == planned.app
-                    && launch.workspace == workspace
-                    && matches!(launch.got, Got::Closed | Got::CouldNotOpen { .. }))
-            });
-            // A launch with no window to show (an action's run) is not one that could fail to open.
-            let got = if windowless {
-                Got::Windowless
-            } else {
-                Got::Arriving
-            };
-            state.launched.insert(
-                started.id,
-                Launching {
-                    asked: asked.to_owned(),
-                    app: planned.app.clone(),
-                    workspace: workspace.to_owned(),
-                    pid: Some(started.pid),
-                    instance,
-                    started: std::time::Instant::now(),
-                    got,
-                },
-            );
-        }
-        if let Some(link) = link {
-            state.held.insert(started.id, link);
-        }
-        drop(state);
-        tracing::info!(
-            app = %planned.app,
-            pid = started.pid,
-            "started {}",
-            planned.describe()
-        );
-        Ok(started.id)
     }
 }
 
@@ -2324,6 +2252,12 @@ fn installed(app: &str) -> Option<app_catalogue::apps::InstalledApp> {
     })
 }
 
+/// Whether `app`'s installed package declares `service` (`[sandbox.services]`): what its launches
+/// are handed, and so what it may ask the session about.
+pub(crate) fn declares_service(app: &str, service: &str) -> bool {
+    installed(app).is_some_and(|package| package.manifest.sandbox.services.contains_key(service))
+}
+
 /// Whether a window of `app` runs only on the device that opened it, as the app's installed
 /// package says of its windows (`[entrypoint] window = "device"`): what it shows lives in its
 /// process here, so the workspace's other devices hold it as this device's window and open no
@@ -2676,7 +2610,7 @@ mod tests {
 
     /// The desktop the apps are started from, laid out as wide as an output: what its notice tabs
     /// draw on.
-    fn shell() -> DesktopHost {
+    fn shell() -> ShellDesktop {
         let (desktop, _strips) = crate::platform::surfaces::desktop(7, 1.0);
         desktop.with_widgets(|widgets| {
             widgets.set_placement(tilo_session_core::surface::Placement {
@@ -2765,7 +2699,7 @@ mod tests {
                     })
             })
             .unwrap();
-        desktop.with_widgets(WidgetHost::relayout);
+        desktop.with_widgets(WidgetSurface::relayout);
         let asked = desktop.take_launches();
         assert_eq!(asked.len(), 1, "the person asked for Canvas");
         // The launch was asked for the tab the shell held for it, and ended before its window
@@ -2837,7 +2771,7 @@ mod tests {
     }
 
     /// What the shell shows as text now.
-    fn texts(desktop: &DesktopHost) -> Vec<String> {
+    fn texts(desktop: &ShellDesktop) -> Vec<String> {
         desktop.with_widgets(|widgets| {
             widgets.relayout();
             ui::a11y::texts(widgets.host_mut().root_widget())

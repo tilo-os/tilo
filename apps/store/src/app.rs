@@ -394,7 +394,7 @@ type LaunchCompletion = Result<(String, Option<serde_json::Value>), String>;
 /// An operation as a job the whole system sees. It offers no Stop, because
 /// there is nothing here that could honour one: the package manager runs the
 /// operation to the end in a process of its own, and the Store holds no
-/// handle to that child (the app host's `flatpak` call has no cancel), so
+/// handle to that child (the package service's `flatpak` call has no cancel), so
 /// stopping here would only stop the Store watching (`APP-store-01`). The
 /// job's row and the app's page say that, and what the person can do instead:
 /// leave it running, or close the window.
@@ -3659,8 +3659,8 @@ mod tests {
                 .state()
                 .set_operation_error(Some(crate::flathub_client::remote_error(
                     &remote,
-                    &app_process::client::CatalogueError::Refused {
-                        refusal: app_process::client::Refusal::TimedOut,
+                    &package_service::client::CatalogueError::Refused {
+                        refusal: package_service::client::Refusal::TimedOut,
                         detail: "command timed out after 8000 ms".into(),
                     },
                 )));

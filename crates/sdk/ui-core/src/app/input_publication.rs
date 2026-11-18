@@ -90,7 +90,7 @@ impl super::App {
 
     /// After the retained tree took `event`: drop the published resource
     /// tree unless an explicitly view-only scroll left committed documents
-    /// unchanged, or the event was inert input ([`crate::host_core::PointerPlace::is_inert`])
+    /// unchanged, or the event was inert input ([`crate::app_core::PointerPlace::is_inert`])
     /// that nothing consumed
     /// (`consumed`: handled, a History event or a focus target) and that
     /// changed neither the app's document, any bound component's record, the

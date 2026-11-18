@@ -562,6 +562,26 @@ impl Store {
 }
 
 impl Store {
+    /// Merge `sections` into the document as one change by `origin`: every
+    /// section's leaves, wherever each is held (this device's document or
+    /// the person's), committed under one message so they are one step
+    /// history takes back together, and one that [`Self::edit_documents`]
+    /// undoes across both. A section held by this device and one by the
+    /// person are written by one call here, which is what a choice spanning
+    /// both (which model the agent answers with, kept half on each) needs.
+    ///
+    /// # Errors
+    /// The document cannot be written, as [`Self::edit_document`].
+    pub fn update_sections(
+        &self,
+        sections: Vec<(String, Map<String, Value>)>,
+        origin: &ChangeOrigin,
+    ) -> std::io::Result<()> {
+        let mutate = std::cell::Cell::new(Some(sections));
+        self.write_sections(origin, &mut |_| mutate.take())
+            .map(drop)
+    }
+
     pub fn edit_document(
         &self,
         section: &str,
@@ -613,6 +633,94 @@ impl Store {
     fn show(&self, document: Arc<Map<String, Value>>) {
         self.publish(document);
         self.save();
+    }
+
+    /// Carry `edit` out on the person's document and on this device's,
+    /// committing what each made under one message for `origin`: one step
+    /// history takes back across both, which [`Self::update_sections`]'s
+    /// choice is undone with. Each document's edit is committed only when it
+    /// wrote anything; the change carries the leaves both wrote, so a reader
+    /// of either document's history finds the whole step.
+    ///
+    /// # Errors
+    /// Either document cannot be read or written, as [`Self::edit_document`].
+    pub fn edit_documents(
+        &self,
+        origin: &ChangeOrigin,
+        edit: impl Fn(&mut AutoCommit, Holder) -> Result<(), String>,
+    ) -> std::io::Result<()> {
+        let refused = self.refused.lock_recover().clone();
+        if let Some(why) = refused
+            && !self.take_over()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                why,
+            ));
+        }
+        let mut docs = self.docs.lock_recover();
+        let mut written: Vec<(Holder, Vec<String>)> = Vec::new();
+        let mut touched: Vec<(Holder, String, String, Value)> = Vec::new();
+        for holder in [Holder::Person, Holder::Device] {
+            let before = read_root(docs.doc(holder));
+            if let Err(reason) = edit(docs.doc(holder), holder) {
+                // Neither document takes the change: what the other edit
+                // wrote is rolled back with it, so no transaction is left
+                // open on either.
+                docs.doc(Holder::Person).rollback();
+                docs.doc(Holder::Device).rollback();
+                return Err(std::io::Error::other(reason));
+            }
+            if docs.doc(holder).pending_ops() == 0 {
+                continue;
+            }
+            let after = read_root(docs.doc(holder));
+            let mut sections = Vec::new();
+            for name in after
+                .keys()
+                .chain(before.keys().filter(|name| !after.contains_key(*name)))
+            {
+                let section_of = |document: &Map<String, Value>| -> Map<String, Value> {
+                    document
+                        .get(name)
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default()
+                };
+                let (was, now) = (section_of(&before), section_of(&after));
+                if was == now {
+                    continue;
+                }
+                sections.push(name.clone());
+                for (leaf, value) in &now {
+                    if was.get(leaf) != Some(value) {
+                        touched.push((holder, name.clone(), leaf.clone(), value.clone()));
+                    }
+                }
+                for leaf in was.keys().filter(|leaf| !now.contains_key(*leaf)) {
+                    touched.push((holder, name.clone(), leaf.clone(), Value::Null));
+                }
+            }
+            written.push((holder, sections));
+        }
+        if touched.is_empty() {
+            return Ok(());
+        }
+        let message = change_message(origin, &touched, CHANGES.fetch_add(1, Ordering::Relaxed));
+        let time = i64::try_from(tilo_clock::unix_now_ms() / 1000).unwrap_or(i64::MAX);
+        let mut sections = Vec::new();
+        for (holder, names) in written {
+            docs.doc(holder).commit_with(
+                CommitOptions::default()
+                    .with_message(message.clone())
+                    .with_time(time),
+            );
+            sections.extend(names);
+        }
+        let document = docs.keep(sections);
+        drop(docs);
+        self.show(document);
+        Ok(())
     }
 
     fn take_changes(&self, changes: &socket::Changes) -> std::io::Result<()> {

@@ -905,8 +905,8 @@ impl FloatingSurfaceProvider for BrowserWindow {
         FloatingSurfaceProvider::take_floating_surface_request(&mut *self.page)
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
-        FloatingSurfaceProvider::take_capture_studio_request(&mut *self.page)
+    fn take_pip_area_request(&mut self) -> bool {
+        FloatingSurfaceProvider::take_pip_area_request(&mut *self.page)
     }
 
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {

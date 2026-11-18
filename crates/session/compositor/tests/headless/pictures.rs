@@ -1,13 +1,13 @@
-//! Windows pictured by a hosted surface: live in a rect of their own, with their corners and lift,
+//! Windows pictured by a surface: live in a rect of their own, with their corners and lift,
 //! and as a placeholder where the window is private.
 
 use super::*;
 
-/// A hosted surface that pictures one window.
+/// A surface that pictures one window.
 struct Pictures(WindowPicture);
 
-impl SurfaceHost for Pictures {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for Pictures {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
     }
 
@@ -25,11 +25,11 @@ impl SurfaceHost for Pictures {
 }
 
 #[test]
-fn a_hosted_surface_pictures_a_window_live_in_a_rect_of_its_own() {
+fn a_surface_surface_pictures_a_window_live_in_a_rect_of_its_own() {
     let mut compositor = headless(Box::new(StackPolicy));
     let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
     let (info, _) = compositor.windows()[0].clone();
-    compositor.add_host(Rc::new(RefCell::new(Pictures(WindowPicture {
+    compositor.add_surface(Rc::new(RefCell::new(Pictures(WindowPicture {
         window: info.id,
         rect: (10.0, 10.0, 100.0, 100.0),
         opacity: 1.0,
@@ -61,7 +61,7 @@ fn a_picture_of_a_window_carries_its_corners_and_its_lift() {
     let mut compositor = headless(Box::new(StackPolicy));
     let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
     let (info, _) = compositor.windows()[0].clone();
-    compositor.add_host(Rc::new(RefCell::new(Pictures(WindowPicture {
+    compositor.add_surface(Rc::new(RefCell::new(Pictures(WindowPicture {
         window: info.id,
         rect: (10.0, 10.0, 100.0, 100.0),
         opacity: 1.0,
@@ -107,7 +107,7 @@ fn a_picture_of_a_window_carries_its_corners_and_its_lift() {
 const IN_PICTURE: [(u32, u32); 4] = [(15, 40), (60, 60), (105, 40), (60, 80)];
 const IN_WINDOW: (u32, u32) = (320, 240);
 
-/// A window the session keeps private is a placeholder wherever a hosted surface pictures it, on
+/// A window the session keeps private is a placeholder wherever a surface pictures it, on
 /// the person's own display too: the shell a picture stands on is what a screenshot, a recording and
 /// a share show.
 #[test]
@@ -120,7 +120,7 @@ fn a_private_window_is_pictured_as_the_placeholder_its_captures_show() {
         [255, 0, 0, 255],
     );
     let (info, _) = compositor.windows()[0].clone();
-    compositor.add_host(Rc::new(RefCell::new(Pictures(WindowPicture {
+    compositor.add_surface(Rc::new(RefCell::new(Pictures(WindowPicture {
         window: info.id,
         rect: (10.0, 10.0, 100.0, 100.0),
         opacity: 1.0,
@@ -200,7 +200,7 @@ fn a_picture_of_an_app_that_holds_secrets_is_its_placeholder() {
         [255, 0, 0, 255],
     );
     let (info, _) = compositor.windows()[0].clone();
-    compositor.add_host(Rc::new(RefCell::new(Pictures(WindowPicture {
+    compositor.add_surface(Rc::new(RefCell::new(Pictures(WindowPicture {
         window: info.id,
         rect: (10.0, 10.0, 100.0, 100.0),
         opacity: 1.0,

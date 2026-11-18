@@ -256,7 +256,12 @@ impl Editor {
             return false;
         };
         match dispatch.apply_now(state, action) {
-            Ok(()) => true,
+            Ok(()) => {
+                // The person edited this block: what an agent wrote there before this no longer
+                // rests as theirs.
+                self.edited_at = Some((self.inner.caret.block.clone(), ui::time::now()));
+                true
+            }
             Err(error) => {
                 if self.read_only() {
                     self.toast.show(t("toast-view-only"), ToastKind::Error);

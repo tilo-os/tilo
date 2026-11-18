@@ -67,6 +67,9 @@ pub struct Options {
     /// and process it launched itself. The apps it starts record their launch here; a session whose
     /// apps run in its own process (a test) records one itself.
     pub launches: std::sync::Arc<Launches>,
+    /// How the Windows compatibility service the Windows Apps manager reaches is put together:
+    /// the computer's own Windows stack, or what a test stands in for it.
+    pub windows: compat_service::Assembly,
     /// The drives the person plugs in, which this session announces and acts on when they open or
     /// eject one.
     pub drives: Option<Rc<crate::drives::Drives>>,
@@ -431,6 +434,7 @@ impl Default for Options {
             test_control: None,
             admin_control: None,
             launches: std::sync::Arc::default(),
+            windows: compat_service::Assembly::system(),
             drives: None,
         }
     }

@@ -131,7 +131,7 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo.
 # The server's coding-agent tests start the guest's own agent program in its serving mode, as the
 # machine-siblings setup names it.
-starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], app-process = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"], tilo-server = ["legacy-agent:tilo-legacy-agent"] }
+starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "tilolang-process:tilolang-process", "launcher:tilo-launcher"], package-service = ["install:tilo-install"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"], tilo-server = ["legacy-agent:tilo-legacy-agent"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -2395,7 +2395,7 @@ default = false
 # the same image.
 [[check]]
 name = "source-date-ci-fast"
-run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-fast os/Containerfile.ci-fast"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/ci-fast os/Containerfile.ci-fast os/scripts/finalize-rpmdb.sh os/scripts/clean-dnf-layer-state.sh os/scripts/pin-directory-times.py"
 git = true
 outputs = ["/target/source-date/ci-fast"]
 default = false
@@ -2423,9 +2423,18 @@ default = false
 
 [[check]]
 name = "image-ci-fast"
-# Fetches from mirrors, registries and release hosts no fixed list names.
+# Fetches from mirrors, registries and release hosts no fixed list names. Not `pinned`: its two
+# FROMs are named by digest, but the `dnf install`s in os/Containerfile.ci-fast name packages, not
+# bytes, and a mirror may answer with another build of one. It can be served again once the build
+# installs those from a snapshot named by digest and this line declares that egress `pinned`, as
+# the OS image does with registry.tilo.so/tilo/rpms.
+#
+# The build's date is source-date-ci-fast's: rpm records it as the transactions' install time
+# (its signature check is the real clock's, so a mirror's newest update installs regardless), and
+# oci-build.sh dates the image and its layers with it. A commit that changes none of the files
+# the date covers builds the same image again.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-fast)\nexport SOURCE_DATE_EPOCH\nmkdir -p $TMPDIR/empty\nbash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.ci-fast /target/publish/ci-fast\n"
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/ci-fast)\nexport SOURCE_DATE_EPOCH\n# The only files the build reads from the tree are the scripts that clean up after the\n# package transactions and pin the times they leave (os/Containerfile.ci-fast).\ncontext=$TMPDIR/ci-fast-context\nrm -rf \"$context\"\nmkdir -p \"$context/os/scripts\"\ncp os/scripts/finalize-rpmdb.sh os/scripts/clean-dnf-layer-state.sh os/scripts/pin-directory-times.py \"$context/os/scripts/\"\nbash tools/ci/publish/oci-build.sh \"$context\" os/Containerfile.ci-fast /target/publish/ci-fast --build-arg \"TILO_BUILD_EPOCH=$SOURCE_DATE_EPOCH\"\n"
 needs = ["source-date-ci-fast"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
@@ -2621,8 +2630,8 @@ on = ["dispatch", "idle"]
 
 [[check]]
 name = "image-ci-fast-smoke"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Reads nothing of the network: it runs the image it needs and asks its tools their versions.
+# What it reaches is refused and told instead of quietly making every run the network's.
 run = "bash os/tests/ci_fast_images.sh /target/publish/ci-fast/image.oci.tar"
 needs = ["image-ci-fast"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"

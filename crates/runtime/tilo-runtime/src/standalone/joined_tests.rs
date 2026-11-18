@@ -161,7 +161,7 @@ impl Joined {
         sign_device_cert(&mut cert, &root).unwrap();
         let joined = Self::open(
             directory.path(),
-            HostIdentity::kept(cert, key.clone()),
+            DeviceIdentity::kept(cert, key.clone()),
             local_endpoint(&key).await,
             BTreeSet::new(),
             (
@@ -182,11 +182,11 @@ impl Joined {
         let (joined, directory) = Self::test_empty().await;
         let host = past_the_server_wait(Box::pin(
             tilo_workspace_service::service::WorkspaceService::open(
-                tilo_workspace_service::service::HostConfig::new(
+                tilo_workspace_service::service::ServiceConfig::new(
                     directory.path().join("workspace-host"),
                     tilo_server_protocol::WorkSetting::none(),
                 ),
-                tilo_workspace_service::service::HostIdentity {
+                tilo_workspace_service::service::ServiceIdentity {
                     user_public_key: joined.identity.device_cert.user_public_key,
                     device_signing_key: native_key(&joined.identity),
                     device_cert: joined.identity.device_cert.clone(),
@@ -429,7 +429,7 @@ fn assert_changed_ownership_refused(joined: &Joined, workspace: WorkspaceId, act
     let default_actor = tilo_workspace_service::apps::collab_app_broker::person_id_for_root(
         identity.device_cert.user_public_key,
     );
-    identity = HostIdentity::held(
+    identity = DeviceIdentity::held(
         identity.device_cert.clone(),
         std::sync::Arc::clone(&identity.signer),
         std::sync::Arc::new(
@@ -454,6 +454,7 @@ fn assert_changed_ownership_refused(joined: &Joined, workspace: WorkspaceId, act
         keys: joined.keys.clone(),
         content: std::sync::OnceLock::new(),
         own_host: std::sync::OnceLock::new(),
+        entered: Arc::default(),
         this: std::sync::Weak::new(),
     };
     assert!(
@@ -484,7 +485,7 @@ fn assert_changed_ownership_refused(joined: &Joined, workspace: WorkspaceId, act
         std::sync::Arc::clone(&probe.identity.signer),
     )
     .in_workspace(workspace, renewed, Vec::new());
-    probe.identity = HostIdentity::held(
+    probe.identity = DeviceIdentity::held(
         probe.identity.device_cert.clone(),
         std::sync::Arc::clone(&probe.identity.signer),
         std::sync::Arc::new(kept),
@@ -673,7 +674,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
     sign_device_cert(&mut device, &root_key).unwrap();
     let invitation = governing.invite(device.user_public_key);
 
-    let identity = HostIdentity::kept(device.clone(), device_key.clone());
+    let identity = DeviceIdentity::kept(device.clone(), device_key.clone());
     let own_workspace = WorkspaceId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
     let joined = Joined::open(
         directory.path(),
@@ -1249,7 +1250,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
     let invitation = governing.invite(device.user_public_key);
     let joined = Joined::open(
         directory.path(),
-        HostIdentity::kept(device.clone(), device_key.clone()),
+        DeviceIdentity::kept(device.clone(), device_key.clone()),
         local_endpoint(&device_key).await,
         BTreeSet::new(),
         (
@@ -1396,7 +1397,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
     let invitation = governing.invite(device.user_public_key);
     let joined = Joined::open(
         directory.path(),
-        HostIdentity::kept(device.clone(), device_key.clone()),
+        DeviceIdentity::kept(device.clone(), device_key.clone()),
         local_endpoint(&device_key).await,
         BTreeSet::new(),
         (
@@ -1611,6 +1612,6 @@ async fn writes_to_a_workspace_the_desktop_session_governs_are_refused() {
 }
 
 /// The key `ownership` holds in the clear, for a test that hands it to a host or writes it to disk.
-pub(super) fn native_key(identity: &HostIdentity) -> ed25519_dalek::SigningKey {
+pub(super) fn native_key(identity: &DeviceIdentity) -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&identity.signer.endpoint_secret().expect("a native key"))
 }

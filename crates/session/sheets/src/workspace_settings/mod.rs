@@ -32,7 +32,7 @@ pub use agents::{
 pub use apps::{AppRow, Apps};
 pub use emoji::{Emoji, EmojiPane, Notice, Picture};
 pub use general::{Device, General, Group, Server, Servers};
-pub use people::{Decision, Offers, People, Person, RoleChoice};
+pub use people::{Decision, Holder, Offers, People, Person, RoleChoice};
 pub use permissions::{Choice, Composer, Holders, Permission, Permissions};
 
 /// The app the shell mounts the sheet as.

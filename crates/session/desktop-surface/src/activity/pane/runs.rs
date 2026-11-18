@@ -133,8 +133,8 @@ impl WorkspaceActivityPane {
         wire::Sessions {
             sessions,
             total,
-            pending: self.feed_coverage.pending_tree,
             mutations: self.host.mutations_available(),
+            ..wire::Sessions::default()
         }
     }
 

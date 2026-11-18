@@ -75,6 +75,26 @@ public final class TiloSource: AssistantSource {
     /// How often one ask of her server on the way to her assistant is made in all, where it
     /// goes unanswered or is answered with nothing in it, before the main chat says so.
     var setupAsks = 5
+    /// How long the ask for which workspace is her own is out before the main chat says that
+    /// her server is making that workspace.
+    var makingAfter: Duration = .seconds(10)
+    /// How long after the main chat said that her server left the finding of her assistant
+    /// unanswered it is begun again by itself, the first time. The wait doubles each time, up
+    /// to a minute.
+    var findingPause: Duration = .seconds(15)
+    /// Her server's asks beside the conversation, made again where one of them went unanswered.
+    private let serverAgain = Again()
+    /// The ask for what came while she was away, made again where it went unanswered.
+    private let sinceAgain = Again()
+    /// The finding of her assistant, begun again where her server left it unanswered and the
+    /// main chat said so.
+    private let findingAgain = Again()
+    /// What she saw on this device that her server has not heard yet: each thing it told her
+    /// of, by its id, with how she saw it. It is said again until her server has heard it.
+    private var unheard: [String: String] = [:]
+    private let hearing = Again()
+    /// Whether word that she saw something is on its way right now: one round goes at a time.
+    private var saysSeen = false
     private static let routeKey = "TiloLiveRoute"
     private static let personKey = "TiloLivePerson"
 
@@ -83,7 +103,7 @@ public final class TiloSource: AssistantSource {
     private var naming: Task<Void, Never>?
     /// The person's identity, as Chat names the author of what they write.
     private var me: String?
-    /// The agent that is the person's assistant, by its id in Chat's record of agents.
+    /// The agent that is the person's assistant, by its id among the agents Chat keeps.
     private var assistant: String?
     private var recipient: ChatRecipient?
     /// Whether the page names a member by its kind (`{"person": …}`), and so spells the id of
@@ -109,6 +129,9 @@ public final class TiloSource: AssistantSource {
     /// devices), and their host (the agents it runs, so the assistant). They are two lists.
     private var learnedInChat: [Supervision.Learned] = []
     private var learnedOnHost: [Supervision.Learned] = []
+    /// The person's connections as their server last listed them, and what was asked of it for
+    /// a card in a conversation (Connections.swift).
+    var connected = Connected()
     /// What marks a fact the host keeps, in the name the frame hands back to forget it.
     private static let onHost = "host:"
 
@@ -138,6 +161,8 @@ public final class TiloSource: AssistantSource {
     private let taskList = Told<[AssistantTask]>([])
     private let automationList = Told<[Automation]>([])
     private let supervisionNow = Told<Supervision>(Supervision())
+    /// The assistant's day as the assistant view says it, and the clock it is read by.
+    let assistantDay = AssistantDay()
     private let setups = Told<Setup>(.unknown)
     private var choices: [ModelChoice] = []
     private var listening: [Task<Void, Never>] = []
@@ -149,6 +174,8 @@ public final class TiloSource: AssistantSource {
     /// server has it. An address that comes before the device is in waits until it is.
     private var address: PushAddress?
     private var addressHanded = false
+    /// The hand-over of the address, made again where it went unanswered.
+    private let handing = Again()
 
     /// - Parameters:
     ///   - store: the name of the store the device's key is kept in, the same at every launch.
@@ -192,7 +219,7 @@ public final class TiloSource: AssistantSource {
                 for await _ in engine.changes() {
                     await self?.look()
                     await self?.survey(.records)
-                    // Following what the person is told ended with an ask that was not answered.
+                    // Where the following of what the person is told ended, it begins again.
                     if self?.toldWanted == true { self?.followTold() }
                 }
             },
@@ -218,7 +245,13 @@ public final class TiloSource: AssistantSource {
             soughtOwn = false
             try engine.pair(with: link.url)
         } catch {
-            throw SourceProblem.refused("This link does not lead into \(engine.settings.origin)")
+            // Of a link it refuses the app says where the link is from, by name and port, and
+            // nothing else: what the link carries to pair with is shown, kept and written nowhere.
+            let site = engine.settings.origin
+            guard let from = EngineAddress.pairingElsewhere(link.url, of: engine.settings) else {
+                throw SourceProblem.refused(AssistantWords.pairsNothing.said(["site": site]))
+            }
+            throw SourceProblem.refused(AssistantWords.codeFromElsewhere.said(["from": from, "site": site]))
         }
     }
 
@@ -233,8 +266,11 @@ public final class TiloSource: AssistantSource {
     /// device, and a store in use cannot be removed.
     public func signOut() async {
         // Their server pushes to this device no more, and the key that opened its pushes goes:
-        // whoever signs in here next is handed nothing of this person's.
-        if person != nil { await unregister() }
+        // whoever signs in here next is handed nothing of this person's. Their server is asked
+        // to forget the address as the page is put away, below: signing out waits for no answer.
+        let forgets = person != nil && closedKeys != nil
+        address = nil
+        handing.settle()
         forgetClosedKey()
         defaults.removeObject(forKey: TiloSource.routeKey)
         defaults.removeObject(forKey: TiloSource.personKey)
@@ -253,6 +289,7 @@ public final class TiloSource: AssistantSource {
         keepsNothingLearned = false
         learnedInChat = []
         learnedOnHost = []
+        connected = Connected()
         toldByMessage = [:]
         toldPieces = [:]
         toldOffered = [:]
@@ -264,6 +301,11 @@ public final class TiloSource: AssistantSource {
         toldFresh = false
         toldWanted = false
         toldRefused = false
+        serverAgain.settle()
+        sinceAgain.settle()
+        findingAgain.settle()
+        unheard = [:]
+        hearing.settle()
         for chat in Array(feeds.keys) {
             feeds[chat]?.conversation = nil
             say([], in: chat, doubting: false)
@@ -273,7 +315,7 @@ public final class TiloSource: AssistantSource {
         automationList.set([])
         supervisionNow.set(Supervision())
         choices = []
-        engine.leave()
+        if forgets { engine.leaveForgettingAddress() } else { engine.leave() }
         tell()
     }
 
@@ -314,7 +356,7 @@ public final class TiloSource: AssistantSource {
             // link leads, so it goes to the person's own once, where the page says which it is.
             if livesInOwn {
                 // An ask that went unanswered is made again the next time the page is in.
-                if ownRoute == nil { ownRoute = (try? await engine.ownWorkspace())?.route }
+                if ownRoute == nil { ownRoute = await ownAsked(of: whose.person) }
                 if !soughtOwn, let ownRoute {
                     soughtOwn = true
                     if EngineAddress.isElsewhere(route, than: ownRoute) {
@@ -360,6 +402,30 @@ public final class TiloSource: AssistantSource {
         toldWanted = true
         followTold()
         await handAddress()
+    }
+
+    /// Ask her server which workspace is her own. It makes that workspace the first time it is
+    /// asked, and a busy server takes minutes over it. The page has said whose device this is,
+    /// so she is signed in from here on, and the main chat says what is waited for: that her
+    /// assistant is being set up, and once the ask has been out for `makingAfter`, that her
+    /// server is making her workspace. Her name and the rest come as the way in goes on.
+    private func ownAsked(of root: String) async -> String? {
+        if person == nil {
+            person = Person(id: .init(root), name: "", workspace: "")
+            tell()
+        }
+        guard mainChat == .assistant, assistant == nil else { return (try? await engine.ownWorkspace())?.route }
+        setups.set(.findingAssistant)
+        let patience = makingAfter
+        let slow = Task { [weak self] in
+            try? await Task.sleep(for: patience)
+            guard !Task.isCancelled, let self, self.setups.now == .findingAssistant else { return }
+            self.setups.set(.makingWorkspace)
+        }
+        let own = (try? await engine.ownWorkspace())?.route
+        slow.cancel()
+        if setups.now == .makingWorkspace { setups.set(.findingAssistant) }
+        return own
     }
 
     /// What the page keeps of its own membership, for a page that hands a native app nothing:
@@ -519,7 +585,7 @@ public final class TiloSource: AssistantSource {
 
     /// Chat's own name for the mark that the workspace's server answers for an agent, and for
     /// the action that sets it.
-    private static let answeredByServer = "on_host"
+    static let answeredByServer = "on_host"
     private static let answersFor = "set-agent-on-host"
 
     /// Have the workspace's server answer for an agent. Where the ask goes unanswered it is
@@ -584,14 +650,18 @@ public final class TiloSource: AssistantSource {
     /// while every device of its person is off.
     /// Where the page hands an app no way to its server, or the server offers none of this,
     /// the assistant is found in what the page itself holds, and nothing is made.
-    private func findAssistant() async {
+    ///
+    /// Where her server left it unanswered the main chat says so, and it is begun again by
+    /// itself (`findLater`), `quietly`: the sentence that stands is true until her server
+    /// answers, so it stays in place of the line that says her assistant is being set up.
+    private func findAssistant(quietly: Bool = false) async {
         feeds[.main, default: Feed()].conversation = nil
         recipient = nil
         assistant = nil
         guard let me, !finding else { return }
         finding = true
         defer { finding = false }
-        setups.set(.findingAssistant)
+        if !quietly { setups.set(.findingAssistant) }
         do {
             var all = try await askedAgain { try await self.agentsWhenOffered() }
             // The agent this device just had the server answer for.
@@ -612,6 +682,8 @@ public final class TiloSource: AssistantSource {
                 guard !livesInOwn || standsInOwn else {
                     if startedOver { return }
                     setups.set(.noAssistant(TiloSource.notInOwn))
+                    // Her server left unanswered which workspace is her own: it is asked again.
+                    if ownRoute == nil { findLater() }
                     return
                 }
                 do {
@@ -660,6 +732,7 @@ public final class TiloSource: AssistantSource {
             // then is never answered. Nothing is wrong: it is asked again once it is in.
             if startedOver { return }
             setups.set(.noAssistant(TiloSource.notAnswered))
+            findLater()
             return
         }
         if let all = await agentsInPage(), let found = TiloSource.assistant(among: all, of: me) {
@@ -676,9 +749,26 @@ public final class TiloSource: AssistantSource {
         if case .arriving = engine.state { true } else { false }
     }
 
+    /// Her server left the finding of her assistant unanswered, and the main chat says so. It
+    /// is begun again by itself after `findingPause`, which doubles each time up to a minute, for as
+    /// long as the page is in and she has none: she presses nothing. A page that is on its way
+    /// in again finds her assistant when it is in. Her own press does the same at once.
+    private func findLater() {
+        findingAgain.later(first: findingPause) { [weak self] in
+            guard let self, case .open = self.engine.state, self.mainChat == .assistant, self.assistant == nil else { return }
+            await self.findAssistant(quietly: true)
+            guard self.assistant != nil else { return }
+            // Found: her conversation with it and what stands beside it are read, as after her press.
+            for chat in Array(self.feeds.keys) { self.feeds[chat]?.told = false }
+            await self.look()
+            await self.survey(.everything)
+        }
+    }
+
     /// This agent is the person's assistant: the main chat is their conversation with it.
     private func take(_ found: JSON, of me: String) {
         guard let id = found["id"]?.string else { return }
+        findingAgain.settle()
         assistant = id
         feeds[.main, default: Feed()].conversation = direct(me, id)
         recipient = ChatRecipient(.agent, id: id, name: found["name"]?.string ?? id)
@@ -708,6 +798,16 @@ public final class TiloSource: AssistantSource {
     /// The id Chat keeps the conversation of the person and one agent under, as this page spells it.
     private func direct(_ person: String, _ agent: String) -> String {
         ChatConversation.direct([ChatMember(namesKinds ? .person : nil, id: person), ChatMember(namesKinds ? .agent : nil, id: agent)])
+    }
+
+    /// Where a sub-agent works, in words a person reads, as the assistant view tells the two
+    /// places apart: a server keeps a coding part for a sub-agent exactly where a coding
+    /// program does the work in the workspace's machine, with what that program is called.
+    /// Every other sub-agent is worked by the person's server itself.
+    static func place(of sub: JSON) -> String {
+        guard let coding = sub["coding"], !coding.isNull else { return AssistantWords.worksOnServer.said }
+        let program = coding["harness_name"]?.string ?? ""
+        return program.isEmpty ? AssistantWords.worksOnMachine.said : AssistantWords.worksOnMachineWith.said(["program": program])
     }
 
     /// An enum's case, however the read spells it: the bare word, or `{"$variant": word}`.
@@ -790,6 +890,10 @@ public final class TiloSource: AssistantSource {
         feed.answering = on
         feeds[chat] = feed
         for listener in feed.listeners.values { listener.yield(.answering(on)) }
+        // An answer that ended may have made a task or moved one on: the list is read again.
+        if !on { Task { [weak self] in await self?.readTasks() } }
+        // An answer that ended may have set an event up, changed one or removed one.
+        if !on, chat == .main { Task { await self.readEvents() } }
     }
 
     private func held(_ id: String) -> (Chat, Item)? {
@@ -801,6 +905,8 @@ public final class TiloSource: AssistantSource {
 
     private func say(_ now: [Item], in chat: Chat, doubting: Bool = true) {
         guard var feed = feeds[chat] else { return }
+        // An event of the person's stands as its card under the answer it was set up in.
+        let now = chat == .main ? cards.carded(now) : now
         // One read with nothing in it does not empty a conversation that holds pieces: a page
         // that just got in reads so before it has published Chat's messages. It is read again,
         // and believed where it still says so after a while. What the app empties itself, at a
@@ -848,8 +954,9 @@ public final class TiloSource: AssistantSource {
     /// own. Every ask counts as a device of the person looking: their server tells them
     /// nowhere else while this app does.
     ///
-    /// The following ends with an ask that is not answered. The page's next word that it is in,
-    /// or that something changed, begins it again.
+    /// An ask that is not answered is made again by itself, after a pause that grows, for as
+    /// long as the page is in. The following ends where the page is on its way in again, and
+    /// begins anew when it is in.
     private func followTold() {
         guard !followsTold, !toldRefused, case .open = engine.state else { return }
         followsTold = true
@@ -896,6 +1003,8 @@ public final class TiloSource: AssistantSource {
                         }
                         if before { for chat in Array(self.feeds.keys) { self.feeds[chat]?.told = false } }
                         await self.look()
+                        // What she was told may be of a task that moved on: the list is read again.
+                        if waits { await self.readTasks() }
                     }
                     // What happened while the person was away is counted at their first look after.
                     if !waits { await self.readSince() }
@@ -912,8 +1021,15 @@ public final class TiloSource: AssistantSource {
                     try? await Task.sleep(for: pause)
                     pause = min(pause * 2, .seconds(60))
                     guard let self, case .open = self.engine.state else { break }
-                } catch {
+                } catch TiloEngine.Problem.notOpen {
+                    // The page is on its way in again: the following begins anew when it is in.
                     break
+                } catch {
+                    // Not answered. The ask is made again by itself, after a pause that grows: no
+                    // word of the page is waited for, and a busy server is not asked without end.
+                    try? await Task.sleep(for: pause)
+                    pause = min(pause * 2, .seconds(60))
+                    guard let self, case .open = self.engine.state else { break }
                 }
             }
             self?.followsTold = false
@@ -959,9 +1075,23 @@ public final class TiloSource: AssistantSource {
     }
 
     /// Ask what the person was told while they were away. Their server counts that stretch at
-    /// the first look after it, which this device's first read of its log was.
+    /// the first look after it, which this device's first read of its log was, and keeps it
+    /// until they are next away: where the ask goes unanswered, or their server fails at it
+    /// this time, it is made again by itself after a pause that grows.
     private func readSince() async {
-        toldSince = try? await engine.toldSinceLeft()
+        do {
+            toldSince = try await engine.toldSinceLeft()
+            sinceAgain.settle()
+        } catch TiloEngine.Problem.refused(let code, _) where TiloSource.offersNone(code) {
+            // A server that counts no such stretch is not asked again.
+            toldSince = nil
+            sinceAgain.settle()
+        } catch TiloEngine.Problem.notOpen {
+            // The page is on its way in again: asked anew when it is in.
+            sinceAgain.settle()
+        } catch {
+            sinceAgain.later(first: firstPause) { [weak self] in await self?.readSince() }
+        }
         saySince()
     }
 
@@ -1046,6 +1176,7 @@ public final class TiloSource: AssistantSource {
     public func unregister() async {
         address = nil
         addressHanded = false
+        handing.settle()
         guard closedKeys != nil else { return }
         try? await engine.unregisterAddress()
     }
@@ -1069,10 +1200,20 @@ public final class TiloSource: AssistantSource {
             try await engine.registerAddress(token: address.token, service: address.service.rawValue, app: address.app,
                                              p256dh: handed.p256dh, auth: handed.auth)
             addressHanded = true
+            handing.settle()
             // The pieces already told now carry the names a push gives them.
             await look()
+        } catch TiloEngine.Problem.refused(let code, _) where TiloSource.offersNone(code) {
+            // A server that takes no address is asked again when the device is in anew.
+            handing.settle()
+        } catch TiloEngine.Problem.notOpen {
+            // The page is on its way in again: the address is handed over when it is in.
+            handing.settle()
         } catch {
-            // Asked again when the device is in anew.
+            // Not answered, or their server failed at it this time. Until it has the address it
+            // pushes nothing to this app while it is closed: the hand-over is made again by
+            // itself, after a pause that grows.
+            handing.later(first: firstPause) { [weak self] in await self?.handAddress() }
         }
     }
 
@@ -1087,7 +1228,47 @@ public final class TiloSource: AssistantSource {
     public func seen(_ item: Item.ID, in chat: Chat) async {
         guard let told = toldPieces[chat]?[item] else { return }
         toldPieces[chat]?[item] = nil
-        try? await engine.acknowledge(told: told, device: deviceName)
+        await saySeen(told, by: "opened")
+    }
+
+    /// Tell her server that she saw a thing it told her of, or acted on it: `how` says which.
+    /// Word her server did not take is not lost: it is said again by itself, after a pause that
+    /// grows, until her server has heard it. Until then her server would go on raising a thing
+    /// that insists, and tell her of it on her other devices, though she saw it here.
+    private func saySeen(_ told: String, by how: String) async {
+        // What she pressed says more than that she looked.
+        if unheard[told] == nil || how != "opened" { unheard[told] = how }
+        await sayUnheard()
+    }
+
+    private func sayUnheard() async {
+        guard !saysSeen else { return }
+        saysSeen = true
+        defer { saysSeen = false }
+        var owed = false
+        // Word that came while another was on its way is said in the next round.
+        while !owed, !unheard.isEmpty {
+            for (told, how) in unheard.sorted(by: { $0.key < $1.key }) {
+                // What her server's log calls settled meanwhile needs no word any more: she saw
+                // it on another device, or what it told was taken back.
+                if toldByMessage.values.contains(where: { $0.id == told && $0.isSettled }) {
+                    unheard[told] = nil
+                    continue
+                }
+                do {
+                    try await engine.acknowledge(told: told, by: how, device: deviceName)
+                    unheard[told] = nil
+                } catch TiloEngine.Problem.refused(let code, _) where TiloSource.offersNone(code) {
+                    // A server that takes no such word is not told again.
+                    unheard[told] = nil
+                } catch {
+                    // Not answered, or her server failed at it this time.
+                    owed = true
+                }
+            }
+        }
+        guard owed else { return hearing.settle() }
+        hearing.later(first: firstPause) { [weak self] in await self?.sayUnheard() }
     }
 
     /// The person pressed one of the things their server offers with a piece, where they were
@@ -1105,11 +1286,12 @@ public final class TiloSource: AssistantSource {
             try await taken { try await self.engine.invoke(wanted.action, on: wanted.resource, wanted.arguments.object ?? [:]) }
         }
         toldPieces[chat]?[item] = nil
-        try? await engine.acknowledge(told: told.id, by: wanted.id, device: deviceName)
+        await saySeen(told.id, by: wanted.id)
     }
 
     private func piece(of message: ChatMessage, in chat: Chat, isFirst: Bool) -> Item {
         let id = Item.ID(message.id)
+        cards.see(message, as: id)
         let fields = message.fields
         if let question = fields["question"], !question.isNull {
             let answered = TiloSource.variant(question["answered"]?["answer"])
@@ -1120,6 +1302,13 @@ public final class TiloSource: AssistantSource {
                 return Item(id: id, at: message.at, .secret(SecretRequest(
                     id: .init(message.id), text: message.text, name: TiloSource.placeName(detail?["belongsTo"]?[0]?.string ?? ""),
                     state: state)))
+            }
+            // A service their assistant proposes to connect is its card (Connections.swift).
+            if let asked = TiloSource.connectionAsk(of: message) {
+                let (offer, askAgain) = connected.card(asked, of: message.id, text: message.text, site: TiloSource.placeName(asked.address))
+                // Their server added it on an answer given elsewhere: its list is asked once more.
+                if askAgain { Task { [weak self] in await self?.survey(.server) } }
+                return Item(id: id, at: message.at, .connection(offer))
             }
             let choices = (question["answers"]?.array ?? []).enumerated().compactMap { index, answer -> Choice? in
                 guard let name = answer["id"]?.string else { return nil }
@@ -1153,7 +1342,8 @@ public final class TiloSource: AssistantSource {
         } else {
             author = .assistant
         }
-        return Item(id: id, at: message.at, .message(Message(author, message.text, live: live)))
+        return Item(id: id, at: message.at,
+                    .message(Message(author, message.text, attachments: TiloFiles.attachments(of: message), live: live)))
     }
 
     /// What a question's kind keeps with it: JSON, as text or already read.
@@ -1244,12 +1434,117 @@ public final class TiloSource: AssistantSource {
         try await answer(request.value, "declined", detail: nil)
     }
 
-    public func authenticate(_ offer: ConnectionOffer.ID) async throws -> URL? {
-        throw SourceProblem.refused("Tilo keeps no connections to sign in to yet")
+    /// What a message asks about a service its person may connect, where it asks that: the
+    /// card their server keeps beside the question's words.
+    private static func connectionAsk(of message: ChatMessage) -> ConnectionAsk? {
+        guard let question = message.fields["question"], !question.isNull, variant(question["kind"]) == "action" else { return nil }
+        return ConnectionAsk(detail: detail(of: question), answered: variant(question["answered"]?["answer"]),
+                             outcome: variant(question["outcome"]?["outcome"]), why: question["outcome"]?["detail"]?.string ?? "",
+                             withdrawn: !(question["withdrawn"]?.isNull ?? true))
     }
 
+    private func connectionAsk(_ offer: ConnectionOffer.ID) async throws -> ConnectionAsk {
+        guard let asked = try await engine.chatMessage(offer.value).flatMap(TiloSource.connectionAsk(of:)) else {
+            throw TiloEngine.Problem.refused(code: "gone", reason: "This question is no longer there")
+        }
+        return asked
+    }
+
+    /// The person's own yes to a service their assistant proposes: Chat's answer to the
+    /// question, on which their server adds what it looked at when it asked. Where the service
+    /// wants a sign-in, the page it happens on is answered: the service's own, for the
+    /// system's sign-in sheet. Nothing of a sign-in is typed into this app, and nothing of it
+    /// reaches the conversation or the assistant.
+    public func authenticate(_ offer: ConnectionOffer.ID) async throws -> URL? {
+        var page: URL?
+        var failure: (any Error)?
+        // The press reads their server's list itself: no card asks for it meanwhile.
+        connected.press(offer.value, begins: true)
+        do {
+            try await taken { page = try await self.connect(offer) }
+        } catch {
+            failure = error
+        }
+        // However it ended, their server's list says how the service stands now.
+        await survey(.server)
+        connected.press(offer.value, begins: false)
+        if let failure { throw failure }
+        return page
+    }
+
+    /// Their yes, then their server's word that it added the service, then the page of its
+    /// sign-in where it wants one. Nil where nothing is to be signed in to.
+    private func connect(_ offer: ConnectionOffer.ID) async throws -> URL? {
+        var asked = try await connectionAsk(offer)
+        if asked.waits { try await answer(offer.value, "allow", detail: nil) }
+        // Their server carries their yes out and says so on the question, which is read again
+        // until it does: for as long as `connected.patience`, and no longer.
+        let patient = ContinuousClock.now + connected.patience
+        while !asked.added {
+            if asked.failed {
+                throw TiloEngine.Problem.refused(code: "failed", reason: asked.why.isEmpty ? "Tilo could not connect this service" : asked.why)
+            }
+            if asked.withdrawn || (asked.answered != nil && asked.answered != "allow") {
+                throw TiloEngine.Problem.refused(code: "settled", reason: "This question no longer waits for an answer")
+            }
+            guard ContinuousClock.now < patient else {
+                throw TiloEngine.Problem.refused(code: "not-yet", reason: "Tilo has not connected this service yet. Try again in a moment.")
+            }
+            try await Task.sleep(for: .milliseconds(250))
+            asked = try await connectionAsk(offer)
+        }
+        guard let kept = try await engine.connections().first(where: { $0.address == asked.address }) else {
+            throw TiloEngine.Problem.refused(code: "gone", reason: "This service is no longer among your connections")
+        }
+        guard kept.needsSignIn else { return nil }
+        let page = try await engine.beginSignIn(to: kept.id, returnTo: SignInReturn.address)
+        connected.signingIn[offer] = kept.id
+        return page
+    }
+
+    /// The person signed in at the service's own page, and the system's sign-in sheet came
+    /// back with this address. It opens the sign-in once: it goes into the one call that
+    /// carries it to their server, as what a protected field holds, and is kept nowhere here.
+    public func signedIn(_ offer: ConnectionOffer.ID, at returned: URL) async throws {
+        guard let connection = connected.signingIn.removeValue(forKey: offer) else {
+            throw SourceProblem.refused("No sign-in was begun from this card")
+        }
+        var failure: (any Error)?
+        do {
+            try await taken { try await self.engine.finishSignIn(to: connection, returned: Protected(returned.absoluteString)) }
+        } catch {
+            failure = error
+        }
+        await survey(.server)
+        if let failure { throw failure }
+    }
+
+    /// The person will not connect this service now: Chat's answer to the question, on which
+    /// their server adds nothing. Where they had said yes and then left the sign-in, the
+    /// service their server added on that yes is taken out again, as their own act. One that
+    /// was ever signed in to is never removed from a card.
     public func decline(_ offer: ConnectionOffer.ID) async throws {
-        throw SourceProblem.refused("Tilo keeps no connections to sign in to yet")
+        var read: ConnectionAsk?
+        try await taken { read = try await self.connectionAsk(offer) }
+        guard let asked = read else { return }
+        if asked.waits { return try await answer(offer.value, "deny", detail: nil) }
+        guard asked.added else { throw SourceProblem.refused("This question no longer waits for an answer") }
+        connected.signingIn[offer] = nil
+        var failure: (any Error)?
+        do {
+            try await taken {
+                guard let kept = try await self.engine.connections().first(where: { $0.address == asked.address }),
+                      kept.state == "needs-sign-in"
+                else { return }
+                try await self.engine.removeConnection(kept.id)
+                // The list that is read next no longer holds it: the card says so then.
+                self.connected.readAgain(for: offer.value)
+            }
+        } catch {
+            failure = error
+        }
+        await survey(.server)
+        if let failure { throw failure }
     }
 
     public func file(of attachment: Attachment.ID) async throws -> URL {
@@ -1286,11 +1581,84 @@ public final class TiloSource: AssistantSource {
 
     public nonisolated func tasks() -> AsyncStream<[AssistantTask]> { taskList.stream() }
 
+    /// Whether the tasks are being read right now, and whether they are wanted once more after.
+    private var readsTasks = false
+    private var tasksWanted = false
+    /// The read of the tasks, made again where it went unanswered.
+    private let tasksAgain = Again()
+
+    /// Read the assistant's tasks again: the issues of the workspace's tracker that are given
+    /// to it, as the workspace's server lists them to the person on this device.
+    ///
+    /// Nothing tells a native app that Tasks changed, and her server is not asked on a clock.
+    /// The list is read when the device gets in, when this app changed something there, when
+    /// her server told her something and when an answer in a conversation ended: after each of
+    /// these a task may have been made or moved on. A read that went unanswered, or that her
+    /// server failed at, is made again by itself after a pause that grows, and what was listed
+    /// stands meanwhile. A server that keeps no tracker, or offers no such read, lists nothing.
+    private func readTasks() async {
+        guard case .open = engine.state, let assistant else { return }
+        guard !readsTasks else {
+            tasksWanted = true
+            return
+        }
+        readsTasks = true
+        defer { readsTasks = false }
+        repeat {
+            tasksWanted = false
+            do {
+                let rows = try await engine.issues(givenTo: assistant)
+                // Whoever signed out meanwhile is listed nothing of the person before.
+                guard self.assistant == assistant else { return }
+                taskList.set(TiloTasks.listed(rows))
+                tasksAgain.settle()
+            } catch TiloEngine.Problem.refused(let code, _) where TiloSource.offersNone(code) {
+                tasksAgain.settle()
+            } catch TiloEngine.Problem.notOpen {
+                // The page is on its way in again: the tasks are read anew when it is in.
+                tasksAgain.settle()
+            } catch {
+                tasksAgain.later(first: firstPause) { [weak self] in await self?.readTasks() }
+            }
+        } while tasksWanted
+    }
+
     public func addTask(_ title: String) async throws {
         throw SourceProblem.refused("Tasks cannot be reached from this app yet")
     }
 
     public nonisolated func automations() -> AsyncStream<[Automation]> { automationList.stream() }
+
+    /// The person's events as their server last listed them, and where each stands as a card.
+    private var cards = EventCards()
+
+    /// Take the person's events as their server listed them: the Tasks panel's list, and the
+    /// cards of the main chat.
+    private func take(events listed: [JSON]) {
+        cards.take(listed)
+        automationList.set(cards.automations)
+        sayCards()
+    }
+
+    /// Ask the person's server for their events alone: when an answer in the main chat ended,
+    /// which may have set one up, changed one or removed one. Never on a clock.
+    private func readEvents() async {
+        guard case .open = engine.state,
+              let listed = try? await engine.ask(.events, "list", of: "events")["events"]?.array
+        else { return }
+        take(events: listed)
+    }
+
+    /// Say the main chat again where its cards are different now: whole, so that a card
+    /// stands under its answer and not at the foot.
+    private func sayCards() {
+        guard var feed = feeds[.main], feed.told else { return }
+        let now = cards.carded(feed.held)
+        guard now != feed.held else { return }
+        feed.held = now
+        feeds[.main] = feed
+        for listener in feed.listeners.values { listener.yield(.all(now)) }
+    }
 
     /// Set up something that comes at a time or when something else happens, as the person:
     /// what it is called, what starts it and what their assistant is told to do then. The
@@ -1413,11 +1781,14 @@ public final class TiloSource: AssistantSource {
         surveying = true
         defer { surveying = false }
         var next: Survey? = what
+        // Whether one of her server's asks went unanswered, where they were made.
+        var unanswered: Bool?
+        defer { if let unanswered { serverAsked(unanswered: unanswered) } }
         while let now = next {
             surveyAgain = nil
             var seen = supervisionNow.now
             if now != .server { await surveyRecords(&seen) }
-            if now != .records { await surveyServer(&seen) }
+            if now != .records { unanswered = await surveyServer(&seen) }
             seen.learned = learnedOnHost + learnedInChat
             seen.learnedCount = max(seen.learned.count, seen.learnedCount)
             // The one workspace the assistant works in. Nothing is said of any other of the person's.
@@ -1452,7 +1823,7 @@ public final class TiloSource: AssistantSource {
                 let since = sub["since"]?.number.map { Date(timeIntervalSince1970: $0 / 1000) }
                 listed.append(SubAgent(
                     id: .init(id), title: agent["name"]?.string ?? id, role: sub["role"]?.string ?? "", state: state,
-                    runsOn: TiloSource.variant(sub["runs"]) ?? "",
+                    runsOn: TiloSource.place(of: sub),
                     started: Date(timeIntervalSince1970: (agent["created_at"]?.number ?? 0) / 1000),
                     startedBy: sub["started_by"]?.string == assistant ? .mainAgent : .person,
                     finished: state == .done ? since : nil))
@@ -1462,11 +1833,13 @@ public final class TiloSource: AssistantSource {
                 }
             }
             agents.set(listed.sorted { $0.started > $1.started })
-            // What the assistant itself spent today, and the most it may.
+            // What the assistant itself used today, as its server counted it, and the most it may spend.
             if let record = all.first(where: { $0["id"]?.string == assistant }) {
-                seen.usage.spentTodayMicros = Int(record["spent"]?["cost_micros"]?.number ?? 0)
-                seen.usage.dailyLimitMicros = record["spend_limit_micros"]?.number.map { Int($0) }
+                seen.usage = assistantDay.usage(of: record, before: seen.usage)
                 seen.isOn = TiloSource.variant(record["state"]) == "active"
+                seen.places = AssistantPlaces.places(among: all, assistant: assistant, keptBy: me)
+                // A day turns with nothing written anywhere: what was counted is read again then.
+                assistantDay.atNextDay { [weak self] in await self?.survey(.records) }
             }
             if again { await look() }
         }
@@ -1490,9 +1863,42 @@ public final class TiloSource: AssistantSource {
         }
     }
 
-    private func surveyServer(_ seen: inout Supervision) async {
+    /// Her server's asks beside the conversation are made when the device gets in and when the
+    /// app changed something there. Where one of them went unanswered, all are made again by
+    /// themselves after a pause that doubles each time, up to a minute: one late or lost answer
+    /// leaves no step of the main chat unoffered, and no list empty, until the next way in.
+    private func serverAsked(unanswered: Bool) {
+        guard unanswered else { return serverAgain.settle() }
+        serverAgain.later(first: firstPause) { [weak self] in await self?.survey(.server) }
+    }
+
+    /// One ask of her server beside the conversation. A server that offers no such thing is
+    /// passed over. An ask that went unanswered, that her server failed at this time, or whose
+    /// answer has nothing in it is counted, to be made again: what was shown stays meanwhile.
+    private func answered<Value: Sendable>(_ unanswered: inout Bool, _ ask: @MainActor () async throws -> Value) async -> Value? {
+        do {
+            let value = try await ask()
+            if let said = value as? JSON, said.isNull {
+                unanswered = true
+                return nil
+            }
+            return value
+        } catch TiloEngine.Problem.refused(let code, _) where TiloSource.offersNone(code) {
+            return nil
+        } catch TiloEngine.Problem.notOpen {
+            // The page is on its way in again: all of it is asked anew when it is in.
+            return nil
+        } catch {
+            unanswered = true
+            return nil
+        }
+    }
+
+    /// Says whether one of the asks went unanswered.
+    private func surveyServer(_ seen: inout Supervision) async -> Bool {
+        var unanswered = false
         // The person's models: which one the main chat answers on.
-        if let linked = try? await engine.modelProviders() {
+        if let linked = await answered(&unanswered, { try await self.engine.modelProviders() }) {
             choices = TiloSource.choices(of: linked)
             seen.model = linked.model(for: WorkKind.request.rawValue).map { chosen in
                 chosen.provider.models.first(where: { $0.id == chosen.model })?.label ?? chosen.model
@@ -1502,21 +1908,21 @@ public final class TiloSource: AssistantSource {
             saySetup()
         }
         // What it can sign in to: the vault's items, by where each belongs. Never a secret.
-        if let items = try? await engine.vaultItems() {
+        if let items = await answered(&unanswered, { try await self.engine.vaultItems() }) {
             seen.logins = items.map {
                 Supervision.Login(id: .init($0.reference), name: TiloSource.placeName($0.belongsTo.first ?? $0.kind), typed: $0.added,
                                   lastUsed: $0.lastUsed)
             }
         }
         // What the agents the host runs have learned about the person, newest first.
-        if let facts = try? await engine.ask(.learned, "list", of: "facts")["facts"]?.array {
+        if let facts = await answered(&unanswered, { try await self.engine.ask(.learned, "list", of: "facts") })?["facts"]?.array {
             learnedOnHost = facts.compactMap { fact in
                 guard let id = fact["id"]?.string, let text = fact["text"]?.string else { return nil }
                 return Supervision.Learned(id: .init(TiloSource.onHost + id), text: text)
             }
         }
         // What is important, in the person's own words, and the situations those words depend on.
-        if let rule = try? await engine.ask(.telling, "read", of: "importance") {
+        if let rule = await answered(&unanswered, { try await self.engine.ask(.telling, "read", of: "importance") }) {
             seen.importance = (rule["lines"]?.array ?? []).compactMap { $0["words"]?.string }
             seen.situations = (rule["facts"]?.array ?? []).compactMap { fact in
                 guard let name = fact["name"]?.string else { return nil }
@@ -1524,20 +1930,19 @@ public final class TiloSource: AssistantSource {
             }
         }
         // What comes at a time and what happens when something else does.
-        if let events = try? await engine.ask(.events, "list", of: "events")["events"]?.array {
-            automationList.set(events.compactMap { event -> Automation? in
-                guard let id = event["id"]?.string else { return nil }
-                let scheduled = TiloSource.variant(event["sort"]) != "event"
-                let when = event["when"]?.string ?? ""
-                return Automation(
-                    id: .init(id), sort: scheduled ? .scheduled : .event, title: event["name"]?.string ?? id,
-                    summary: scheduled ? when : event["instruction"]?.string ?? when,
-                    next: event["nextAtMs"]?.number.map { Date(timeIntervalSince1970: $0 / 1000) },
-                    once: when.lowercased().hasPrefix("once"), filter: event["onlyIf"]?.string,
-                    threshold: event["every"]?.number.map { Int($0) }, note: nil,
-                    actsAlone: !(event["permits"]?.array ?? []).isEmpty, isOn: event["on"]?.bool ?? true)
-            })
+        if let events = await answered(&unanswered, { try await self.engine.ask(.events, "list", of: "events") })?["events"]?.array {
+            take(events: events)
         }
+        // The services they connected by their address: the assistant view's line of each, and
+        // how each one's card in a conversation stands (Connections.swift).
+        let awaited = connected.awaited
+        if let listed = await answered(&unanswered, { try await self.engine.connections() }) {
+            seen.connections = Connected.lines(of: listed, site: TiloSource.placeName)
+            if connected.heard(listed, for: awaited) { await look() }
+        }
+        // The assistant's tasks: the issues of the workspace's tracker that are given to it.
+        await readTasks()
+        return unanswered
     }
 
     private var noAssistant: SourceProblem { .refused("You have no assistant in this workspace yet") }
@@ -1561,6 +1966,36 @@ public final class TiloSource: AssistantSource {
             throw SourceProblem.refused(reason.isEmpty ? code : reason)
         } catch is TiloEngine.Problem {
             throw person == nil ? SourceProblem.signedOut : SourceProblem.unreachable
+        }
+    }
+}
+
+/// Something that is done again by itself where it did not go through: after a pause that
+/// doubles each time, up to a minute, so that a busy server is not asked without end.
+@MainActor
+final class Again {
+    private var pause: Duration?
+    private var waiting: Task<Void, Never>?
+
+    nonisolated init() {}
+
+    /// It went through, or is wanted no more: nothing is done again, and the next pause is the first.
+    func settle() {
+        waiting?.cancel()
+        waiting = nil
+        pause = nil
+    }
+
+    /// It did not go through: `again` is done after the next pause, unless `settle` comes first.
+    func later(first: Duration, _ again: @escaping @MainActor () async -> Void) {
+        waiting?.cancel()
+        let wait = pause ?? first
+        pause = min(wait * 2, .seconds(60))
+        waiting = Task {
+            try? await Task.sleep(for: wait)
+            guard !Task.isCancelled else { return }
+            // What is done again is not cut short where it settles this, or asks for itself again.
+            await Task { await again() }.value
         }
     }
 }

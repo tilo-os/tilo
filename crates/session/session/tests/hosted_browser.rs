@@ -6,7 +6,12 @@
 //! this session has, and the join is the server's own: it asks the server to enter it into the
 //! workspace, redeems the invitation the server answers with, and holds the workspace as any device
 //! does. The window is a package's, mapped by a client of this test's own as a toolkit's window
-//! maps: the session opens Browser through the launcher the way it opens any app.
+//! maps: the session opens Browser through the launcher the way it opens any app. The app's side
+//! of that window is this test's too: a connection to the session's app wire as the Browser the
+//! session started, joined as the handed device and publishing its page. That is what the
+//! session's broker lists the window by, and the provider the session reports is the one the
+//! broker lists, never the tab the shell shows the window in: a caller reaches a window by what the
+//! broker lists, so a window nothing is listed for is reported as nothing.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -23,13 +28,17 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ed25519_dalek::{Signer as _, SigningKey};
+use runtime_collab::{
+    ActionCatalogue, CatalogueChange, CollabClient, ExportedAction, ExportedInput,
+};
 use tilo_actions::remote::browser::READY;
 use tilo_identity::provisioning::FILE_SECRETS_ENV;
 use tilo_server_protocol::hosted::Material;
 use tilo_session::apps::Apps;
 use tilo_session::hosted_browser::HostedBrowser;
-use tilo_session::{AppActions, Options, Session};
-use tilo_user_identity::IdentityPaths;
+use tilo_session::{AppActions, AppSocket, Launches, Options, Session};
+use tilo_user_identity::{DeviceCert, IdentityPaths};
 
 use crate::common::people::{Person, Site};
 use collab_types::WorkspaceId;
@@ -38,9 +47,13 @@ use collab_types::WorkspaceId;
 const BROWSER: &str = "so.tilo.browser";
 /// The record the window opens on: the Browser record the server placed.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000aa";
+/// The page a Browser window publishes its actions on, as the server names it.
+const PAGE: &str = "browser.page";
 
 /// What the session said, in order: every report line it printed.
 type Said = Arc<Mutex<Vec<String>>>;
+/// The provider the workspace's catalogue lists Browser's window under, once it lists one.
+type Named = Arc<Mutex<Option<u64>>>;
 
 /// The material the server hands a browser environment's session: the workspace `workspace` of
 /// `site`, the record to open, and the device `device` certifies.
@@ -57,11 +70,12 @@ fn material(
     let device = person.certify(&paths, "Browser");
     let key =
         tilo_user_identity::persist::load_device_key(&paths).expect("the handed device's key");
+    let opens = record.to_owned();
     let material = Material {
         workspace: workspace.to_owned(),
         workspace_id,
-        record: record.to_owned(),
-        device,
+        record: opens.clone(),
+        device: device.clone(),
         secret: key.to_bytes(),
         server: site.node_addr(),
         user_public_key: person.public,
@@ -69,22 +83,36 @@ fn material(
     };
     (
         serde_json::to_string(&material).expect("the material is the server's"),
-        Handed(root),
+        Handed {
+            root,
+            key,
+            cert: device,
+            opens,
+        },
     )
 }
 
-/// The handed device's identity root, kept as long as the material it was read from.
-struct Handed(
-    #[expect(dead_code, reason = "the directory lives as long as the test")] tempfile::TempDir,
-);
+/// The handed device: its identity root, kept as long as the material it was read from, the key
+/// and certificate an app the session starts presents as that device's, and what its window
+/// opens on.
+struct Handed {
+    #[expect(dead_code, reason = "the directory lives as long as the test")]
+    root: tempfile::TempDir,
+    key: SigningKey,
+    cert: DeviceCert,
+    opens: String,
+}
 
 /// A session in a browser environment, its apps starting through `launcher`, keeping what it holds
-/// under `state`, with the workspace directory it read from `home`.
+/// under `state`, with the workspace directory it read from `home`. It serves its apps on
+/// `app_wire`, as the session in a workspace's machine serves the Browser it starts, and the
+/// Browser that speaks there in `workspace` is this test's own process.
 fn environment(
     home: &tilo_test_env::TestHome,
     state: &Path,
     launcher: &Path,
     material: &str,
+    (app_wire, workspace): (&Path, &str),
 ) -> (Session, Said) {
     let said: Said = Arc::default();
     let reports = Arc::clone(&said);
@@ -101,15 +129,127 @@ fn environment(
     let mut launch = tilo_app_launch::SessionEnvironment::from_process();
     launch.wayland_socket = Some(home.runtime().join("wayland-7"));
     let apps = Rc::new(Apps::with_launcher(launch, None, Some(launcher.to_owned())));
+    // Browser's side of the window speaks from this test's own process, so the launch the session
+    // keeps for the Browser it starts names that process too: what its broker admits the
+    // connection by.
+    let begun = Arc::new(Launches::default());
+    begun.started(std::process::id(), BROWSER, workspace, true);
     let session = crate::common::headless(Options {
         collab: true,
         state: Some(state.to_path_buf()),
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
         launch: Some(apps),
         hosted_browser: Some(hosted),
+        app_socket: AppSocket::At(app_wire.to_path_buf()),
+        launches: begun,
         ..Options::default()
     });
     (session, said)
+}
+
+/// The one action Browser's window publishes of its page here: what the session's broker lists
+/// the window by.
+fn page_action() -> ExportedAction {
+    use tilo_actions::{ActionContract, ActionKind, OperationKind};
+    ExportedAction {
+        resource: PAGE.into(),
+        semantic_identity: None,
+        action: "navigate".into(),
+        resource_kind: PAGE.into(),
+        resource_label: "Page".into(),
+        action_label: "Navigate".into(),
+        keywords: Vec::new(),
+        icon: None,
+        description: None,
+        state: tilo_actions::ActionState::default(),
+        operation_kind: OperationKind::Effect,
+        params: Vec::new(),
+        contract: ActionContract {
+            kind: ActionKind::Outside,
+            ..ActionContract::default()
+        },
+        view: None,
+        input: ExportedInput::None,
+        did: None,
+    }
+}
+
+/// Browser's side of its window: the connection the launcher hands the app the session started,
+/// joined on `document` as the device the session is, publishing its page. It then reads the
+/// workspace's action catalogue as any app does, and puts in `named` the provider that catalogue
+/// lists the window under: what a caller names the window by. The connection stays for as long as
+/// the session serves it, as an open window's does.
+fn browser(
+    app_wire: &Path,
+    (workspace, document): (&str, &str),
+    (key, cert): (&SigningKey, &DeviceCert),
+    named: &Named,
+) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the app");
+    runtime.block_on(async {
+        let mut stream =
+            std::os::unix::net::UnixStream::connect(app_wire).expect("the app wire's socket");
+        launcher::services::write_collab_handoff(&mut stream, BROWSER, workspace)
+            .expect("the launcher names the app on the connection");
+        stream
+            .set_nonblocking(true)
+            .expect("the connection is ready for the runtime");
+        let stream = tokio::net::UnixStream::from_std(stream).expect("a runtime stream");
+        let (reader, writer) = stream.into_split();
+        let (client, carrying) = CollabClient::over(reader, writer);
+        tokio::spawn(carrying);
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: workspace.to_owned(),
+            device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
+            proof: key
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    workspace,
+                ))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .expect("a presentation encodes");
+        let route = tilo_workspace_service::apps::route::CrdtRoute {
+            app_id: BROWSER.into(),
+            cluster_id: workspace.into(),
+            document_id: document.into(),
+        };
+        let window = client
+            .join_channel(&route.channel_key(), &presentation)
+            .await
+            .expect("the Browser the session started joins where its window opens");
+        window
+            .publish_actions(&[page_action()])
+            .await
+            .expect("Browser publishes its page");
+        let catalogue = window
+            .subscribe_action_catalogue()
+            .await
+            .expect("the app reads its workspace's action catalogue");
+        let mut held = ActionCatalogue::default();
+        while let Ok(change) = catalogue.read().await {
+            let change: CatalogueChange =
+                serde_json::from_str(&change).expect("a change of the catalogue");
+            held.apply(&change)
+                .expect("the change applies to the catalogue the app holds");
+            let shown = held.surfaces().iter().find(|surface| {
+                surface.live
+                    && surface.app_id == BROWSER
+                    && surface.cluster_id == workspace
+                    && surface.document_id == document
+            });
+            if let Some(shown) = shown {
+                let mut first = named.lock().expect("the provider is this test's");
+                if first.is_none() {
+                    *first = Some(shown.peer_id);
+                }
+            }
+        }
+    });
 }
 
 /// Whether the shell holds `workspace`.
@@ -153,7 +293,7 @@ fn a_session_in_a_browser_environment_joins_its_workspace_and_opens_browser() {
     let workspace_id = site
         .workspace_id(&site.workspace)
         .expect("the site serves the workspace the material names");
-    let (handed, _root) = material(&site, &site.workspace, workspace_id, RECORD, &person);
+    let (handed, device) = material(&site, &site.workspace, workspace_id, RECORD, &person);
 
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     crate::common::probe_app(&mut home, BROWSER, "Browser");
@@ -164,8 +304,16 @@ fn a_session_in_a_browser_environment_joins_its_workspace_and_opens_browser() {
     home.env().set("TILO_IDENTITY_ROOT", &identity_root);
     home.env().set(FILE_SECRETS_ENV, "1");
     let state = tempfile::tempdir().expect("a directory for the environment's shell");
+    let private = crate::common::private_home();
+    let app_wire = private.path().join("app_wire.sock");
 
-    let (mut session, said) = environment(&home, state.path(), launcher.path(), &handed);
+    let (mut session, said) = environment(
+        &home,
+        state.path(),
+        launcher.path(),
+        &handed,
+        (&app_wire, &site.workspace),
+    );
     session.step(Duration::from_millis(1)).expect("a frame");
     assert_eq!(
         reports(&said).first().map(String::as_str),
@@ -179,16 +327,44 @@ fn a_session_in_a_browser_environment_joins_its_workspace_and_opens_browser() {
         holds(session, &site.workspace)
     });
 
-    // Browser opens on the record, and its window publishes under the tab it takes.
+    // Browser opens on the record, and its window takes a tab in the workspace.
     let mut client = crate::common::window::Client::connect(session.compositor());
     crate::common::window::pump(&mut session, &mut [&mut client], |_, clients| {
         let seen = &clients[0].seen;
         seen.compositor.is_some() && seen.wm_base.is_some() && seen.shm.is_some()
     });
     client.map_plain(&mut session, BROWSER, (600, 400));
-    let provider = crate::common::wait_for(&mut session, "the window publishes", |session| {
-        tab_of(session, &site.workspace, BROWSER)
+    crate::common::until(&mut session, "the window takes its tab", |session| {
+        tab_of(session, &site.workspace, BROWSER).is_some()
     });
+    // A window on the screen is not yet one a caller reaches: the session's broker lists nothing
+    // under it until the app publishes there, so the session has no provider to report.
+    assert_eq!(
+        reports(&said),
+        vec![READY.to_owned()],
+        "a window its broker lists nothing for is not reported as up"
+    );
+
+    // The Browser the session started joins as the handed device and publishes its page: the
+    // session's broker lists the window, and the workspace's catalogue names its provider.
+    let named = Named::default();
+    {
+        let (workspace, document, key, cert, named) = (
+            site.workspace.clone(),
+            device.opens,
+            device.key,
+            device.cert,
+            Arc::clone(&named),
+        );
+        std::thread::spawn(move || {
+            browser(&app_wire, (&workspace, &document), (&key, &cert), &named);
+        });
+    }
+    let provider = crate::common::wait_for(
+        &mut session,
+        "the session's broker lists the window",
+        |_| *named.lock().expect("the provider is this test's"),
+    );
     crate::common::until(&mut session, "the provider is reported", |_| {
         reports(&said)
             .iter()
@@ -197,7 +373,7 @@ fn a_session_in_a_browser_environment_joins_its_workspace_and_opens_browser() {
     assert_eq!(
         reports(&said),
         vec![READY.to_owned(), format!("up {provider}")],
-        "`ready` first, then the window's provider, and nothing else"
+        "`ready` first, then the provider the broker lists the window under, and nothing else"
     );
 }
 
@@ -225,8 +401,16 @@ fn a_session_whose_workspace_the_server_does_not_let_it_into_opens_nothing() {
     home.env().set("TILO_IDENTITY_ROOT", &identity_root);
     home.env().set(FILE_SECRETS_ENV, "1");
     let state = tempfile::tempdir().expect("a directory for the environment's shell");
+    let private = crate::common::private_home();
+    let app_wire = private.path().join("app_wire.sock");
 
-    let (mut session, said) = environment(&home, state.path(), launcher.path(), &handed);
+    let (mut session, said) = environment(
+        &home,
+        state.path(),
+        launcher.path(),
+        &handed,
+        (&app_wire, other),
+    );
     let joined = crate::common::steps_within(&mut session, Duration::from_secs(15), |session| {
         holds(session, other).then_some(())
     });

@@ -39,8 +39,6 @@ mode = "off"
 [sandbox.services]
 collab = "optional@31"
 tilo-fs = "optional@31"
-# A task's menu carries its issue as the subject of the send-to box beside it.
-shell-ui   = "optional@35"
 
 # Writing an issue's note asks Notes to make it. Done for someone the host
 # delivered the action for, that is their request; pressed here, it is

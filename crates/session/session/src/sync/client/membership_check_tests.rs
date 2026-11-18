@@ -39,7 +39,7 @@ impl Device {
         let state = tempfile::tempdir().expect("the session's directory");
         let key = test_server::fresh_signing_key(label);
         let cert = test_server::certified(root, &key, label, DeviceCapabilities::member());
-        let identity = tilo_network_actor::HostIdentity::kept(cert, key);
+        let identity = tilo_network_actor::DeviceIdentity::kept(cert, key);
         let engine = std::sync::Arc::new(
             Engine::open(
                 identity.clone(),

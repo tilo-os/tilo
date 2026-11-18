@@ -1,6 +1,7 @@
-//! A same-owner home host enrols its owner's devices into workspaces on demand,
-//! and nobody else's — not even a member its handshake trusts because
-//! another workspace's governance admits their root.
+//! A home server admits the devices its workspaces name, and nobody else —
+//! not even a member its handshake trusts because another workspace's
+//! governance admits their root. A workspace the server does not hold is not
+//! bound on demand.
 
 #![allow(
     clippy::unwrap_used,
@@ -14,18 +15,18 @@
 
 use std::path::Path;
 
-use tilo_peer_state::GovernedAccess;
+use tilo_peer_state::join::Role;
 use tilo_server::{Envelope, Server, ServerClient, ServerConfig, TrustPolicy};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser, client_endpoint};
+use crate::common::{TestDevice, TestUser, client_endpoint, hold_workspace, invitation, redeem};
 use tilo_server::WorkspaceId;
 
 /// The member's own workspace, governed natively on this host.
 const GOVERNED: WorkspaceId = WorkspaceId::from_u128(801);
-/// The owner's workspace, bound on demand by the owner's first subscribe.
+/// The owner's workspace, made on their server.
 const OWNERS: WorkspaceId = WorkspaceId::from_u128(802);
-/// A workspace nobody bound yet.
+/// A workspace the server does not hold.
 const UNBOUND: WorkspaceId = WorkspaceId::from_u128(803);
 
 struct HomeHost {
@@ -33,15 +34,16 @@ struct HomeHost {
     state: tempfile::TempDir,
     owner: TestUser,
     bob: TestUser,
+    /// The server's own device, which governors the workspaces it makes.
+    server_dev: TestDevice,
 }
 
-/// A certified home host with the operator policy `AllowMatchingUser`
-/// (autobind on), one governed workspace admitting Bob, and the owner's workspace
-/// autobound by the owner's first device.
+/// A certified home server with the operator policy `AllowMatchingUser`, the
+/// owner's workspace made on it and the owner's first device entered.
 async fn home_host() -> HomeHost {
     let owner = TestUser::fresh("Owner");
     let bob = TestUser::fresh("Bob");
-    let host = owner.enrol("home", DeviceCapabilities::member());
+    let server_dev = owner.enrol("home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server = crate::common::start_server(
         ServerConfig {
@@ -51,8 +53,8 @@ async fn home_host() -> HomeHost {
         },
         tilo_server::daemon::ServerIdentity {
             user_public_key: owner.user_pk,
-            device_signing_key: host.sk,
-            device_cert: host.cert,
+            device_signing_key: server_dev.sk.clone(),
+            device_cert: server_dev.cert.clone(),
             revocations: RevocationList::new(),
         },
     )
@@ -63,16 +65,18 @@ async fn home_host() -> HomeHost {
         state,
         owner,
         bob,
+        server_dev,
     };
     let laptop = host.owner.enrol("laptop", DeviceCapabilities::primary());
     let laptop_key = laptop.device_pubkey();
+    hold_workspace(&host.server, OWNERS, &[&laptop.cert]).await;
     let laptop = connect(&host.server, laptop).await;
     assert!(
         matches!(
             subscribe(&laptop, OWNERS).await,
             Some(Envelope::Ready { .. })
         ),
-        "the owner's first device binds and enters the owner's workspace"
+        "the owner's first device enters the owner's workspace"
     );
     assert!(members(host.state.path(), OWNERS).contains(&laptop_key));
     host
@@ -92,7 +96,18 @@ async fn connect(server: &Server, device: TestDevice) -> ServerClient {
 
 async fn subscribe(client: &ServerClient, workspace_id: WorkspaceId) -> Option<Envelope> {
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
-    tilo_test_env::within("server answered subscription", client.recv()).await
+    tilo_test_env::within("server answered subscription", async {
+        loop {
+            match client.recv().await {
+                Some(answer @ (Envelope::Ready { .. } | Envelope::NotAuthorised { .. })) => {
+                    break Some(answer);
+                }
+                Some(_) => {}
+                None => break None,
+            }
+        }
+    })
+    .await
 }
 
 /// The devices the workspace's access record admits, as its host keeps them.
@@ -108,32 +123,31 @@ fn members(state: &Path, workspace_id: WorkspaceId) -> Vec<[u8; 32]> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn cross_user_device_is_not_auto_enrolled_into_same_owner_workspace() {
+async fn cross_user_device_is_not_admitted_into_a_workspace_it_does_not_hold() {
     let host = home_host().await;
     let bob_laptop = host.bob.enrol("bob-laptop", DeviceCapabilities::primary());
     let bob_key = bob_laptop.device_pubkey();
-    host.server
-        .replace_governed_workspace_access(
-            GOVERNED,
-            true,
-            GovernedAccess {
-                member_devices: vec![bob_key],
-                member_user_roots: vec![host.bob.user_pk],
-            },
-            host.state.path().to_path_buf(),
-        )
-        .await
-        .unwrap();
+    let workspaces = host.server.workspaces().unwrap();
+    hold_workspace(&host.server, GOVERNED, &[]).await;
+    let issued = invitation(
+        workspaces,
+        &host.server_dev,
+        &GOVERNED.to_string(),
+        Role::Editor,
+        &bob_laptop,
+    )
+    .await;
+    redeem(&bob_laptop, &issued).await.unwrap();
 
-    // The governed workspace's root lets Bob's laptop through the handshake, and
-    // into the workspace that admits it.
+    // The governed workspace's root lets Bob's laptop through the handshake,
+    // and into the workspace that admits it.
     let bob = connect(&host.server, bob_laptop).await;
     assert!(matches!(
         subscribe(&bob, GOVERNED).await,
         Some(Envelope::Ready { .. })
     ));
 
-    // The owner's workspace does not enrol him, and does not remember him.
+    // The owner's workspace does not admit him, and does not remember him.
     assert!(matches!(
         subscribe(&bob, OWNERS).await,
         Some(Envelope::NotAuthorised {
@@ -166,7 +180,7 @@ async fn cross_user_device_is_not_auto_enrolled_into_same_owner_workspace() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn owner_device_still_auto_enrols_on_home_host() {
+async fn owner_device_still_enters_on_a_home_host() {
     let host = home_host().await;
     let phone = host.owner.enrol("phone", DeviceCapabilities::primary());
     let phone_key = phone.device_pubkey();
@@ -178,8 +192,9 @@ async fn owner_device_still_auto_enrols_on_home_host() {
             ..
         })
     ));
-    // The workspace keeps no list of who came: the owner's root admits the owner's
-    // devices, so another one is admitted on its first arrival as this one was.
+    // The workspace keeps no list of who came: the owner's root is a member,
+    // so another device of theirs is admitted on its first arrival as this
+    // one was.
     let tablet = host.owner.enrol("tablet", DeviceCapabilities::primary());
     let tablet_key = tablet.device_pubkey();
     let tablet = connect(&host.server, tablet).await;

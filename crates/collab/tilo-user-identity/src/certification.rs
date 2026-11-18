@@ -270,8 +270,6 @@ impl CertificationPolicy {
             // Operating web pages in Browser is a key's, given by its person
             // where they make it, never a device enrolled through a request.
             browser_pages: false,
-            // Retired grants are never granted again.
-            retired: crate::RetiredFlags::default(),
         }
     }
 

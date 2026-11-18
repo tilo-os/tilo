@@ -337,9 +337,8 @@ pub fn keep_image_action(bytes: Vec<u8>) -> Action {
     }))
 }
 
-/// Keep the picture `bytes` with note `page` and show it there by `show`,
-/// the edit of its body naming it: one change, one undo step.
-#[must_use]
+/// Show the picture `picture` in note `page` by `show`, the edit of its body
+/// naming it: one change, one undo step.
 pub fn show_image(
     page: PageId,
     picture: Bytes,

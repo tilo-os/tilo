@@ -84,7 +84,7 @@ fn add_mail(address: &str, incoming: &str, password: &Value) -> InvokeRequest {
 
 /// A login for both mail servers, kept by `who` from their own device.
 async fn a_mail_login(
-    service: &super::super::HostWorkspaceActions,
+    service: &super::super::ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
 ) -> Value {
@@ -116,7 +116,7 @@ fn proving(workspaces: &Workspaces) -> Arc<Mutex<Vec<String>>> {
 
 /// What `item` remembers, as its person reads it from their own device.
 async fn remembered(
-    service: &super::super::HostWorkspaceActions,
+    service: &super::super::ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
     item: &Value,
@@ -304,7 +304,7 @@ async fn allowed_once_the_use_is_made_once_and_leaves_no_leave() {
 /// No agent reads an item's leaves or takes them back. Its person does,
 /// from their own device: what the item remembers after.
 async fn she_alone_takes_the_leave_back(
-    service: &super::super::HostWorkspaceActions,
+    service: &super::super::ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     ada: &DeviceCert,
     item: &Value,

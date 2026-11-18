@@ -192,7 +192,7 @@ before at its last laid-out place and poses it away on `Snap` (a strip step)
 or `Drill::WORKSPACE` (a workspace step) while the strip chosen is already the
 one laid out and taking input. A pointer and a finger slide; a key and an
 action move within `fast`, as the design note says, and a change nobody made
-still lands. Three fingers sideways carry the shown strip: `surface-host`'s
+still lands. Three fingers sideways carry the shown strip: `shell-surface`'s
 gesture reader hands every update to `DesktopSurface::carry_strip`. Up and
 down they step the strip at the lift, which slides. Tests:
 `surface/slide_tests.rs` (a click slides across frames and never cuts, a key's

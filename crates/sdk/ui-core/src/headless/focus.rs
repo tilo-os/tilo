@@ -5,7 +5,7 @@
 //! a rebuild.
 
 use super::FrameHarness;
-use crate::host_core::{HostCore as _, KeyHost as _};
+use crate::app_core::{AppCore as _, KeyCore as _};
 use taffy::NodeId;
 
 impl FrameHarness {

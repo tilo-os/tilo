@@ -19,7 +19,7 @@ use tilo_actions::{ActionAddress, InvocationId};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
-use super::super::HostWorkspaceActions;
+use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_asking::{Allowing, MAX_PERMISSIONS};
@@ -31,7 +31,7 @@ const AGENT: &str = "scout";
 /// `target` asked by `caller`, on the device `device` certifies, in the
 /// workspace `workspace_id` carries.
 async fn ask_at(
-    holder: &HostWorkspaceActions,
+    holder: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     (device, caller): (&DeviceCert, &Caller),
     target: RemoteActionTarget,
@@ -66,7 +66,7 @@ async fn ask_at(
 
 /// `action` of what stands, asked as [`ask_at`] asks.
 async fn ask(
-    holder: &HostWorkspaceActions,
+    holder: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
     action: &str,

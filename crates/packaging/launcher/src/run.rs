@@ -19,7 +19,8 @@ use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_app_baseline;
 use crate::services::{
     ACCOUNT_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext,
-    resolve_blob_bind, resolve_chooser_bind, resolve_service_binds_for_launch, to_service_binds,
+    resolve_blob_bind, resolve_chooser_bind, resolve_service_binds_for_launch,
+    resolve_shell_ui_bind, to_service_binds,
 };
 use entrypoint_runtime::preflight_entrypoint_runtime;
 use seccomp_fds::SeccompFds;
@@ -36,8 +37,6 @@ pub mod tilolang_process;
 pub enum RunError {
     #[error(transparent)]
     Manifest(#[from] crate::manifest::ManifestReadError),
-    #[error("refusing to launch: {0}")]
-    FsPolicy(#[from] crate::manifest::FsPolicyViolation),
     #[error(
         "refusing to launch `{package}`: could not create its directory at {path} ({source}). \
          An app with nowhere to write loses the user's work on exit, so this is a refusal \
@@ -581,7 +580,8 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> Capab
         .as_deref()
         .map(load_capability_file)
         .unwrap_or_default();
-    let mut plan = CapabilityPlan::for_app(&app_id, &grants.sandbox, Some(unix_now()));
+    let sandbox = crate::capabilities::declared(manifest, grants.sandbox);
+    let mut plan = CapabilityPlan::for_app(&app_id, &sandbox, Some(unix_now()));
     // A workspace launch may change the space when its person may.
     if grants.author {
         plan.participation = crate::capabilities::Participation::Author;
@@ -1431,6 +1431,12 @@ pub enum LaunchMode {
         /// Desktop-file id of the entry, e.g. `com.spotify.Client`.
         desktop_id: String,
     },
+}
+
+/// Whether a launch opens a window, which gets the shell-UI connection: a command, a headless service
+/// or an origin connector has no window to describe.
+fn opens_window(mode: &LaunchMode, connector: Option<&str>) -> bool {
+    matches!(mode, LaunchMode::Gui) && connector.is_none()
 }
 
 /// Env override that turns the egress proxy off, downgrading a host-scoped grant to unrestricted access.
@@ -3073,9 +3079,6 @@ pub(crate) fn run_with_context(
     validate_launch_mode(manifest, opts)?;
     validate_interfaces(manifest)?;
 
-    // 0.
-    crate::manifest::enforce_fs_policy(manifest)?;
-
     // Hold the payload and runtime trees before they are looked at, until the sandbox that mounts them
     // has exited: an update or collection meanwhile leaves them alone (`crate::lease`).
     let _leases = crate::lease::LaunchLeases::take(manifest, payload_root, opts)?;
@@ -3156,7 +3159,7 @@ pub(crate) fn run_with_context(
     }
 
     // Connect only after cold runtime verification, loader preflight and host preparation.
-    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
+    let egress = crate::sandbox::egress_decision(manifest, &capabilities, payload_root);
     let package_id = manifest.package_id.as_str();
     let resolved = if let Some((services, _)) = enrolled.as_mut() {
         let binding = services.binding().clone();
@@ -3178,7 +3181,11 @@ pub(crate) fn run_with_context(
                 workspace_id: opts.workspace_id.as_deref(),
             },
         )?;
-        crate::services::authenticate_shell_ui_bind(&resolved, package_id, &egress)?;
+        if opens_window(&opts.mode, opts.tilolang_connector.as_deref())
+            && let Some(shell_ui) = resolve_shell_ui_bind(package_id, &egress, opts.no_services)?
+        {
+            resolved.push(shell_ui);
+        }
         if let Some(identity) = crate::services::resolve_identity_bind_for_contract(
             package_id,
             opts.workspace_id.as_deref(),
@@ -3919,7 +3926,6 @@ fn run_with_capture_spawn<T>(
     // one enforced route is a route beside it.
     validate_launch_mode(manifest, opts)?;
     validate_interfaces(manifest)?;
-    crate::manifest::enforce_fs_policy(manifest)?;
 
     // Seccomp baseline resolved identically to `run_with` — two paths reaching different conclusions
     // would make capture a way around the filter.
@@ -3954,7 +3960,7 @@ fn run_with_capture_spawn<T>(
         dbus_proxy::media_player_for(manifest).as_deref(),
     );
     // As in `run_with_context`, cold runtime checks precede service handoff.
-    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
+    let egress = crate::sandbox::egress_decision(manifest, &capabilities, payload_root);
     let package_id = manifest.package_id.as_str();
     let mut resolved = resolve_service_binds_for_launch(
         &manifest.sandbox.services,
@@ -3964,7 +3970,11 @@ fn run_with_capture_spawn<T>(
             workspace_id: opts.workspace_id.as_deref(),
         },
     )?;
-    crate::services::authenticate_shell_ui_bind(&resolved, package_id, &egress)?;
+    if opens_window(&opts.mode, opts.tilolang_connector.as_deref())
+        && let Some(shell_ui) = resolve_shell_ui_bind(package_id, &egress, opts.no_services)?
+    {
+        resolved.push(shell_ui);
+    }
     if let Some(identity) = crate::services::resolve_identity_bind_for_contract(
         package_id,
         opts.workspace_id.as_deref(),
@@ -4999,24 +5009,6 @@ mod app_dir_tests {
                     .expect("another app");
                 assert_ne!(a, other, "an app keeps only its own records of the person");
             }
-            {
-                let data = tempfile::tempdir().expect("tempdir");
-
-                let mut m = manifest("so.tilo.fixture");
-                let victim = data.path().join("so.tilo.totp");
-                m.sandbox.fs.write.push(victim.display().to_string());
-                let refused = run_with(&m, Path::new("/nonexistent"), &opts_at(data.path(), None));
-
-                let err = refused.expect_err("a manifest naming a write path must be refused");
-                assert!(
-                    matches!(err, RunError::FsPolicy(_)),
-                    "expected a policy refusal, got: {err}"
-                );
-                assert!(
-                    !victim.exists(),
-                    "the launcher must not create a path a package named"
-                );
-            }
         }
 
         phase settings_binds_its_accounts_but_never_the_session_settings_and_other_apps_bind_nothing;
@@ -5631,6 +5623,9 @@ mod render_service_launch_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod shell_ui_tests;
 
 #[cfg(test)]
 mod gui_argv_tests {

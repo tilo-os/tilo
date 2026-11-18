@@ -388,7 +388,7 @@ impl ChatApp {
                     .iter()
                     .find(|item| item.id == alone.message)
             })
-            .map(|message| self.message_author_label(message, crate::identity::RoleWord::InBadge))
+            .map(|message| self.message_author_label(message))
             .unwrap_or_default()
     }
 

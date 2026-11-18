@@ -1,32 +1,32 @@
-//! Drag-and-drop between Wayland clients, X11 clients and hosted surface
+//! Drag-and-drop between Wayland clients, X11 clients and surface
 //! apps, files (`text/uri-list`) included.
 //!
-//! | from \ to | Wayland | X11 | hosted |
+//! | from \ to | Wayland | X11 | surface |
 //! |---|---|---|---|
 //! | Wayland | smithay's data device | XDND, the compositor as source | read from the client's source |
 //! | X11 | a compositor drag, data read through `XdndSelection` | XDND among X11 clients | read through `XdndSelection` |
-//! | hosted | a compositor drag of the app's bytes | XDND, the compositor as source | the app's bytes |
+//! | surface | a compositor drag of the app's bytes | XDND, the compositor as source | the app's bytes |
 //!
 //! While a drag runs under a pointer grab (a client's drag or one the
 //! compositor started), pointer motion first finds what is under the
 //! pointer: a Wayland surface gets the drag from smithay's data device, a
-//! hosted surface is asked whether it takes the formats
-//! ([`SurfaceHost::drop_offered`]), an X11 window is spoken to in XDND
+//! surface is asked whether it takes the formats
+//! ([`ShellSurface::drop_offered`]), an X11 window is spoken to in XDND
 //! through [`XdndBridge`]. An X11 client's drag runs inside Xwayland until
 //! it leaves the X11 windows; then the bridge's proxy window takes it (see
-//! [`crate::xdnd_bridge`]).
+//! [`tilo_x11_transfer::bridge`]).
 //!
 //! A Wayland source is told its drag was cancelled as the button comes up
 //! over anything that is not a Wayland client (smithay validates drops
-//! only through its own offers), so the data a hosted surface or an X11
+//! only through its own offers), so the data a surface or an X11
 //! window gets is asked for before the button reaches the grab: the
 //! request goes out first, and sources answer requests in order.
 //!
 //! A drag follows the pointer or, when it started with a touch, that
-//! finger; its icon (the client's icon surface, or the image a hosted app
+//! finger; its icon (the client's icon surface, or the image a surface app
 //! gave) is drawn under it, in front of everything but the idle dim.
 //!
-//! [`SurfaceHost::drop_offered`]: tilo_session_core::surface::SurfaceHost::drop_offered
+//! [`ShellSurface::drop_offered`]: tilo_session_core::surface::ShellSurface::drop_offered
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -57,12 +57,13 @@ use smithay::xwayland::X11Surface;
 use smithay::xwayland::xwm::XwmId;
 
 use crate::render::OutputRenderElement;
-use crate::selection::{MAX_SELECTION_BYTES, host_offer, normalized_mimes, serve, value_for};
+use crate::selection::{MAX_SELECTION_BYTES, normalized_mimes, serve, surface_offer, value_for};
 use crate::state::State;
-use crate::xdnd::{self, Action};
-use crate::xdnd_bridge::{BridgeEvent, Request, XdndBridge};
+use tilo_x11_transfer::bridge::{BridgeEvent, Request, XdndBridge};
+use tilo_x11_transfer::pick_format;
+use tilo_x11_transfer::xdnd::{self, Action};
 
-/// The left button, which starts a hosted app's drag.
+/// The left button, which starts a surface app's drag.
 const BTN_LEFT: u32 = 0x110;
 
 /// Drag-and-drop state.
@@ -86,7 +87,7 @@ pub(crate) struct Dnd {
     release_x11_source: bool,
     /// What the drag shows under the pointer or finger.
     icon: Option<DragIcon>,
-    /// A Wayland source whose drop a hosted surface or an X11 window took: told `dnd_finished` once
+    /// A Wayland source whose drop a surface or an X11 window took: told `dnd_finished` once
     /// the target has the data.
     finishing: Option<WlDataSource>,
     /// Where the drag is, in the logical layout.
@@ -101,9 +102,9 @@ pub(crate) enum DragIcon {
         surface: WlSurface,
         offset: Point<i32, Logical>,
     },
-    /// A hosted app's image, its hotspot (logical) on the drag's point.
+    /// A surface app's image, its hotspot (logical) on the drag's point.
     Image {
-        frame: tilo_session_core::surface::HostFrame,
+        frame: tilo_session_core::surface::SurfaceFrame,
         hotspot: Point<i32, Logical>,
     },
 }
@@ -114,10 +115,10 @@ struct Drag {
     mimes: Vec<String>,
     actions: DndAction,
     target: Target,
-    /// How the drop went: set by our own drop (hosted and X11 targets) or by smithay's grab
+    /// How the drop went: set by our own drop (surface and X11 targets) or by smithay's grab
     /// (Wayland targets).
     outcome: Option<bool>,
-    /// The action a hosted or X11 target takes it with: the source's preferred one, or what an X11
+    /// The action a surface or X11 target takes it with: the source's preferred one, or what an X11
     /// window accepted (a move deletes the item at the source once the target has it).
     chosen: Action,
 }
@@ -126,9 +127,9 @@ struct Drag {
 enum Source {
     /// A Wayland client's data source.
     Client(WlDataSource),
-    /// Bytes the compositor holds: a hosted app's, `origin` being that app, or what a drag that
+    /// Bytes the compositor holds: a surface app's, `origin` being that app, or what a drag that
     /// crossed from another of the person's devices carried here, which no app here started.
-    Host {
+    Surface {
         values: Arc<BTreeMap<String, Vec<u8>>>,
         origin: Option<usize>,
     },
@@ -142,8 +143,8 @@ enum Target {
     Nothing,
     /// A Wayland surface: smithay's grab offers it the drag.
     Client,
-    /// A hosted surface, and the format it takes there.
-    Host {
+    /// A surface, and the format it takes there.
+    Surface {
         index: usize,
         mime: Option<String>,
     },
@@ -160,7 +161,7 @@ impl Target {
     fn is(&self, under: &Under) -> bool {
         match (self, under) {
             (Self::Nothing, Under::Nothing) | (Self::Client, Under::Client(..)) => true,
-            (Self::Host { index, .. }, Under::Host(new)) => index == new,
+            (Self::Surface { index, .. }, Under::Surface(new)) => index == new,
             (
                 Self::X11 { xwm, window, .. },
                 Under::X11 {
@@ -177,13 +178,13 @@ impl Target {
 enum Under {
     Nothing,
     Client(WlSurface, Point<f64, Logical>),
-    Host(usize),
+    Surface(usize),
     X11 { xwm: XwmId, window: u32 },
 }
 
 /// What a compositor-started Wayland drag serves.
 enum Served {
-    Host(Arc<BTreeMap<String, Vec<u8>>>),
+    Surface(Arc<BTreeMap<String, Vec<u8>>>),
     /// The X11 drag's types, read through the bridge of `xwm` 's display.
     X11 {
         xwm: XwmId,
@@ -197,11 +198,11 @@ struct Incoming {
     xwm: XwmId,
     types: Vec<String>,
     mimes: Vec<String>,
-    /// The hosted surface it is over while Xwayland still runs the drag.
-    host: Option<(usize, Option<String>)>,
+    /// The surface it is over while Xwayland still runs the drag.
+    surface: Option<(usize, Option<String>)>,
     /// A compositor drag took it over for Wayland clients.
     grabbed: bool,
-    /// How the Wayland (or hosted) side took the drop.
+    /// How the Wayland (or surface) side took the drop.
     outcome: Option<bool>,
     /// The X11 source dropped it on the proxy.
     dropped: bool,
@@ -239,8 +240,8 @@ impl Dnd {
 
 /// Bytes read off the loop.
 enum Delivery {
-    /// For a hosted surface's drop; `finish_x11` when an X11 source waits.
-    Host {
+    /// For a surface's drop; `finish_x11` when an X11 source waits.
+    Surface {
         index: usize,
         mime: String,
         bytes: Vec<u8>,
@@ -251,23 +252,26 @@ enum Delivery {
 }
 
 impl State {
-    /// Start a hosted surface app's drag of `offer` (bytes per format),
+    /// Start a surface app's drag of `offer` (bytes per format),
     /// showing `icon` under it, while a finger holds the app (the drag
     /// follows that finger) or else while the pointer is pressed on it;
-    /// false when there is nothing to drag or no hosted surface there.
-    pub(crate) fn start_host_drag(
+    /// false when there is nothing to drag or no surface there.
+    pub(crate) fn start_surface_drag(
         &mut self,
         offer: Vec<(String, Vec<u8>)>,
-        icon: Option<(tilo_session_core::surface::HostFrame, Point<i32, Logical>)>,
+        icon: Option<(
+            tilo_session_core::surface::SurfaceFrame,
+            Point<i32, Logical>,
+        )>,
     ) -> bool {
-        let Some(values) = host_offer(offer) else {
+        let Some(values) = surface_offer(offer) else {
             return false;
         };
-        let touch = self.touch.take_host_finger();
+        let touch = self.touch.take_surface_finger();
         let origin = if let Some((_, index, _)) = touch {
             index
         } else {
-            let Some(origin) = self.host_under(self.pointer) else {
+            let Some(origin) = self.shell_surface_under(self.pointer) else {
                 return false;
             };
             if self
@@ -287,7 +291,7 @@ impl State {
     /// follows the pointer from where it is, and the release that drops it is still to come. False
     /// when it offers nothing or the pointer is held by something else.
     pub(crate) fn carry_drag_here(&mut self, offer: Vec<(String, Vec<u8>)>) -> bool {
-        let Some(values) = host_offer(offer) else {
+        let Some(values) = surface_offer(offer) else {
             return false;
         };
         if self.dnd.drag.is_some()
@@ -308,14 +312,17 @@ impl State {
         &mut self,
         values: BTreeMap<String, Vec<u8>>,
         origin: Option<usize>,
-        icon: Option<(tilo_session_core::surface::HostFrame, Point<i32, Logical>)>,
+        icon: Option<(
+            tilo_session_core::surface::SurfaceFrame,
+            Point<i32, Logical>,
+        )>,
         touch: Option<(u32, usize, Point<f64, Logical>)>,
     ) {
         let values = Arc::new(values);
         let mimes = normalized_mimes(values.keys().cloned());
-        self.dnd.served = Some(Served::Host(Arc::clone(&values)));
+        self.dnd.served = Some(Served::Surface(Arc::clone(&values)));
         self.dnd.drag = Some(Drag {
-            source: Source::Host { values, origin },
+            source: Source::Surface { values, origin },
             mimes: mimes.clone(),
             actions: DndAction::Copy,
             target: Target::Nothing,
@@ -368,7 +375,7 @@ impl State {
                 source.send(mime.to_owned(), fd.as_fd());
                 Ok(())
             }
-            Source::Host { values, .. } => {
+            Source::Surface { values, .. } => {
                 let bytes = value_for(values, mime).ok_or("the drag does not offer it")?;
                 serve(fd, bytes.to_vec());
                 Ok(())
@@ -470,10 +477,10 @@ impl State {
     /// The touch carrying a drag was taken back: the drag ends unaccepted.
     pub(crate) fn drag_cancelled(&mut self) {
         if let Some(mut drag) = self.dnd.drag.take() {
-            if let Target::Host { index, .. } = drag.target
-                && let Some(host) = self.hosts.get_mut(index)
+            if let Target::Surface { index, .. } = drag.target
+                && let Some(surface) = self.surfaces.get_mut(index)
             {
-                host.drop_left();
+                surface.drop_left();
             }
             drag.outcome = Some(false);
             self.drag_ended(&drag, BTN_LEFT);
@@ -569,8 +576,8 @@ impl State {
         if self.locked() {
             return Under::Nothing;
         }
-        if let Some(index) = self.host_under(at) {
-            return Under::Host(index);
+        if let Some(index) = self.shell_surface_under(at) {
+            return Under::Surface(index);
         }
         match self.surface_under(at) {
             Some((window, surface, origin)) => match window.x11_surface() {
@@ -629,13 +636,13 @@ impl State {
         };
         let old = drag.target.clone();
         let mimes = drag.mimes.clone();
-        let action = Action::preferred(drag.actions);
+        let action = Action::preferred(drag.actions.bits());
         let same = old.is(under);
         if !same {
             match old {
-                Target::Host { index, .. } => {
-                    if let Some(host) = self.hosts.get_mut(index) {
-                        host.drop_left();
+                Target::Surface { index, .. } => {
+                    if let Some(surface) = self.surfaces.get_mut(index) {
+                        surface.drop_left();
                     }
                 }
                 Target::X11 { xwm, .. } => {
@@ -650,13 +657,13 @@ impl State {
         let target = match *under {
             Under::Nothing => Target::Nothing,
             Under::Client(..) => Target::Client,
-            Under::Host(index) => {
+            Under::Surface(index) => {
                 let mime = self
-                    .hosts
+                    .surfaces
                     .get_mut(index)
-                    .and_then(|host| host.drop_offered(&mimes, at.x, at.y));
+                    .and_then(|surface| surface.drop_offered(&mimes, at.x, at.y));
                 self.source_feedback(mime.as_deref(), action);
-                Target::Host { index, mime }
+                Target::Surface { index, mime }
             }
             Under::X11 { xwm, window } => {
                 let aware = match old {
@@ -683,7 +690,7 @@ impl State {
     }
 
     /// Tell a Wayland source whether the target takes it (smithay does for Wayland targets; this is
-    /// for hosted and X11 ones).
+    /// for surface and X11 ones).
     fn source_feedback(&self, mime: Option<&str>, action: Action) {
         let Some(Drag {
             source: Source::Client(source),
@@ -695,7 +702,7 @@ impl State {
         source.target(mime.map(str::to_owned));
         if source.version() >= 3 {
             source.action(if mime.is_some() {
-                action.dnd()
+                DndAction::from_bits_truncate(action.bits())
             } else {
                 DndAction::None
             });
@@ -745,21 +752,21 @@ impl State {
         true
     }
 
-    /// The grab ended: tell the hosted app that started the drag, let an X11 source see its button
+    /// The grab ended: tell the surface app that started the drag, let an X11 source see its button
     /// come up, and route the pointer anew.
     fn drag_ended(&mut self, drag: &Drag, button: u32) {
         self.dnd.icon = None;
-        if let Source::Host {
+        if let Source::Surface {
             origin: Some(origin),
             ..
         } = drag.source
-            && let Some(host) = self.hosts.get_mut(origin)
+            && let Some(surface) = self.surfaces.get_mut(origin)
         {
             // The press was the app's; so is the release.
-            host.pointer_button(button, false);
+            surface.pointer_button(button, false);
             // smithay cancels every drop on a client it does not validate,
             // so a client drop that was not cancelled was taken.
-            host.drag_ended(drag.outcome.unwrap_or(true));
+            surface.drag_ended(drag.outcome.unwrap_or(true));
         }
         if std::mem::take(&mut self.dnd.release_x11_source) {
             self.release_x11_source();
@@ -785,23 +792,23 @@ impl State {
         self.pointer_motion(self.pointer, SERIAL_COUNTER.next_serial(), time);
     }
 
-    /// The button came up over a hosted surface or an X11 window: hand it the drop before the grab
+    /// The button came up over a surface or an X11 window: hand it the drop before the grab
     /// tells the source.
     fn drop_on_target(&mut self) {
         let Some(drag) = &self.dnd.drag else {
             return;
         };
         let outcome = match drag.target.clone() {
-            Target::Host {
+            Target::Surface {
                 index,
                 mime: Some(mime),
             } => {
-                self.drop_on_host(index, &mime);
+                self.drop_on_surface(index, &mime);
                 Some(true)
             }
-            Target::Host { index, mime: None } => {
-                if let Some(host) = self.hosts.get_mut(index) {
-                    host.drop_left();
+            Target::Surface { index, mime: None } => {
+                if let Some(surface) = self.surfaces.get_mut(index) {
+                    surface.drop_left();
                 }
                 Some(false)
             }
@@ -821,34 +828,34 @@ impl State {
         }
     }
 
-    fn drop_on_host(&mut self, index: usize, mime: &str) {
+    fn drop_on_surface(&mut self, index: usize, mime: &str) {
         let Some(drag) = &self.dnd.drag else {
             return;
         };
         match &drag.source {
             Source::Client(source) => {
                 let source = source.clone();
-                self.read_for_host(index, mime, false, |fd| {
+                self.read_for_surface(index, mime, false, |fd| {
                     source.send(mime.to_owned(), fd.as_fd());
                 });
             }
-            Source::Host { values, .. } => {
+            Source::Surface { values, .. } => {
                 let bytes = value_for(values, mime).map(<[u8]>::to_vec);
-                if let (Some(bytes), Some(host)) = (bytes, self.hosts.get_mut(index)) {
-                    host.drop_data(mime, bytes);
+                if let (Some(bytes), Some(surface)) = (bytes, self.surfaces.get_mut(index)) {
+                    surface.drop_data(mime, bytes);
                 }
             }
-            Source::X11 => self.read_x11_for_host(index, mime, false),
+            Source::X11 => self.read_x11_for_surface(index, mime, false),
         }
     }
 
-    /// Read the X11 drag's `mime` for hosted surface `index` .
-    fn read_x11_for_host(&mut self, index: usize, mime: &str, finish_x11: bool) {
+    /// Read the X11 drag's `mime` for surface `index` .
+    fn read_x11_for_surface(&mut self, index: usize, mime: &str, finish_x11: bool) {
         let Some(target) = self
             .dnd
             .incoming
             .as_ref()
-            .and_then(|incoming| xdnd::pick_format(mime, &incoming.types))
+            .and_then(|incoming| pick_format(mime, &incoming.types))
         else {
             return;
         };
@@ -856,15 +863,15 @@ impl State {
             return;
         };
         let mut writer = None;
-        self.read_for_host(index, mime, finish_x11, |fd| writer = Some(fd));
+        self.read_for_surface(index, mime, finish_x11, |fd| writer = Some(fd));
         if let (Some(fd), Some(bridged)) = (writer, self.dnd.bridged_mut(xwm)) {
             bridged.bridge.convert(target, fd);
         }
     }
 
-    /// Read what `request` writes into a pipe, off the loop, then hand it to hosted surface `index`
+    /// Read what `request` writes into a pipe, off the loop, then hand it to surface `index`
     /// .
-    fn read_for_host(
+    fn read_for_surface(
         &mut self,
         index: usize,
         mime: &str,
@@ -872,7 +879,7 @@ impl State {
         request: impl FnOnce(OwnedFd),
     ) {
         let mime = mime.to_owned();
-        self.read_off_loop(request, move |bytes| Delivery::Host {
+        self.read_off_loop(request, move |bytes| Delivery::Surface {
             index,
             mime,
             bytes,
@@ -930,14 +937,14 @@ impl State {
 
     fn deliver(&mut self, delivery: Delivery) {
         match delivery {
-            Delivery::Host {
+            Delivery::Surface {
                 index,
                 mime,
                 bytes,
                 finish_x11,
             } => {
-                if let Some(host) = self.hosts.get_mut(index) {
-                    host.drop_data(&mime, bytes);
+                if let Some(surface) = self.surfaces.get_mut(index) {
+                    surface.drop_data(&mime, bytes);
                 }
                 if finish_x11 {
                     self.finish_incoming(true);
@@ -963,7 +970,7 @@ impl State {
     }
 
     /// Drop on the X11 window of `xwm` 's display under the drag: what it may ask for is read ahead
-    /// (a Wayland source) or at hand (a hosted one).
+    /// (a Wayland source) or at hand (a surface one).
     fn drop_on_x11(&mut self, xwm: XwmId) -> bool {
         let Some(drag) = &self.dnd.drag else {
             return false;
@@ -996,7 +1003,7 @@ impl State {
                     );
                 }
             }
-            Source::Host { values, .. } => {
+            Source::Surface { values, .. } => {
                 self.dnd.x_served = Some(XServed {
                     xwm,
                     values: values.as_ref().clone(),
@@ -1028,7 +1035,7 @@ impl State {
                     .chain(served.loading.iter())
                     .cloned()
                     .collect();
-                match xdnd::pick_format(&request.target, &available) {
+                match pick_format(&request.target, &available) {
                     Some(mime) if served.loading.contains(&mime) => {
                         // The bytes are still being read: answered when they arrive.
                         served.waiting.push(request);
@@ -1048,7 +1055,7 @@ impl State {
 
     /// Connect an XDND bridge to the display of `xwm` 's server.
     pub(crate) fn start_xdnd(&mut self, display: u32, xwm: XwmId) {
-        let bridge = match XdndBridge::connect(display) {
+        let bridge = match XdndBridge::connect(display, None) {
             Ok(bridge) => bridge,
             Err(error) => {
                 tracing::warn!(%error, "no drag-and-drop with X11 windows");
@@ -1156,7 +1163,7 @@ impl State {
                     xwm,
                     types,
                     mimes,
-                    host: None,
+                    surface: None,
                     grabbed: false,
                     outcome: None,
                     dropped: false,
@@ -1167,10 +1174,10 @@ impl State {
             }
             BridgeEvent::Leave => {
                 if let Some(incoming) = self.dnd.incoming.take_if(|incoming| !incoming.grabbed)
-                    && let Some((index, _)) = incoming.host
-                    && let Some(host) = self.hosts.get_mut(index)
+                    && let Some((index, _)) = incoming.surface
+                    && let Some(surface) = self.surfaces.get_mut(index)
                 {
-                    host.drop_left();
+                    surface.drop_left();
                 }
             }
             BridgeEvent::Drop => self.incoming_drop(),
@@ -1207,35 +1214,35 @@ impl State {
             return;
         }
         let mimes = incoming.mimes.clone();
-        let old_host = incoming.host.as_ref().map(|(index, _)| *index);
+        let old_surface = incoming.surface.as_ref().map(|(index, _)| *index);
         let under = self.drag_under(at, true);
-        if let Some(old) = old_host
-            && !matches!(under, Under::Host(index) if index == old)
-            && let Some(host) = self.hosts.get_mut(old)
+        if let Some(old) = old_surface
+            && !matches!(under, Under::Surface(index) if index == old)
+            && let Some(surface) = self.surfaces.get_mut(old)
         {
-            host.drop_left();
+            surface.drop_left();
         }
         match under {
-            Under::Host(index) => {
+            Under::Surface(index) => {
                 let mime = self
-                    .hosts
+                    .surfaces
                     .get_mut(index)
-                    .and_then(|host| host.drop_offered(&mimes, at.x, at.y));
+                    .and_then(|surface| surface.drop_offered(&mimes, at.x, at.y));
                 let accept = mime.is_some();
                 if let Some(incoming) = self.dnd.incoming.as_mut() {
-                    incoming.host = Some((index, mime));
+                    incoming.surface = Some((index, mime));
                 }
                 self.x11_status(xwm, accept);
             }
             Under::Client(surface, origin) => {
                 if let Some(incoming) = self.dnd.incoming.as_mut() {
-                    incoming.host = None;
+                    incoming.surface = None;
                 }
                 self.take_over_x11_drag(surface, origin, mimes);
             }
             Under::Nothing | Under::X11 { .. } => {
                 if let Some(incoming) = self.dnd.incoming.as_mut() {
-                    incoming.host = None;
+                    incoming.surface = None;
                 }
                 self.x11_status(xwm, false);
             }
@@ -1323,8 +1330,8 @@ impl State {
             }
             return;
         }
-        match incoming.host.clone() {
-            Some((index, Some(mime))) => self.read_x11_for_host(index, &mime, true),
+        match incoming.surface.clone() {
+            Some((index, Some(mime))) => self.read_x11_for_surface(index, &mime, true),
             _ => self.finish_incoming(false),
         }
     }
@@ -1436,12 +1443,12 @@ impl ClientDndGrabHandler for State {
                 actions,
                 target: Target::Nothing,
                 outcome: None,
-                chosen: Action::preferred(actions),
+                chosen: Action::preferred(actions.bits()),
             }
         });
     }
 
-    /// A hosted surface or an X11 window took the drop (handed it before the button reached the
+    /// A surface or an X11 window took the drop (handed it before the button reached the
     /// grab): the source hears it was performed with the action taken, not that it was cancelled.
     fn drop_target_action(&mut self, _seat: &Seat<Self>) -> Option<DndAction> {
         let drag = self.dnd.drag.as_ref()?;
@@ -1452,7 +1459,7 @@ impl ClientDndGrabHandler for State {
             return None;
         }
         self.dnd.finishing = Some(source.clone());
-        Some(drag.chosen.dnd())
+        Some(DndAction::from_bits_truncate(drag.chosen.bits()))
     }
 
     fn dropped(&mut self, _target: Option<WlSurface>, validated: bool, _seat: Seat<Self>) {
@@ -1465,7 +1472,7 @@ impl ClientDndGrabHandler for State {
 impl ServerDndGrabHandler for State {
     fn send(&mut self, mime_type: String, fd: OwnedFd, _seat: Seat<Self>) {
         let x11 = match &self.dnd.served {
-            Some(Served::X11 { xwm, types }) => Some((*xwm, xdnd::pick_format(&mime_type, types))),
+            Some(Served::X11 { xwm, types }) => Some((*xwm, pick_format(&mime_type, types))),
             _ => None,
         };
         if let Some((xwm, target)) = x11 {
@@ -1474,7 +1481,7 @@ impl ServerDndGrabHandler for State {
             }
             return;
         }
-        let Some(Served::Host(values)) = &self.dnd.served else {
+        let Some(Served::Surface(values)) = &self.dnd.served else {
             return;
         };
         if let Some(bytes) = value_for(values, &mime_type) {

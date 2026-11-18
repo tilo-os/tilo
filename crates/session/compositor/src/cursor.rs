@@ -257,14 +257,14 @@ fn arrow_pixels(side: u32) -> Vec<u8> {
 }
 
 impl State {
-    /// What the pointer shows now: nothing while it is parked, else a hosted surface under it
+    /// What the pointer shows now: nothing while it is parked, else a surface under it
     /// chooses its shape, else the focused client.
     fn cursor_status(&self) -> CursorImageStatus {
         if self.pointer_parked {
             return CursorImageStatus::Hidden;
         }
-        match self.host_under_pointer() {
-            Some(host) => CursorImageStatus::Named(host.cursor()),
+        match self.surface_under_pointer() {
+            Some(surface) => CursorImageStatus::Named(surface.cursor()),
             None => self.cursor.status.clone(),
         }
     }

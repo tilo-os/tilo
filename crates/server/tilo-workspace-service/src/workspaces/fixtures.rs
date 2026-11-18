@@ -17,7 +17,7 @@ use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::{DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, PreAdmitRequest, Workspaces};
-use crate::service::{HostConfig, HostIdentity, WorkspaceService};
+use crate::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 
 /// What a test that stands in for the mail servers of the accounts people keep here is made
 /// of ([`Workspaces::carry_mail_through`]): the session's trait with what its calls carry, a
@@ -288,7 +288,7 @@ pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -
 }
 
 /// The same host, keeping `grants` pre-admissions per workspace
-/// ([`crate::service::HostConfig::max_workspace_grants`]).
+/// ([`crate::service::ServiceConfig::max_workspace_grants`]).
 ///
 /// # Panics
 ///
@@ -377,11 +377,11 @@ async fn host_on(
     #[cfg(test)]
     reached_through(&endpoint, &home).await;
     let host = WorkspaceService::open(
-        HostConfig {
+        ServiceConfig {
             max_workspace_grants: grants,
             people_keys: people_keys.map(Path::to_owned),
             // A server of other people's workspaces takes their work in them.
-            ..HostConfig::new(
+            ..ServiceConfig::new(
                 state_root.to_owned(),
                 tilo_server_protocol::WorkSetting {
                     from: tilo_server_protocol::WorkFrom::Anyone,
@@ -389,7 +389,7 @@ async fn host_on(
                 },
             )
         },
-        HostIdentity {
+        ServiceIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: key.clone(),
             device_cert: cert.clone(),
@@ -491,7 +491,7 @@ pub async fn project_access(workspaces: &Workspaces, workspace: &str) {
         .inner
         .host
         .access
-        .replace_access(workspace_id, true, device_access)
+        .replace_access(workspace_id, device_access)
         .await
         .expect("the server projects the workspace's device_access");
 }
@@ -701,4 +701,18 @@ pub fn voice_leave(
     participation: [u8; 32],
 ) {
     workspaces.voice_leave(peer, call, participation);
+}
+
+/// Admit `key`, a key its person made, to `workspace`, as redeeming its
+/// person's invitation there admits it: listed as one of the person's
+/// devices, its grant kept beside the workspace's governance.
+///
+/// # Panics
+///
+/// The workspace is not held here, or refuses the key.
+pub async fn enter_key(workspaces: &Workspaces, workspace: &str, key: &DeviceCert) {
+    workspaces
+        .admit_entering(workspace, key, tilo_clock::unix_now_ns())
+        .await
+        .expect("the workspace admits the key");
 }

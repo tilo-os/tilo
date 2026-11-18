@@ -573,7 +573,7 @@ fn box_aad(workspace: WorkspaceId, epoch: u64, sender: &[u8; 32]) -> Vec<u8> {
 
 /// The X25519 form of a device's Ed25519 identity key, which is what a box is
 /// addressed to.
-fn box_recipient(device: [u8; 32]) -> Result<PublicKey> {
+pub(crate) fn box_recipient(device: [u8; 32]) -> Result<PublicKey> {
     Ok(PublicKey::from_bytes(
         VerifyingKey::from_bytes(&device)
             .map_err(|_| Error::InvalidState("not an ed25519 public key".into()))?

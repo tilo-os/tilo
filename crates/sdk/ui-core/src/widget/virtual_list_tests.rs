@@ -381,7 +381,7 @@ tilo_test_env::scenario! {
                 &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
-            assert_eq!(list.focused_key, Some(20));
+            assert_eq!(list.focused_key(), Some(&20));
             assert!(Widget::perform_semantic_action(
                 &mut list,
                 "key:20",
@@ -474,13 +474,13 @@ tilo_test_env::scenario! {
             })
             .with_viewport_height(100.0);
             assert!(list.set_row_height(0, 300.0));
-            list.focused_key = Some(1);
+            list.focused_key = Some(ListKey::new(1u32));
 
             assert!(list.on_key(&Key::Named(NamedKey::PageDown), false, false));
-            assert_eq!(list.focused_key, Some(1));
+            assert_eq!(list.focused_key(), Some(&1));
             assert_eq!(list.scroll_offset(), 90.0);
             assert!(list.on_key(&Key::Named(NamedKey::PageUp), false, false));
-            assert_eq!(list.focused_key, Some(1));
+            assert_eq!(list.focused_key(), Some(&1));
             assert_eq!(list.scroll_offset(), 0.0);
         }
 
@@ -495,12 +495,12 @@ tilo_test_env::scenario! {
                 ))
             })
             .with_viewport_height(100.0);
-            list.focused_key = Some(1);
+            list.focused_key = Some(ListKey::new(1u32));
 
             assert!(list.on_key(&Key::Named(NamedKey::PageDown), false, false));
-            assert_eq!(list.focused_key, Some(3));
+            assert_eq!(list.focused_key(), Some(&3));
             assert!(list.on_key(&Key::Named(NamedKey::PageUp), false, false));
-            assert_eq!(list.focused_key, Some(1));
+            assert_eq!(list.focused_key(), Some(&1));
             assert_eq!(list.scroll_offset(), 0.0);
         }
     }
@@ -753,7 +753,8 @@ tilo_test_env::scenario! {
             let now = crate::time::now();
             let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
             let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
-            list.drag_scroll.begin(50.0, list.scroll_offset(), started);
+            let offset = list.scroll_offset();
+        list.drag_scroll.begin(50.0, offset, started);
             assert!(list.drag_scroll.update(10.0, moved).is_some());
             assert!(dispatch(
                 &mut list,
@@ -870,7 +871,7 @@ tilo_test_env::scenario! {
             dispatch(&mut list, &cursor(55.0), &taffy, node);
             assert_eq!(
                 list.reorder_target(),
-                Some(&DropTarget::new(2, DropPlacement::After))
+                Some(DropTarget::new(2, DropPlacement::After))
             );
             assert!(list.reorder_preview().is_some());
             dispatch(&mut list, &left(ElementState::Released), &taffy, node);
@@ -1067,7 +1068,7 @@ tilo_test_env::scenario! {
         let (taffy, node) = lay_out(&mut list, 300.0);
         list.set_focus(true);
         assert!(list.reveal(&1));
-        list.selection_mut().select_only(1);
+        list.select_only(Some(1));
         let shift = winit::keyboard::ModifiersState::SHIFT;
         for _ in 0..2 {
             assert!(
@@ -1318,7 +1319,7 @@ tilo_test_env::scenario! {
                 .model
                 .key_at(row.index)
                 .expect("a mounted row has a key");
-            let lift = list.row_rect(&key).expect("a row in view has a box");
+            let lift = VirtualRows::row_rect(&list, &key).expect("a row in view has a box");
             assert!(
                 (lift.y0 - stands.y0).abs() < 0.5 && (lift.y1 - stands.y1).abs() < 0.5,
                 "row {} stands at {stands:?} and its lift is drawn at {lift:?}",
@@ -1407,7 +1408,8 @@ tilo_test_env::scenario! {
         .with_viewport_height(200.0)
         .following_end();
         let _ = lay_out(&mut list, 300.0);
-        list.set_scroll_offset(list.scroll_offset() - 500.0);
+        let offset = list.scroll_offset() - 500.0;
+        list.set_scroll_offset(offset);
         let _ = lay_out(&mut list, 300.0);
         assert!(!list.is_at_end());
         let reading = list.scroll_offset();
@@ -1425,7 +1427,9 @@ tilo_test_env::scenario! {
         );
         assert!(!list.is_at_end());
 
-        list.set_scroll_offset(list.max_scroll_offset());
+        let offset = list.max_scroll_offset();
+
+        list.set_scroll_offset(offset);
         assert!(list.is_at_end());
     }
 
@@ -1874,8 +1878,8 @@ fn a_selection_delegate_receives_its_neighbours_and_list_rows_join() {
     .multi_select(true)
     .with_viewport_height(400.0);
     let _ = lay_out(&mut list, 300.0);
-    list.selection_mut().select_only(1);
-    list.selection_mut().toggle(2);
+    list.select_only(Some(1));
+    list.selection_mut().toggle(ListKey::new(2u32));
     list.push_row_selection();
     let joins: Vec<crate::chrome::RowJoin> = list
         .mounted
@@ -1904,7 +1908,7 @@ fn a_selection_delegate_wrapped_in_its_swipe_takes_its_selection() {
     })
     .with_viewport_height(400.0);
     let _ = lay_out(&mut list, 300.0);
-    list.selection_mut().select_only(1);
+    list.select_only(Some(1));
     list.push_row_selection();
     let selected: Vec<bool> = list
         .mounted
@@ -1960,7 +1964,10 @@ fn rows_the_person_moves_glide_and_a_sync_lands_at_once() {
     let _ = lay_out(&mut list, 300.0);
     list.start_row_motion(motion);
     let now = crate::time::now();
-    let first = list.row_motion.get(&1).expect("row 1 moved down");
+    let first = list
+        .row_motion
+        .get(&ListKey::new(1u64))
+        .expect("row 1 moved down");
     assert!(
         first.offset(now) < 0.0,
         "drawn where it stood, above its new place"
@@ -2076,7 +2083,8 @@ fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
     .following_end();
     let _ = lay_out(&mut reading, 300.0);
     assert_eq!(reading.jump(), None, "at its end with nothing unread");
-    reading.set_scroll_offset(reading.scroll_offset() - 400.0);
+    let back = reading.scroll_offset() - 400.0;
+    reading.set_scroll_offset(back);
     let _ = lay_out(&mut reading, 300.0);
     assert_eq!(reading.jump(), Some(Jump::Present));
     reading.jump_to_present();

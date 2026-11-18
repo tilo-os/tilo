@@ -227,7 +227,8 @@ impl Rig {
         self.attach_desktop(compositor);
     }
 
-    fn attach_desktop(&mut self, compositor: Compositor) {
+    /// Attach `compositor` as a new desktop.
+    pub fn attach_desktop(&mut self, compositor: Compositor) {
         // As the session connects a keeper: a connection it hands over itself, for the keeper's
         // process, which is this one in a test.
         let socket = compositor
@@ -491,6 +492,8 @@ pub struct Heard {
     /// The drag offer the app holds, and where the drag is.
     pub drag_offer: Option<WlDataOffer>,
     pub drag_entered: bool,
+    /// The app accepted the drag's offer (and finishes it when it is dropped).
+    pub drag_accepted: bool,
     pub drag_left: bool,
     pub drag_motion: usize,
     pub drops: usize,
@@ -1905,7 +1908,14 @@ impl Dispatch<WlDataDevice, ()> for Heard {
                 }
             }
             wl_data_device::Event::Motion { .. } => heard.drag_motion += 1,
-            wl_data_device::Event::Drop => heard.drops += 1,
+            wl_data_device::Event::Drop => {
+                heard.drops += 1;
+                if heard.drag_accepted
+                    && let Some(offer) = &heard.drag_offer
+                {
+                    offer.finish();
+                }
+            }
             _ => {}
         }
     }
@@ -2136,6 +2146,7 @@ impl App {
         let offer = self.heard.drag_offer.clone()?;
         offer.set_actions(DndAction::Copy | DndAction::Move, DndAction::Copy);
         offer.accept(self.heard.enter_serial, Some(mime.to_owned()));
+        self.heard.drag_accepted = true;
         offer.receive(mime.to_owned(), writer.as_fd());
         drop(writer);
         let bytes = std::sync::Arc::new(std::sync::Mutex::new(None));

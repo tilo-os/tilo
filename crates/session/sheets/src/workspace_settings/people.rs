@@ -52,6 +52,16 @@ pub struct RoleChoice {
     pub allows: String,
 }
 
+/// One holder of the workspace: what it goes by, and what it can read of the
+/// workspace.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Holder {
+    /// What it goes by.
+    pub name: String,
+    /// What it can read of the workspace.
+    pub can_read: String,
+}
+
 /// A question the sheet asks before it changes something that cannot be
 /// taken back with a press: keep things as they are, look at what was
 /// done first, or go ahead.
@@ -81,6 +91,9 @@ pub struct People {
     pub note: Option<String>,
     /// The question removing someone asks.
     pub remove_decision: Decision,
+    /// The holders of the workspace, under their own heading.
+    pub holders_header: String,
+    pub holders: Vec<Holder>,
 }
 
 /// The People tab of `settings`.
@@ -108,6 +121,12 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     }
     if let Some(note) = &people.note {
         groups.push(caption(note));
+    }
+    if !people.holders.is_empty() {
+        groups.push(Box::new(Section::titled(
+            people.holders_header.clone(),
+            people.holders.iter().map(holder_row).collect(),
+        )));
     }
     Box::new(
         groups.into_iter().fold(
@@ -180,6 +199,22 @@ fn row(people: &People, person: &Person, parts: &Parts) -> Element {
     Box::new(row.trailing(Box::new(controls)))
 }
 
+/// One holder's row: what it goes by, and what it can read of the workspace
+/// under it.
+fn holder_row(holder: &Holder) -> Element {
+    Box::new(
+        ListRow::new(
+            format!("ws-people-holder-{}", holder.name),
+            holder.name.clone(),
+        )
+        .two_line_title()
+        .avatar(holder.name.clone(), holder.name.clone())
+        .square()
+        .avatar_glyph(Icon::HardDrive)
+        .secondary(holder.can_read.clone()),
+    )
+}
+
 /// The roles a person is given here, for captures.
 fn sample_roles() -> Vec<RoleChoice> {
     [
@@ -235,6 +270,21 @@ pub(super) fn sample() -> People {
             review: "Review activity".to_owned(),
             confirm: "Remove person".to_owned(),
         },
+        holders_header: "Where it is kept".to_owned(),
+        holders: vec![
+            Holder {
+                name: "Kitchen NAS".to_owned(),
+                can_read: "Reads the workspace".to_owned(),
+            },
+            Holder {
+                name: "tilo.sh".to_owned(),
+                can_read: "Reads the workspace, and so can the cloud provider".to_owned(),
+            },
+            Holder {
+                name: "Backup box".to_owned(),
+                can_read: "Keeps an encrypted copy and reads none of it".to_owned(),
+            },
+        ],
     }
 }
 

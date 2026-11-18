@@ -1,19 +1,24 @@
-//! A workspace's Linux machine is branched and deleted on the VM host that
-//! holds it: the server asks the placer where, then that host's member device,
-//! over the device action service as the server's own device and in the workspace's name,
-//! and the member asks its hosted-VM service on the service's own socket. A
-//! deletion asks the placer whether there is a machine at all, and forgets it
-//! there only once the member deleted it.
+//! A workspace's Linux machine is branched and deleted on the VM machine that
+//! keeps it: the server reads which in the VM's lease, which that machine's
+//! member device holds in the workspace, and asks that member device, over
+//! the device action service as the server's own device and in the
+//! workspace's name; the member asks its hosted-VM service on the service's
+//! own socket. A workspace whose VM nobody keeps has no machine.
 
 #![allow(
     clippy::significant_drop_tightening,
     reason = "the host, the member and their routers stay up until the test ends"
 )]
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use legacy_vm::hosted::control::{self, Reply, Request, VmRequest};
+use legacy_vm::hosted::control::{self, HostLoad, Reply, Request, VmRequest, VmStatus};
 use legacy_vm::hosted::size::VmSize;
+use tilo_actions::remote::{
+    ActionProvider as _, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
+};
+use tilo_actions::{ActionAddress, InvocationId};
 use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_runtime::standalone::take_work;
 use tilo_server::placed_machines::PlacedMachines;
@@ -22,9 +27,9 @@ use tilo_server::workspaces::WorkspaceMachines as _;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Hosted, TestUser, device_endpoint, host_on};
+use crate::common::{Hosted, TestUser, device_endpoint, serve_on};
 
-/// The VM host the placer names.
+/// The VM machine of the test.
 const VM_HOST: &str = "tilo-vm-host-0";
 
 /// Who was asked what, in order: `placer` or `service`, and the request.
@@ -33,17 +38,22 @@ type Asked = Arc<Mutex<Vec<(&'static str, Request)>>>;
 /// How a fake answers a request.
 type Answer = Arc<Mutex<Box<dyn FnMut(&Request) -> Reply + Send>>>;
 
+/// The VMs a fake hosted-VM service keeps, `workspace/environment`.
+type Kept = Arc<Mutex<BTreeSet<String>>>;
+
 fn answering(answer: impl FnMut(&Request) -> Reply + Send + 'static) -> Answer {
     Arc::new(Mutex::new(Box::new(answer)))
 }
 
 /// Serve the connections `accept` takes one request each, noting each as
-/// `who`'s and answering it as `answer` says.
+/// `who`'s and answering it as `answer` says, and a Status with the VMs
+/// `kept` lists.
 fn serve<S: std::io::Read + std::io::Write>(
     mut accept: impl FnMut() -> std::io::Result<S> + Send + 'static,
     who: &'static str,
     asked: Asked,
     answer: Answer,
+    kept: Kept,
 ) {
     std::thread::spawn(move || {
         loop {
@@ -52,10 +62,35 @@ fn serve<S: std::io::Read + std::io::Write>(
                 continue;
             };
             asked.lock().unwrap().push((who, request.clone()));
-            let reply = (answer.lock().unwrap())(&request);
+            let reply = if request == Request::Status {
+                status(&kept.lock().unwrap())
+            } else {
+                (answer.lock().unwrap())(&request)
+            };
             let _ = control::FRAMING.write_value(&mut stream, &reply);
         }
     });
+}
+
+/// A service's Status listing `kept`.
+fn status(kept: &BTreeSet<String>) -> Reply {
+    Reply::Status {
+        vms: kept
+            .iter()
+            .map(|vm| VmStatus {
+                vm: vm.clone(),
+                account: "acct-1".into(),
+                size: VmSize::Small,
+                phase: "Off".into(),
+                last_wake_ms: None,
+                last_wake_restored: None,
+                snapshot_bytes: None,
+                resident_mib: None,
+                balloon_mib: 0,
+            })
+            .collect(),
+        load: HostLoad::default(),
+    }
 }
 
 /// The `host:port` an endpoint of this process listens on.
@@ -68,16 +103,16 @@ fn address_of(endpoint: &iroh::Endpoint) -> String {
     format!("127.0.0.1:{}", socket.port())
 }
 
-/// A server, the member device of its one VM host with a hosted-VM service
-/// beside it, and a placer: the two fakes answer as the test says.
+/// A server, the member device of its one VM machine with a hosted-VM
+/// service beside it, and a placer: the two fakes answer as the test says.
 struct Fleet {
     hosted: Hosted,
     machines: Arc<PlacedMachines>,
     placer_address: String,
     members: Members,
     asked: Asked,
-    placer: Answer,
     service: Answer,
+    kept: Kept,
     _member: take_work::Member,
     _dir: tempfile::TempDir,
 }
@@ -86,7 +121,7 @@ async fn fleet() -> Fleet {
     let operator = TestUser::fresh("operator");
     let shell = operator.enrol("host", DeviceCapabilities::primary());
     let vm_host = operator.enrol(VM_HOST, DeviceCapabilities::member());
-    let hosted = host_on(&operator, &shell, WorkSetting::own_person()).await;
+    let hosted = serve_on(&operator, &shell, WorkSetting::own_person()).await;
     let dir = tempfile::tempdir().unwrap();
     let asked = Asked::default();
 
@@ -98,8 +133,10 @@ async fn fleet() -> Fleet {
         "placer",
         Arc::clone(&asked),
         Arc::clone(&placer),
+        Kept::default(),
     );
 
+    let kept = Kept::default();
     let service = answering(|_| Reply::Error("the test did not say".into()));
     let socket = dir.path().join("hosted.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
@@ -108,6 +145,7 @@ async fn fleet() -> Fleet {
         "service",
         Arc::clone(&asked),
         Arc::clone(&service),
+        Arc::clone(&kept),
     );
 
     let member_endpoint = device_endpoint(&vm_host).await;
@@ -141,6 +179,10 @@ async fn fleet() -> Fleet {
         hosted.host.workspaces().action_service(),
         hosted.router.endpoint().clone(),
     );
+    shells.read_leases(
+        hosted.host.workspaces().clone(),
+        tokio::runtime::Handle::current(),
+    );
     let machines = Arc::new(PlacedMachines::new(Arc::clone(&shells)));
     hosted.host.workspaces().machines(machines.clone());
     Fleet {
@@ -149,16 +191,85 @@ async fn fleet() -> Fleet {
         placer_address,
         members,
         asked,
-        placer,
         service,
+        kept,
         _member: member,
         _dir: dir,
     }
 }
 
 impl Fleet {
+    /// What was asked besides the member's look at which VMs its service
+    /// keeps.
     fn asked(&self) -> Vec<(&'static str, Request)> {
-        self.asked.lock().unwrap().clone()
+        self.asked
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, request)| *request != Request::Status)
+            .cloned()
+            .collect()
+    }
+
+    /// Have the member's hosted-VM service keep `workspace`'s VM, as one it
+    /// made for it does, and wait until the member holds the VM's lease in
+    /// the workspace, read by the server.
+    async fn keep(&self, workspace: &str) {
+        self.kept
+            .lock()
+            .unwrap()
+            .insert(format!("{workspace}/default"));
+        // Any request the server signs in the workspace's name makes the
+        // member enter it, and then it looks at which VMs it keeps.
+        let member = &self.members[VM_HOST];
+        let address = tilo_server::placed_shells::member_address(member).unwrap();
+        let device = self.hosted.host.workspaces().action_service().remote(
+            self.hosted.router.endpoint(),
+            &address,
+            workspace,
+        );
+        let probe = InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: "tilo.test".into(),
+                address: ActionAddress::new("nothing", "nothing"),
+            },
+            argument: InvokeArgument::Json(serde_json::Map::new()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let caller = Caller::local_app("tilo.server");
+        let _ = tokio::task::spawn_blocking(move || {
+            device
+                .invoke(&caller, probe)
+                .wait_timeout(std::time::Duration::from_secs(30))
+        })
+        .await;
+        let lease = tilo_peer_state::vm_lease("default");
+        let until = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(30))
+            .unwrap();
+        loop {
+            let holder = self
+                .hosted
+                .host
+                .workspaces()
+                .lease_holder(workspace, &lease)
+                .await
+                .unwrap();
+            if holder.map(hex::encode).as_deref() == Some(member.device.as_str()) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the member holds the lease of the VM it keeps"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     async fn workspace(&self, name: &str) -> String {
@@ -207,31 +318,27 @@ fn vm(workspace: &str) -> VmRequest {
     }
 }
 
-fn on_host() -> Reply {
-    Reply::Placed {
-        host: VM_HOST.into(),
-    }
-}
-
 #[tokio::test(flavor = "multi_thread")]
-async fn a_branch_asks_the_placer_and_then_the_member_holding_the_source() {
+async fn a_branch_is_made_by_the_member_keeping_the_source() {
     let fleet = fleet().await;
     let source = fleet.workspace("Template").await;
     let branch = fleet.workspace("Task").await;
-    *fleet.placer.lock().unwrap() = Box::new(|_| on_host());
     *fleet.service.lock().unwrap() = Box::new(|_| Reply::Done);
+    fleet.keep(&source).await;
     let before = fleet.generation(&branch).await;
 
     assert_eq!(fleet.branch(&source, &branch).await, Ok(true));
-    let asked = Request::Branch {
-        vm: vm(&branch),
-        from: source.clone(),
-    };
     assert_eq!(
         fleet.asked(),
-        [("placer", asked.clone()), ("service", asked)],
-        "the placer named the source's host, and that host's member made the branch there, \
-         for the server's account at its size"
+        [(
+            "service",
+            Request::Branch {
+                vm: vm(&branch),
+                from: source.clone(),
+            }
+        )],
+        "the member keeping the source's VM made the branch there, for the server's account at \
+         its size, and no placer was asked"
     );
     assert_ne!(
         fleet.generation(&branch).await,
@@ -246,42 +353,37 @@ async fn a_branch_the_member_refuses_fails_in_its_words() {
     let fleet = fleet().await;
     let source = fleet.workspace("Template").await;
     let branch = fleet.workspace("Task").await;
-    *fleet.placer.lock().unwrap() = Box::new(|request| match request {
-        // The host made nothing, so it lists nothing to keep the placement.
-        Request::Delete { .. } => Reply::Done,
-        _ => on_host(),
-    });
-    *fleet.service.lock().unwrap() = Box::new(|request| {
-        let Request::Branch { from, .. } = request else {
-            return Reply::Error("only a branch is asked".into());
-        };
-        Reply::Error(format!(
+    *fleet.service.lock().unwrap() = Box::new(|request| match request {
+        Request::Branch { from, .. } => Reply::Error(format!(
             "the VM of workspace {from} is xlarge, and a branch of it is no smaller"
-        ))
+        )),
+        _ => Reply::Done,
     });
+    fleet.keep(&source).await;
     let refused = fleet.branch(&source, &branch).await.unwrap_err();
     assert!(
         refused.starts_with(&format!("{VM_HOST}: ")) && refused.ends_with("is no smaller"),
-        "the refusal names the host and says why: {refused}"
+        "the refusal names the machine and says why: {refused}"
     );
-    let asked = Request::Branch {
-        vm: vm(&branch),
-        from: source.clone(),
-    };
     assert_eq!(
         fleet.asked(),
         [
-            ("placer", asked.clone()),
-            ("service", asked),
             (
-                "placer",
+                "service",
+                Request::Branch {
+                    vm: vm(&branch),
+                    from: source.clone(),
+                }
+            ),
+            (
+                "service",
                 Request::Delete {
                     workspace: branch.clone(),
                     environment: "default".into(),
                 }
             ),
         ],
-        "the placement made for the machine that did not come is forgotten"
+        "whatever the machine that did not come left is deleted there"
     );
 
     // The member takes the work of its own person's server alone: asked by a
@@ -299,6 +401,10 @@ async fn a_branch_the_member_refuses_fails_in_its_words() {
         ActionService::new(stranger.sk.clone(), Arc::new(NoActions)),
         stranger_endpoint,
     );
+    posing.read_leases(
+        fleet.hosted.host.workspaces().clone(),
+        tokio::runtime::Handle::current(),
+    );
     let other = fleet.workspace("Other").await;
     let before = (fleet.generation(&other).await, fleet.asked().len());
     let machines = PlacedMachines::new(posing);
@@ -308,60 +414,31 @@ async fn a_branch_the_member_refuses_fails_in_its_words() {
         .unwrap()
         .unwrap_err();
     assert!(refused.contains("refused"), "{refused}");
-    let asked = fleet.asked();
     assert_eq!(
         fleet.generation(&other).await,
         before.0,
         "the stranger's ask made no member enter"
     );
-    assert!(
-        asked[before.1..].iter().all(|(who, _)| *who == "placer"),
-        "and reached the placer alone, which placed it and forgot it again: no machine was made \
-         ({asked:?})"
-    );
+    assert_eq!(fleet.asked().len(), before.1, "and no machine was made");
     fleet.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_source_without_a_machine_branches_with_nothing_asked_of_a_member() {
+async fn a_source_without_a_machine_branches_with_nothing_asked() {
     let fleet = fleet().await;
     let source = fleet.workspace("Template").await;
     let branch = fleet.workspace("Task").await;
-    let none = source.clone();
-    *fleet.placer.lock().unwrap() = Box::new(move |_| Reply::NoVm {
-        workspace: none.clone(),
-    });
     assert_eq!(fleet.branch(&source, &branch).await, Ok(false));
-    assert_eq!(
-        fleet
-            .asked()
-            .iter()
-            .map(|(who, _)| *who)
-            .collect::<Vec<_>>(),
-        ["placer"],
-        "nothing to copy, so no member was asked"
-    );
+    assert_eq!(fleet.asked(), [], "nobody keeps its VM: nothing to copy");
     fleet.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_workspace_is_deleted_after_its_machine_on_the_host_that_holds_it() {
+async fn a_workspace_is_deleted_after_its_machine_on_the_machine_keeping_it() {
     let fleet = fleet().await;
     let workspace = fleet.workspace("Task").await;
-    let deleted = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let gone = Arc::clone(&deleted);
-    *fleet.placer.lock().unwrap() = Box::new(move |request| match request {
-        Request::Delete { .. } if gone.load(std::sync::atomic::Ordering::SeqCst) => Reply::Done,
-        Request::Delete { workspace, .. } => Reply::Error(format!(
-            "{VM_HOST} still holds the VM of workspace {workspace}: delete it there first"
-        )),
-        _ => on_host(),
-    });
-    let deleting = Arc::clone(&deleted);
-    *fleet.service.lock().unwrap() = Box::new(move |_| {
-        deleting.store(true, std::sync::atomic::Ordering::SeqCst);
-        Reply::Done
-    });
+    *fleet.service.lock().unwrap() = Box::new(|_| Reply::Done);
+    fleet.keep(&workspace).await;
 
     fleet
         .hosted
@@ -370,20 +447,16 @@ async fn a_workspace_is_deleted_after_its_machine_on_the_host_that_holds_it() {
         .delete(&workspace)
         .await
         .unwrap();
-    let forget = Request::Delete {
-        workspace: workspace.clone(),
-        environment: "default".into(),
-    };
     assert_eq!(
         fleet.asked(),
-        [
-            ("placer", forget.clone()),
-            ("placer", Request::Place { vm: vm(&workspace) }),
-            ("service", forget.clone()),
-            ("placer", forget),
-        ],
-        "the placer kept the machine its host held, the member deleted it there, and only then \
-         did the placer forget it"
+        [(
+            "service",
+            Request::Delete {
+                workspace: workspace.clone(),
+                environment: "default".into(),
+            }
+        )],
+        "the member keeping the VM deleted it there"
     );
     assert!(
         fleet
@@ -399,16 +472,12 @@ async fn a_workspace_is_deleted_after_its_machine_on_the_host_that_holds_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_workspace_whose_machines_host_does_not_answer_stays() {
+async fn a_workspace_whose_machine_is_not_deleted_stays() {
     let fleet = fleet().await;
     let workspace = fleet.workspace("Task").await;
-    *fleet.placer.lock().unwrap() = Box::new(move |request| match request {
-        Request::Delete { workspace, .. } => Reply::Busy(format!(
-            "{VM_HOST}, which holds the VM of workspace {workspace}, does not answer; ask again \
-             once it is up"
-        )),
-        _ => on_host(),
-    });
+    *fleet.service.lock().unwrap() =
+        Box::new(|_| Reply::Busy("the machine's disk does not answer; ask again".into()));
+    fleet.keep(&workspace).await;
     let refused = fleet
         .hosted
         .host
@@ -430,13 +499,9 @@ async fn a_workspace_whose_machines_host_does_not_answer_stays() {
             .is_ok(),
         "the workspace stays, to be deleted again"
     );
-    assert!(
-        fleet.asked().iter().all(|(who, _)| *who == "placer"),
-        "no disk was deleted on a guess"
-    );
 
-    // Once its host answers again and holds no machine for it, it is deleted.
-    *fleet.placer.lock().unwrap() = Box::new(|_| Reply::Done);
+    // Once the machine deletes it, the workspace goes.
+    *fleet.service.lock().unwrap() = Box::new(|_| Reply::Done);
     fleet
         .hosted
         .host

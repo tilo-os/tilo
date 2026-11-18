@@ -89,6 +89,9 @@ pub(crate) enum Service {
     /// The apps' render services: a toolkit app hands its frame to the service of its workspace,
     /// which draws it on the GPU.
     Render,
+    /// The Windows compatibility service the Windows Apps manager sets up and starts Windows
+    /// programs through ([`crate::windows_compat`]).
+    Windows,
 }
 
 /// One service of this desktop: its name, how it is reached, and what serves it.
@@ -141,10 +144,7 @@ pub(crate) const TABLE: &[Row] = &[
     Row {
         name: launcher::services::COMPAT_SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Nothing(
-            "a Windows application's handoff reaches no compatibility service in this session \
-             yet, because no session runs the appliance it would start",
-        ),
+        owner: Owner::Session(Service::Windows),
     },
     Row {
         name: tools::SERVICE,
@@ -172,9 +172,9 @@ pub(crate) const TABLE: &[Row] = &[
         owner: Owner::Elsewhere("tilo-model-manager"),
     },
     Row {
-        name: launcher::services::APP_HOST_SERVICE,
+        name: launcher::services::PACKAGE_SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Elsewhere("tilo-app-process"),
+        owner: Owner::Elsewhere("tilo-package-service"),
     },
     Row {
         name: launcher::services::USH_SERVICE,
@@ -206,6 +206,8 @@ pub(crate) struct Served {
     tools: Option<tools::Tools>,
     /// The apps' render services, one per workspace, and their supervision.
     render: Option<render::Broker>,
+    /// The Windows compatibility service.
+    windows: Option<crate::windows_compat::Served>,
 }
 
 /// What a session serves its services with.
@@ -232,6 +234,8 @@ pub(crate) struct Serving {
     pub tools: Option<tools::Handle>,
     /// What wakes the session's loop when a worker read something that the loop counts.
     pub wake: tilo_service::Wake,
+    /// What the Windows compatibility service is served with, for a session that starts apps.
+    pub windows: Option<crate::windows_compat::Serving>,
 }
 
 /// Start every service of [`TABLE`] this module owns, and keep what serves them for as long as the
@@ -287,6 +291,9 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                             }
                         });
             }
+            Service::Windows => {
+                served.windows = windows(&mut serving);
+            }
             Service::DataUsage => {}
         }
     }
@@ -309,6 +316,17 @@ impl Served {
             render.sync_workspaces();
         }
     }
+}
+
+/// The Windows compatibility service at the launcher's socket for it, for a session whose apps
+/// start through a launcher and read the workspaces' sandboxes from its app wire.
+fn windows(serving: &mut Serving) -> Option<crate::windows_compat::Served> {
+    let layout = serving.shell.as_ref().map(Arc::clone)?;
+    crate::windows_compat::serve(serving.windows.take()?, layout)
+        .inspect_err(
+            |error| tracing::warn!(%error, "the Windows compatibility service is unavailable"),
+        )
+        .ok()
 }
 
 /// The identity service at the launcher's socket for it, signing in the workspace the shell shows.
@@ -414,8 +432,7 @@ struct ConsentsPrompter {
     consents: tilo_portal::consent::Consents,
 }
 
-/// Who asks: the app, in the workspace its launcher named. An app launched into no workspace asks
-/// as itself, with no workspace's grant behind it.
+/// Who asks: the app, in the workspace its launcher named.
 fn caller(handoff: &Handoff) -> PortalCaller {
     PortalCaller {
         workspace: handoff.workspace_id.clone(),
@@ -425,14 +442,13 @@ fn caller(handoff: &Handoff) -> PortalCaller {
 
 impl Prompter for ConsentsPrompter {
     fn granted(&self, handoff: &Handoff, grant: Grant) -> bool {
-        self.consents
-            .allowed(&caller(handoff), grant.device_scope())
+        self.consents.allowed(&caller(handoff), grant.name())
     }
 
     fn ask(&self, handoff: &Handoff, grant: Grant) -> std::sync::mpsc::Receiver<bool> {
         let caller = caller(handoff);
         let question = tilo_portal::consent::AccessQuestion {
-            capability: grant.device_scope().to_owned(),
+            capability: grant.name().to_owned(),
             reason: None,
             may_remember: true,
             text: None,
@@ -1005,6 +1021,7 @@ mod tests {
                 Service::DataUsage,
                 Service::Tools,
                 Service::Render,
+                Service::Windows,
             ] {
                 assert!(
                     TABLE

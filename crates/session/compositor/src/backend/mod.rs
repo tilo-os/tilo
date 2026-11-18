@@ -160,7 +160,7 @@ pub trait Backend {
         )))
     }
 
-    /// Draw and blur what lies below a hosted surface's translucent region (see
+    /// Draw and blur what lies below a surface's translucent region (see
     /// [`crate::backdrop::draw`]); `None` when it did not change. Backends that cannot draw outside
     /// their frames have none.
     fn backdrop(

@@ -75,7 +75,7 @@ x86_64 = 983040
 aarch64 = 6000000
 
 [apps."so.tilo.backups"]
-x86_64 = 1048576
+x86_64 = 1245184
 aarch64 = 1179648
 
 [apps."so.tilo.browser"]
@@ -95,7 +95,7 @@ x86_64 = 1703936
 aarch64 = 1769472
 
 [apps."so.tilo.canvas"]
-x86_64 = 4849664
+x86_64 = 4653056
 aarch64 = 4128768
 
 [apps."so.tilo.chat"]
@@ -111,7 +111,7 @@ x86_64 = 1245184
 aarch64 = 1179648
 
 [apps."so.tilo.code-editor"]
-x86_64 = 3670016
+x86_64 = 3473408
 aarch64 = 2490368
 
 [apps."so.tilo.contacts"]
@@ -191,7 +191,7 @@ x86_64 = 1376256
 aarch64 = 1310720
 
 [apps."so.tilo.messages"]
-x86_64 = 1376256
+x86_64 = 2031616
 aarch64 = 1245184
 
 [apps."so.tilo.model-providers"]
@@ -215,7 +215,7 @@ x86_64 = 3735552
 aarch64 = 3670016
 
 [apps."so.tilo.passwords"]
-x86_64 = 1179648
+x86_64 = 1638400
 aarch64 = 1179648
 
 [apps."so.tilo.pdf-viewer"]
@@ -263,7 +263,7 @@ x86_64 = 1703936
 aarch64 = 1769472
 
 [apps."so.tilo.snippets"]
-x86_64 = 1048576
+x86_64 = 1114112
 aarch64 = 1048576
 
 [apps."so.tilo.speed-test"]
@@ -275,7 +275,7 @@ x86_64 = 2883584
 aarch64 = 2686976
 
 [apps."so.tilo.tasks"]
-x86_64 = 2555904
+x86_64 = 2490368
 aarch64 = 1572864
 
 [apps."so.tilo.terminal"]

@@ -402,7 +402,7 @@ impl DesktopHandle {
         };
         if offered && action == REOPEN_CLOSED {
             // Undo after a close reopens as Shift+Super+T does, through the same command.
-            let _ = self.dispatch(ChromeEffect::ReopenClosed);
+            let _ = self.dispatch(ChromeEffect::ReopenClosed { app: None });
         }
         offered
     }

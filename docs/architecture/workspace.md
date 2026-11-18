@@ -115,6 +115,22 @@ holder's address only with that host's own signature on it, whoever wrote it
 into the governance.
 Detached, the other host lets the workspace go and keeps its files.
 
+**How many copies a workspace keeps.** A workspace says how many key holders
+and how many stores it wants, in its governance beside the servers that hold
+it, chosen by the same owners (`copies.set`). One that never chose wants one
+of each once a server holds it; a group of desktops with no server wants
+nothing beyond the devices it has, so it needs no setup and is never short.
+Each holder says in the workspace's state where its own copy stands: which
+holders it is still taking what it lacks from, and which it cannot reach and
+since when. Every device reads the same rows, so every device names the same
+shortfall: which holder lacks what (history from another holder, or what was
+written since it was last reached) and how many current copies of each kind
+are missing (`tilo_peer_state::CopyStatus`, answered with the holder list). A
+holder that comes back dials the others, takes in what they hold and it
+lacks, and says it is current; the others, reaching it again, say so too.
+A store compacting its history keeps every frame a device that asked it for
+history still lacks, and the newest checkpoint of each document.
+
 ### A machine copied from another
 
 A person sets up one machine and branches others off it by copying its disk
@@ -226,12 +242,19 @@ server finds the same one; a server enrolled into the person's identity makes
 it where it holds none and enters itself on its first start. One document of
 kind `tilo.servers` holds each server's desired configuration: its name, which
 workspaces it holds and as what (store or key holder), what it offers
-(storage, compute, machines), its update channel and daily maintenance window,
+(storage, compute, machines), the updates it follows and daily maintenance window,
 how it unlocks after a boot, and whether it was retired. Every change is a
 typed action on that document, so it has history and an author, and a server
 applies what its entry says: no setting of a server lives in a file of its
-own. Today a server takes its name and its retirement from the document; the
-other fields are declared for the parts that apply them.
+own. A device of the person that governs a workspace hands it to the servers
+the entry names and names them among its hosts, so choosing a holder is one
+action on that document, and an entry that stops naming a workspace lets it
+go.
+A server applies its own entry's offer to what it answers devices that offer
+it work, and writes the updates it follows and its maintenance window for a
+root-run helper to apply. A retired server lets go of everything it holds and takes no
+work. Holding a workspace as an encrypted store, rather than as a key holder,
+is not applied yet.
 
 ## Transport
 
@@ -1005,8 +1028,8 @@ the model but instead of it:
 - **The old spelling.** The `workspace` key a desktop entry or an action row
   stores its workspace id under, `(app, workspace, document)` addresses and
   `tilo-workspaces` on disk.
-- **Governance by one device.** The governor, the pinned governance writer,
-  the separate governance document with its receipts, ownership and succession,
+- **Governance by one device.** The governor, the separate governance document
+  with its receipts, ownership and succession,
   and the host-served `tilo.host` / `tilo.member` namespaces. Membership is
   workspace state changed by actions.
 - **Per-person spaces.** The person's devices meet on the session between two

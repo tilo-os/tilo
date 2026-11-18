@@ -470,17 +470,28 @@ fn excerpt(text: &str, at: usize) -> String {
     around.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The route of the chain whose part the record `route` names ([`DocumentId::part`]): empty for a part of
-/// the app's own record.
+/// The record whose items the chain part `route` keeps ([`DocumentId::part`]), by route: the record
+/// its chain is derived from, empty for the app's own record of the workspace, which an app's
+/// chains are derived from. `None` for a route that names no part.
 #[must_use]
-pub fn chain_of(route: &str) -> Option<&str> {
+pub fn record_of_part(route: &str) -> Option<&str> {
     let (role, chain) = route.strip_prefix("derived:")?.split_once('@')?;
-    role.starts_with("part.")
-        .then_some(if chain == DocumentId::package_primary().as_str() {
+    if !role.starts_with("part.") {
+        return None;
+    }
+    let record = chain
+        .strip_prefix("derived:")
+        .and_then(|derived| derived.split_once('@'))
+        .map_or(chain, |(_, of)| of);
+    Some(
+        if record == DocumentId::workspace_default().as_str()
+            || record == DocumentId::package_primary().as_str()
+        {
             ""
         } else {
-            chain
-        })
+            record
+        },
+    )
 }
 
 /// The name of channel `id` of a chat record, as `#name`.

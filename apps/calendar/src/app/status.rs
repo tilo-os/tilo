@@ -191,6 +191,28 @@ impl CalendarApp {
         self.dirty = true;
     }
 
+    /// Whether the event `id` is kept in a calendar that cannot be written:
+    /// one of an account connected for reading only, or one its server lets
+    /// the person only read. Then the person is told so, and whoever asks
+    /// changes nothing: no change of such an entry ever reaches its server.
+    pub(super) fn kept_for_reading(&mut self, id: crate::model::Id) -> bool {
+        let reading = self
+            .model
+            .event(id)
+            .and_then(|event| event.calendar_id.as_deref())
+            .is_some_and(|calendar| {
+                self.configured
+                    .all_calendars()
+                    .any(|(_, kept)| kept.id == calendar && kept.read_only)
+            });
+        if reading {
+            self.status
+                .failed(crate::resource::t("calendar-kept-for-reading"));
+            self.dirty = true;
+        }
+        reading
+    }
+
     pub(super) fn visibility_status(visible: bool) -> String {
         crate::resource::t(if visible {
             "calendar-visible"

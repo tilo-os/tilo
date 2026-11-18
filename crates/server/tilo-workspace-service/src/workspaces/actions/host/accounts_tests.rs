@@ -20,7 +20,7 @@ use tilo_actions::remote::{
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use super::super::HostWorkspaceActions;
+use super::super::ServiceWorkspaceActions;
 use super::super::tests::{caller, settled};
 use crate::workspaces::tests::{governor, test_host};
 
@@ -99,7 +99,7 @@ async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
     let device = key_of(&root, "studio");
@@ -172,7 +172,7 @@ async fn a_person_asks_what_arrived_and_the_host_watches_from_then_on() {
     let workspaces = server.workspaces();
     let servers = std::sync::Arc::new(Watched::default());
     workspaces.carry_mail_through(servers.clone());
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
     let device = key_of(&root, "studio");

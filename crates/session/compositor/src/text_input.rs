@@ -34,7 +34,7 @@ use smithay::wayland::virtual_keyboard::{VirtualKeyboardHandler, VirtualKeyboard
 use crate::input::{InputEvent, Switch};
 use crate::render::OutputRenderElement;
 use crate::state::{ClientState, State};
-use tilo_session_core::surface::{HostIme, HostTextInput};
+use tilo_session_core::surface::{SurfaceIme, SurfaceTextInput};
 
 fn trusted(client: &Client) -> bool {
     client
@@ -105,9 +105,9 @@ pub(crate) struct TextInput {
     touchscreen: bool,
     /// A convertible folded into tablet shape: the screen is the keyboard.
     tablet_mode: bool,
-    /// The hosted surface whose field an input method serves now, if one does: keys the input
+    /// The surface whose field an input method serves now, if one does: keys the input
     /// method composes go there, not to the surface.
-    host_field: Option<HostField>,
+    surface_field: Option<HostField>,
     /// Whether the key being routed came back from a trusted input method through its virtual
     /// keyboard, rather than from a device.
     reinjected: bool,
@@ -129,13 +129,13 @@ struct CaretWait {
     since: Instant,
 }
 
-/// The hosted surface's field an input method serves.
+/// The surface's field an input method serves.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct HostField {
-    /// Which hosted surface draws it.
-    host: usize,
+    /// Which surface draws it.
+    surface: usize,
     /// What it declared and where its caret stands.
-    input: HostTextInput,
+    input: SurfaceTextInput,
     /// Whether the input method was told to compose in it: a method that connects later is
     /// activated on the pass that sees it.
     activated: bool,
@@ -143,7 +143,7 @@ struct HostField {
 
 /// Where the caret an input method places its composition at stands in the shell, in the protocol's
 /// integers.
-fn caret_rect(input: HostTextInput) -> Rectangle<i32, Logical> {
+fn caret_rect(input: SurfaceTextInput) -> Rectangle<i32, Logical> {
     #[allow(
         clippy::cast_possible_truncation,
         reason = "a caret on the shell, far from i32 limits"
@@ -172,7 +172,7 @@ impl TextInput {
             last_touch: None,
             touchscreen: false,
             tablet_mode: false,
-            host_field: None,
+            surface_field: None,
             reinjected: false,
             caret_wait: None,
         }
@@ -219,37 +219,37 @@ impl State {
 
     /// What a text field and the person's own typing ask the on-screen keyboard to do.
     pub(crate) fn text_entry(&self) -> TextEntry {
-        let mut typing = self.text_input.host_field.is_some();
+        let mut typing = self.text_input.surface_field.is_some();
         self.seat
             .text_input()
             .with_active_text_input(|_, _| typing = true);
         self.text_input.entry(typing)
     }
 
-    /// The hosted surface whose field the person types into now: the topmost one that holds the
+    /// The surface whose field the person types into now: the topmost one that holds the
     /// keyboard and has a field with the focus, while the session is not locked. A surface that
     /// keeps its field focused under another that took the keys (the shell's search under the
     /// clipboard opened over it) is not typed into until it has them back.
-    fn host_text_input(&self) -> Option<(usize, HostTextInput)> {
+    fn host_text_input(&self) -> Option<(usize, SurfaceTextInput)> {
         if self.locked() {
             return None;
         }
-        self.hosts
+        self.surfaces
             .iter()
             .enumerate()
             .rev()
-            .filter(|(_, host)| host.wants_keyboard())
-            .find_map(|(index, host)| host.text_input().map(|input| (index, input)))
+            .filter(|(_, surface)| surface.wants_keyboard())
+            .find_map(|(index, surface)| surface.text_input().map(|input| (index, input)))
     }
 
     /// Keep the field the person types into on the keyboard's focus, whoever draws it: a client
     /// tells its `text-input-v3` object, and the compositor's own fields are served by the input
     /// method directly.
-    /// A hosted field holds the keyboard, so no client's field has the focus while it is served:
+    /// A surface field holds the keyboard, so no client's field has the focus while it is served:
     /// the input method composes there, and its candidate window stands where the field's caret
     /// does.
     pub(crate) fn sync_text_input(&mut self) {
-        let host = self.host_text_input();
+        let surface = self.host_text_input();
         let focused = self
             .seat
             .get_keyboard()
@@ -265,7 +265,7 @@ impl State {
             handle.done(false);
         }
         let input_method = self.seat.input_method().clone();
-        match (host, self.text_input.host_field) {
+        match (surface, self.text_input.surface_field) {
             (None, None) => {}
             (None, Some(served)) => {
                 // A client's field may have taken the focus in the same pass: it enables the method
@@ -277,10 +277,10 @@ impl State {
                 if !client_field {
                     input_method.deactivate_input_method(self);
                 }
-                self.text_input.host_field = None;
-                self.notify_host(served.host, HostIme::Disabled);
+                self.text_input.surface_field = None;
+                self.notify_surface(served.surface, SurfaceIme::Disabled);
             }
-            (Some((index, input)), Some(mut served)) if served.host == index => {
+            (Some((index, input)), Some(mut served)) if served.surface == index => {
                 if served.input != input && caret_rect(served.input) != caret_rect(input) {
                     // The composition follows the caret: the candidate window stands under it.
                     input_method.set_text_input_rectangle(self, caret_rect(input));
@@ -291,8 +291,8 @@ impl State {
                     // activated on the pass that sees it.
                     input_method.deactivate_input_method(self);
                     served.activated = false;
-                    self.notify_host(index, HostIme::Disabled);
-                    self.text_input.host_field = Some(served);
+                    self.notify_surface(index, SurfaceIme::Disabled);
+                    self.text_input.surface_field = Some(served);
                     return;
                 }
                 if !served.activated && input_method.has_instance() {
@@ -300,32 +300,32 @@ impl State {
                     // sees both activates it.
                     input_method.activate_without_text_input(self, caret_rect(input));
                     served.activated = true;
-                    self.text_input.host_field = Some(served);
-                    self.notify_host(index, HostIme::Enabled);
+                    self.text_input.surface_field = Some(served);
+                    self.notify_surface(index, SurfaceIme::Enabled);
                     return;
                 }
-                self.text_input.host_field = Some(served);
+                self.text_input.surface_field = Some(served);
             }
             (Some((index, input)), served) => {
                 if served.is_some() {
                     input_method.deactivate_input_method(self);
                 }
                 if let Some(served) = served {
-                    self.notify_host(served.host, HostIme::Disabled);
+                    self.notify_surface(served.surface, SurfaceIme::Disabled);
                 }
                 let activated = input_method.has_instance();
                 if activated {
                     input_method.activate_without_text_input(self, caret_rect(input));
                 }
-                self.text_input.host_field = Some(HostField {
-                    host: index,
+                self.text_input.surface_field = Some(HostField {
+                    surface: index,
                     input,
                     activated,
                 });
                 if activated {
                     // Only a method that composes there is told of it: the pass that first sees one
                     // activates this field.
-                    self.notify_host(index, HostIme::Enabled);
+                    self.notify_surface(index, SurfaceIme::Enabled);
                 }
             }
         }
@@ -337,17 +337,17 @@ impl State {
         self.seat.input_method().has_instance()
     }
 
-    /// Hand `event` to hosted surface `host` , if it still stands.
-    fn notify_host(&mut self, host: usize, event: HostIme) {
-        if let Some(host) = self.hosts.get_mut(host) {
-            host.ime(event);
+    /// Hand `event` to surface `index` , if it still stands.
+    fn notify_surface(&mut self, surface: usize, event: SurfaceIme) {
+        if let Some(surface) = self.surfaces.get_mut(surface) {
+            surface.ime(event);
         }
     }
 
-    /// Hand `event` to the hosted field the input method serves now.
-    fn notify_served_field(&mut self, event: HostIme) {
-        if let Some(served) = self.text_input.host_field {
-            self.notify_host(served.host, event);
+    /// Hand `event` to the surface field the input method serves now.
+    fn notify_served_field(&mut self, event: SurfaceIme) {
+        if let Some(served) = self.text_input.surface_field {
+            self.notify_surface(served.surface, event);
         }
     }
 
@@ -360,14 +360,14 @@ impl State {
         self.text_input.reinjected = false;
     }
 
-    /// The hosted surface whose field the input method takes the person's keys for now: it has the
+    /// The surface whose field the input method takes the person's keys for now: it has the
     /// keyboard grabbed, so every key reaches the method first, and the surface hears only what the
     /// method leaves for it (`State::handle_ime_key`).
     pub(crate) fn composing(&self) -> Option<usize> {
         if self.text_input.reinjected || !self.seat.input_method().keyboard_grabbed() {
             return None;
         }
-        self.text_input.host_field.map(|served| served.host)
+        self.text_input.surface_field.map(|served| served.surface)
     }
 
     /// The text field the person is typing into, as dictation names it.
@@ -421,10 +421,10 @@ impl State {
     /// Answers whether the field declared its content secret, which decides whether the text is
     /// remembered; `None` when no field takes text now.
     pub(crate) fn insert_active_text(&mut self, text: &str) -> Option<bool> {
-        if let Some(served) = self.text_input.host_field {
-            // A hosted surface's field takes text the same way, through the input method that
+        if let Some(served) = self.text_input.surface_field {
+            // A surface's field takes text the same way, through the input method that
             // serves it.
-            self.notify_served_field(HostIme::Commit(text.to_owned()));
+            self.notify_served_field(SurfaceIme::Commit(text.to_owned()));
             return Some(secret(Some((
                 ContentHint::from_bits_truncate(served.input.hint),
                 ContentPurpose::try_from(served.input.purpose).unwrap_or(ContentPurpose::Normal),
@@ -447,7 +447,7 @@ impl State {
     /// rectangle its client last committed, placed on the surface it types into. `None` when no
     /// field takes text, it never reported one, or its window is not on screen.
     pub(crate) fn text_caret(&self) -> Option<TextCaret> {
-        if let Some(served) = self.text_input.host_field {
+        if let Some(served) = self.text_input.surface_field {
             let input = served.input;
             return Some(TextCaret {
                 x: input.x,
@@ -648,7 +648,7 @@ impl InputMethodHandler for State {
     /// The input method composed `text` for a field the compositor draws: the text takes the place
     /// of the composition shown there, once.
     fn commit_to_host(&mut self, text: &str) {
-        self.notify_served_field(HostIme::Commit(text.to_owned()));
+        self.notify_served_field(SurfaceIme::Commit(text.to_owned()));
     }
 
     fn preedit_to_host(&mut self, text: &str, cursor_begin: i32, cursor_end: i32) {
@@ -658,7 +658,7 @@ impl InputMethodHandler for State {
                 cursor_end.unsigned_abs() as usize,
             )
         });
-        self.notify_served_field(HostIme::Preedit(text.to_owned(), cursor));
+        self.notify_served_field(SurfaceIme::Preedit(text.to_owned(), cursor));
     }
 }
 

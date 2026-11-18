@@ -211,6 +211,7 @@ impl FilesContent {
         // trees are read is read too.
         let mut writes = self.workspaces.document_writes();
         let mut governance = self.workspaces.governance_changes();
+        let mut reached = self.workspaces.holders_reached();
         self.read_all().await;
         let mut read = ticker(READ_EVERY);
         let mut again = ticker(READ_EVERY);
@@ -234,6 +235,14 @@ impl FilesContent {
                 change = governance.recv() => match change {
                     Ok(workspace) => self.keep_tree(&workspace, true).await,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        self.read_all().await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+                reached = reached.recv() => match reached {
+                    Ok(workspace) => self.holder_reached(&workspace).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        self.state.lock_recover().wants.forget_unanswered();
                         self.read_all().await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
@@ -387,11 +396,24 @@ impl FilesContent {
             return;
         }
         let only = (!whole).then_some(&read);
-        for ask in self.asks(workspace, only) {
+        let (asks, missing) = self.asks(workspace, only);
+        for ask in asks {
             if let Err(error) = self.workspaces.ask_members(workspace, ask).await {
                 tracing::debug!(workspace, %error, "could not ask a workspace for its files");
             }
         }
+        if whole {
+            // Read over the whole tree: what it lacks is all it lacks.
+            let blobs = u32::try_from(missing).unwrap_or(u32::MAX);
+            self.workspaces.lacks_content(workspace, blobs).await;
+        }
+    }
+
+    /// Ask again at once for all `workspace` lacks: its copy turned current
+    /// with another holder, which may keep what nobody answered before.
+    async fn holder_reached(&self, workspace: &str) {
+        self.state.lock_recover().wants.forget_unanswered();
+        self.keep_tree(workspace, true).await;
     }
 
     /// The records of `workspace`'s tree to read now, taken; the tree's own
@@ -522,20 +544,20 @@ impl FilesContent {
         clippy::significant_drop_tightening,
         reason = "the files are read from what the guard holds"
     )]
-    fn asks(&self, workspace: &str, only: Option<&BTreeSet<TreeChunk>>) -> Vec<Vec<u8>> {
+    fn asks(&self, workspace: &str, only: Option<&BTreeSet<TreeChunk>>) -> (Vec<Vec<u8>>, usize) {
         let files = {
             let state = self.state.lock_recover();
             let Some(kept) = state.trees.get(workspace) else {
-                return Vec::new();
+                return (Vec::new(), 0);
             };
             referenced(&kept.chunks, only)
         };
         let mut state = self.state.lock_recover();
         let mut asks = Vec::new();
-        let mut unanswered = false;
+        let mut missing = 0_usize;
         for file in files {
             for hash in self.missing(workspace, &file) {
-                unanswered = true;
+                missing = missing.saturating_add(1);
                 if let Some(ask) = state.wants.ask(
                     &self.host,
                     workspace.to_owned(),
@@ -547,11 +569,11 @@ impl FilesContent {
                 }
             }
         }
-        if unanswered {
+        if missing > 0 {
             state.unanswered.insert(workspace.to_owned());
         }
         drop(state);
-        asks
+        (asks, missing)
     }
 
     /// The blobs of the file whose content is `manifest` that this host does

@@ -128,7 +128,7 @@ def report(result):
 while True:
     clients = []
     for bus, pid in m.bus_pids(address).items():
-        app = m.app_process(pid)
+        app = m.package_service(pid)
         cmd = m.process_command(app).split()
         own = bool(cmd) and cmd[0].rsplit("/", 1)[-1] == program
         try:

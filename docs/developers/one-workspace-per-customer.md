@@ -290,10 +290,11 @@ The agent sees that one workspace's apps through the same tools a person's agent
 (`pdf-viewer/application.pdf#field-edit`) and writes a cover letter in Writer (`word-processor#append-paragraph`,
 then `#export-content` as docx). It cannot list, read or act in any other workspace: another workspace's
 MCP URL answers its token `403`, every `/v1/workspaces/<other>/...` route answers `403 beyond_scope`, a
-tool call naming another workspace reaches nothing, and the account's paths (`account/...`, `GET
-/v1/account`, making, deleting, minting) are refused. Listing workspaces with it names its own alone. Revoking
-the key ends its open MCP sessions at once: their next call is refused, and the token opens no new one
-(`401 key_revoked`). Every call that
+tool call naming another workspace reaches nothing, and the account's paths (`account/...` apart from the
+keys its workspace admitted, `GET /v1/account`, making, deleting, minting) are refused. `GET /v1/keys`
+lists the key and the keys it minted there, from the workspace's own governance. Listing workspaces
+with it names its own alone. Revoking the key ends its open MCP sessions at once: their next call is
+refused, and the token opens no new one (`401 key_revoked`). Every call that
 changed a resource answers that resource's `link`, and `tilo_link {path}` answers the link to anything a path
 names, so the agent can end its work by handing a person the link to what it did.
 

@@ -36,6 +36,9 @@ pub(super) const OWN_KINDS: &[(&str, &str)] = &[
     ("so.tilo.terminal", "terminal.recent-environments"),
     ("so.tilo.tube", "tube.watch-history"),
     ("so.tilo.video-player", "video-player.recent"),
+    ("so.tilo.lang.mail", "tl.so.tilo.lang.mail"),
+    ("so.tilo.shell", "tl.so.tilo.shell"),
+    ("so.tilo.lang.views", "tl.so.tilo.lang.views"),
 ];
 
 /// The apps whose window opens a kind each member keeps as their own.

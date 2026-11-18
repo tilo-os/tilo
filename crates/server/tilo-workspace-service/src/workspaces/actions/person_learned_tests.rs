@@ -32,7 +32,7 @@ type Answered<T> = Result<T, ActionCallError>;
 
 /// Where a test asks the provider: the server's actions, in one workspace.
 struct Asking<'a> {
-    server: &'a super::HostWorkspaceActions,
+    server: &'a super::ServiceWorkspaceActions,
     workspace: WorkspaceId,
 }
 

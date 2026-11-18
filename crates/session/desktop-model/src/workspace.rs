@@ -1,20 +1,19 @@
 //! A workspace: a unit of collaboration with its own strips, members and
 //! permissions.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use collab_types::caps::{
-    Access, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_app, decide_capability,
+    Access, CapDecision, CapOverride, DeviceCap, Effect, ResourceRef, Scope, decide_app,
+    decide_capability,
 };
 use tilo_action_policy::{
     Acting, ActionKind, Answer, Authority, Change, Context, Grant, GrantId, Grantee, KindSet,
     Lifetime, Preset, PresetError, Refusal, Role, TreePath, WorkspacePolicy, roles,
 };
 
-use crate::app::AppId;
-use crate::capability::Capability;
 use crate::ids::WorkspaceId;
 use crate::layout::Strip;
 use crate::layout::WorkspaceLayout;
@@ -279,22 +278,6 @@ impl Workspace {
 
     // The sandbox: what apps' code may reach, granted through portals.
 
-    /// Record an app's sandbox grant, for `person`. Returns the ids of the
-    /// capabilities written (one per requested scope).
-    pub fn grant_app(&mut self, person: &str, app_id: &str, cap: &Capability) -> Vec<String> {
-        let expiry = cap.requested_expiry();
-        cap.requested_scopes()
-            .into_iter()
-            .map(|(scope, access)| {
-                self.grant_sandbox(
-                    CapOverride::grant(Grantee::person(person), scope, access)
-                        .through(app_id)
-                        .expiring(expiry),
-                )
-            })
-            .collect()
-    }
-
     pub fn app_capabilities_at(&self, app_id: &str, now: u64) -> Vec<&CapOverride> {
         let live_at = Some(now);
         self.sandbox
@@ -303,99 +286,17 @@ impl Workspace {
             .collect()
     }
 
-    /// Whether app `app_id` may act on this desktop beyond its own window at
-    /// `now`: a live [`Capability::DesktopControl`] grant of this
-    /// workspace's.
-    pub fn holds_desktop_control_at(&self, app_id: &str, now: u64) -> bool {
-        self.sandbox.iter().any(|cap| {
-            cap.names_app(app_id)
-                && cap.effect == Effect::Grant
-                && cap.is_live_at(Some(now))
-                && matches!(
-                    Capability::from_capability(cap),
-                    Some(Capability::DesktopControl { .. })
-                )
-        })
-    }
-
     /// Take back app `app_id`'s desktop control: every
-    /// [`Capability::DesktopControl`] grant of its, whatever its lifetime.
+    /// [`DeviceCap::DesktopControl`] grant of its, whatever its lifetime.
     /// Whether there was one.
     pub fn stop_desktop_control(&mut self, app_id: &str) -> bool {
         !self
             .revoke_sandbox_matching(|cap| {
                 cap.names_app(app_id)
-                    && matches!(
-                        Capability::from_capability(cap),
-                        Some(Capability::DesktopControl { .. })
-                    )
+                    && cap.effect == Effect::Grant
+                    && cap.scope == Scope::Device(DeviceCap::DesktopControl)
             })
             .is_empty()
-    }
-
-    /// A **snapshot** of app grants in the portal's `Capability` shape.
-    /// Rebuilt from [`Self::sandbox`] on every call — mutating the returned
-    /// map edits a temporary and stores nothing. To grant, use
-    /// [`Self::grant_app`].
-    pub fn app_grants_snapshot_at(&self, now: u64) -> HashMap<AppId, Vec<Capability>> {
-        let live_at = Some(now);
-        let mut out: HashMap<AppId, Vec<Capability>> = HashMap::new();
-        for c in &self.sandbox {
-            if c.effect != Effect::Grant || !c.is_live_at(live_at) {
-                continue;
-            }
-            let Some(app) = &c.app else {
-                continue;
-            };
-            if let Some(desc) = Capability::from_capability(c) {
-                out.entry(AppId::new(app.as_str())).or_default().push(desc);
-            }
-        }
-        out
-    }
-
-    /// Whether app `app_id` still holds device `device` ("camera",
-    /// "microphone", as [`Capability::device_scope`] spells it) at `now`.
-    /// A revoke or an expiry answers `false` here at once, which is what
-    /// ends a capture already running: nothing has to restart the app.
-    #[must_use]
-    pub fn grants_device_at(&self, app_id: &str, device: &str, now: u64) -> bool {
-        let live_at = Some(now);
-        self.sandbox.iter().any(|capability| {
-            capability.effect == Effect::Grant
-                && capability.is_live_at(live_at)
-                && capability.names_app(app_id)
-                && matches!(&capability.scope, Scope::Device(scope) if scope == device)
-        })
-    }
-
-    /// Does any app hold a grant in this workspace? Drives the Permissions
-    /// tab's visibility.
-    pub fn has_app_grants_at(&self, now: u64) -> bool {
-        let live_at = Some(now);
-        self.sandbox.iter().any(|c| {
-            c.effect == Effect::Grant
-                && c.is_live_at(live_at)
-                && c.app.is_some()
-                && Capability::from_capability(c).is_some()
-        })
-    }
-
-    /// Ids of the capabilities backing app `app_id`'s grants, in the
-    /// same order `Self::grants` renders them, so a Revoke button
-    /// that knows a row index can name the capability it removes.
-    pub fn app_grant_ids_at(&self, app_id: &str, now: u64) -> Vec<String> {
-        let live_at = Some(now);
-        self.sandbox
-            .iter()
-            .filter(|c| {
-                c.names_app(app_id)
-                    && c.effect == Effect::Grant
-                    && c.is_live_at(live_at)
-                    && Capability::from_capability(c).is_some()
-            })
-            .map(|c| c.id.clone())
-            .collect()
     }
 
     /// May the app `app` reach `resource` with `access` under the workspace's sandbox?

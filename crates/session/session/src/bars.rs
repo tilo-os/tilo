@@ -86,7 +86,7 @@ impl Session {
             // showing it over a window lays the windows out again for what is left.
             self.shared
                 .desktop
-                .with_widgets(crate::platform::surfaces::WidgetHost::relayout);
+                .with_widgets(crate::platform::surfaces::WidgetSurface::relayout);
         }
     }
 }

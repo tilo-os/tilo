@@ -190,10 +190,7 @@ impl FedExplorer {
             }
             self.view.update_model(|current| *current = model(rows));
         }
-        match shown.current {
-            Some(id) => self.view.selection_mut().select_only(id),
-            None => self.view.selection_mut().clear(),
-        }
+        self.view.select_only(shown.current);
         true
     }
 }

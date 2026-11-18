@@ -286,11 +286,11 @@ impl PermissionContext {
             Acting::person(LOCAL_USER),
             [
                 Scope::FsPath("/".into()),
-                Scope::Device(collab_types::caps::EVERY.into()),
                 Scope::NetHost(collab_types::caps::EVERY.into()),
                 Scope::FsResource(collab_types::caps::EVERY.into()),
             ]
             .into_iter()
+            .chain(collab_types::caps::DeviceCap::ALL.map(Scope::Device))
             .enumerate()
             .map(|(index, scope)| {
                 CapOverride::grant(Grantee::person(LOCAL_USER), scope, Access::Write)

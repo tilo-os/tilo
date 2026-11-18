@@ -434,7 +434,7 @@ mod tests {
             };
             let active = tree.active;
             assert_eq!(
-                tree.reopen_closed(active).map(|put| put.tab),
+                tree.reopen_closed(active, None).map(|put| put.tab),
                 Some(NOTES),
                 "the window is back"
             );

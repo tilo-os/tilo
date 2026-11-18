@@ -6,8 +6,9 @@
 //! which outputs or windows to share, a question of kind
 //! [`SCREENCAST_QUESTION`] offering what the session can capture now
 //! ([`CaptureStreams::sources`]), and starts one stream per source picked.
-//! A valid `restore_data` the app kept from an earlier share
-//! ([`crate::restore`]) shares the same sources again without asking.
+//! A valid `restore_data` the app kept from an earlier share, before it
+//! quit and in the same workspace ([`crate::restore`]) shares the same sources
+//! again without asking.
 //! Every running stream is a capture lease the person sees and may stop
 //! ([`crate::captures`]); stopping it ends the session.
 //!
@@ -24,7 +25,7 @@ use zbus::interface;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 use crate::reply::{Ended, OrFail, Reply, Results, answer, ensure};
-use crate::restore::{Grant, restore_data, restore_key, unix_now};
+use crate::restore::{Grant, restore_data, restore_key};
 use crate::session::SessionKind;
 use crate::streams::{CaptureSource, SourceKind, Stream, StreamRequest, cursor_mode};
 use crate::{Portal, PortalCaller, option, question_handle};
@@ -55,9 +56,6 @@ pub struct ShareQuestion {
     pub sources: Vec<OfferedSource>,
     /// Whether more than one source may be picked.
     pub multiple: bool,
-    /// Whether the person may let the app share the same again without
-    /// asking (the answer's `remember`).
-    pub may_remember: bool,
     /// The input devices asked for: `keyboard`, `pointer`.
     pub devices: Vec<String>,
 }
@@ -68,7 +66,8 @@ pub(crate) struct Selection {
     pub types: u32,
     pub cursor_mode: u32,
     pub multiple: bool,
-    /// What the app asked to be remembered for: 0, 1 or 2.
+    /// What the app asked to be remembered for: 0, 1 or 2; it is
+    /// remembered until it quits at most.
     pub persist_mode: u32,
     /// What a restore key the app handed back shares again.
     pub restore: Option<Grant>,
@@ -158,6 +157,8 @@ pub(crate) struct Shared {
     pub streams: Vec<(CaptureSource, Stream)>,
     /// The persist mode granted: 0 when nothing is remembered.
     pub persist_mode: u32,
+    /// The restore key it shared again under, handed back unchanged.
+    pub restored: Option<String>,
 }
 
 /// The sources of `restore` as they are now, when every one is still
@@ -203,17 +204,6 @@ fn picked(
     fits.then_some(picked)
 }
 
-/// The persist mode an answer grants: an app asking to be remembered
-/// until revoked is only if the person said so; otherwise it is
-/// remembered while it runs.
-const fn granted_persist_mode(asked: u32, remember: bool) -> u32 {
-    match asked {
-        2 if remember => 2,
-        0 => 0,
-        _ => 1,
-    }
-}
-
 const fn device_names(devices: u32) -> [Option<&'static str>; 2] {
     use crate::remote_desktop::device_type;
     [
@@ -241,6 +231,8 @@ pub(crate) struct Ask<'a> {
     pub selection: Option<&'a Selection>,
     /// What a restore key shares again without asking.
     pub restore: Option<&'a Grant>,
+    /// What the app asked to be remembered for: 0, 1 or 2.
+    pub persist_mode: u32,
     /// The question's kind.
     pub kind: &'a str,
     /// The devices a remote desktop drives.
@@ -248,7 +240,7 @@ pub(crate) struct Ask<'a> {
 }
 
 /// Ask the person for a session's share (unless its restore key shares
-/// the same again), then start a stream of every source picked, each held
+/// the same sources again; devices alone are always asked for), then start a stream of every source picked, each held
 /// as a capture lease.
 pub(crate) async fn share(portal: &Portal, ask: Ask<'_>) -> Result<Shared, Ended> {
     let offered: Vec<CaptureSource> = ask.selection.map_or_else(Vec::new, |selection| {
@@ -259,37 +251,34 @@ pub(crate) async fn share(portal: &Portal, ask: Ask<'_>) -> Result<Shared, Ended
             .filter(|source| selection.types & source.kind.source_type() != 0)
             .collect()
     });
-    let restored = match (ask.selection, ask.restore) {
-        (Some(_), Some(restore)) => restored_sources(restore, &offered),
-        (None, Some(_)) => Some(Vec::new()),
-        _ => None,
-    };
-    let persist_asked = ask.restore.map_or_else(
-        || ask.selection.map_or(0, |selection| selection.persist_mode),
-        |grant| grant.persist_mode,
-    );
-    let (sources, persist_mode) = if let Some(sources) = restored {
-        (sources, persist_asked)
-    } else {
-        pick(portal, &ask, &offered, persist_asked).await?
+    let restored = ask
+        .selection
+        .and(ask.restore)
+        .and_then(|restore| Some((restored_sources(restore, &offered)?, restore.key.clone())));
+    let (sources, restored) = match restored {
+        Some((sources, key)) => (sources, Some(key)),
+        None => (pick(portal, &ask, &offered).await?, None),
     };
     let cursor = ask
         .selection
         .map_or(cursor_mode::HIDDEN, |selection| selection.cursor_mode);
     Ok(Shared {
         streams: start_streams(portal, ask.path, ask.caller, sources, cursor).await?,
-        persist_mode,
+        persist_mode: if restored.is_some() {
+            1
+        } else {
+            ask.persist_mode.min(1)
+        },
+        restored,
     })
 }
 
-/// Ask the person what to share of `offered`, and whether to remember it;
-/// the sources and the persist mode granted.
+/// Ask the person what to share of `offered`; the sources picked.
 async fn pick(
     portal: &Portal,
     ask: &Ask<'_>,
     offered: &[CaptureSource],
-    persist_asked: u32,
-) -> Result<(Vec<CaptureSource>, u32), Ended> {
+) -> Result<Vec<CaptureSource>, Ended> {
     ensure(ask.selection.is_none() || !offered.is_empty())?;
     let multiple = ask.selection.is_some_and(|selection| selection.multiple);
     let question = ShareQuestion {
@@ -303,7 +292,6 @@ async fn pick(
             })
             .collect(),
         multiple,
-        may_remember: persist_asked == 2,
         devices: device_names(ask.devices)
             .into_iter()
             .flatten()
@@ -321,15 +309,11 @@ async fn pick(
         })
         .await
         .ok_or(Ended::Cancelled)?;
-    let sources = if ask.selection.is_some() {
-        picked(&answer, offered, multiple).or_fail()?
+    if ask.selection.is_some() {
+        picked(&answer, offered, multiple).or_fail()
     } else {
-        Vec::new()
-    };
-    Ok((
-        sources,
-        granted_persist_mode(persist_asked, answer.remember),
-    ))
+        Ok(Vec::new())
+    }
 }
 
 /// Start a stream of every one of `sources` for session `path`, each held
@@ -384,7 +368,8 @@ async fn start_streams(
 }
 
 /// Remember `shared` for `caller` when it was granted persistence; the
-/// results' `restore_data` and `persist_mode`.
+/// results' `restore_data` and `persist_mode`. A restored share keeps its
+/// key.
 pub(crate) fn remember(
     portal: &Portal,
     caller: &PortalCaller,
@@ -393,31 +378,29 @@ pub(crate) fn remember(
     devices: u32,
     results: &mut Results,
 ) -> Result<(), Ended> {
-    if shared.persist_mode == 0 {
-        return Ok(());
-    }
-    let key = portal
-        .grants
-        .insert(Grant {
-            id: String::new(),
-            app_id: caller.app_id.clone(),
-            persist_mode: shared.persist_mode,
-            issued_unix_seconds: unix_now(),
-            sources: shared
-                .streams
-                .iter()
-                .map(|(source, _)| source.clone())
-                .collect(),
-            cursor_mode,
-            devices,
-        })
-        .map_err(|error| {
-            tracing::warn!(%error, "share not remembered");
-            Ended::Failed
-        })?;
+    let key = match &shared.restored {
+        Some(key) => key.clone(),
+        None if shared.persist_mode == 0 => return Ok(()),
+        None => {
+            let key = portal.grants.insert(Grant {
+                key: String::new(),
+                id: String::new(),
+                app_id: caller.app_id.clone(),
+                workspace: caller.workspace.clone(),
+                sources: shared
+                    .streams
+                    .iter()
+                    .map(|(source, _)| source.clone())
+                    .collect(),
+                cursor_mode,
+                devices,
+            });
+            portal.sessions.changed();
+            key
+        }
+    };
     results.insert("restore_data".into(), restore_data(key).or_fail()?);
     results.insert("persist_mode".into(), OwnedValue::from(shared.persist_mode));
-    portal.sessions.changed();
     Ok(())
 }
 
@@ -579,15 +562,12 @@ impl ScreenCast {
             .or_fail()?;
             if kind == SessionKind::ScreenCast {
                 selection.restore = restore_key(&options)
-                    .and_then(|key| self.portal.grants.get(&key, &auth.caller.app_id))
+                    .and_then(|key| self.portal.grants.get(&key, &auth.caller))
                     .filter(|grant| !grant.sources.is_empty());
                 if let Some(restore) = &selection.restore {
                     selection.cursor_mode = restore.cursor_mode & self.available_cursor_modes();
                     ensure(selection.cursor_mode != 0)?;
                 }
-            } else {
-                // A remote desktop remembers through its own devices call.
-                selection.persist_mode = 0;
             }
             ensure(self.portal.casts.select(path, selection))?;
             Ok(Results::new())
@@ -635,6 +615,7 @@ impl ScreenCast {
                             caller: &auth.caller,
                             selection: Some(&selection),
                             restore: selection.restore.as_ref(),
+                            persist_mode: selection.persist_mode,
                             kind: SCREENCAST_QUESTION,
                             devices: 0,
                         },
@@ -728,10 +709,10 @@ mod tests {
         phase a_restored_share_finds_its_outputs_by_name_and_windows_by_app;
         {
             let grant = Grant {
+                key: String::new(),
                 id: String::new(),
                 app_id: "org.example.Share".into(),
-                persist_mode: 2,
-                issued_unix_seconds: 0,
+                workspace: None,
                 sources: vec![output("DP-1"), window("old", "org.a")],
                 cursor_mode: cursor_mode::HIDDEN,
                 devices: 0,
@@ -760,14 +741,6 @@ mod tests {
             assert_eq!((selection.types, selection.cursor_mode), (3, 2));
             options.insert("persist_mode".into(), OwnedValue::from(3_u32));
             assert!(selection_of(&options, 3, cursor_mode::ALL).is_none());
-        }
-
-        phase persistence_until_revoked_needs_the_persons_say;
-        {
-            assert_eq!(granted_persist_mode(2, true), 2);
-            assert_eq!(granted_persist_mode(2, false), 1);
-            assert_eq!(granted_persist_mode(1, false), 1);
-            assert_eq!(granted_persist_mode(0, true), 0);
         }
 
         phase streams_carry_their_node_size_type_and_an_outputs_place;

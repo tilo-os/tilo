@@ -70,11 +70,19 @@ the machinery `tilo device swap` uses on a development machine:
    of its own again (memory tiers, the pressure watch, its end report, ending
    it at logout), lets the saved tab of its app wait for its window instead of
    starting the app again, and attaches the keeper, which shows the windows'
-   last pictures at once. Nothing watches memory pressure in the seconds
+   last pictures at once. What the app wrote goes on being kept as well: the
+   keeper holds the newest 64 KiB of each of its two streams in a bounded file
+   in that directory (`output.stdout`, `output.stderr`), and the desktop that
+   follows reads it from the first line still held and keeps following it
+   while the app is there. Nothing watches memory pressure in the seconds
    between the two desktops; the kernel's OOM kill of the app's group is the
    backstop, and the end is reported as a memory end from the group's events
    once the new desktop takes it back. An app that ended while no desktop was
-   there is reported from the record its keeper left. A keeper started by an
+   there is reported from the record its keeper left.
+   A Windows program in a Wine capsule is one of these launches: the
+   compatibility service has the desktop start its sandbox behind a keeper
+   (`tilo-launcher windows-program`), and the service the new desktop starts
+   lists it open again, can quit it, and reports its end. A keeper started by an
    older desktop that speaks another version of its interface cannot be shown:
    the new desktop counts it as a launch (tiers, memory watch, ended at
    logout), starts no second copy of its app, and offers to restart it, which
@@ -111,7 +119,7 @@ because it boots the staged deployment that holds them.
 
 | Interface | Version | Schema | Checked |
 |---|---|---|---|
-| App ↔ shell (shell-ui) | `ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION` | `crates/sdk/ui-core/interface.toml` | the app's first frame on its shell-ui connection; the launcher, from the manifest |
+| App ↔ shell (shell-ui) | `ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION` | `crates/sdk/ui-core/interface.toml` | the app's first frame on the shell-ui connection the launcher gives every window |
 | App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION` | `crates/runtime/runtime-portal/interface.toml` | the launcher, before it connects any service |
 | Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION`, working with the versions `neighbour_wire::works_with_peer_version` names (below) | `crates/collab/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (server sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a workspace, whose index never moves |
 | Session ↔ app keeper (the control socket of a kept app) | `tilo_app_keeper::wire::INTERFACE_VERSION` | `crates/session/app-keeper/interface.toml` | the session's `Hello`, the first message on every connection: a keeper at another version (one started by an older session build, still running its app) answers `VersionMismatch`, then `"holding"`, keeps displaying, and holds its app while that connection stays open (the unversioned part, never changed) |
@@ -175,7 +183,7 @@ one that is ahead, and exits 75 when the update is not there yet:
   update from the developer". It does not start.
 - **The app is ahead** (it needs a newer system): "Opens once Tilo has
   updated", and the system update starts.
-- An app whose shell-ui hello names another version than its manifest is
+- An app whose shell-ui hello names another version than the session's is
   answered with the session's version and closed, and the side behind updates.
 
 Between devices (`neighbour_wire::PEER_PROTOCOL_VERSION`), a device at a peer

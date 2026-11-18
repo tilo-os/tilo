@@ -1680,32 +1680,22 @@ pub fn set_model_limits(
 /// Make `model` the default of `provider`, which offers it afterwards even
 /// if it was written by hand rather than listed. `listed` is what the
 /// provider's list says of it; without it, a model the profile does not
-/// have yet gets what its family is known to do.
+/// have yet gets what its family is known to do. The choice is
+/// [`ProviderConfig::take_model`](agent_provider_config::ProviderConfig::take_model)'s,
+/// which the canvas composer makes through its own verb, so the two places
+/// change it the same way.
 pub(crate) fn take_model(
     config: &mut ProviderConfig,
     provider: &str,
     model: &str,
     listed: Option<ModelDescriptor>,
 ) -> Result<(), String> {
-    let model = model.trim();
-    if model.is_empty() || model.len() > 256 || model.contains(char::is_control) {
-        return Err(t("agent-model-invalid"));
-    }
-    let profile = find(config, provider)?;
-    match profile.models.iter_mut().find(|known| known.id == model) {
-        // What the provider now says about a model the person already has;
-        // their own answer stays.
-        Some(known) => {
-            if let Some(listed) = &listed {
-                agent_provider_config::capabilities::refresh(known, listed);
-            }
-        }
-        None => profile
-            .models
-            .push(listed.unwrap_or_else(|| ModelDescriptor::named(model.to_owned()))),
-    }
-    profile.default_model = Some(model.to_owned());
-    Ok(())
+    config.take_model(provider, model, listed).map_err(|error| {
+        t(match error {
+            agent_provider_config::ProviderChoiceError::NotAModel => "agent-model-invalid",
+            agent_provider_config::ProviderChoiceError::ProviderGone => "agent-provider-gone",
+        })
+    })
 }
 
 /// Set what `model` of `provider` can do. Either flag given makes both the

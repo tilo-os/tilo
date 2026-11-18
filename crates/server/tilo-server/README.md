@@ -15,8 +15,9 @@ and, if a peer is offline, its deltas are store-and-forwarded.
   canonical types live in `tilo-user-identity`.
 - Fans out incoming Automerge deltas to every other subscribed
   peer for the same workspace.
-- A default same-owner home host auto-binds and pins workspaces on first subscribe;
-  other workspaces are those it governs or hosts for their governor.
+- A server holds the workspaces made on it and the ones a governor hands
+  over; it never takes one into being on a device's Subscribe. A workspace it
+  does not hold refuses the subscription until it is handed over or made there.
 - Enqueues deltas for offline members under
   `workspaces/<id>/pending/<hex(device_pubkey)>/<seq>.delta` and
   drains them on next `Subscribe`.

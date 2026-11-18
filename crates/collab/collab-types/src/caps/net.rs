@@ -106,6 +106,12 @@ impl HostPattern {
     pub fn names_exactly(&self, host: &str) -> bool {
         !self.subdomains && host == self.name
     }
+
+    /// Does this pattern allow every name `other` allows? A domain pattern
+    /// covering the other's name covers everything under it too.
+    fn includes(&self, other: &Self) -> bool {
+        self == other || (self.subdomains && self.covers(&other.name))
+    }
 }
 
 impl fmt::Display for HostPattern {
@@ -319,13 +325,33 @@ impl EgressPolicy {
         match (self, other) {
             (_, Self::Any) => true,
             (Self::Any, Self::Hosts(_)) => false,
-            // A domain grant covering a pattern's name covers everything
-            // under it too.
-            (Self::Hosts(mine), Self::Hosts(theirs)) => mine.iter().all(|p| {
-                theirs
-                    .iter()
-                    .any(|t| t == p || (t.subdomains && t.covers(&p.name)))
-            }),
+            (Self::Hosts(mine), Self::Hosts(theirs)) => {
+                mine.iter().all(|p| theirs.iter().any(|t| t.includes(p)))
+            }
+        }
+    }
+
+    /// The names both `self` and `other` allow: of each pair of patterns,
+    /// the narrower one when one includes the other.
+    #[must_use]
+    pub fn intersect(&self, other: &Self) -> Self {
+        match (self, other) {
+            (Self::Any, only) | (only, Self::Any) => only.clone(),
+            (Self::Hosts(mine), Self::Hosts(theirs)) => Self::hosts(
+                mine.iter()
+                    .flat_map(|p| {
+                        theirs.iter().filter_map(move |t| {
+                            if t.includes(p) {
+                                Some(p.clone())
+                            } else if p.includes(t) {
+                                Some(t.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect(),
+            ),
         }
     }
 

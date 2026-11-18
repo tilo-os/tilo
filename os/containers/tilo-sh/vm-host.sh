@@ -318,8 +318,6 @@ up() {
   loop=$(state_loop)
   [ -n "$loop" ] || fail 'the state disk is not attached'
   guest_ref=$(cat "$vm/guest-ref")
-  mkdir -p "$vm/placer"
-  chown 10001:10001 "$vm/placer"
 
   # The placer: the same image and command the cloud's placer runs, naming
   # this stack's one host, with no cluster to start hosts on.
@@ -327,10 +325,8 @@ up() {
   podman run -d --name "$placer_container" --network host --log-driver k8s-file \
     --user 10001:10001 --read-only --tmpfs /tmp \
     --security-opt no-new-privileges --cap-drop ALL \
-    -v "$vm/placer:/var/lib/tilo-placer" \
     --entrypoint tilo-legacy "$image" \
     hosted place --listen "127.0.0.1:$place_port" \
-    --record /var/lib/tilo-placer/placements.json \
     --hosts "$pod=127.0.0.1:$status_port" >/dev/null
 
   # The host itself: privileged for KVM, the cgroup tree, user namespaces and

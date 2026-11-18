@@ -7,7 +7,7 @@
 //!
 //! * an output tunnel is always present, to the session's Pulse server;
 //! * an input tunnel is added only after `CapabilityPlan` has granted the
-//!   canonical `Device("microphone")` capability.
+//!   canonical `Device(DeviceCap::Microphone)` capability.
 //!
 //! The capsule sees only the private daemon's native and Pulse sockets.  It
 //! cannot name, mount, or connect to the host socket.  Killing the two broker
@@ -40,7 +40,7 @@ pub struct AudioProxyLease {
 
 impl AudioProxyLease {
     /// Start a private graph rooted in the already-daemon-owned lease path.
-    /// `uid` is taken from the compositor session/effective uid, never from a
+    /// `uid` is taken from the session's effective uid, never from a
     /// catalogue record or application request.
     pub fn start(root: PathBuf, uid: u32, microphone: bool) -> Result<Self, AudioProxyError> {
         let audio_root = root.join("audio");

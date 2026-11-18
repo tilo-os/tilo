@@ -758,7 +758,7 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
         settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
     );
-    let mut host = crate::personal_dictionary::TestHost::new(source, "so.tilo.notes");
+    let mut settings = crate::personal_dictionary::TestSettings::new(source, "so.tilo.notes");
     let field = |text: &str| {
         TextInput::local()
             .with_autocorrect(true)
@@ -775,14 +775,14 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
         ),
     )
     .unwrap();
-    host.flush().unwrap();
+    settings.flush().unwrap();
     input.insert_word_boundary(" ");
     assert_eq!(input.value(), "teh ");
     // An edit is a request the session answers: it refuses an ordinary app's reset, and the
     // words stay as they were.
     crate::personal_dictionary::edit(1, crate::personal_dictionary::Edit::Reset).unwrap();
     assert!(
-        host.flush().is_err(),
+        settings.flush().is_err(),
         "ordinary apps may add explicit words but cannot reset the dictionary"
     );
     assert!(
@@ -806,7 +806,7 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
         ),
     )
     .unwrap();
-    host.flush().unwrap();
+    settings.flush().unwrap();
     let mut french = field("E\u{301}lodie").with_spell_language("fr_FR");
     french.set_focus(true);
     french.refresh_personal_spelling();

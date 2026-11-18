@@ -89,13 +89,20 @@ impl Outcome {
             .retryable(crate::i18n::t("answer-restart"))
     }
 
-    /// The same outcome with what its button asked for under way ([`Self::busy`]).
+    /// The same outcome with its Restart under way ([`Self::busy`]): the button says what is
+    /// happening, so the body keeps only what is still true of the app — its unsaved changes
+    /// are lost. `apps` names a Linux VM's apps, as [`Self::from_before_update`] does.
     #[must_use]
-    pub fn under_way(mut self) -> Self {
+    pub fn restarting(mut self, apps: bool) -> Self {
         self.busy = true;
         if self.retry.is_some() {
             self.retry = Some(crate::i18n::t("answer-restarting"));
         }
+        self.why = crate::i18n::t(if apps {
+            "answer-why-apps-restarting"
+        } else {
+            "answer-why-restarting"
+        });
         self
     }
 
@@ -454,11 +461,15 @@ mod tests {
             ("from-before-long", Outcome::from_before_update(long, false)),
             (
                 "restarting",
-                Outcome::from_before_update("Firefox", false).under_way(),
+                Outcome::from_before_update("Firefox", false).restarting(false),
             ),
             (
                 "vm-from-before",
                 Outcome::from_before_update("Fedora apps", true),
+            ),
+            (
+                "vm-restarting",
+                Outcome::from_before_update("Fedora apps", true).restarting(true),
             ),
             ("closed-after", Outcome::closed_after_update("Firefox")),
         ];
@@ -478,17 +489,36 @@ mod tests {
         }
     }
 
-    /// A card whose button is under way takes no second press.
+    /// A card whose button is under way takes no second press, and its body keeps only what the
+    /// restart does not change: the button already names what is happening.
     #[test]
-    fn a_restart_under_way_takes_no_second_press() {
+    fn a_restart_under_way_takes_no_second_press_and_drops_what_it_already_did() {
         let pressed = std::rc::Rc::new(std::cell::Cell::new(0));
         let counted = std::rc::Rc::clone(&pressed);
-        let outcome = Outcome::from_before_update("Firefox", false).under_way();
+        let outcome = Outcome::from_before_update("Firefox", false).restarting(false);
         assert_eq!(outcome.retry.as_deref(), Some("Restarting…"));
+        assert_eq!(outcome.why, "Unsaved changes in it will be lost.");
+        assert_eq!(
+            Outcome::from_before_update("Fedora apps", true)
+                .restarting(true)
+                .why,
+            "Unsaved changes in them will be lost."
+        );
         let card = OutcomeCard::new(&outcome, move || counted.set(counted.get() + 1));
         let mut frame =
             ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (720, 480));
         frame.relayout();
+        let texts = ui::a11y::texts(frame.root_widget());
+        assert!(
+            !texts.iter().any(|text| text.contains("Restart it")),
+            "the instruction is gone once Restart is pressed: {texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|text| text == "Unsaved changes in it will be lost."),
+            "{texts:?}"
+        );
         let (x, y) = centre_of_control(frame.root_widget(), "Restarting…").expect("its button");
         frame.click_at(x, y);
         assert_eq!(pressed.get(), 0);

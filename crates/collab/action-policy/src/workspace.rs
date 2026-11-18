@@ -345,6 +345,12 @@ impl WorkspacePolicy {
         self.owner.as_deref() == Some(person)
     }
 
+    /// The owner, by person id: the root the workspace was made for.
+    #[must_use]
+    pub fn owner(&self) -> Option<&str> {
+        self.owner.as_deref()
+    }
+
     /// The role a person holds: `Owner` for the owner, `None` for a non-member.
     #[must_use]
     pub fn role_of(&self, person: &str) -> Option<Role> {

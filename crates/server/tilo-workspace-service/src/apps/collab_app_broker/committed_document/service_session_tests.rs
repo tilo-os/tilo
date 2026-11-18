@@ -1,13 +1,105 @@
 use super::NativeDocumentReadContext;
-use crate::apps::collab_app_broker::delegate_browser_service_session_command;
-use crate::apps::services::{
-    BrowserServiceSessionRequestContext, BrowserServiceSessionServices, ProcessServices,
+use crate::apps::BrokerError;
+use crate::apps::collab_app_broker::{
+    delegate_browser_service_session_command, item_use::delegate_item_use, wire::Answer,
 };
-use runtime_collab::{BrowserServiceSessionCommand, BrowserServiceSessionReply};
+use crate::apps::services::{
+    BrowserServiceSessionRequestContext, BrowserServiceSessionServices, ItemAnswering,
+    ProcessServices,
+};
+use runtime_collab::{BrowserServiceSessionCommand, BrowserServiceSessionReply, ItemField};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+
+/// A vault item's reference, made up.
+const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
+/// What the made-up item keeps: nobody's password, and it says so.
+const MADE_UP_TEXT: &str = "made-up item text, nobody's password";
+const BROWSER: &str = "so.tilo.browser";
+
+/// What whoever keeps the vault answers an item's use, once a test says what.
+type Decided = Arc<Mutex<Option<Result<BrowserServiceSessionReply, String>>>>;
+
+/// The answer to an item's use that is not there until a test puts it there.
+struct Later(Decided);
+impl Future for Later {
+    type Output = Result<BrowserServiceSessionReply, String>;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.0
+            .lock()
+            .unwrap()
+            .take()
+            .map_or(std::task::Poll::Pending, std::task::Poll::Ready)
+    }
+}
+
+/// Whoever keeps the vault, stood in for: it counts the item uses it was asked for and
+/// answers each when a test says what.
+struct Items {
+    asked: AtomicUsize,
+    /// Whether its leave for Browser is withdrawn.
+    withdrawn: AtomicBool,
+    decided: Decided,
+}
+impl BrowserServiceSessionServices for Items {
+    fn authorize(&self, context: &BrowserServiceSessionRequestContext) -> Result<(), String> {
+        context.revalidate()?;
+        if self.withdrawn.load(Ordering::Acquire) {
+            return Err("leave withdrawn".into());
+        }
+        Ok(())
+    }
+    fn command(
+        &self,
+        _: &BrowserServiceSessionRequestContext,
+        _: BrowserServiceSessionCommand,
+    ) -> Result<BrowserServiceSessionReply, String> {
+        Err("an item's use is never answered on the dispatch".into())
+    }
+    fn item_use(
+        &self,
+        _: &BrowserServiceSessionRequestContext,
+        _: BrowserServiceSessionCommand,
+    ) -> ItemAnswering {
+        self.asked.fetch_add(1, Ordering::AcqRel);
+        Box::pin(Later(self.decided.clone()))
+    }
+    fn disconnect(&self, _: u64) {}
+}
+fn items() -> Arc<Items> {
+    Arc::new(Items {
+        asked: AtomicUsize::new(0),
+        withdrawn: AtomicBool::new(false),
+        decided: Decided::default(),
+    })
+}
+/// `bytes` from `app`'s connection, put to `service` as the connection's dispatch puts it.
+fn put(
+    service: &Arc<impl BrowserServiceSessionServices + 'static>,
+    app: &str,
+    live: &Arc<AtomicBool>,
+    bytes: &[u8],
+) -> Option<Result<Answer<zeroize::Zeroizing<Vec<u8>>>, BrokerError>> {
+    let service: Arc<dyn BrowserServiceSessionServices> = service.clone();
+    delegate_item_use(Some(&service), &context(app, live.clone()), bytes)
+}
+/// What `answer` is now, without waiting for it: `None` while nobody answered.
+fn now(
+    answer: &mut Answer<zeroize::Zeroizing<Vec<u8>>>,
+) -> Option<Result<zeroize::Zeroizing<Vec<u8>>, BrokerError>> {
+    match answer
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    {
+        std::task::Poll::Ready(answered) => Some(answered),
+        std::task::Poll::Pending => None,
+    }
+}
 
 struct Service {
     live: Arc<AtomicBool>,
@@ -233,5 +325,148 @@ tilo_test_env::scenario! {
                 .contains("synthetic-private-provider-error")
         );
         assert!(error.to_string().contains("request refused"));
+    }
+
+    phase an_items_use_is_waited_for_off_the_dispatch_and_answered_with_its_text_or_its_reason;
+    {
+        let invocation = tilo_actions::InvocationId::new();
+        let command = BrowserServiceSessionCommand::UseItem {
+            invocation,
+            item: ITEM.into(),
+            origin: "https://login.example.test".into(),
+        };
+        let bytes = command.encode().unwrap();
+        let text = |invocation| BrowserServiceSessionReply::ItemText {
+            invocation,
+            text: zeroize::Zeroizing::new(MADE_UP_TEXT.to_owned()),
+            into: ItemField::Password,
+        };
+        let carried = |answered: Option<Result<zeroize::Zeroizing<Vec<u8>>, BrokerError>>| {
+            BrowserServiceSessionReply::decode(&answered.unwrap().unwrap()).unwrap()
+        };
+        // What a refused answer says, or nothing where it was not refused.
+        let refusal = |answered: Option<Result<zeroize::Zeroizing<Vec<u8>>, BrokerError>>| {
+            answered.and_then(Result::err).map(|error| error.to_string())
+        };
+        let live = Arc::new(AtomicBool::new(true));
+
+        // Any other command is no item's use: it is answered at once, as it always was.
+        let stood_in = items();
+        for other in [
+            BrowserServiceSessionCommand::List {}.encode().unwrap().to_vec(),
+            BrowserServiceSessionCommand::LendsItems {}.encode().unwrap().to_vec(),
+            b"not a command".to_vec(),
+        ] {
+            assert!(put(&stood_in, BROWSER, &live, &other).is_none());
+        }
+
+        // An app that is not Browser is told so, and whoever keeps the vault is never asked.
+        let mut answer = put(&stood_in, "so.tilo.mail", &live, &bytes)
+            .unwrap()
+            .unwrap();
+        let told = carried(now(&mut answer));
+        assert!(told.matches(&command));
+        assert!(matches!(
+            &told,
+            BrowserServiceSessionReply::ItemRefused { reason, .. } if reason.contains("Only Browser")
+        ));
+        assert_eq!(stood_in.asked.load(Ordering::Acquire), 0);
+
+        // Browser's ask comes back before anybody answered it: the answer waits, the
+        // dispatch does not. Then the text arrives, for the page action that asked.
+        let mut answer = put(&stood_in, BROWSER, &live, &bytes).unwrap().unwrap();
+        assert_eq!(stood_in.asked.load(Ordering::Acquire), 1);
+        assert!(now(&mut answer).is_none());
+        assert!(now(&mut answer).is_none());
+        *stood_in.decided.lock().unwrap() = Some(Ok(text(invocation)));
+        let released = carried(now(&mut answer));
+        assert!(released.matches(&command));
+        assert!(matches!(
+            &released,
+            BrowserServiceSessionReply::ItemText { text, into: ItemField::Password, .. }
+                if text.as_str() == MADE_UP_TEXT
+        ));
+
+        // A refusal's reason and a question's words come back as they were decided, also
+        // where the service's leave for Browser was withdrawn meanwhile: only a text needs it.
+        for (decided, said, withdrawn) in [
+            (
+                BrowserServiceSessionReply::item_refused(invocation, "Ada said no."),
+                "Ada said no.",
+                false,
+            ),
+            (
+                BrowserServiceSessionReply::item_refused(invocation, "Nobody answered in time."),
+                "Nobody answered in time.",
+                true,
+            ),
+            (
+                BrowserServiceSessionReply::item_asked(invocation, "Ada is asked first."),
+                "Ada is asked first.",
+                false,
+            ),
+        ] {
+            let stood_in = items();
+            let mut answer = put(&stood_in, BROWSER, &live, &bytes).unwrap().unwrap();
+            stood_in.withdrawn.store(withdrawn, Ordering::Release);
+            *stood_in.decided.lock().unwrap() = Some(Ok(decided));
+            let told = carried(now(&mut answer));
+            assert!(told.matches(&command));
+            assert!(matches!(
+                &told,
+                BrowserServiceSessionReply::ItemRefused { reason: words, .. }
+                    | BrowserServiceSessionReply::ItemAsked { words, .. }
+                    if words == said
+            ));
+        }
+
+        // A text that came leaves for nobody where the connection is gone, where the
+        // service's leave for Browser was withdrawn while it was waited for, or where it
+        // answers another page action. Nor does what a fault says leave.
+        for case in 0..4 {
+            let live = Arc::new(AtomicBool::new(true));
+            let stood_in = items();
+            let mut answer = put(&stood_in, BROWSER, &live, &bytes).unwrap().unwrap();
+            let decided = match case {
+                0 => {
+                    live.store(false, Ordering::Release);
+                    Ok(text(invocation))
+                }
+                1 => {
+                    stood_in.withdrawn.store(true, Ordering::Release);
+                    Ok(text(invocation))
+                }
+                2 => Ok(text(tilo_actions::InvocationId::new())),
+                _ => Err(format!("a fault that says {MADE_UP_TEXT}")),
+            };
+            *stood_in.decided.lock().unwrap() = Some(decided);
+            let said = refusal(now(&mut answer));
+            assert!(
+                said.as_deref().is_some_and(|said| {
+                    said.contains("request refused") && !said.contains(MADE_UP_TEXT)
+                }),
+                "case {case}: a text or a fault's words left"
+            );
+        }
+
+        // A connection that is gone is refused before anybody is asked.
+        let gone = Arc::new(AtomicBool::new(false));
+        let stood_in = items();
+        assert!(put(&stood_in, BROWSER, &gone, &bytes).unwrap().is_err());
+        assert_eq!(stood_in.asked.load(Ordering::Acquire), 0);
+
+        // A service that has no vault items used says so, as an answer of its own.
+        let without = Arc::new(Service {
+            live: live.clone(),
+            calls: AtomicUsize::new(0),
+            revoke: false,
+        });
+        let mut answer = put(&without, BROWSER, &live, &bytes).unwrap().unwrap();
+        let told = carried(now(&mut answer));
+        assert!(told.matches(&command));
+        assert!(matches!(
+            &told,
+            BrowserServiceSessionReply::ItemRefused { reason, .. } if reason.contains("no vault items")
+        ));
     }
 }

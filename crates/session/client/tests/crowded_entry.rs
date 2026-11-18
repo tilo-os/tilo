@@ -495,7 +495,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         )
         .unwrap();
     first
-        .leave_part(&author, desktop_part(&mut base, 0, 600))
+        .leave_part("Member 0", &author, desktop_part(&mut base, 0, 600))
         .await;
     let staying = vec![author];
     let mut arriving = tokio::task::JoinSet::new();
@@ -521,7 +521,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         let member = first.clone();
         arriving.spawn(async move {
             let page = member.arrive(&name).await;
-            member.leave_part(&page, part).await;
+            member.leave_part(&name, &page, part).await;
             page.close();
         });
     }
@@ -648,7 +648,7 @@ impl Member {
 
     /// Write `part`, `page`'s own part of the shared desktop, and wait until
     /// the host keeps it.
-    async fn leave_part(&self, page: &Link, part: Vec<u8>) {
+    async fn leave_part(&self, name: &str, page: &Link, part: Vec<u8>) {
         page.write(self.desktop.clone(), &DocumentMutation::Incremental(part))
             .unwrap();
         let receipt = page.barrier().unwrap();
@@ -658,9 +658,13 @@ impl Member {
                 kept.unwrap();
                 break;
             }
+            let status = page.status();
             assert!(
                 std::time::Instant::now() < deadline,
-                "a member's part of the desktop was never kept"
+                "{name}'s part of the desktop was never kept: {} write(s) wait, failures: {:?}\n{}",
+                status.outgoing_pending,
+                status.failures,
+                status.key_state
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

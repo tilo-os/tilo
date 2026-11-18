@@ -7,14 +7,14 @@ use std::iter::Peekable;
 
 use vello::kurbo::Rect;
 
-use super::{ListModel, VirtualList};
+use super::{ListKey, VirtualRows};
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::composition::{Composed, Own};
 use crate::i18n::widget_text;
 use crate::icons::Icon;
 use crate::theme::Theme;
 
-impl<M: ListModel + 'static> VirtualList<M> {
+impl VirtualRows {
     /// The list's rows as elements: a flat list where the list is not a tree, and otherwise
     /// each row's notes nested in a `<ul>` inside the row's own element, with a branch row's
     /// disclosure where its chevron does.
@@ -24,7 +24,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
         };
         // Pair each composed row with the row the list holds, by where it stands: the
         // composition names a row by its path in the window's layout, the list by its key.
-        let mut paired: Vec<(u32, M::Key, Composed)> = Vec::with_capacity(rows.len());
+        let mut paired: Vec<(u32, ListKey, Composed)> = Vec::with_capacity(rows.len());
         let mut loose: Vec<Composed> = Vec::new();
         for row in rows {
             let mounted = self.mounted.iter().find(|mounted| {
@@ -63,7 +63,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
     /// the chevron is painted, pressing the list's own fold on the row it belongs to.
     fn disclosure_html(
         &self,
-        key: &M::Key,
+        key: &ListKey,
         row_path: &str,
         rect: Rect,
         folded: bool,

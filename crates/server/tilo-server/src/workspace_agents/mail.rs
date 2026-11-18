@@ -200,6 +200,21 @@ impl TurnProvider for TurnMail {
             && target.address.resource == person_accounts::RESOURCE
     }
 
+    /// What a message holds was written by whoever sent it: its words, what it is about, the
+    /// name its sender goes by and the names of the files with it. Whatever answers messages
+    /// (what arrived, a folder, one message, what a search found) carries them, and the turn's
+    /// tools are told so with the answer. What this server says itself, of a message it began
+    /// or of a question it put to its person, is no content from outside.
+    fn carries_untrusted(&self, target: &RemoteActionTarget) -> bool {
+        matches!(
+            target.address.action.as_str(),
+            person_accounts::ARRIVED
+                | person_accounts::FETCH
+                | person_accounts::READ
+                | person_accounts::SEARCH
+        )
+    }
+
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending {
         Box::pin(async move { self.take(&caller, &request).await })
     }
@@ -208,7 +223,7 @@ impl TurnProvider for TurnMail {
 /// The rules a turn of `agent` is decided by in `workspace`, where anything narrows it: what
 /// its entry bounds it to and, for a sub-agent, what keeps it from whoever started it. `None`
 /// for an agent nothing narrows.
-fn narrowing(agent: &Agent, workspace: &str) -> Option<Vec<tilo_action_policy::Rule>> {
+pub(super) fn narrowing(agent: &Agent, workspace: &str) -> Option<Vec<tilo_action_policy::Rule>> {
     (agent.bound_rules().is_some() || agent.is_sub()).then(|| agent.turn_rules(workspace))
 }
 

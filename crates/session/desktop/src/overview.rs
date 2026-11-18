@@ -339,7 +339,7 @@ pub fn workspace_shares(
         };
         share(
             host.node_label(&grant.node),
-            shown_person(&holder, ws, tree),
+            shown_person(holder, ws, tree),
             grant
                 .kinds
                 .contains(tilo_action_policy::ActionKind::Undoable),
@@ -365,7 +365,7 @@ pub fn workspace_shares(
         };
         share(
             what,
-            shown_person(&holder, ws, tree),
+            shown_person(holder, ws, tree),
             cap.access == Access::Write,
         );
     }

@@ -8,7 +8,7 @@
 # version indexes and channel authorizations, each carrying this version in
 # its `protocol` field.
 name = "package"
-version = 2
+version = 3
 version_const = "crates/packaging/registry-types/src/lib.rs:PACKAGE_FORMAT_VERSION"
 encoding = "json"
 served_to_apps = false
@@ -191,7 +191,6 @@ roots = ["Manifest", "Header", "SignedRegistrySnapshot", "CompactRegistrySnapsho
 "PackageRequirement" = "struct"
 "PackageRequirement.min_version" = "String"
 "PackageRequirement.package_id" = "String"
-"PathPattern" = "alias String"
 "Platform" = "enum external"
 "Platform::linux" = "unit"
 "Platform::macos" = "unit"
@@ -255,16 +254,12 @@ roots = ["Manifest", "Header", "SignedRegistrySnapshot", "CompactRegistrySnapsho
 "Resources.kinds" = "Vec<String> optional"
 "Resources.own" = "Vec<String> optional"
 "Sandbox" = "struct"
-"Sandbox.fs" = "SandboxFs optional"
 "Sandbox.landlock" = "String"
 "Sandbox.namespaces" = "Vec<String>"
 "Sandbox.net" = "SandboxNet"
 "Sandbox.portals" = "BTreeMap<String, PortalPolicy> optional"
 "Sandbox.seccomp" = "String"
 "Sandbox.services" = "BTreeMap<String, ServiceReq> optional"
-"SandboxFs" = "struct"
-"SandboxFs.read" = "Vec<PathPattern> optional"
-"SandboxFs.write" = "Vec<PathPattern> optional"
 "SandboxNet" = "struct"
 "SandboxNet.hosts" = "Vec<String> optional"
 "SandboxNet.mode" = "NetMode"

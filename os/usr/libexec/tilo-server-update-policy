@@ -1,0 +1,64 @@
+#!/bin/sh
+# Apply the update settings a server's entry in its person's admin workspace
+# asks for.
+#
+#   tilo-server-update-policy
+#
+# The server runs unprivileged and writes what it wants at one fixed path
+# (/var/lib/tilo-server/update-policy.request, written by the tilo-server
+# daemon from the server's entry in the admin workspace's `tilo.servers`
+# document): `updates=<updates>` and `window=HH:MM-HH:MM`, one per line, and
+# only lines for the settings the entry names. A path unit starts this as root
+# when that file changes, and it applies exactly what the lines name through
+# tilo-update-policy-set, which rewrites the whole policy file. Every value is
+# checked here again: nothing in the request is passed to a shell, and a
+# request naming anything else is refused as a whole rather than half applied.
+#
+# No updates line keeps the updates the machine follows; no window line clears
+# the window, since its entry is the one place a server's window lives.
+set -eu
+
+request="${TILO_SERVER_POLICY_REQUEST:-/var/lib/tilo-server/update-policy.request}"
+policy_set="${TILO_UPDATE_POLICY_SET:-/usr/libexec/tilo-update-policy-set}"
+
+refuse() { printf 'tilo-server-update-policy: %s\n' "$*" >&2; exit 2; }
+
+updates=
+window=
+[ -r "$request" ] || exit 0
+while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+        "") continue ;;
+        updates=?*|window=?*) ;;
+        *) refuse "$request names a setting this server does not set" ;;
+    esac
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+        updates)
+            [ -z "$updates" ] || refuse "$request names updates twice"
+            case "$value" in
+                stable|dev) updates=$value ;;
+                *) refuse "unknown updates '$value'" ;;
+            esac
+            ;;
+        window)
+            [ -z "$window" ] || refuse "$request names a window twice"
+            case "$value" in
+                [0-9][0-9]:[0-9][0-9]-[0-9][0-9]:[0-9][0-9]) ;;
+                *) refuse "window '$value' is not HH:MM-HH:MM" ;;
+            esac
+            for at in "${value%-*}" "${value#*-}"; do
+                hour=$((10#${at%%:*}))
+                minute=$((10#${at#*:}))
+                if [ "$hour" -gt 23 ] || [ "$minute" -gt 59 ]; then
+                    refuse "window '$value' is not a time of day"
+                fi
+            done
+            window=$value
+            ;;
+    esac
+done <"$request"
+
+[ -z "$updates" ] || "$policy_set" "channel-$updates"
+"$policy_set" window "${window:-none}"

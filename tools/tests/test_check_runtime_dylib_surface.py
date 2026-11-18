@@ -31,7 +31,7 @@ CLEAN = forest(
     "4serde v1.0.228",
     "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)",
     "0store v0.1.2 (/repo/apps/store)",
-    "1app-process v0.1.0 (/repo/crates/packaging/app-process)",
+    "1package-service v0.1.0 (/repo/crates/packaging/package-service)",
     "2serde v1.0.228 (*)",
     "1runtime-dylib v0.1.0 (/repo/crates/runtime/runtime-dylib) (*)",
     "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)",

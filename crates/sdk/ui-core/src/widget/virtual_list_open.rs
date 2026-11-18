@@ -1,7 +1,8 @@
 //! A row open into its item where it stands: which row the list holds open, the height it
 //! grows through on the way to its document, and the name it keeps over it.
 
-use super::{Element, ListModel, VirtualList, Widget};
+use super::{Element, Widget};
+use super::{ListKey, VirtualRows};
 use crate::arriving::Arrival;
 use crate::widget::Decorator;
 
@@ -9,7 +10,7 @@ use crate::widget::Decorator;
 /// ([`VirtualList::grown_height`]), in logical pixels.
 const GROWN_EPSILON: f64 = 0.5;
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     pub(super) fn opens_here(&self, index: usize) -> bool {
         self.in_place && self.model.opens_in_place(index)
     }
@@ -19,11 +20,11 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     #[must_use]
-    pub fn open_row(&self) -> Option<&M::Key> {
+    pub fn open_row(&self) -> Option<&ListKey> {
         self.open.as_ref()
     }
 
-    pub fn set_open(&mut self, key: Option<M::Key>) {
+    pub fn set_open(&mut self, key: Option<ListKey>) {
         if self.open == key {
             return;
         }
@@ -34,7 +35,7 @@ impl<M: ListModel> VirtualList<M> {
                 .is_some_and(|index| self.opens_here(index))
         });
         self.open = opened;
-        let changed: Vec<M::Key> = closed.into_iter().chain(self.open.clone()).collect();
+        let changed: Vec<ListKey> = closed.into_iter().chain(self.open.clone()).collect();
         self.growing.extend(changed.iter().cloned());
         self.invalidate_rows(changed);
     }
@@ -73,7 +74,7 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    pub(super) fn open_where_it_stands(&mut self, key: M::Key) {
+    pub(super) fn open_where_it_stands(&mut self, key: ListKey) {
         self.held_open = None;
         let closing = self.open.as_ref() == Some(&key);
         self.set_open(if closing { None } else { Some(key) });
@@ -115,7 +116,7 @@ impl<M: ListModel> VirtualList<M> {
     pub(super) fn grown_height(
         &mut self,
         index: usize,
-        key: &M::Key,
+        key: &ListKey,
         target: f64,
         first: bool,
     ) -> f64 {

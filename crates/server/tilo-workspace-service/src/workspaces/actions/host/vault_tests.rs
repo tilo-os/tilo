@@ -17,7 +17,7 @@ use tilo_actions::remote::{person_accounts, person_models, person_vault};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
-use super::super::HostWorkspaceActions;
+use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::fixtures::test_server_keeping_keys_apart;
 use crate::workspaces::tests::{governor, test_host};
@@ -31,7 +31,7 @@ const KEY: &str = "sk-live-ada-own-key";
 /// `target` asked by `caller`, on the device `device` certifies, in the
 /// workspace `workspace_id` carries.
 pub(super) async fn ask_at(
-    service: &HostWorkspaceActions,
+    service: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     (device, caller): (&DeviceCert, &Caller),
     target: RemoteActionTarget,
@@ -66,7 +66,7 @@ pub(super) async fn ask_at(
 
 /// `action` of the vault, asked as [`ask_at`] asks.
 pub(super) async fn ask(
-    service: &HostWorkspaceActions,
+    service: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
     action: &str,
@@ -97,7 +97,7 @@ fn fields(said: &Value) -> Vec<&str> {
 /// What `other` reaches of the item `reference` names in someone else's
 /// vault: nothing listed, nothing removed.
 async fn reaches_nothing_of_it(
-    service: &HostWorkspaceActions,
+    service: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     other: (&DeviceCert, &Caller),
     reference: &str,
@@ -387,7 +387,7 @@ async fn an_item_that_is_not_one_is_refused_without_repeating_it() {
 
 /// A provider of whoever asks, at `https://models.example/v1`, by its id.
 pub(super) async fn a_provider(
-    service: &HostWorkspaceActions,
+    service: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
 ) -> String {
@@ -405,7 +405,7 @@ pub(super) async fn a_provider(
 
 /// A `kind` kept for `place` in the vault of whoever asks, by its reference.
 pub(super) async fn kept_item(
-    service: &HostWorkspaceActions,
+    service: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
     (kind, place): (&str, &str),
@@ -424,7 +424,7 @@ pub(super) async fn kept_item(
 
 /// The uses the item `item` names remembers, as its person reads them.
 async fn uses_of(
-    service: &HostWorkspaceActions,
+    service: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
     item: &Value,
@@ -526,7 +526,7 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
 /// a key for another service, a login for the provider's site, and the
 /// provider's own key.
 async fn a_provider_and_items(
-    service: &HostWorkspaceActions,
+    service: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
 ) -> (String, [Value; 3]) {
@@ -552,7 +552,7 @@ async fn a_provider_and_items(
 /// Nothing was kept and nothing used: the provider of `who` has no key and
 /// none of `items` remembers a use.
 async fn nothing_was_used(
-    service: &HostWorkspaceActions,
+    service: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     who: (&DeviceCert, &Caller),
     items: &[Value; 3],

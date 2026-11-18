@@ -1,5 +1,5 @@
 //! `ext-session-lock` : while a trusted client locks the session, every output shows only that
-//! client's lock surfaces and all input goes to them. No window, hosted surface or other client
+//! client's lock surfaces and all input goes to them. No window, surface or other client
 //! sees a pixel or a key.
 
 use smithay::backend::renderer::element::surface::{
@@ -102,7 +102,11 @@ impl State {
     /// Whether the session draws the lock itself now: the lock screen's app is not there, and the
     /// session's own view of the lock is on the outputs.
     pub(crate) fn lock_view_shows(&self) -> bool {
-        self.idle.session.is_locked() && self.hosts.iter().any(|host| host.drawn_over_lock())
+        self.idle.session.is_locked()
+            && self
+                .surfaces
+                .iter()
+                .any(|surface| surface.drawn_over_lock())
     }
 
     /// Whether `output` shows a lock screen now, with a frame of its own on it: what a capture of

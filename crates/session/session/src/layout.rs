@@ -494,6 +494,15 @@ impl Layouts {
         edit(self.held.borrow_mut().entry(key.clone()).or_default())
     }
 
+    /// Whether the layout of every workspace `tree` holds has been read at least once: what
+    /// the workspaces held of this device's windows when the session started is laid out.
+    pub(crate) fn all_read(&self, tree: &Layout) -> bool {
+        tree.workspaces
+            .iter()
+            .filter(|workspace| !workspace.id().is_nil())
+            .all(|workspace| self.held(&(workspace.id(), Route::layout()), |held| held.read))
+    }
+
     /// Note that this look left `workspace_id`'s layout unwritten for `why`, said at debug when the
     /// reason changes; `None` once a write of it goes out.
     fn unwritten(&self, workspace_id: WorkspaceId, why: Option<&'static str>) {
@@ -2714,7 +2723,7 @@ mod tests {
         let theirs = Arc::clone(&hold);
         let engine = Arc::new(
             Engine::open(
-                tilo_identity::identity_store::HostIdentity::kept(
+                tilo_identity::identity_store::DeviceIdentity::kept(
                     cert.clone(),
                     HeldSigner { key, hold: theirs },
                 ),

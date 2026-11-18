@@ -210,7 +210,7 @@ mod tests {
     }
     #[test]
     fn real_background_admission_is_not_relabelled_completed() {
-        let owner = crate::application_test_support::ProbeHost::new();
+        let owner = crate::application_test_support::ProbeHarness::new();
         let (component, observed) =
             crate::widget::control_result_probe::component(&owner, 17, true);
         let mut frame = FrameHarness::from_component(
@@ -280,7 +280,7 @@ mod startup_tests {
     use super::*;
     #[test]
     fn failed_real_startup_control_keeps_an_empty_explicit_invocation_envelope() {
-        let owner = crate::application_test_support::ProbeHost::new();
+        let owner = crate::application_test_support::ProbeHarness::new();
         let (component, observed) =
             crate::widget::control_result_probe::component(&owner, 18, false);
         let mut frame = FrameHarness::from_component(

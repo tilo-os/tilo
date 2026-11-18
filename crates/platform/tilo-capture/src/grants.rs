@@ -22,7 +22,7 @@ pub enum Decision {
     Deny,
 }
 
-type Key = (String, String, &'static str);
+type Key = (String, String, DeviceKind);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
@@ -42,23 +42,19 @@ struct Loaded {
     decisions: BTreeMap<Key, Decision>,
 }
 
-impl DeviceKind {
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Camera => "camera",
-            Self::Microphone => "microphone",
-        }
+/// How the file spells `device`: the file is this module's own, and no other code names a device by
+/// it.
+const fn word(device: DeviceKind) -> &'static str {
+    match device {
+        DeviceKind::Camera => "camera",
+        DeviceKind::Microphone => "microphone",
     }
+}
 
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "camera" => Some(Self::Camera),
-            "microphone" => Some(Self::Microphone),
-            _ => None,
-        }
-    }
+fn from_word(word: &str) -> Option<DeviceKind> {
+    [DeviceKind::Camera, DeviceKind::Microphone]
+        .into_iter()
+        .find(|device| self::word(*device) == word)
 }
 
 fn valid_id(id: &str) -> bool {
@@ -92,7 +88,7 @@ impl DeviceGrants {
         let loaded = self.current();
         let decision = loaded
             .decisions
-            .get(&(workspace.to_owned(), app.to_owned(), device.name()))
+            .get(&(workspace.to_owned(), app.to_owned(), device))
             .copied();
         drop(loaded);
         decision
@@ -103,13 +99,11 @@ impl DeviceGrants {
         let grants = loaded
             .decisions
             .iter()
-            .filter_map(|((workspace, app, device), decision)| {
-                Some(Grant {
-                    workspace: workspace.clone(),
-                    app: app.clone(),
-                    device: DeviceKind::from_name(device)?,
-                    decision: *decision,
-                })
+            .map(|((workspace, app, device), decision)| Grant {
+                workspace: workspace.clone(),
+                app: app.clone(),
+                device: *device,
+                decision: *decision,
             })
             .collect();
         drop(loaded);
@@ -135,10 +129,7 @@ impl DeviceGrants {
             ));
         }
         self.update(|decisions| {
-            decisions.insert(
-                (workspace.to_owned(), app.to_owned(), device.name()),
-                decision,
-            );
+            decisions.insert((workspace.to_owned(), app.to_owned(), device), decision);
         })
     }
 
@@ -152,7 +143,7 @@ impl DeviceGrants {
         let mut removed = false;
         self.update(|decisions| {
             removed = decisions
-                .remove(&(workspace.to_owned(), app.to_owned(), device.name()))
+                .remove(&(workspace.to_owned(), app.to_owned(), device))
                 .is_some();
         })?;
         Ok(removed)
@@ -178,6 +169,7 @@ impl DeviceGrants {
                 Decision::Allow => "allow",
                 Decision::Deny => "deny",
             };
+            let device = word(*device);
             let _ = writeln!(text, "{workspace}\t{app}\t{device}\t{decision}");
         }
         tilo_files::native::atomic::write_creating_parent_with_mode(
@@ -222,7 +214,7 @@ fn read(path: &Path) -> io::Result<Loaded> {
                 let [workspace, app, device, decision] = fields.as_slice() else {
                     return Err(invalid("a device grant line has the wrong shape"));
                 };
-                let device = DeviceKind::from_name(device)
+                let device = from_word(device)
                     .ok_or_else(|| invalid("a device grant names an unknown device"))?;
                 let decision = match *decision {
                     "allow" => Decision::Allow,
@@ -230,7 +222,7 @@ fn read(path: &Path) -> io::Result<Loaded> {
                     _ => return Err(invalid("a device grant has an unknown decision")),
                 };
                 decisions.insert(
-                    ((*workspace).to_owned(), (*app).to_owned(), device.name()),
+                    ((*workspace).to_owned(), (*app).to_owned(), device),
                     decision,
                 );
             }
@@ -261,7 +253,7 @@ where
             return Err(format!(
                 "{} does not declare the {}",
                 self.app,
-                device.name()
+                word(device)
             ));
         }
         let decision =
@@ -282,7 +274,7 @@ where
             Decision::Allow => Ok(()),
             Decision::Deny => Err(format!(
                 "the {} is not allowed for {}",
-                device.name(),
+                word(device),
                 self.app
             )),
         }

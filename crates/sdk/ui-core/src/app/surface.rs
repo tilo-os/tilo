@@ -1929,7 +1929,7 @@ mod tests {
     /// coordinates, as it would in a window of that size.
     #[test]
     fn an_app_on_a_host_surface_lays_out_paints_and_takes_input_there() {
-        let host = crate::application_test_support::ProbeHost::new();
+        let host = crate::application_test_support::ProbeHarness::new();
         let definition = crate::application_test_support::definition(clicks_factory);
         let target = crate::application::LaunchTarget::New;
         let context = host
@@ -2320,7 +2320,7 @@ mod tests {
     }
 
     fn clicks_app() -> (App, Rc<RefCell<Vec<Point>>>) {
-        let host = crate::application_test_support::ProbeHost::new();
+        let host = crate::application_test_support::ProbeHarness::new();
         let definition = crate::application_test_support::definition(clicks_factory);
         let target = crate::application::LaunchTarget::New;
         let context = host

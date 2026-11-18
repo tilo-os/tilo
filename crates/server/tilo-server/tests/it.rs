@@ -41,6 +41,8 @@ mod end_to_end_sync;
 mod governed_workspace_access;
 #[path = "governed_workspaces.rs"]
 mod governed_workspaces;
+#[path = "holder_copies.rs"]
+mod holder_copies;
 #[cfg(feature = "agents")]
 #[path = "hosted_browser.rs"]
 mod hosted_browser;
@@ -79,6 +81,8 @@ mod remote_action_routing;
 mod server_cost;
 #[path = "server_daemon.rs"]
 mod server_daemon;
+#[path = "servers_document.rs"]
+mod servers_document;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
 #[path = "surface_content.rs"]

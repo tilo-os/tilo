@@ -397,6 +397,8 @@ pub async fn start_server_lending(
             .await
             .context("start the server serving its workspaces' records")?;
         // The agents each workspace made to run here work around the clock, on the host's model.
+        // The devices this server placed itself: no agent reads as one of them for a person.
+        let placed = server.environments();
         let host_agents = server.workspaces().cloned().map(|workspaces| {
             // What is judged for a person is counted on their assistant's day,
             // and a question that waits for them reaches their log.
@@ -418,6 +420,7 @@ pub async fn start_server_lending(
                 .with_events(events)
                 .with_initiative(initiative)
                 .placing(browsers)
+                .knowing_placed(placed)
                 .run(),
             )
         });

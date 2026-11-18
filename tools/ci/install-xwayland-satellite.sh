@@ -18,11 +18,13 @@
 # whether the installed build is this one.
 set -euo pipefail
 
-# v0.8.2 plus the patches. Upstream review of the clipboard handoff fix:
-# https://github.com/Supreeeme/xwayland-satellite/pull/527. Once a release
-# contains it, the image and CI can install the distribution package again.
-asset=xwayland-satellite-8d135d3.tar.gz
-source_url=https://github.com/Supreeeme/xwayland-satellite/tree/8d135d3b2854b30fd01ea6cd6c27e523dd50a839
+# An upstream main commit after v0.8.3 (the first with the fix for X events left
+# unread, see the README) plus the patches. Upstream review of the clipboard
+# handoff fix: https://github.com/Supreeeme/xwayland-satellite/pull/527. Once a
+# release contains both, the image and CI can install the distribution package
+# again.
+asset=xwayland-satellite-779151f.tar.gz
+source_url=https://github.com/Supreeeme/xwayland-satellite/tree/779151fdfc034048c770edbfd2818c7a3389bd12
 features=systemd,fontconfig
 
 usage() {
@@ -84,7 +86,7 @@ install -D -m 0644 -t "$licenses" "$stage/src/LICENSE" "$patches"/*.patch
 printf '%s\n' \
   'xwayland-satellite - rootless Xwayland integration' \
   'License: MPL-2.0 (see LICENSE)' \
-  "Source: $source_url (v0.8.2)" \
+  "Source: $source_url (v0.8.3-10-g779151f)" \
   'Modified: bin/xwayland-satellite is built from the source above with the patches here.' \
   > "$licenses/NOTICE"
 printf '%s\n' "$recorded" > "$licenses/SOURCE"

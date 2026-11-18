@@ -76,6 +76,7 @@ mod listing;
 mod member;
 mod opened;
 mod opened_file;
+mod outcome;
 mod placed;
 mod publish;
 mod reads;
@@ -113,6 +114,9 @@ use collab_types::DocumentMutation;
 use invocation_log::InvocationLog;
 use jobs::Jobs;
 use keys::{Keys, catalogue_keys};
+use outcome::{
+    confirms, exact_view_query, log_outcome, opens_as_its_own, rejected, speaks_for_a_member,
+};
 use publish::Unsaved;
 use run_context::{caller_context, said_invocation_title};
 use tilo_actions::InteractionPhase;
@@ -123,9 +127,7 @@ use tilo_actions::remote::{
     MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionMessage, application_provider,
     application_provider_resource, pending, provider_workspace,
 };
-use tilo_actions::{
-    ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, MemberId,
-};
+use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate, MemberId};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use ui::permissions::policy::{ActionKind, Answer, TreePath};
@@ -374,7 +376,11 @@ impl WorkspaceActions {
             .entries
             .get(id)
             .filter(|entry| entry.caller == *caller)
-            .map(|entry| InvocationState::new(*id, entry.update.clone()).linked(entry.link.clone()))
+            .map(|entry| {
+                InvocationState::new(*id, entry.update.clone())
+                    .linked(entry.link.clone())
+                    .with_untrusted(tree_put::answers_from_outside(&entry.request.target))
+            })
     }
 
     fn log(&self) -> std::sync::MutexGuard<'_, InvocationLog> {
@@ -1409,6 +1415,13 @@ impl Worker {
     /// waiting for every join and every key before it. A workspace's requests
     /// run in the order they came.
     fn admit(&mut self, queued: Instant, job: Job) {
+        self.take_up(queued, job);
+        // What landed while the job read its workspace wakes who waits for a change of it.
+        self.wake_watchers();
+    }
+
+    /// [`Self::admit`] without the look at who waits for a change.
+    fn take_up(&mut self, queued: Instant, job: Job) {
         // A workspace's change woke this thread to run what waited for it.
         // Nothing waits usually, and most wakes then cost nothing: reading
         // the workspace for each wake would make a busy workspace pay a read
@@ -1577,22 +1590,13 @@ impl Worker {
         }
     }
 
-    /// A change of `workspace_id` arrived: the replica is read up to it, so a wait of a watch
-    /// of the workspace answers ([`change::Watchers`]), and the requests held for the same
-    /// change look again.
-    fn woken(&mut self, workspace_id: WorkspaceId) {
-        if let Ok(workspace) = self.membership(workspace_id) {
-            workspace.pump(workspace_id);
-        }
-        self.resume(workspace_id);
-    }
-
-    /// Stop asking to be woken for `workspace_id` once nothing waits for it.
+    /// Stop asking to be woken for `workspace_id` once nothing waits for it: no request held
+    /// for its join or its keys, and nobody waiting for a change of it.
     fn stop_waiting_if_idle(&self, workspace_id: WorkspaceId) {
         let watched = self
             .workspaces
             .get(&workspace_id)
-            .is_some_and(|workspace| workspace.watchers.held());
+            .is_some_and(|workspace| workspace.watchers.any());
         if !self.joining.contains_key(&workspace_id) && !watched {
             self.awaiting(workspace_id, false);
         }
@@ -1741,7 +1745,7 @@ impl Worker {
                     query,
                     done,
                 } => done.complete(self.invocations(workspace_id, &caller, &query)),
-                Job::Joined(workspace_id) => self.woken(workspace_id),
+                Job::Joined(workspace_id) => self.resume(workspace_id),
                 Job::Rename(workspace_id, route) => self.rename(workspace_id, &route),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
                 Job::Content {
@@ -2431,7 +2435,7 @@ impl Worker {
                     caller,
                     &who,
                     (request, &route, &state),
-                    (target, arguments),
+                    (target, arguments, &withheld),
                 )
                 .map(|(output, left_at)| (withheld.shown(output), left_at));
         }
@@ -2444,7 +2448,7 @@ impl Worker {
         if descriptor.contract.kind == ActionKind::Read {
             self.note_reads(request);
         }
-        let arguments = descriptor.bind_prompt_text(arguments);
+        let arguments = withheld.given(descriptor.bind_prompt_text(arguments))?;
         let confirmed = self.confirmed_here(workspace_id, caller, request, &descriptor);
         let holder = self.holder_of(&route);
         let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
@@ -2453,7 +2457,7 @@ impl Worker {
         let output = mounted
             .app
             .invoke_in(
-                context.as_ref(),
+                Some(&context),
                 appearance.as_ref(),
                 &target.address,
                 &arguments,
@@ -2781,120 +2785,6 @@ impl Worker {
             resources: Vec::new(),
         })
     }
-}
-
-/// Whether `given`, from the host's own person on their own device, confirms
-/// an action asking `policy`: their own word, the phrase it names, or a
-/// token naming their answer that the host issued for this very invocation
-/// (`approved` spends it).
-fn confirms(
-    policy: &ConfirmationPolicy,
-    given: Option<&Confirmation>,
-    approved: impl FnOnce(&str) -> bool,
-) -> bool {
-    match (policy, given) {
-        (_, Some(Confirmation::Approved(token))) => approved(token),
-        (ConfirmationPolicy::Phrase { phrase }, Some(Confirmation::Phrase(given))) => {
-            phrase == given
-        }
-        (ConfirmationPolicy::Phrase { .. }, _) | (_, None) => false,
-        (_, Some(Confirmation::Confirmed | Confirmation::Phrase(_))) => true,
-    }
-}
-
-fn exact_view_query(
-    query: &CatalogueQuery,
-) -> Result<(&tilo_actions::remote::ViewResourceQuery, &str), ActionCallError> {
-    let wanted = query
-        .view_resource
-        .as_ref()
-        .ok_or(ActionCallError::UnknownAction)?;
-    let provider = query
-        .provider
-        .as_deref()
-        .ok_or(ActionCallError::UnknownAction)?;
-    if wanted.id.is_empty()
-        || wanted.id.trim().is_empty()
-        || wanted.id.chars().any(char::is_control)
-        || wanted.id.len() > 2048
-        || wanted.kind.is_empty()
-        || wanted.kind.trim().is_empty()
-        || wanted.kind.chars().any(char::is_control)
-        || wanted.kind.len() > 128
-        || provider.len() > 2048
-        || provider.chars().any(char::is_control)
-        || query.target.is_some()
-        || !query.cursor.is_empty()
-        || query.parent_resource.is_some()
-    {
-        return Err(ActionCallError::UnknownAction);
-    }
-    Ok((wanted, provider))
-}
-
-/// Whether `caller` speaks for someone a workspace may admit as a member: a
-/// person themselves, the agent a device of theirs handed its session to (an
-/// agent's grant), which every decision then holds to what an agent of
-/// theirs may do, or an agent device they certified, held to what the
-/// workspace grants that agent. The workspace's governance still decides
-/// whether it admits them.
-fn speaks_for_a_member(caller: &Caller) -> bool {
-    if caller.acting().is_person() {
-        return true;
-    }
-    if !caller.acting().is_agent() {
-        return false;
-    }
-    if caller.is_session_delegated() {
-        return caller.acting_for_person().is_some();
-    }
-    caller.user_public_key().is_some() && caller.device_public_key().is_some()
-}
-
-/// The receipt of an invocation the host turns away outright, with why.
-fn rejected(invocation: InvocationId, error: ActionCallError) -> InvocationReceipt {
-    InvocationReceipt {
-        invocation,
-        status: ReceiptStatus::Rejected { error },
-    }
-}
-
-/// Log how the action `target` names ended: succeeded, failed or refused.
-fn log_outcome(
-    target: &tilo_actions::remote::RemoteActionTarget,
-    outcome: &Result<(ActionOutput, Option<tilo_actions::remote::ActorPlace>), Outcome>,
-) {
-    match outcome {
-        Ok(_) => {
-            tracing::info!(provider = %target.provider, resource = %target.address.resource,
-            action = %target.address.action, "workspace actions: succeeded");
-        }
-        Err(Outcome::Failed(error)) => tracing::info!(provider = %target.provider,
-            resource = %target.address.resource, action = %target.address.action,
-            code = %error.code, message = %error.message, "workspace actions: failed"),
-        Err(Outcome::Rejected(error)) => tracing::info!(provider = %target.provider,
-            resource = %target.address.resource, action = %target.address.action,
-            code = error.code(), %error, "workspace actions: refused"),
-    }
-}
-
-/// Whether `record` is one of `app`'s own records, which its replica opens. An app that keeps one
-/// record per workspace opens that one, and what it keeps as records of its own beside it (a
-/// chain's parts); a person's record of some kind, kept beside the app's for that person (Files'
-/// tree of the workspace's folder, and the chunks that tree is kept in), is read where it is kept,
-/// never mounted as the app's, which refuses it as not the app's workspace record.
-fn opens_as_its_own(app: &ui::application::ApplicationDefinition, record: &str) -> bool {
-    // The empty route is the app's own record where it keeps one per workspace, and its index of
-    // the workspace's named records where it keeps none: the index is read where it is kept,
-    // never mounted as the app's record.
-    if record.is_empty() {
-        return app.keeps_workspace_resource();
-    }
-    // A tree's own record and its chunks are one folder, read record by record where it is kept.
-    if fs_protocol::tree::chunk_of_record(record).is_some() {
-        return false;
-    }
-    !app.keeps_workspace_resource() || collab_types::person_resource_type(record).is_none()
 }
 
 #[cfg(test)]

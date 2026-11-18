@@ -21,7 +21,7 @@ use tilo_peer_state::join::WorkspaceId;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::join::{self, Role};
 use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::IssueInvitationRequest;
@@ -51,8 +51,8 @@ fn certificate(
     cert
 }
 
-fn ownership(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
-    HostIdentity::kept(cert.clone(), key.clone())
+fn ownership(cert: &DeviceCert, key: &SigningKey) -> DeviceIdentity {
+    DeviceIdentity::kept(cert.clone(), key.clone())
 }
 
 /// A workspace on a server with an invitation for Bob, which Bob's device proved

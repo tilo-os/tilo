@@ -2,10 +2,9 @@
 //! replay capture and live-subscriber registration.
 
 use super::{
-    Arc, AuthenticatedPeer, Decision, Envelope, Lag, MAX_AUTOBOUND_WORKSPACES, PeerError,
-    ReplayCatchup, ReplayHandle, ReplayTicket, ResumeLog, SessionCtx, SharedWorkspace,
-    StateDelivery, StateSession, StateSource, Step, StoreError, Subscriber, WorkspaceAutobind,
-    WorkspaceOperation, WorkspaceRegistry, current_session, lost_session, mpsc,
+    Arc, AuthenticatedPeer, Decision, Envelope, Lag, PeerError, ReplayCatchup, ReplayHandle,
+    ReplayTicket, ResumeLog, SessionCtx, SharedWorkspace, StateDelivery, StateSession, StateSource,
+    Step, StoreError, Subscriber, WorkspaceOperation, current_session, lost_session, mpsc,
     session_peer_authorized, unix_now_ns,
 };
 use tilo_lock::MutexRecover as _;
@@ -124,9 +123,8 @@ pub(super) enum Subscribed {
     Refused(Envelope),
 }
 
-/// Handle `Subscribe`: check on membership (or admit, for a
-/// same-owner autobind), replay retained baselines + this device's
-/// pending queue, then register the live subscriber.
+/// Handle `Subscribe`: check on membership, replay retained baselines + this
+/// device's pending queue, then register the live subscriber.
 pub(super) async fn handle_subscribe(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -266,11 +264,10 @@ pub(super) async fn subscribe(
 }
 
 /// The admission half of [`handle_subscribe`]: the agent's delegation, the
-/// workspace's binding (autobinding it for the server owner's own devices), and
-/// the workspace's decision under a fresh membership read, enrolling the device
-/// when the workspace says so. A device the server does not admit is refused
-/// as not admitted; a connection whose own authorization changed meanwhile
-/// ends.
+/// workspace this host holds, and the workspace's decision under a fresh
+/// membership read, enrolling the device when the workspace says so. A device
+/// the server does not admit is refused as not admitted; a connection whose
+/// own authorization changed meanwhile ends.
 async fn admit_subscription(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -298,17 +295,14 @@ async fn admit_subscription(
             refusal: reason.refusal(),
         }));
     }
-    // Only the server owner's own devices can be enrolled into an autobound
-    // workspace, so only they may cause one to be bound.
-    let autobind = session
-        .autobind
-        .filter(|_| peer.user_public_key == *session.own_user_public_key);
-    let ws = get_or_autobind_workspace(session.workspaces, autobind, workspace_id).await?;
+    // Only a workspace this host holds admits a device here: a person's own
+    // server makes theirs, and one made elsewhere is handed over.
+    let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
     let Some(ws) = ws else {
         // A host that keeps nothing of this person forgot them: their session
         // stops as not admitted, and they join again through its entry. One
-        // that knows them keeps no such workspace, which their workspace's
-        // permissions answer.
+        // that knows them holds no such workspace yet: it is not ready until
+        // the person's device hands it over or their server makes it.
         let known = session
             .admin
             .is_some_and(|workspaces| workspaces.knows(&peer.user_public_key));
@@ -528,87 +522,4 @@ pub(super) async fn handle_unsubscribe(
     }
     subscribed.retain(|id| id != &workspace_id);
     Ok(None)
-}
-
-pub async fn get_or_autobind_workspace(
-    workspaces: &WorkspaceRegistry,
-    autobind: Option<&WorkspaceAutobind>,
-    workspace_id: WorkspaceId,
-) -> Result<Option<SharedWorkspace>, StoreError> {
-    let existing = workspaces.lock().await.get(&workspace_id).cloned();
-    if let Some(workspace) = existing {
-        return Ok(Some(workspace));
-    }
-    let Some(autobind) = autobind else {
-        return Ok(None);
-    };
-    crate::workspace_io::get_or_initialize(
-        workspaces,
-        autobind.state_root.clone(),
-        &autobind.shell_payloads,
-        workspace_id,
-        true,
-        crate::workspace_access::AdmissionMode::SameOwner,
-        MAX_AUTOBOUND_WORKSPACES,
-    )
-    .await
-    .map(Some)
-}
-
-#[cfg(test)]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "relays, fixtures and guards deliberately stay alive until each test ends"
-)]
-mod autobind_tests {
-    use super::super::{AsyncMutex, HashMap, autobind_has_capacity};
-    use super::*;
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn autobind_open_releases_registry_lock_and_shares_one_runtime() {
-        let tmp = tempfile::tempdir().unwrap();
-        let registry = Arc::new(AsyncMutex::new(HashMap::new()));
-        let autobind = WorkspaceAutobind {
-            state_root: tmp.path().to_path_buf(),
-            shell_payloads: crate::payloads::neighbour(),
-        };
-        let (release, reached) = crate::store::test_barrier::install(
-            &tmp.path()
-                .join(format!("workspaces/{}", WorkspaceId::from_u128(7))),
-            "open",
-        );
-        let observer_registry = registry.clone();
-        let handle = tokio::runtime::Handle::current();
-        let observer = std::thread::spawn(move || {
-            handle.block_on(async move {
-                reached.await.unwrap();
-                let unlocked =
-                    tokio::time::timeout(tilo_test_env::hang_bound(), observer_registry.lock())
-                        .await
-                        .is_ok();
-                drop(release);
-                unlocked
-            })
-        });
-        let (first, second) = tokio::join!(
-            get_or_autobind_workspace(&registry, Some(&autobind), WorkspaceId::from_u128(7)),
-            get_or_autobind_workspace(&registry, Some(&autobind), WorkspaceId::from_u128(7))
-        );
-        assert!(
-            observer.join().unwrap(),
-            "workspace open held registry lock"
-        );
-        assert!(Arc::ptr_eq(
-            &first.unwrap().unwrap(),
-            &second.unwrap().unwrap()
-        ));
-        assert_eq!(registry.lock().await.len(), 1);
-    }
-
-    #[test]
-    fn automatic_workspace_creation_has_a_hard_capacity_bound() {
-        assert!(autobind_has_capacity(MAX_AUTOBOUND_WORKSPACES - 1));
-        assert!(!autobind_has_capacity(MAX_AUTOBOUND_WORKSPACES));
-        assert!(!autobind_has_capacity(usize::MAX));
-    }
 }

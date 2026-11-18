@@ -7,7 +7,7 @@
 //! addressed to the host's own device. A server answers them with its app
 //! workers; a person's device answers them with its own action broker, which
 //! is what [`KeySessions`] puts behind the host
-//! ([`HostConfig::apps`](tilo_workspace_service::service::HostConfig::apps)).
+//! ([`ServiceConfig::apps`](tilo_workspace_service::service::ServiceConfig::apps)).
 //!
 //! Each key works in a run of its own, which the device's broker admits as it
 //! admits an agent at the device's MCP server ([`Sessions::open`]). Before every

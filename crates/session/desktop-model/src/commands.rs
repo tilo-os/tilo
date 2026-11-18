@@ -651,7 +651,7 @@ fn remove(workspace: &mut Workspace, at: TabIndex, leaving: Leaving) -> Result<T
 }
 fn reopen(workspace: &mut Workspace, strip: Option<u64>) -> Result<(), String> {
     workspace
-        .reopen_closed(strip.map(StripId))
+        .reopen_closed(strip.map(StripId), None)
         .map(|_| ())
         .ok_or_else(|| "there is no closed window to reopen".to_owned())
 }

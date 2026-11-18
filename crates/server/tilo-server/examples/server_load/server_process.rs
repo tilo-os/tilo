@@ -32,8 +32,8 @@ pub struct Setup {
     pub user_public_key: [u8; 32],
     pub server_secret_key: [u8; 32],
     pub server_cert: DeviceCert,
-    /// Each workspace's id and the device keys of its members.
-    pub workspaces: Vec<(collab_types::WorkspaceId, Vec<[u8; 32]>)>,
+    /// Each workspace's id and the certificates of its members.
+    pub workspaces: Vec<(collab_types::WorkspaceId, Vec<DeviceCert>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -253,20 +253,23 @@ async fn serve_server() -> anyhow::Result<()> {
         iroh::RelayMode::Disabled,
     )
     .await?;
+    // The workspaces are the server owner's: their server makes each, and the
+    // load's devices enter it.
+    let workspaces = server
+        .workspaces()
+        .context("the server holds its workspaces")?;
     for (id, members) in setup.workspaces {
-        // The workspaces are the server owner's; their governor admits exactly
-        // the load's devices.
-        server
-            .replace_governed_workspace_access(
-                id,
-                true,
-                tilo_peer_state::GovernedAccess {
-                    member_devices: members,
-                    member_user_roots: vec![setup.user_public_key],
-                },
-                setup.state_root.clone(),
-            )
-            .await?;
+        let workspace = id.to_string();
+        workspaces
+            .create_workspace("Load", Some(&workspace))
+            .await
+            .map_err(anyhow::Error::msg)?;
+        for member in &members {
+            workspaces
+                .enter(&workspace, member)
+                .await
+                .map_err(anyhow::Error::msg)?;
+        }
     }
     say(&Ready {
         addr: server.node_addr(),

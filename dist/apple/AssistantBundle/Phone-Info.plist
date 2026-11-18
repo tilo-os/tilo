@@ -26,6 +26,7 @@
   <key>LSRequiresIPhoneOS</key><true/>
   <key>MinimumOSVersion</key><string>26.4</string>
   <key>NSCameraUsageDescription</key><string>__NAME__ uses the camera to scan the code that pairs this iPhone.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>__NAME__ reaches your Tilo when it is on your own network.</string>
   <key>NSMicrophoneUsageDescription</key><string>__NAME__ listens when you dictate a message.</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>__NAME__ turns what you dictate into words on this iPhone.</string>
   <!-- A reminder about to come, a brief before something begins, and work the person waits on. -->

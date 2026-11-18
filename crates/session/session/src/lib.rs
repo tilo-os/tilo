@@ -244,6 +244,8 @@ mod input_method;
 mod input_sources;
 pub mod invite;
 #[cfg(target_os = "linux")]
+mod item_lending;
+#[cfg(target_os = "linux")]
 pub mod keyboard;
 mod keyboard_shortcuts;
 mod keys;
@@ -275,6 +277,8 @@ pub mod mentions;
 pub mod nearby_transfer;
 #[cfg(target_os = "linux")]
 mod network;
+#[cfg(target_os = "linux")]
+mod network_reach;
 #[cfg(target_os = "linux")]
 pub mod night_light;
 #[cfg(target_os = "linux")]
@@ -428,6 +432,8 @@ mod window_transfer;
 #[cfg(target_os = "linux")]
 mod window_warmth;
 pub mod windows;
+#[cfg(target_os = "linux")]
+mod windows_compat;
 #[cfg(target_os = "linux")]
 mod workspace_branch;
 #[cfg(target_os = "linux")]

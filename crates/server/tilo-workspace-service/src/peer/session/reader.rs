@@ -42,6 +42,20 @@ const fn subscription_target(env: &Envelope) -> Option<WorkspaceId> {
     }
 }
 
+/// Whether `reply` refuses a device the server does not admit. A connection
+/// that holds no workspace holds nothing the refusal leaves open, so the
+/// refusal is its last word and the session ends. One that held a workspace
+/// before keeps the protocol-violation close for its changed authority.
+fn refused_not_admitted(reply: Option<&Envelope>) -> bool {
+    matches!(
+        reply,
+        Some(Envelope::NotAuthorised {
+            refusal: tilo_server_protocol::refusal::Refusal::NotAdmitted,
+            ..
+        })
+    )
+}
+
 /// The delivery budget an inbound frame holds while it waits.
 type Budget = Arc<tokio::sync::OwnedSemaphorePermit>;
 
@@ -426,6 +440,10 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
             self.inbound.overtake_while(operation, cx).await?
         };
         trace_buffered_prefix(&self.inbound.backlog);
+        // A session with no workspace here does not stay open for a device
+        // the server does not admit: the refusal is written, and the session
+        // ends with it.
+        let ended = self.subscribed.is_empty() && refused_not_admitted(reply.as_ref());
         if replaying || reply.is_some() || ticket.is_some() {
             self.inbound
                 .hand_off_reply(
@@ -439,6 +457,9 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                     cx,
                 )
                 .await?;
+        }
+        if ended {
+            return Err(PeerError::NotAdmitted);
         }
         Ok(())
     }
@@ -482,6 +503,8 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
         cx.pending_replays
             .fetch_add(run.len(), std::sync::atomic::Ordering::SeqCst);
         let mut entered = Vec::with_capacity(run.len());
+        let idle = self.subscribed.is_empty();
+        let mut refused_the_session = false;
         let outcome = {
             let subscribed = &*self.subscribed;
             let mut running: n0_future::FuturesUnordered<_> = run
@@ -510,7 +533,10 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                         entered.push(slot.0);
                         (Some(slot), None)
                     }
-                    Ok(Subscribed::Refused(refusal)) => (None, Some(refusal)),
+                    Ok(Subscribed::Refused(refusal)) => {
+                        refused_the_session |= idle && refused_not_admitted(Some(&refusal));
+                        (None, Some(refusal))
+                    }
                     Err(error) => {
                         // The session ends; what the rest of the run
                         // entered meanwhile is still left with it.
@@ -541,7 +567,15 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                 self.subscribed.push(workspace_id);
             }
         }
-        outcome
+        // A batch of subscriptions that only refused a device the server does
+        // not admit ends the session with that refusal; one that entered a
+        // workspace leaves it.
+        match outcome {
+            Ok(()) if refused_the_session && self.subscribed.is_empty() => {
+                Err(PeerError::NotAdmitted)
+            }
+            outcome => outcome,
+        }
     }
 
     /// Handle `env`, a `Commit`, with the commits read ahead behind it:

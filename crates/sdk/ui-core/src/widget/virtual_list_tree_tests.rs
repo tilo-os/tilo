@@ -77,7 +77,7 @@ fn nested() -> VirtualList<Nested> {
 fn shape(list: &VirtualList<Nested>, marks: &TreeMarks<u64>) -> Vec<(u64, u32, bool, bool)> {
     (0..list.model.len())
         .map(|index| {
-            let key = list.model.key_at(index).expect("every row has a key");
+            let key = list.model().key_at(index).expect("every row has a key");
             (
                 key,
                 marks.depth(&key),
@@ -369,7 +369,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             list.reorder_target(),
-            Some(&DropTarget::new(0, DropPlacement::Inside))
+            Some(DropTarget::new(0, DropPlacement::Inside))
         );
         let doc = AutoCommit::new();
         assert!(
@@ -587,7 +587,7 @@ tilo_test_env::scenario! {
 
         let (chevron, folded) = list
             .chevrons()
-            .rect(&marks, &Theme::dark(), &0, row, false)
+            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), row, false)
             .expect("the row folds the subtask under it");
         assert!(!folded, "the group starts open");
         assert!(
@@ -613,7 +613,7 @@ tilo_test_env::scenario! {
         let narrow = list.row_box(0).expect("the first row on a phone");
         let (chevron, _) = list
             .chevrons()
-            .rect(&marks, &Theme::dark(), &0, narrow, false)
+            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), narrow, false)
             .expect("the row folds the subtask under it");
         assert!(
             (chevron.center().y - narrow.center().y).abs() < 0.5,
@@ -626,7 +626,7 @@ tilo_test_env::scenario! {
         let row = list.row_box(0).expect("the first row stands somewhere");
         let (chevron, _) = list
             .chevrons()
-            .rect(&marks, &Theme::dark(), &0, row, false)
+            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), row, false)
             .expect("the row folds the subtask under it");
         press(
             &mut list,
@@ -643,7 +643,7 @@ tilo_test_env::scenario! {
         let row = list.row_box(0).expect("the folded row stands somewhere");
         let (chevron, folded) = list
             .chevrons()
-            .rect(&marks, &Theme::dark(), &0, row, list.row_folded(&0))
+            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), row, list.row_folded(&0))
             .expect("a folded row still shows its disclosure");
         assert!(folded, "the chevron points at what it folded away");
         assert!(
@@ -713,27 +713,27 @@ tilo_test_env::scenario! {
         let key = |named| Key::Named(named);
         assert!(list.on_key(&key(NamedKey::ArrowDown), false, false));
         assert_eq!(
-            list.focused_key,
-            Some(0),
+            list.focused_key(),
+            Some(&0),
             "the keyboard starts on the first row"
         );
 
         assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
-        assert_eq!(list.focused_key, Some(1));
+        assert_eq!(list.focused_key(), Some(&1));
         assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
-        assert_eq!(list.focused_key, Some(2));
+        assert_eq!(list.focused_key(), Some(&2));
         assert!(
             !list.on_key(&key(NamedKey::ArrowRight), false, false),
             "a row with nothing under it has nowhere to step"
         );
 
         assert!(list.on_key(&key(NamedKey::ArrowLeft), false, false));
-        assert_eq!(list.focused_key, Some(1));
+        assert_eq!(list.focused_key(), Some(&1));
         assert!(list.on_key(&key(NamedKey::ArrowLeft), false, false));
         assert!(list.row_folded(&1), "the branch folded its subtask away");
         assert_eq!(
-            list.focused_key,
-            Some(1),
+            list.focused_key(),
+            Some(&1),
             "the folded row keeps the keyboard"
         );
         assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
@@ -875,7 +875,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             list.reorder_target(),
-            Some(&DropTarget::new(0, DropPlacement::Inside)),
+            Some(DropTarget::new(0, DropPlacement::Inside)),
             "the middle of a row that takes subtasks takes the row into it"
         );
         assert!(list.reorder_preview().is_some());
@@ -913,7 +913,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             list.reorder_target(),
-            Some(&DropTarget::new(1, DropPlacement::Before))
+            Some(DropTarget::new(1, DropPlacement::Before))
         );
         let preview = list.reorder_preview().expect("a line where it lands");
         assert!(

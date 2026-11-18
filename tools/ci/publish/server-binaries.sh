@@ -20,8 +20,10 @@ target=${CARGO_TARGET_DIR:-$repo_root/target}
 export CARGO_PROFILE_RELEASE_LTO=thin
 case $image in
   api)
-    packages=(-p tilo-api --bin tilo-api)
-    bins=(tilo-api) ;;
+    # The API server starts a task's tilolang programs in tilolang-process, which it finds
+    # beside itself: one feature resolution for the two.
+    packages=(-p tilo-api --bin tilo-api -p tilolang-process --bin tilolang-process)
+    bins=(tilo-api tilolang-process) ;;
   vm-host)
     # tilo-runtime already depends on the runtime packages the host serves from; one feature
     # resolution for the three programs.
@@ -35,17 +37,20 @@ case $image in
     bins=(tilo-server tilo-server-admin tilo-enroll fs) ;;
   host)
     # The server OS: the server and replica, the hosted-VM service and its jail helper, the API
-    # server, and the boot tools the update log and the boot-entry pass read. One feature
+    # server with the program it starts a task's tilolang programs in (it finds it beside
+    # itself), and the boot tools the update log and the boot-entry pass read. One feature
     # resolution, so the shared workspace crates compile once.
     packages=(-p tilo-server -p tilo-fs --bin tilo-server --bin tilo-server-admin \
                 --bin tilo-enroll --bin fs
               -p legacy-vm --bin tilo-legacy --bin tilo-hosted-jail
               -p tilo-api --bin tilo-api
+              -p tilolang-process --bin tilolang-process
               -p tilo-esp-write --bin tilo-esp-write
               -p tilo-image-policy-check --bin tilo-image-policy-check
               -p tilo-user-identity --bin tilo-image-trust
               -p tilo-board-successor --bin tilo-board-successor)
     bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api
+          tilolang-process
           tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor) ;;
   *)
     die "unknown server image $image: api, vm-host, server or host" ;;

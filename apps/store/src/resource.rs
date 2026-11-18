@@ -1171,7 +1171,7 @@ mod tests {
         }
     }
 
-    impl app_process::wire::Server for CatalogueServer {
+    impl package_service::wire::Server for CatalogueServer {
         #[expect(
             clippy::too_many_lines,
             reason = "one fake host answering every request the catalogue tests make"
@@ -1182,10 +1182,11 @@ mod tests {
         )]
         fn handle(
             self: std::rc::Rc<Self>,
-            request: app_process::wire::Operation,
-        ) -> impl core::future::Future<Output = Result<app_process::wire::Answer, String>> + 'static
+            request: package_service::wire::Operation,
+            _progress: package_service::wire::Sink,
+        ) -> impl core::future::Future<Output = Result<package_service::wire::Answer, String>> + 'static
         {
-            use app_process::wire::{Action, Answer, Catalogue, Operation, Resource};
+            use package_service::wire::{Action, Answer, Catalogue, Operation, Resource};
             async move {
                 match request {
                     Operation::Invoke(Action::Flatpak {
@@ -1193,7 +1194,7 @@ mod tests {
                         app_id,
                         reference,
                     }) => {
-                        assert_eq!(verb, app_process::wire::FlatpakVerb::Install);
+                        assert_eq!(verb, package_service::wire::FlatpakVerb::Install);
                         assert_eq!(app_id, "org.example.Editor");
                         assert!(reference.is_empty());
                         self.installs
@@ -1283,7 +1284,7 @@ mod tests {
                             "the immutable device source cannot be changed"
                         );
                         assert_eq!(name, "flathub");
-                        assert_eq!(verb, app_process::wire::RemoteVerb::Disable);
+                        assert_eq!(verb, package_service::wire::RemoteVerb::Disable);
                         self.disabled
                             .store(true, std::sync::atomic::Ordering::SeqCst);
                         Ok(Answer::Text("Source disabled.".into()))
@@ -1311,7 +1312,7 @@ mod tests {
                             "org.example.Editor\tEditor\tEdit local documents\t2.0\tstable\t{name}\n"
                         ))))
                     }
-                    other => app_process::testing::refuse(&other),
+                    other => package_service::testing::refuse(&other),
                 }
             }
         }
@@ -1369,7 +1370,7 @@ mod tests {
         });
         let browses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (service, connection) =
-            app_process::testing::ConnectedService::start(CatalogueServer {
+            package_service::testing::ConnectedService::start(CatalogueServer {
                 installs: std::sync::Arc::default(),
                 browses: std::sync::Arc::clone(&browses),
                 registry_hold: Some(std::sync::Arc::clone(&check)),
@@ -1513,7 +1514,7 @@ mod tests {
         settle_catalogue_worker(&mut app);
         let check = std::sync::Arc::new(CatalogueHold::default());
         let (service, connection) =
-            app_process::testing::ConnectedService::start(CatalogueServer {
+            package_service::testing::ConnectedService::start(CatalogueServer {
                 installs: std::sync::Arc::default(),
                 browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 registry_hold: Some(std::sync::Arc::clone(&check)),
@@ -1587,7 +1588,7 @@ mod tests {
         settle_catalogue_worker(&mut app);
         let check = std::sync::Arc::new(CatalogueHold::default());
         let (service, connection) =
-            app_process::testing::ConnectedService::start(CatalogueServer {
+            package_service::testing::ConnectedService::start(CatalogueServer {
                 installs: std::sync::Arc::default(),
                 browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 registry_hold: Some(std::sync::Arc::clone(&check)),
@@ -1624,7 +1625,7 @@ mod tests {
         let mut app = TestApp::<StoreShell>::new().unwrap();
         settle_catalogue_worker(&mut app);
         let (service, connection) =
-            app_process::testing::ConnectedService::start(CatalogueServer {
+            package_service::testing::ConnectedService::start(CatalogueServer {
                 installs: std::sync::Arc::default(),
                 browses: std::sync::Arc::default(),
                 registry_hold: None,
@@ -1745,7 +1746,7 @@ mod tests {
         let mut app = TestApp::<StoreShell>::new().unwrap();
         settle_catalogue_worker(&mut app);
         let (service, connection) =
-            app_process::testing::ConnectedService::start(CatalogueServer {
+            package_service::testing::ConnectedService::start(CatalogueServer {
                 installs: std::sync::Arc::default(),
                 browses: std::sync::Arc::default(),
                 registry_hold: None,
@@ -1787,7 +1788,7 @@ mod tests {
         settle_catalogue_worker(&mut app);
         let browses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (service, connection) =
-            app_process::testing::ConnectedService::start(CatalogueServer {
+            package_service::testing::ConnectedService::start(CatalogueServer {
                 installs: std::sync::Arc::default(),
                 browses: std::sync::Arc::clone(&browses),
                 registry_hold: None,
@@ -1864,7 +1865,7 @@ mod tests {
         let check = std::sync::Arc::new(CatalogueHold::default());
         check.release();
         let (service, connection) =
-            app_process::testing::ConnectedService::start(CatalogueServer {
+            package_service::testing::ConnectedService::start(CatalogueServer {
                 installs: std::sync::Arc::clone(&installs),
                 browses: std::sync::Arc::default(),
                 registry_hold: Some(check),

@@ -40,7 +40,9 @@ impl DesktopChrome {
             }
             // The window the person closed last comes back where it was; the shell answers the chord
             // either way, as the shell it replaces did.
-            ShortcutAction::ReopenClosedTab => self.dispatch(ChromeEffect::ReopenClosed),
+            ShortcutAction::ReopenClosedTab => {
+                self.dispatch(ChromeEffect::ReopenClosed { app: None });
+            }
             ShortcutAction::ToggleMaximize => {
                 self.choose_row(&[window_menu::MAXIMIZE, window_menu::RESTORE]);
             }

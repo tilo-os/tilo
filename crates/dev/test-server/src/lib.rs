@@ -432,12 +432,13 @@ impl Host {
     #[must_use]
     pub fn host_hint(&self) -> tilo_workspace_join::TransportHint {
         let workspace = self.workspace();
+        let own = self.0.cert.device_public_key;
         self.0
             .runtime
             .block_on(self.0.workspaces.hosts(workspace))
             .expect("the host signs its own address")
             .into_iter()
-            .next()
+            .find(|hint| hint.host.device_public_key == own)
             .expect("the host serves its workspace")
     }
 }

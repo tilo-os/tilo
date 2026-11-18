@@ -73,7 +73,8 @@ curl -sS --fail-with-body "$resources?path=notes" -H "$auth" \
 records hold: their titles and text. It answers hits, best first, one per record, each as your own
 listing shows it: a `path` the other calls take, its `kind`, its `label`, and the `action` the row offers
 (`open` when the row opens the resource itself). A record sealed end to end that the host cannot open is
-not found by words; walk to it instead.
+not found by words; walk to it instead. What a change says joins the index a moment after it lands, so a
+search made right after a write may answer none of it yet.
 
 ```python example=find-by-words
 from tilo import Tilo

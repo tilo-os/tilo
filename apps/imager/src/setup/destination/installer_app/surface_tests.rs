@@ -15,6 +15,15 @@ use ui::tilo_resource::Effect as _;
 mod capacity_tests;
 mod method_intent_tests;
 
+/// The installer's published live rows as the resource tree the palette, a
+/// script and an agent reach.
+fn published_resources(app: &InstallerApp) -> Vec<ui::tilo_actions::ResourceSpec> {
+    app.published()
+        .into_iter()
+        .map(ui::framework::LiveRow::into_resource)
+        .collect()
+}
+
 struct FakeBackend {
     disks: Vec<Disk>,
     installs: Mutex<Vec<(String, String, String, InstallOptions)>>,
@@ -390,7 +399,7 @@ tilo_test_env::scenario! {
                 ))
                 .is_none()
             );
-            let published = app.published();
+            let published = published_resources(&app);
             let storage = published[0]
                 .children
                 .iter()
@@ -457,7 +466,7 @@ tilo_test_env::scenario! {
                 Step::Install,
             ] {
                 app.step = step;
-                let resources = app.published();
+                let resources = published_resources(&app);
                 let violations = tilo_actions::validate_surface(
                     &resources,
                     &tilo_actions::ActionRegistry::new(),
@@ -558,8 +567,7 @@ tilo_test_env::scenario! {
             by_row.recovery_key = Some(KEY.into());
             by_row.control(DestinationEffect::Reboot).fire();
             by_row.sync(&row_doc, &automerge::ROOT);
-            let reason = by_row
-                .published()
+            let reason = published_resources(&by_row)
                 .iter()
                 .flat_map(|root| root.actions.iter())
                 .find(|action| action.id == "reboot")

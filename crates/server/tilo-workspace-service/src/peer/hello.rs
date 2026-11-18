@@ -40,12 +40,7 @@ pub(super) async fn handle_host_hello(
                 continue;
             }
         }
-        let mut runtime = ws.lock().await;
-        runtime.note_attached_host(peer.device_public_key);
-        runtime
-            .attach_sessions
-            .insert(peer.device_public_key, session.disconnect.clone());
-        drop(runtime);
+        ws.lock().await.note_attached_host(peer.device_public_key);
         hosted_here.push(id);
     }
     if !own && hosted_here.is_empty() {

@@ -28,12 +28,8 @@ pub enum Author<'a> {
         avatar: Option<&'a ImageData>,
         color: Option<Color>,
     },
-    /// An agent acting for a person.
-    Agent {
-        name: &'a str,
-        for_person: Option<&'a str>,
-        color: Color,
-    },
+    /// An agent, by its own name.
+    Agent { name: &'a str, color: Color },
     /// An installed bot, by its name and installer, with the appearance it
     /// showed, the Tilo person its persona is linked to, and the image its
     /// tile shows (the appearance's avatar, else the bot's icon).

@@ -245,11 +245,14 @@ pub fn summonses(chat: &Chat, part: &ChatPart) -> Vec<Summons> {
             .copied()
             .filter(|(id, message)| !stopped_now(message) && unanswered(reply(id, message)))
             .collect();
+        // Of two they wrote within one second the later is the one that stands later in the
+        // part, as a turn is told them ([`crate::recall::told`]): `max_by_key` keeps the last
+        // of equals, and a message's id says nothing of when it was written.
         let turn = open
             .iter()
             .copied()
             .filter(|(_, message)| typed(message))
-            .max_by_key(|(id, message)| (message.ts, id.as_str()))
+            .max_by_key(|(_, message)| message.ts)
             .or_else(|| {
                 open.iter()
                     .copied()
@@ -603,6 +606,32 @@ mod tests {
             AgentWorkState::Done { did: String::new() },
         );
         assert_eq!(turn(&part), second);
+    }
+
+    /// Of two messages a person wrote within one second the later one is their newest: the one
+    /// that stands later in the part, whichever way the two ids sort.
+    #[test]
+    fn of_two_messages_of_one_second_the_later_in_the_part_is_the_newest() {
+        let chat = Chat::default();
+        let direct = Chat::direct_id([MemberId::person(ADA), MemberId::agent("scout")]);
+        for (earlier, later) in [("m1", "m2"), ("m2", "m1")] {
+            let mut part = ChatPart::default();
+            part.messages.push(
+                Id::from_raw(earlier),
+                said(&direct, MemberId::person(ADA), "plan the launch", 7),
+            );
+            part.messages.push(
+                Id::from_raw(later),
+                said(&direct, MemberId::person(ADA), "also order the cake", 7),
+            );
+            let asked = summonses(&chat, &part);
+            assert_eq!(asked.len(), 1, "one turn at a time: {asked:?}");
+            assert_eq!(
+                asked[0].message,
+                Id::from_raw(later),
+                "written as {earlier}, then as {later}"
+            );
+        }
     }
 
     /// A stop ends the ask of the attempt it is in; whoever runs the agent is told to end its

@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 54;
+pub const PEER_PROTOCOL_VERSION: u32 = 55;
 
 /// The oldest peer version this build still works with: the one before
 /// [`PEER_PROTOCOL_VERSION`] when this build reads and writes the frames of
@@ -56,7 +56,32 @@ pub const PEER_PROTOCOL_VERSION: u32 = 54;
 /// version wrote are kept beside `tilo-server-protocol`
 /// (`previous/peer-v<N>.txt`), and its test fails a build that reads or
 /// writes them differently.
-pub const OLDEST_PEER_PROTOCOL_VERSION: u32 = 53;
+pub const OLDEST_PEER_PROTOCOL_VERSION: u32 = 55;
+
+// A version bump moves `OLDEST_PEER_PROTOCOL_VERSION` in the same change, and
+// `previous-peer-frames.txt` with it: the window is one version wide, so a
+// bump that leaves it behind fails here, in the bumping crate's own build,
+// rather than later in a test of another crate (docs/architecture/compatibility.md,
+// "Two versions at once").
+const _: () = assert!(
+    OLDEST_PEER_PROTOCOL_VERSION + 1 >= PEER_PROTOCOL_VERSION
+        && OLDEST_PEER_PROTOCOL_VERSION <= PEER_PROTOCOL_VERSION,
+    "a peer version bump also moves OLDEST_PEER_PROTOCOL_VERSION and previous-peer-frames.txt"
+);
+
+#[cfg(test)]
+mod frozen_frames {
+    /// The frozen frames are the oldest version's this build works with, so a
+    /// bump that moves the window without writing them fails in this crate.
+    #[test]
+    fn the_frozen_frames_are_the_oldest_versions() {
+        let version = include_str!("../previous-peer-frames.txt")
+            .lines()
+            .find_map(|line| line.strip_prefix("version "))
+            .and_then(|version| version.trim().parse::<u32>().ok());
+        assert_eq!(version, Some(super::OLDEST_PEER_PROTOCOL_VERSION));
+    }
+}
 
 /// Whether a device at peer version `theirs` and this one work together:
 /// the same version, the one before when this build still speaks it

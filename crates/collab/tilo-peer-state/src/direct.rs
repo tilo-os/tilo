@@ -1264,6 +1264,13 @@ impl DirectSync {
             let LinkFrame::Cursors(cursors) = frame else {
                 return Err("the device asked for something else than retained frames".into());
             };
+            if let Some(store) = &self.0.store {
+                // What the device asks from is what it holds: the store keeps
+                // what it still lacks when it compacts.
+                store
+                    .holds(self.workspace()?, remote, &cursors)
+                    .map_err(|error| error.to_string())?;
+            }
             let (kept, more) = self.replay(&cursors)?;
             let mut frames = Vec::new();
             if opens_an_ask {

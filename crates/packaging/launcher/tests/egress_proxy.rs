@@ -741,7 +741,7 @@ tilo_test_env::scenario! {
             let allowed_port = serve("ALLOWED-SERVER");
             let other_port = serve("OTHER-SERVER");
 
-            let decision = EgressDecision::resolve("off", &[], &[ALLOWED_NAME.to_string()]);
+            let decision = EgressDecision::resolve("host", &[], &[ALLOWED_NAME.to_string()], false);
             let policy = decision.policy().expect("a named host is filtered").clone();
             let (proxy, socket) = start_proxy("one-host", policy);
 
@@ -831,7 +831,7 @@ tilo_test_env::scenario! {
             let allowed_port = serve("ALLOWED-SERVER");
             let other_port = serve("OTHER-SERVER");
 
-            let decision = EgressDecision::resolve("off", &[], &[]);
+            let decision = EgressDecision::resolve("off", &[], &[], false);
             assert_eq!(
                 decision,
                 EgressDecision::Blocked,
@@ -855,7 +855,7 @@ tilo_test_env::scenario! {
             let allowed_port = serve("ALLOWED-SERVER");
             let other_port = serve("OTHER-SERVER");
 
-            let decision = EgressDecision::resolve("off", &[], &["*".to_string()]);
+            let decision = EgressDecision::resolve("host", &[], &["*".to_string()], false);
             assert_eq!(
                 decision,
                 EgressDecision::Unrestricted,
@@ -877,7 +877,7 @@ tilo_test_env::scenario! {
             let other_port = serve("OTHER-SERVER");
 
             // Control: the exact request the strict policy refused.
-            let strict = EgressDecision::resolve("off", &[], &[ALLOWED_NAME.to_string()]);
+            let strict = EgressDecision::resolve("host", &[], &[ALLOWED_NAME.to_string()], false);
             let (strict_proxy, strict_socket) =
                 start_proxy("breakage-strict", strict.policy().unwrap().clone());
             let refused = run_probe(
@@ -963,7 +963,7 @@ tilo_test_env::scenario! {
                 format!("{ip}:{port}")
             });
 
-            let decision = EgressDecision::resolve("off", &[], &[]);
+            let decision = EgressDecision::resolve("off", &[], &[], false);
             assert_eq!(decision, EgressDecision::Blocked);
 
             let report = run_device_local_probe(&decision, None, &loopback, lan.as_deref(), None);

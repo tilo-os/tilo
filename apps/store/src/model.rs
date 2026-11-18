@@ -78,7 +78,7 @@ pub enum InstalledState {
         available: String,
         #[serde(default)]
         pinned: bool,
-        /// Whether this package can be changed through the app-process
+        /// Whether this package can be changed through the package-service
         /// capability. Immutable system RPM packages are launchable but
         /// cannot be pinned or removed from the user store.
         #[serde(default = "default_user_managed")]

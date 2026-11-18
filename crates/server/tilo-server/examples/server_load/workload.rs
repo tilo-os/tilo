@@ -194,7 +194,11 @@ impl Fleet {
                 .map(|workspace| {
                     (
                         workspace.id,
-                        workspace.members.iter().map(Device::public_key).collect(),
+                        workspace
+                            .members
+                            .iter()
+                            .map(|device| device.cert.clone())
+                            .collect(),
                     )
                 })
                 .collect(),

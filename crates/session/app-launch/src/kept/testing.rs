@@ -60,9 +60,10 @@ pub fn keeper_program(path: &Path, test: &str) -> io::Result<()> {
     )
 }
 
-/// Write at `path` a stand-in for the launcher a host app starts through: it starts the keeper
+/// Write at `path` a stand-in for the launcher a kept app starts through: it starts the keeper
 /// it is handed, in the directory and as the launch it is handed, with `app` as the app's command
-/// line, and takes no other argument into account.
+/// line followed by what it was handed after `--` (a Windows program's sandbox), and takes no
+/// other argument into account. What it was handed is kept for [`launcher_handed`].
 ///
 /// # Errors
 /// The program could not be written.
@@ -71,11 +72,29 @@ pub fn launcher_program(path: &Path, app: &[String]) -> io::Result<()> {
     program(
         path,
         &format!(
-            "while [ $# -gt 0 ]; do case \"$1\" in --keeper) k=$2; shift;; --keep-in) d=$2; shift;; --keep-as) l=$2; shift;; esac; shift; done\n\
-             exec \"$k\" --dir \"$d\" --launch \"$l\" -- {}",
+            "for a in \"$@\"; do printf '%s\\000' \"$a\"; done > {}\n\
+             while [ $# -gt 0 ]; do case \"$1\" in --keeper) k=$2; shift;; --keep-in) d=$2; shift;; --keep-as) l=$2; shift;; --) shift; break;; esac; shift; done\n\
+             exec \"$k\" --dir \"$d\" --launch \"$l\" -- {} \"$@\"",
+            quoted(&handed_at(path).to_string_lossy()),
             app.join(" ")
         ),
     )
+}
+
+/// The command line the last start of the stand-in launcher at `path` was handed, an argument
+/// each: what the session asks the real launcher to do.
+#[must_use]
+pub fn launcher_handed(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(handed_at(path))
+        .unwrap_or_default()
+        .split_terminator('\0')
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Where the stand-in launcher at `path` keeps what it was handed.
+fn handed_at(path: &Path) -> PathBuf {
+    path.with_extension("handed")
 }
 
 /// What each keeper under `root` that answers says it keeps, with its directory.

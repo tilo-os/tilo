@@ -275,6 +275,8 @@ mod window_menu_probe;
 mod window_share_live;
 #[path = "window_switcher.rs"]
 mod window_switcher;
+#[path = "windows_compat.rs"]
+mod windows_compat;
 #[path = "workspace_agents.rs"]
 mod workspace_agents;
 #[path = "workspaces.rs"]

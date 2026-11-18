@@ -12,7 +12,7 @@
 //!
 //! [`HeadlessApp`] mounts an application's component in one frame and opens the API on it:
 //! ```ignore
-//! let host = ProbeHost::new();
+//! let host = ProbeHarness::new();
 //! let component = host.component(11);
 //! let mut app = HeadlessApp::mount(component).unwrap();
 //! let answer = app

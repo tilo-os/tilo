@@ -42,6 +42,24 @@ where
         Self::default()
     }
 
+    /// The same selection with each key turned into another.
+    #[must_use]
+    pub fn map<L: Eq + Hash>(self, mut key: impl FnMut(K) -> L) -> KeySelection<L> {
+        let mode = match self.mode {
+            KeySelectionMode::Explicit(keys) => {
+                KeySelectionMode::Explicit(keys.into_iter().map(&mut key).collect())
+            }
+            KeySelectionMode::AllExcept(keys) => {
+                KeySelectionMode::AllExcept(keys.into_iter().map(&mut key).collect())
+            }
+        };
+        KeySelection {
+            mode,
+            anchor: self.anchor.map(&mut key),
+            primary: self.primary.map(key),
+        }
+    }
+
     #[must_use]
     pub fn is_selected(&self, key: &K) -> bool {
         match &self.mode {

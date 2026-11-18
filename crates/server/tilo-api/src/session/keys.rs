@@ -8,7 +8,7 @@
 //!   every holder and API server that reads the workspace refuses it from then
 //!   on.
 //!
-//! The record is the workspace's own (`grants_v1` in its governance), written
+//! The record is the workspace's own (`key_grants` in its governance), written
 //! by the host that admitted the key and read by every holder, so a key is
 //! listed and revoked the same wherever the workspace is held and whichever
 //! API server the caller reaches.

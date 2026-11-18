@@ -264,3 +264,101 @@ scenario "one waiting" {
         open.tree()
     );
 }
+
+// A view reads the agent model choice the session publishes as
+// `settings.agent_models`: its root is a named root of Settings' package, its
+// fields the reading's, and its `use-model` the verb the settings service
+// answers.
+tilo_test_env::scenario! {
+    fn a_view_reads_the_agent_model_choice_as_a_settings_root;
+
+    phase the_view_compiles_against_the_settings_package;
+    {
+        // `settings.agent_models` reads as a named root of Settings' package,
+        // as `settings.appearance` does, and its fields are the reading's.
+        const VIEW: &str = r#"app test.models "Models"
+
+use so.tilo.settings as settings
+
+view switcher() {
+  let m = settings.agent_models
+  ui.Text("{m.in_use.model_label}")
+}
+"#;
+        let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+        tilolang::compile_package(VIEW, &IdsLock::new(), &metas)
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    }
+
+    phase the_view_reads_the_root_and_its_verb;
+    {
+        // The same choice, its `use_model` taking the resource and the
+        // provider and model the person picks: the verb is published on the
+        // resource, so the view passes it.
+        const VIEW: &str = r#"app test.models "Models"
+
+use so.tilo.settings as settings
+
+view switcher(m: settings.AgentModels) {
+  stack {
+    text("{m.in_use.model_label}")
+    button("Use it", on: settings.use_model(m, m.in_use.provider, m.in_use.model)) as pick
+  }
+}
+"#;
+        let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+        tilolang::compile_package(VIEW, &IdsLock::new(), &metas)
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    }
+
+    phase the_view_shows_the_model_agents_answer_with;
+    {
+        const VIEW: &str = r#"app test.models "Models"
+
+use so.tilo.settings as settings
+
+view switcher(m: settings.AgentModels) {
+  ui.Text("{m.in_use.model_label}")
+}
+"#;
+        let doc = AutoCommit::new();
+        let host = Host::new(
+            &doc,
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            || None,
+        )
+        .unwrap();
+        let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
+        for meta in &metas {
+            host.runtime().load_foreign(meta.clone()).unwrap();
+        }
+        let compiled = tilolang::compile_package(VIEW, &IdsLock::new(), &metas)
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+        let package = host.load_compiled(&compiled).unwrap();
+        let reading = tilolang_runtime::ResourceRef::parse_id(
+            "settings:settings.agent-models",
+            "so.tilo.settings#AgentModels",
+        )
+        .unwrap();
+        host.runtime()
+            .set_reading(
+                &reading,
+                &json!({
+                    "providers": [],
+                    "in_use": { "provider": "local", "model": "small", "model_label": "Small model" },
+                })
+                .to_string(),
+            )
+            .unwrap();
+        let view = package
+            .meta
+            .views
+            .iter()
+            .find(|view| view.name == "switcher")
+            .expect("the view's declaration")
+            .id
+            .clone();
+        let open = host.open_resource(&reading, Some(&view)).unwrap();
+        assert_eq!(shown(&open), Value::text("Small model"), "{:?}", open.tree());
+    }
+}

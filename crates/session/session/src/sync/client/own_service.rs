@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use crate::engine::Engine;
 use neighbour_wire::NeighbourMsg;
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_network_actor::own_service::{OwnService, workspace_service};
 use tilo_workspace_keys::KeyProvider;
 use tilo_workspace_service::workspaces::{DeviceKeyGroups, GroupKeys, KeySink};
@@ -33,7 +33,7 @@ const OPEN_WAIT: Duration = Duration::from_secs(30);
 /// service's store cannot be opened.
 pub(super) async fn open(
     own: &OwnService,
-    identity: &HostIdentity,
+    identity: &DeviceIdentity,
     engine: &Arc<Engine>,
     endpoint: iroh::Endpoint,
 ) -> Result<Arc<workspace_service::WorkspaceService>, String> {
@@ -46,8 +46,8 @@ pub(super) async fn open(
         .ok_or("this device's key never leaves its store, so it opens no workspace service")?;
     let cert = identity.device_cert.clone();
     let service = workspace_service::WorkspaceService::open(
-        workspace_service::HostConfig::new(root, tilo_server_protocol::WorkSetting::none()),
-        workspace_service::HostIdentity {
+        workspace_service::ServiceConfig::new(root, tilo_server_protocol::WorkSetting::none()),
+        workspace_service::ServiceIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: ed25519_dalek::SigningKey::from_bytes(&secret),
             device_cert: cert,
@@ -115,7 +115,7 @@ impl KeySink for DeviceKeySink {
 pub(super) struct Founding {
     pub(super) service: OwnService,
     pub(super) endpoint: iroh::Endpoint,
-    pub(super) identity: HostIdentity,
+    pub(super) identity: DeviceIdentity,
     pub(super) engine: std::sync::Weak<Engine>,
     pub(super) network: tokio::sync::mpsc::Sender<tilo_network_actor::NetCmd>,
     pub(super) events: tokio::sync::mpsc::Sender<tilo_network_actor::NetEvent>,

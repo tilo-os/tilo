@@ -325,6 +325,26 @@ Remove these once upstream separates binding a display from spawning its
 server, with a backlog deep enough for the clients waiting on one, and ends
 its server when the Wayland connection does.
 
+## A display number is held by one process, and there are enough of them
+
+Every kept launch with X11 programs takes a display of its own next to the
+compositor's, all from one machine-wide set of numbers. The lock file decided
+who held a number, and a lock left by a killed process was removed by whoever
+found it: two processes finding it at once both removed it and both took the
+display, and the one that then failed to bind the abstract socket removed the
+other's lock and socket file as it gave up, leaving a display that no client
+reached through `/tmp/.X11-unix`. Upstream also stopped at display 32.
+
+- `src/xwayland/x11_sockets.rs`: on Linux a number is first taken by binding
+  its abstract socket, which is atomic between processes and freed by the
+  kernel with the last descriptor; `X11Lock` keeps a descriptor of it and
+  removes the files before letting go. The lock file is written whole under a
+  name of the process's own and linked into place, and a lock whose process is
+  gone is replaced in one rename. The search runs over every number whose TCP
+  port exists (`0..59536`) instead of `0..33`.
+
+Remove this once upstream reserves display numbers atomically.
+
 ## Shared memory in every 10-bit and half-float format
 
 `Xrgb2101010`, `Argb2101010`, `Xrgb16161616f` and `Argb16161616f` had no way

@@ -74,7 +74,6 @@ mode = "off"
 [sandbox.services]
 collab = "optional@31"
 tilo-fs = "optional@31"
-shell-ui   = "optional@35"
 
 [entrypoint]
 bin             = "bin/code-editor"

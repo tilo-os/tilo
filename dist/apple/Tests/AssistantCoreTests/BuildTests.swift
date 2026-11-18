@@ -36,6 +36,7 @@ final class BuildTests: XCTestCase {
     case "$what" in
       mac) build_assistant_mac ;;
       iphone) build_assistant_iphone ;;
+      mark) printf '%s\n' "$mark" >&2 ;;
     esac
     """#
 
@@ -205,6 +206,27 @@ final class BuildTests: XCTestCase {
         XCTAssertFalse(mac.said.contains { $0.contains("push") }, "\(mac.said)")
     }
 
+    // MARK: What the phone's bundle says of what it asks its person for
+
+    /// An iPhone asks its person before an app may reach anything on their own network, and
+    /// shows them the bundle's sentence for it. Tilo Assistant reaches its person's Tilo there
+    /// when that is where it is, so its bundle says so, beside what it says of the camera, the
+    /// microphone and dictation: each in the app's own name, as build.sh writes it.
+    func testThePhoneBundleSaysWhyItReachesItsPersonsOwnNetwork() throws {
+        let phone = try build("iphone", ["TILO_APPLE_PROFILE": profileForAny()])
+        let info = try phone.info()
+        XCTAssertEqual(info["NSLocalNetworkUsageDescription"] as? String,
+                       "Tilo Assistant reaches your Tilo when it is on your own network.")
+        let asked = (info.allKeys as? [String] ?? []).filter { $0.hasSuffix("UsageDescription") }.sorted()
+        XCTAssertEqual(asked, ["NSCameraUsageDescription", "NSLocalNetworkUsageDescription", "NSMicrophoneUsageDescription",
+                               "NSSpeechRecognitionUsageDescription"])
+        for key in asked {
+            let sentence = try XCTUnwrap(info[key] as? String, key)
+            XCTAssertTrue(sentence.hasPrefix("Tilo Assistant "), "\(key): \(sentence)")
+            XCTAssertFalse(sentence.contains("__"), "\(key): \(sentence)")
+        }
+    }
+
     // MARK: Told, and the profile grants it
 
     func testAPhoneBuildToldToWhoseProfileGrantsPushClaimsItAndCarriesTheNoticeExtension() throws {
@@ -277,6 +299,31 @@ final class BuildTests: XCTestCase {
         ])
     }
 
+    // MARK: A site on this computer, by plain http
+
+    /// Inside a bundle the system refuses plain http to a name with a dot in it, so a Mac app
+    /// built for a Tilo on this computer could not load its own site. Such a build names
+    /// exactly its site's name as the one the system lets through by plain http, and nothing
+    /// else. A build for an https site names nothing, and is held to https everywhere.
+    func testAMacBuildForAPlainHttpSiteOnThisComputerIsLetThroughToThatSiteAloneAndAnHttpsBuildToNone() throws {
+        let named = try build("mac", ["TILO_SHELL_SITE": "http://tilo.localhost:24520"])
+        XCTAssertEqual(try named.info("Contents/")["TiloSite"] as? String, "http://tilo.localhost:24520")
+        XCTAssertEqual(try named.info("Contents/")["NSAppTransportSecurity"] as? NSDictionary,
+                       ["NSExceptionDomains": ["tilo.localhost": ["NSExceptionAllowsInsecureHTTPLoads": true]]] as NSDictionary)
+        let bare = try build("mac", ["TILO_SHELL_SITE": "http://localhost"])
+        XCTAssertEqual(try bare.info("Contents/")["NSAppTransportSecurity"] as? NSDictionary,
+                       ["NSExceptionDomains": ["localhost": ["NSExceptionAllowsInsecureHTTPLoads": true]]] as NSDictionary)
+        // An address cannot be named: what the system has for one, and no name beside it.
+        let address = try build("mac", ["TILO_SHELL_SITE": "http://127.0.0.1:24520"])
+        XCTAssertEqual(try address.info("Contents/")["NSAppTransportSecurity"] as? NSDictionary,
+                       ["NSAllowsLocalNetworking": true] as NSDictionary)
+        for site in ["https://tilo.sh", "https://tilo.wifi.example:24520"] {
+            let secure = try build("mac", ["TILO_SHELL_SITE": site])
+            XCTAssertEqual(try secure.info("Contents/")["TiloSite"] as? String, site)
+            XCTAssertNil(try secure.info("Contents/")["NSAppTransportSecurity"], site)
+        }
+    }
+
     // MARK: Told, and the profile does not grant it
 
     func testAPhoneBuildToldToWhoseProfileGrantsNoPushIsAsOneNotToldAndSaysWhy() throws {
@@ -322,6 +369,28 @@ final class BuildTests: XCTestCase {
             + "name the profile of the notice extension in TILO_APPLE_NOTICE_PROFILE")
         // Only the widget extension was signed: neither the notice extension nor the app itself.
         XCTAssertEqual(stopped.signed, [BuildTests.phoneSigned[0]])
+    }
+
+    // MARK: The icon
+
+    /// Tilo Assistant is drawn from a drawing of its own, not from Tilo Shell's: on a phone and
+    /// in the Dock the two apps are told apart at a glance, by their ground and by their figure.
+    func testTheAssistantIsDrawnFromADrawingOfItsOwn() throws {
+        let asked = try build("mark", [:])
+        let own = URL(fileURLWithPath: try XCTUnwrap(asked.said.last { !$0.isEmpty }))
+        XCTAssertTrue(own.path.hasSuffix("/dist/apple/AssistantBundle/AppIcon.svg"), own.path)
+        let shell = own.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Bundle/AppIcon.svg")
+        let mine = try String(contentsOf: own, encoding: .utf8)
+        let theirs = try String(contentsOf: shell, encoding: .utf8)
+        XCTAssertTrue(mine.contains("<svg") && theirs.contains("<svg"))
+        // The colour each drawing fills its whole square with: not the same, so not a shade apart.
+        func ground(_ drawing: String) -> String? {
+            guard let before = drawing.range(of: "<rect width=\"1024\" height=\"1024\" fill=\"") else { return nil }
+            return String(drawing[before.upperBound...].prefix(7))
+        }
+        XCTAssertNotNil(ground(mine))
+        XCTAssertNotNil(ground(theirs))
+        XCTAssertNotEqual(ground(mine), ground(theirs))
     }
 }
 #endif

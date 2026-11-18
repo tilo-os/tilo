@@ -190,7 +190,7 @@ impl PageWorkspaceSettings {
                         .into_iter()
                         .find(|held| held.workspace == uuid)
                         .map(WorkspacesReply::Workspace)
-                        .ok_or_else(|| "the host does not govern this workspace".to_owned()),
+                        .ok_or_else(|| "the server does not hold this workspace".to_owned()),
                     other => other,
                 });
             },
@@ -363,8 +363,13 @@ impl PageWorkspaceSettings {
             .collect();
         // The owner first, then everyone else by key, as the session's shell lists them.
         rows.sort_by(|a, b| b.owns.cmp(&a.owns).then_with(|| a.user.cmp(&b.user)));
+        let kept = workspace_people::holders(
+            workspace
+                .as_ref()
+                .map_or(&[], |workspace| &workspace.holders),
+        );
         let mut people =
-            workspace_people::tab(content_of(&rows, &viewer, role == Some(Role::Owner)));
+            workspace_people::tab(content_of(&rows, &viewer, role == Some(Role::Owner), &kept));
         // What the workspace did is the session's to show; a page offers only the decision.
         people.remove_decision.review.clear();
         // Which servers keep the workspace is its owners' to choose: the page shows them the tab

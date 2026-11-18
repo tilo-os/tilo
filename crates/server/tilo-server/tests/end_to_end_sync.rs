@@ -71,20 +71,28 @@ async fn round_trip(client: &ServerClient, what: &str) {
     loop {
         match recv_reply(client, what).await {
             Envelope::Pong => return,
-            Envelope::Ready { .. } => {}
+            Envelope::Ready { .. }
+            | Envelope::WorkspaceBootstrap { .. }
+            | Envelope::Delta { .. } => {}
             other => panic!("{what}: unexpected envelope {other:?}"),
         }
     }
 }
 
-/// Receive envelopes until a `Delta` arrives (skipping any interleaved
-/// `Ready`/`Pong`), returning its delta bytes. A delta that never arrives
-/// hangs, and nextest's slow-timeout reports it.
-async fn recv_delta(client: &ServerClient, what: &str) -> Vec<u8> {
+/// The next delta `client` receives that `author` wrote: the state the
+/// workspace itself sends first is another author's.
+async fn recv_delta_by(client: &ServerClient, what: &str, author: [u8; 32]) -> Vec<u8> {
     loop {
         match recv_reply(client, what).await {
-            Envelope::Delta { delta, .. } => return delta,
-            Envelope::Ready { .. } | Envelope::Pong => {}
+            Envelope::Delta {
+                delta,
+                author_device_public_key,
+                ..
+            } if author_device_public_key == author => return delta,
+            Envelope::Delta { .. }
+            | Envelope::Ready { .. }
+            | Envelope::Pong
+            | Envelope::WorkspaceBootstrap { .. } => {}
             other => panic!("{what}: unexpected envelope {other:?}"),
         }
     }
@@ -128,17 +136,14 @@ async fn connect_and_subscribe(
     b_client
         .send(Envelope::Subscribe { workspace_id: ws })
         .unwrap();
-    // Drain both Ready(ws, 0) acks (nothing queued yet).
+    // Drain both Ready(ws, 0) acks (nothing queued yet), past the state the
+    // held workspace sends each of them first.
     for (cli, who) in [(&a_client, "A"), (&b_client, "B")] {
-        let env = recv_reply(cli, &format!("{who} Ready")).await;
+        let env = crate::common::next(cli, |env| matches!(env, Envelope::Ready { .. })).await;
         assert!(
             matches!(
                 env,
-                Envelope::Ready {
-                    workspace_id: w,
-                    pending_deltas: 0,
-                    documents_when_opened: false,
-                } if w == ws
+                Envelope::Ready { workspace_id: w, .. } if w == ws
             ),
             "{who} expected Ready(WS,0), got {env:?}"
         );
@@ -162,6 +167,7 @@ async fn take_b_offline(b_client: &ServerClient, ws: WorkspaceId) {
 async fn reconnect_b_and_catch_up(
     addr: iroh_base::EndpointAddr,
     user: &TestUser,
+    a: &crate::common::TestDevice,
     b: &crate::common::TestDevice,
     ws: WorkspaceId,
     doc_a: &mut AutoCommit,
@@ -181,19 +187,19 @@ async fn reconnect_b_and_catch_up(
     b2.send(Envelope::Subscribe { workspace_id: ws }).unwrap();
 
     // The queued delta is flushed on subscribe; apply it to B's doc.
-    let got2 = recv_delta(&b2, "B catch-up delta").await;
+    let got2 = recv_delta_by(&b2, "B catch-up delta", a.device_pubkey()).await;
     doc_b.load_incoming(&got2).expect("B applies d2");
 
     // The host writes the replay before it acknowledges the subscription, so
     // Ready follows the catch-up delta and counts it.
-    let ready = recv_reply(&b2, "B catch-up Ready").await;
+    let ready = crate::common::next(&b2, |env| matches!(env, Envelope::Ready { .. })).await;
     assert!(
         matches!(
             ready,
             Envelope::Ready {
                 workspace_id: w,
                 pending_deltas,
-                documents_when_opened: false,
+                ..
             } if w == ws && pending_deltas >= 1
         ),
         "B expected Ready(WS) counting its catch-up replay, got {ready:?}"
@@ -230,13 +236,7 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     let b = user.enrol("phone", DeviceCapabilities::member());
 
     // A durable host that pins workspace 7 and knows A + B are members.
-    let host = Box::pin(spawn_server(
-        &user,
-        host_dev,
-        &[WS],
-        &[a.device_pubkey(), b.device_pubkey()],
-    ))
-    .await;
+    let host = Box::pin(spawn_server(&user, host_dev, &[WS], &[&a.cert, &b.cert])).await;
     let addr = host.server.node_addr();
 
     // Both devices dial the host, subscribe, and drain their initial Ready acks.
@@ -257,7 +257,7 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
         .unwrap();
 
     // B receives it via the host's fan-out and converges.
-    let got1 = recv_delta(&b_client, "B live delta").await;
+    let got1 = recv_delta_by(&b_client, "B live delta", a.device_pubkey()).await;
     let mut doc_b = AutoCommit::new();
     doc_b.load_incoming(&got1).expect("B applies d1");
     assert_eq!(
@@ -271,8 +271,14 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     );
 
     // Author exclusion: A must NOT receive its own delta back.
-    let ghost = tokio::time::timeout(Duration::from_millis(300), a_client.recv()).await;
-    assert!(ghost.is_err(), "author must not receive its own delta");
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+    while let Ok(Some(env)) = tokio::time::timeout_at(deadline, a_client.recv()).await {
+        assert!(
+            !matches!(&env, Envelope::Delta { author_device_public_key, .. }
+                if *author_device_public_key == a.device_pubkey()),
+            "author must not receive its own delta"
+        );
+    }
 
     take_b_offline(&b_client, WS).await;
     drop(b_client); // B's device is now fully offline.
@@ -301,17 +307,11 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
         .join(WS.to_string())
         .join("pending")
         .join(&b_hex);
-    let mut queued = count_delta_files(&pending_dir);
-    while queued == 0 {
+    while !crate::common::queued_carries(&pending_dir, &d2) {
         tokio::time::sleep(Duration::from_millis(25)).await;
-        queued = count_delta_files(&pending_dir);
     }
-    assert_eq!(
-        queued, 1,
-        "A's offline edit must be store-and-forwarded to disk for B"
-    );
 
-    reconnect_b_and_catch_up(addr, &user, &b, WS, &mut doc_a, &mut doc_b).await;
+    reconnect_b_and_catch_up(addr, &user, &a, &b, WS, &mut doc_a, &mut doc_b).await;
 
     // Queue drains after delivery. The drain follows the delivered flush on
     // the host's persistence turn, so it may land just after B has applied

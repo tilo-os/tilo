@@ -9,13 +9,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use accounts::{AccessDecision, AccessRequest, CredentialBroker, CredentialOwner, CredentialScope};
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_messaging::SendError;
 use tilo_messaging_protocol::journal::Owner;
 
 /// The person's device identity and whether their session is usable now.
 pub(crate) struct Ownership {
-    host: HostIdentity,
+    host: DeviceIdentity,
     actor: String,
     device: String,
     workspace: collab_types::WorkspaceId,
@@ -39,7 +39,7 @@ impl Ownership {
             tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&person))
                 .map_err(|e| e.to_string())?;
         Self::with_host(
-            HostIdentity::held(
+            DeviceIdentity::held(
                 cert,
                 key,
                 std::sync::Arc::new(tilo_identity::identity_store::files::Files::new(paths)),
@@ -49,7 +49,11 @@ impl Ownership {
         )
     }
 
-    pub(crate) fn with_host(host: HostIdentity, actor: &str, device: &str) -> Result<Self, String> {
+    pub(crate) fn with_host(
+        host: DeviceIdentity,
+        actor: &str,
+        device: &str,
+    ) -> Result<Self, String> {
         let mut person = [0; 32];
         hex::decode_to_slice(actor, &mut person).map_err(|e| e.to_string())?;
         let room = collab_types::personal_cluster(&person).to_string();

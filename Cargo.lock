@@ -652,45 +652,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "app-process"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "app-cli",
- "app-registry",
- "blake3",
- "bounded-command",
- "clap",
- "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
- "hex",
- "install",
- "libc",
- "package-store",
- "registry-types",
- "runtime-bundle",
- "runtime-portal",
- "sd-notify",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tilo-app-id",
- "tilo-app-package",
- "tilo-clock",
- "tilo-files",
- "tilo-lock",
- "tilo-paths",
- "tilo-test-env",
- "tokio",
- "toml 1.0.6+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "wire-frame",
- "workspace-hack",
-]
-
-[[package]]
 name = "app-registry"
 version = "0.1.0"
 dependencies = [
@@ -2823,6 +2784,7 @@ dependencies = [
  "tilo-clock",
  "tilo-files",
  "tilo-test-env",
+ "tracing",
  "windows-vm",
  "wire-frame",
  "workspace-hack",
@@ -8642,6 +8604,7 @@ dependencies = [
  "landlock",
  "libc",
  "libloading 0.8.9",
+ "package-service",
  "package-store",
  "runtime-bundle",
  "runtime-identity",
@@ -11784,6 +11747,45 @@ dependencies = [
  "primefield",
  "primeorder 0.14.0",
  "sha2 0.11.0",
+]
+
+[[package]]
+name = "package-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app-cli",
+ "app-registry",
+ "blake3",
+ "bounded-command",
+ "clap",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "install",
+ "libc",
+ "package-store",
+ "registry-types",
+ "runtime-bundle",
+ "runtime-portal",
+ "sd-notify",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-app-id",
+ "tilo-app-package",
+ "tilo-clock",
+ "tilo-files",
+ "tilo-lock",
+ "tilo-paths",
+ "tilo-test-env",
+ "tokio",
+ "toml 1.0.6+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "wire-frame",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15403,12 +15405,12 @@ dependencies = [
  "jiff",
  "launcher",
  "os-actions",
+ "package-service",
  "package-store",
  "provider-settings-ui",
  "quick-xml 0.41.0",
  "rcgen",
  "runtime-dylib",
- "runtime-portal",
  "serde",
  "serde_json",
  "settings-sections",
@@ -16292,12 +16294,12 @@ version = "0.1.2"
 dependencies = [
  "app-catalogue",
  "app-cli",
- "app-process",
  "blake3",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
  "lru 0.18.3",
+ "package-service",
  "package-store",
  "reqwest 0.13.4",
  "runtime-bundle",
@@ -17768,7 +17770,7 @@ name = "tilo-app-process-engine"
 version = "0.1.0"
 dependencies = [
  "app-catalogue",
- "app-process",
+ "package-service",
  "runtime-dylib",
  "workspace-hack",
 ]
@@ -18794,8 +18796,8 @@ dependencies = [
  "tilo-feedback-transport",
  "tilo-resource",
  "tilo-session-core",
+ "tilo-shell-surface",
  "tilo-sort",
- "tilo-surface-host",
  "tilo-system-stats",
  "tilo-test-env",
  "tilo-tts",
@@ -21587,6 +21589,7 @@ dependencies = [
  "tilo-clock",
  "tilo-connector",
  "tilo-content",
+ "tilo-crypto",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-files",
@@ -21601,6 +21604,7 @@ dependencies = [
  "tilo-paths",
  "tilo-peer-state",
  "tilo-resource",
+ "tilo-rollback",
  "tilo-rt",
  "tilo-runtime",
  "tilo-seal",
@@ -21790,6 +21794,8 @@ dependencies = [
  "chat",
  "collab-types",
  "collaboration",
+ "compat-catalogue",
+ "compat-service",
  "desktop-policy",
  "durable-store",
  "ed25519-dalek 3.0.0",
@@ -21922,9 +21928,9 @@ dependencies = [
  "tilo-session-power",
  "tilo-settings-service",
  "tilo-sheets",
+ "tilo-shell-surface",
  "tilo-speaker-service",
  "tilo-startup-metrics",
- "tilo-surface-host",
  "tilo-system-service",
  "tilo-system-stats",
  "tilo-test-env",
@@ -22068,6 +22074,7 @@ dependencies = [
  "tilo-crash-reports",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tracing",
  "tracing-subscriber",
  "workspace-hack",
 ]
@@ -22125,6 +22132,8 @@ dependencies = [
 name = "tilo-settings-service"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
+ "serde",
  "serde_json",
  "settings-sections",
  "settings-store",
@@ -22163,6 +22172,36 @@ dependencies = [
  "url",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-shell-surface"
+version = "0.1.0"
+dependencies = [
+ "app-catalogue",
+ "jiff",
+ "package-store",
+ "serde",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-app-window",
+ "tilo-compositor",
+ "tilo-desktop-model",
+ "tilo-desktop-policy",
+ "tilo-desktop-surface",
+ "tilo-presentation",
+ "tilo-render-protocol",
+ "tilo-render-service",
+ "tilo-resource",
+ "tilo-service",
+ "tilo-session-core",
+ "tilo-ui",
+ "tilo-vello",
+ "tilo-winit",
+ "tilolang-tilo",
+ "tracing",
+ "url",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -22303,36 +22342,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-model-client",
  "tilo-segment",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-surface-host"
-version = "0.1.0"
-dependencies = [
- "app-catalogue",
- "jiff",
- "package-store",
- "serde",
- "serde_json",
- "tilo-action-policy",
- "tilo-app-window",
- "tilo-compositor",
- "tilo-desktop-model",
- "tilo-desktop-policy",
- "tilo-desktop-surface",
- "tilo-presentation",
- "tilo-render-protocol",
- "tilo-render-service",
- "tilo-resource",
- "tilo-service",
- "tilo-session-core",
- "tilo-ui",
- "tilo-vello",
- "tilo-winit",
- "tilolang-tilo",
- "tracing",
- "url",
  "workspace-hack",
 ]
 
@@ -23418,7 +23427,9 @@ name = "tilo-x11-transfer"
 version = "0.1.0"
 dependencies = [
  "tilo-test-env",
+ "tracing",
  "workspace-hack",
+ "x11rb",
 ]
 
 [[package]]
@@ -27743,7 +27754,6 @@ dependencies = [
  "app-catalogue",
  "app-cli",
  "app-fleet",
- "app-process",
  "app-registry",
  "appendlist",
  "approx 0.4.0",
@@ -28507,6 +28517,7 @@ dependencies = [
  "p384 0.13.1",
  "p384 0.14.0",
  "p521",
+ "package-service",
  "package-store",
  "page_size",
  "palette",
@@ -29133,6 +29144,7 @@ dependencies = [
  "tilo-settings-records",
  "tilo-settings-service",
  "tilo-sheets",
+ "tilo-shell-surface",
  "tilo-sibling-unlock",
  "tilo-sort",
  "tilo-speaker-service",
@@ -29141,7 +29153,6 @@ dependencies = [
  "tilo-staging-reclaim",
  "tilo-startup-metrics",
  "tilo-subject",
- "tilo-surface-host",
  "tilo-system-info",
  "tilo-system-service",
  "tilo-system-stats",

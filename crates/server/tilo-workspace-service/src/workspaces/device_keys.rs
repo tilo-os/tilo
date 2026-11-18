@@ -4,7 +4,7 @@
 //! leaf it has in every other group ([`key_group::GroupPeer`]). The
 //! workspace service holds no keys of its own: when it seals or opens the records of
 //! the workspaces it governs it asks that service through a handle its embedder
-//! hands it at open ([`crate::service::HostSessions::open`]). The answer is
+//! hands it at open ([`crate::service::ServiceSessions::open`]). The answer is
 //! content keys only, which open and seal and admit nobody: the device's
 //! group stays the device's business.
 //!

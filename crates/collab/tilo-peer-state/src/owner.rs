@@ -378,10 +378,25 @@ impl NativeCommittedView {
     pub fn continuity(&self) -> u64 {
         self.record.continuity
     }
-    /// Where the host that governs this workspace is reached: the hint its
-    /// enrollment carries, the one the host's own answer named for a workspace
-    /// this device holds as a further device of its person, or, for a
-    /// workspace founded here, the one its own host recorded as it founded it.
+    /// Where the devices keeping this workspace are reached, each its own
+    /// signed address, by device key: the holders the workspace's governance
+    /// names, and, for a workspace its governance names none of yet (one
+    /// founded here before its host named itself), the hint this device keeps
+    /// for it. A client tries every holder, so none of them comes first.
+    #[must_use]
+    pub fn keeping_devices(&self) -> Vec<crate::join::TransportHint> {
+        let named = self.peer.governance().keeping_devices();
+        if !named.is_empty() {
+            return named;
+        }
+        self.transport_hint().ok().cloned().into_iter().collect()
+    }
+    /// Where the host this device's own entry names is reached: the hint its
+    /// enrollment carries, the one the host's own answer named for a
+    /// workspace this device holds as a further device of its person, or, for
+    /// a workspace founded here, the one its own host recorded as it founded
+    /// it. [`Self::keeping_devices`] is where the workspace's holders are
+    /// reached now that a workspace has several.
     pub fn transport_hint(&self) -> Result<&crate::join::TransportHint, String> {
         self.record
             .enrollment

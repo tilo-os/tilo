@@ -64,18 +64,7 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         server.node_addr().relay_urls().collect::<Vec<_>>(),
         vec![&url]
     );
-    server
-        .replace_governed_workspace_access(
-            workspace_id,
-            true,
-            tilo_peer_state::GovernedAccess {
-                member_devices: vec![a.device_pubkey(), b.device_pubkey()],
-                member_user_roots: vec![a.cert.user_public_key, b.cert.user_public_key],
-            },
-            tmp.path().to_owned(),
-        )
-        .await
-        .unwrap();
+    crate::common::hold_workspace(&server, workspace_id, &[&a.cert, &b.cert]).await;
     // No IP addresses are passed to either client, as in a real browser.
     let server_addr = EndpointAddr::new(server.node_addr().id).with_relay_url(url);
     let endpoint_a = Endpoint::builder(presets::Minimal)
@@ -121,10 +110,8 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     for (client, page) in [(&first, &page_a), (&second, &page_b)] {
         client.send(Envelope::Subscribe { workspace_id }).unwrap();
         page.network_change().await;
-        assert!(matches!(
-            tilo_test_env::within("a message on client", client.recv()).await,
-            Some(Envelope::Ready { .. })
-        ));
+        // A held workspace sends its own state before it is ready.
+        crate::common::next(client, |env| matches!(env, Envelope::Ready { .. })).await;
     }
     let mut directory =
         tilo_user_identity::WorkspaceDirectory::new(user.user_pk, a.device_pubkey());
@@ -169,9 +156,10 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         tilo_user_identity::WorkspaceDirectory::load(user.user_pk, b.device_pubkey(), &body)
             .unwrap();
     assert_eq!(replica.list_workspaces(), directory.list_workspaces());
-    // A valid same-root certificate without workspace membership is still
-    // rejected by the configured membership policy.
-    let outsider = user.enrol("unlisted device", DeviceCapabilities::member());
+    // A valid certificate of a person the operator does not list is still
+    // rejected: membership follows the person, never a bare certificate.
+    let outsider =
+        TestUser::fresh("outsider").enrol("unlisted device", DeviceCapabilities::member());
     let outsider_endpoint = Endpoint::builder(presets::Minimal)
         .relay_mode(mode)
         .bind_addr((Ipv4Addr::LOCALHOST, 0))
@@ -187,16 +175,11 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         outsider.sk,
         RevocationList::new(),
     )
-    .await
-    .unwrap();
-    outsider_client
-        .send(Envelope::Subscribe { workspace_id })
-        .unwrap();
-    assert!(matches!(
-        tilo_test_env::within("a message on outsider_client", outsider_client.recv()).await,
-        Some(Envelope::NotAuthorised { .. })
-    ));
-    outsider_client.close().await;
+    .await;
+    assert!(
+        outsider_client.is_err(),
+        "a person the operator does not list is refused at the handshake"
+    );
     first.close().await;
     second.close().await;
     server.shutdown().await;

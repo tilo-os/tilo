@@ -73,6 +73,9 @@ public enum Setup: Equatable, Sendable {
     case unknown
     /// The person's assistant is being found, or made where they keep none.
     case findingAssistant
+    /// As `findingAssistant`, where their server has been making their own workspace for a
+    /// while: the first time it is asked for, that can take minutes, and the main chat says so.
+    case makingWorkspace
     /// It could not be found or made. The sentence says why, in Tilo's own words where it has any.
     case noAssistant(String)
     /// No provider is linked. These can be, each with a key of the person's own.
@@ -387,15 +390,22 @@ public struct ConnectionOffer: Identifiable, Equatable, Sendable {
     public var text: String
     /// The service's name.
     public var name: String
-    /// How many commands it offers once the person is signed in, when it says so.
+    /// How many commands it offers, when it says so before anyone signed in.
     public var commands: Int?
+    /// Whether the service wants the person to sign in before it is used.
+    public var needsSignIn: Bool
+    /// The site that sign-in happens at, by name, when the service names it.
+    public var signInAt: String?
     public var state: State
 
-    public init(id: ID, text: String, name: String, commands: Int? = nil, state: State = .waiting) {
+    public init(id: ID, text: String, name: String, commands: Int? = nil, needsSignIn: Bool = true, signInAt: String? = nil,
+                state: State = .waiting) {
         self.id = id
         self.text = text
         self.name = name
         self.commands = commands
+        self.needsSignIn = needsSignIn
+        self.signInAt = signInAt
         self.state = state
     }
 
@@ -613,8 +623,12 @@ public struct Supervision: Equatable, Sendable {
     }
 
     public struct Usage: Equatable, Sendable {
-        public var messagesToday: Int
-        public var tokensToday: Int
+        /// What the assistant wrote today, as the person's server counted it. Nil where their
+        /// server keeps no such count: the view says so then, and shows no number.
+        public var messagesToday: Int?
+        /// The tokens of the day's model calls, as the person's server counted them. Nil where
+        /// their server keeps no such count.
+        public var tokensToday: Int?
         /// Spent today, in millionths of the currency.
         public var spentTodayMicros: Int
         /// The most it may spend in a day. Nil for no limit.
@@ -622,7 +636,7 @@ public struct Supervision: Equatable, Sendable {
         /// The currency's sign as the person reads it: "$".
         public var currency: String
 
-        public init(messagesToday: Int = 0, tokensToday: Int = 0, spentTodayMicros: Int = 0,
+        public init(messagesToday: Int? = nil, tokensToday: Int? = nil, spentTodayMicros: Int = 0,
                     dailyLimitMicros: Int? = nil, currency: String = "$") {
             self.messagesToday = messagesToday
             self.tokensToday = tokensToday
@@ -638,12 +652,16 @@ public struct Supervision: Equatable, Sendable {
         public var name: String
         public var added: Date
         public var commands: Int
+        /// Whether nobody is signed in to it: its person never did, or the service no longer
+        /// takes their sign-in. It offers nothing until they are.
+        public var needsSignIn: Bool
 
-        public init(id: ID, name: String, added: Date, commands: Int) {
+        public init(id: ID, name: String, added: Date, commands: Int, needsSignIn: Bool = false) {
             self.id = id
             self.name = name
             self.added = added
             self.commands = commands
+            self.needsSignIn = needsSignIn
         }
     }
 

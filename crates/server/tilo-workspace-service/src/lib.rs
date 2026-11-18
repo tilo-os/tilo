@@ -32,8 +32,6 @@ pub mod content_work;
 pub mod environment;
 #[doc(hidden)]
 pub mod handshake;
-#[doc(hidden)]
-pub mod host_authority;
 mod i18n;
 #[doc(hidden)]
 pub mod membership_watch;
@@ -46,6 +44,8 @@ mod people_keys;
 pub mod persistence;
 pub mod presence_mailbox;
 pub mod service;
+#[doc(hidden)]
+pub mod service_authority;
 pub mod store;
 pub mod surfaces;
 #[doc(hidden)]

@@ -533,9 +533,9 @@ tilo_test_env::scenario! {
         assert_eq!(app.live_status(&me), Presence::Online, "I am here");
     }
 
-    phase an_agent_is_named_with_the_person_it_acts_for;
-    // An agent a person admitted is named with them, as presence knows whom it acts for: "Helper
-    // for Ada" to everyone else, "Helper for you" to Ada.
+    phase an_agent_is_named_by_its_own_name_to_everyone;
+    // An agent a person admitted reads by its own name, to everyone else and to that person
+    // alike, as its chip, its caret tag and its history rows do.
     {
         use ui::permissions::MemberId;
         let (mut app, _) = app_with_doc();
@@ -544,9 +544,9 @@ tilo_test_env::scenario! {
         presence.set_display_name(MemberId::agent("helper"), "Helper");
         presence.set_acting_for(MemberId::agent("helper"), Some(MemberId::person("ada")));
         app.adopt_workspace(&presence);
-        assert_eq!(app.user_name(&MemberId::agent("helper")), "Helper for Ada");
+        assert_eq!(app.user_name(&MemberId::agent("helper")), "Helper");
         app.me.id = MemberId::person("ada");
-        assert_eq!(app.user_name(&MemberId::agent("helper")), "Helper for you");
+        assert_eq!(app.user_name(&MemberId::agent("helper")), "Helper");
     }
 
     phase the_workspaces_call_places_its_people_in_the_voice_channel_by_person;

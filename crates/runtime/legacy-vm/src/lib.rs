@@ -21,6 +21,8 @@ pub mod hosted;
 pub mod image;
 pub mod lifecycle;
 pub mod memory;
+mod peer;
+#[cfg(feature = "supervisor")]
 pub mod supervisor;
 pub mod transport;
 pub mod virtiofs;

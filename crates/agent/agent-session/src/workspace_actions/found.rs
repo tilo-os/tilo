@@ -78,6 +78,26 @@ fn inside(within: &Within, entry: &IndexEntry) -> bool {
     within.holds(place, entry.when)
 }
 
+/// Where a resource found in the document at `route` is listed, nearest first:
+/// a chain's item under the chain's own resource, then under each resource its
+/// id extends, then at the document's top. A part of a chain is a piece of the
+/// document that keeps the chain, and what it holds is published by the chain
+/// (under `chain:` and that document's id), not by the part.
+fn naming_parents(route: &DocumentRoute, resource: &str) -> Vec<Option<String>> {
+    super::opened::chain_of(&route.document)
+        .map(|chain| ui::resource::chain_resource_id(&chain))
+        .into_iter()
+        .map(Some)
+        .chain(
+            resource
+                .match_indices('/')
+                .map(|(at, _)| resource.get(..at).map(str::to_owned))
+                .rev()
+                .chain(std::iter::once(None)),
+        )
+        .collect()
+}
+
 impl Worker {
     /// What a person types to name a resource as it is (`#12`, a handle) is found as written:
     /// the entry whose identity field is the whole of `needle` answers first, ahead of every
@@ -607,25 +627,14 @@ impl Worker {
                 when: entry.when,
             });
         }
-        let mut query = CatalogueQuery {
-            provider: Some(record_provider(route)),
-            needle: entry.resource.clone(),
-            max_results: NAMING_ROWS,
-            ..CatalogueQuery::default()
-        };
-        // A document that is a part of a chain keeps its items under the chain's address, never
-        // at its own top level: the part is one document of a set, and the address is what a
-        // listing names them all by.
-        let chain = ui::resource::DocumentId::parse(&route.document)
-            .and_then(|document| document.chain_part())
-            .map(|(chain, _)| ui::resource::chain_resource_id(&chain));
-        let holders = id
-            .match_indices('/')
-            .map(|(at, _)| id.get(..at).map(str::to_owned))
-            .rev()
-            .chain(std::iter::once(None));
-        for parent in holders.chain(chain.into_iter().map(Some)) {
-            query.parent_resource = parent;
+        for parent in naming_parents(route, id) {
+            let query = CatalogueQuery {
+                provider: Some(record_provider(route)),
+                parent_resource: parent,
+                needle: entry.resource.clone(),
+                max_results: NAMING_ROWS,
+                ..CatalogueQuery::default()
+            };
             let Ok(page) = self.catalogue_page(workspace_id, caller, &query) else {
                 continue;
             };
@@ -644,7 +653,12 @@ impl Worker {
         }
         // An app that keeps its items in parts beside its own document lists them under a
         // container its top level names: each container is one page read for the row it holds.
-        query.parent_resource = None;
+        let mut query = CatalogueQuery {
+            provider: Some(record_provider(route)),
+            needle: entry.resource.clone(),
+            max_results: NAMING_ROWS,
+            ..CatalogueQuery::default()
+        };
         let root = self.catalogue_page(workspace_id, caller, &query);
         for container in root
             .ok()?
@@ -763,49 +777,114 @@ impl Worker {
             .collect();
         let cluster_id = state.workspace.clone().unwrap_or_default();
         let engine = std::sync::Arc::clone(&state.engine);
-        let page = {
-            let log = &mut self.membership(workspace_id)?.changes;
-            log.take_in(
-                &records,
-                |(app, record)| {
-                    engine
-                        .document_revision(&cluster_id, app, record)
-                        .ok()
-                        .flatten()
-                },
-                |(app, record)| engine.record(&cluster_id, app, record).ok().flatten(),
-                &ui::history_source::sentence::ThreadWords,
-            );
-            log.page(after)
-        };
-        let Some(who) = self.bounded(caller) else {
-            return Ok(page);
-        };
-        // Decided before anything is answered, as a search is: a change to a resource the
-        // workspace keeps from the caller, or lets them read only parts of, is not theirs to
-        // see.
-        let readable: Vec<DocumentRoute> = routes
-            .into_iter()
-            .filter(|route| {
-                matches!(
-                    self.readable(workspace_id, Some(&who), route),
-                    Some(Readable::Whole)
-                )
-            })
-            .collect();
-        let changes = page
-            .changes
-            .into_iter()
-            .filter(|change| {
-                readable
-                    .iter()
-                    .any(|route| route.app_id == change.app && route.document == change.record)
-            })
-            .collect();
-        Ok(ChangePage {
-            changes,
-            cursor: page.cursor,
-        })
+        let log = &mut self.membership(workspace_id)?.changes;
+        log.take_in(
+            &records,
+            |(app, record)| {
+                engine
+                    .document_revision(&cluster_id, app, record)
+                    .ok()
+                    .flatten()
+            },
+            |(app, record)| engine.record(&cluster_id, app, record).ok().flatten(),
+            &ui::history_source::sentence::ThreadWords,
+        );
+        let page = log.page(after);
+        // What is said in a direct conversation is told to the people it is between
+        // ([`super::direct`]).
+        let page = self.told(caller, &cluster_id, &state, page);
+        Ok(self.read_by(workspace_id, caller, &cluster_id, page))
+    }
+
+    /// `page` of the feed as `caller` may read it: without the changes of what the workspace
+    /// does not let them read, by the rule a search is answered by ([`Self::readable`]). A
+    /// document of which they read only the items their permissions name is left out whole: a
+    /// change does not say which item it is of. The page's cursor stands, so whoever follows
+    /// the feed reads on behind what was left out.
+    fn read_by(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        cluster_id: &str,
+        mut page: ChangePage,
+    ) -> ChangePage {
+        let mut read: std::collections::HashMap<DocumentKey, bool> =
+            std::collections::HashMap::new();
+        page.changes.retain(|change| {
+            let key: DocumentKey = (change.app.clone(), change.record.clone());
+            if let Some(reads) = read.get(&key) {
+                return *reads;
+            }
+            let route = DocumentRoute {
+                app_id: key.0.clone(),
+                cluster_id: cluster_id.to_owned(),
+                document: key.1.clone(),
+            };
+            let reads = self.reads_whole(workspace_id, caller, &route);
+            read.insert(key, reads);
+            reads
+        });
+        page
+    }
+
+    /// Whether `caller` may read all of what is kept at `route`, by the rule a search is
+    /// answered by ([`Self::readable`]): what the feed of changes tells them of, and what a
+    /// write must land in to wake their wait for a change.
+    pub(super) fn reads_whole(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        route: &DocumentRoute,
+    ) -> bool {
+        let who = self.bounded(caller);
+        matches!(
+            self.readable(workspace_id, who.as_ref(), route),
+            Some(Readable::Whole)
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn route(document: &str) -> DocumentRoute {
+        DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "workspace".into(),
+            document: document.into(),
+        }
+    }
+
+    /// A chain's part is searched as the chain's document: its items are
+    /// published by the chain, under `chain:` and its id, and are asked for
+    /// there first.
+    #[test]
+    fn a_chain_parts_item_is_asked_for_under_the_chain_first() {
+        let part = route("derived:part.0@derived:pages@derived:default@tab:0000000000000000");
+        assert_eq!(
+            naming_parents(&part, "notes.pages/pages/note"),
+            [
+                Some("chain:derived:pages@derived:default@tab:0000000000000000".to_owned()),
+                Some("notes.pages/pages".to_owned()),
+                Some("notes.pages".to_owned()),
+                None,
+            ]
+        );
+    }
+
+    /// A document of its own lists its items under themselves, as it always has.
+    #[test]
+    fn a_documents_own_item_is_asked_for_under_its_collection() {
+        let document = route("derived:messages@derived:default@tab:0000000000000000");
+        assert_eq!(
+            naming_parents(&document, "chat.messages/messages/m1"),
+            [
+                Some("chat.messages/messages".to_owned()),
+                Some("chat.messages".to_owned()),
+                None,
+            ]
+        );
     }
 }
 

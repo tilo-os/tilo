@@ -11,19 +11,16 @@ use std::path::Path;
 
 use tilo_system_stats::protocol::{Grant, Grants, Handoff, PROTOCOL, write_handoff};
 
-use crate::capabilities::CapabilityPlan;
+use collab_types::caps::DeviceCap;
+
+use crate::capabilities::{CapabilityPlan, declares};
 use crate::manifest::ManifestView;
 use crate::services::{ResolvedService, ServiceError, socket_for};
 
-/// The manifest capability that opens the connection.
-pub const SYSTEM_INFO: &str = "system-info";
-/// The manifest capability that allows the process list on it.
-pub const PROCESSES: &str = "processes";
-
 #[must_use]
 pub fn ceiling(manifest: &ManifestView) -> Grants {
-    let system_info = manifest.declares_capability(SYSTEM_INFO);
-    let processes = system_info && manifest.declares_capability(PROCESSES);
+    let system_info = declares(manifest, DeviceCap::SystemInfo);
+    let processes = system_info && declares(manifest, DeviceCap::Processes);
     Grants {
         system_info,
         processes,
@@ -41,9 +38,13 @@ pub fn grants(manifest: &ManifestView, plan: &CapabilityPlan, image_shipped: boo
         Grants::default()
     };
     for device in &plan.devices {
-        if let Some(grant) = Grant::from_device_scope(device) {
-            grants = grants.with(grant);
-        }
+        let grant = match device {
+            DeviceCap::SystemInfo => Grant::SystemInfo,
+            DeviceCap::Processes => Grant::Processes,
+            DeviceCap::ProcessCommands => Grant::CommandLines,
+            _ => continue,
+        };
+        grants = grants.with(grant);
     }
     grants.within(ceiling(manifest))
 }
@@ -129,7 +130,10 @@ mod tests {
 
     fn plan(devices: &[&str]) -> CapabilityPlan {
         CapabilityPlan {
-            devices: devices.iter().map(|d| (*d).to_owned()).collect(),
+            devices: devices
+                .iter()
+                .filter_map(|d| DeviceCap::from_name(d))
+                .collect(),
             ..CapabilityPlan::empty()
         }
     }

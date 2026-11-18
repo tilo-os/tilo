@@ -376,9 +376,9 @@ check("A05", AREA, "Store opens, draws its first frame, and exits on close")(
 @check("A06", AREA, "A host Wayland app (foot) opens in a window and exits on close")
 def host_wayland(ctx, res):
     ids = [a["id"] for a in ctx.vm.actions("foot") if a["provider"] == "applications"]
-    if "foot" not in ids:
-        raise Unobservable(f"no host Wayland app to open: `foot` is not in host-applications ({ids})")
-    gid, procs = _lifecycle(ctx, res, "foot", "applications", "A06-foot", True,
+    if "host:foot" not in ids:
+        raise Unobservable(f"no machine Wayland app to open: `foot` is not in applications ({ids})")
+    gid, procs = _lifecycle(ctx, res, "host:foot", "applications", "A06-foot", True,
                                      match=lambda f: "foot" in (f.get("app_id") or ""))
     expect(any("foot" in c.cmd for c in procs.values()),
            f"no foot process observed ({[c.cmd for c in procs.values()][:4]})")
@@ -402,14 +402,15 @@ def x11(ctx, res):
         except Exception as exc:  # noqa: BLE001
             res.metrics["verification_install_error"] = str(exc).splitlines()[:3]
             cands = x11_clients()
-    app = next((i for i in ("xterm", "org.xfce.xterm", "xeyes") if i in cands), None) or next(iter(cands), None)
+    app = next((i for i in ("host:xterm", "host:org.xfce.xterm", "host:xeyes") if i in cands),
+               None) or next(iter(cands), None)
     if app is None:
         wine = [a["id"] for a in ctx.vm.actions("Wine File") if a["provider"] == "applications"]
         app = wine[0] if wine else None
     if app is None:
         raise Unobservable("no X11 app available: xterm/xeyes not installable and no Wine File entry")
     res.metrics["x11_app"] = app
-    key = app.split("-")[-1].lower()
+    key = app.removeprefix("host:").split("-")[-1].lower()
     try:
         gid, procs = _lifecycle(ctx, res, app, "applications", "A07-x11", True,
                                          match=lambda f: key in (f.get("app_id") or "").lower()

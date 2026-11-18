@@ -1,12 +1,12 @@
 //! The blurred backdrop translucent chrome is drawn over.
 //!
 //! Floating chrome (quick settings, menus, the launcher, notifications) is
-//! made of a material that shows a blur of what lies behind it. A hosted
+//! made of a material that shows a blur of what lies behind it. A surface
 //! app cannot see behind itself: the windows and the surfaces below are the
-//! compositor's. So a hosted surface names the regions it draws the material
-//! in ([`BackdropRequest`], from [`SurfaceHost::backdrops`](tilo_session_core::surface::SurfaceHost::backdrops)) and the
+//! compositor's. So a surface names the regions it draws the material
+//! in ([`BackdropRequest`], from [`ShellSurface::backdrops`](tilo_session_core::surface::ShellSurface::backdrops)) and the
 //! compositor hands back, after each frame, a blurred image of what lies
-//! below each ([`BackdropImage`], [`SurfaceHost::set_backdrops`](tilo_session_core::surface::SurfaceHost::set_backdrops)),
+//! below each ([`BackdropImage`], [`ShellSurface::set_backdrops`](tilo_session_core::surface::ShellSurface::set_backdrops)),
 //! drawn at the request's texel size, only when what lies below changed.
 //! The app draws it in its material, under its tint, the next frame.
 //!
@@ -36,7 +36,7 @@ use smithay::backend::renderer::{Bind, ExportMem, Frame, Offscreen, Renderer, Te
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Size, Transform};
 
 use crate::backend::BackendError;
-use crate::render::{BACKGROUND, below_host};
+use crate::render::{BACKGROUND, below_surface};
 use crate::state::State;
 use tilo_session_core::surface::{BackdropImage, BackdropRequest};
 
@@ -93,12 +93,12 @@ pub(crate) struct Backdrops {
     watches: Vec<Watch>,
 }
 
-/// Draw what lies below hosted surface `host`'s region `slot` and blur it;
+/// Draw what lies below surface `index`'s region `slot` and blur it;
 /// `None` when nothing there changed since its last image.
 pub(crate) fn draw(
     renderer: &mut GlesRenderer,
     state: &mut State,
-    (host, slot): (usize, usize),
+    (surface, slot): (usize, usize),
     request: &BackdropRequest,
 ) -> Result<Option<BackdropImage>, BackendError> {
     let (x, y, width, height) = request.rect;
@@ -112,10 +112,10 @@ pub(crate) fn draw(
         i32::try_from(texels.1).unwrap_or(i32::MAX),
     ));
     let origin = Point::<f64, Logical>::from((x, y));
-    let elements = below_host(
+    let elements = below_surface(
         renderer,
         state,
-        host,
+        surface,
         origin,
         scale,
         Rectangle::from_size(size),
@@ -125,19 +125,22 @@ pub(crate) fn draw(
     // A texture is only usable in the context that made it, so a region drawn on another one starts
     // over.
     let fresh = !watches.iter().any(|watch| {
-        watch.key == (host, slot) && watch.request == *request && watch.context == context
+        watch.key == (surface, slot) && watch.request == *request && watch.context == context
     });
     if fresh {
-        watches.retain(|watch| watch.key != (host, slot));
+        watches.retain(|watch| watch.key != (surface, slot));
         watches.push(Watch {
-            key: (host, slot),
+            key: (surface, slot),
             request: *request,
             context: context.clone(),
             tracker: OutputDamageTracker::new(size, scale, Transform::Normal),
             images: None,
         });
     }
-    let Some(watch) = watches.iter_mut().find(|watch| watch.key == (host, slot)) else {
+    let Some(watch) = watches
+        .iter_mut()
+        .find(|watch| watch.key == (surface, slot))
+    else {
         return Ok(None);
     };
     let changed = match watch.tracker.damage_output(1, &elements) {
@@ -234,25 +237,25 @@ fn read_back(
 }
 
 impl dyn crate::Backend {
-    /// Hand every hosted surface that draws translucent material the backdrops that changed, and
-    /// answer the hosts that were handed one: those draw their material in the frame being built.
+    /// Hand every surface that draws translucent material the backdrops that changed, and
+    /// answer the surfaces that were handed one: those draw their material in the frame being built.
     pub(crate) fn serve_backdrops(&mut self, state: &mut State) -> Vec<usize> {
         let requests: Vec<(usize, Vec<BackdropRequest>)> = state
-            .hosts
+            .surfaces
             .iter()
             .enumerate()
-            .map(|(index, host)| (index, host.backdrops()))
+            .map(|(index, surface)| (index, surface.backdrops()))
             .collect();
         let live: Vec<(usize, usize)> = requests
             .iter()
-            .flat_map(|(host, list)| (0..list.len()).map(move |slot| (*host, slot)))
+            .flat_map(|(surface, list)| (0..list.len()).map(move |slot| (*surface, slot)))
             .collect();
         state
             .backdrops
             .watches
             .retain(|watch| live.contains(&watch.key));
         let mut fed = Vec::new();
-        for (host, list) in requests {
+        for (index, list) in requests {
             if list.is_empty() {
                 continue;
             }
@@ -260,7 +263,7 @@ impl dyn crate::Backend {
                 .iter()
                 .enumerate()
                 .map(
-                    |(slot, request)| match self.backdrop(state, (host, slot), request) {
+                    |(slot, request)| match self.backdrop(state, (index, slot), request) {
                         Ok(image) => image,
                         Err(error) => {
                             tracing::debug!(%error, "backdrop not drawn");
@@ -270,10 +273,10 @@ impl dyn crate::Backend {
                 )
                 .collect();
             if images.iter().any(Option::is_some)
-                && let Some(surface) = state.hosts.get_mut(host)
+                && let Some(surface) = state.surfaces.get_mut(index)
             {
                 surface.set_backdrops(images);
-                fed.push(host);
+                fed.push(index);
             }
         }
         fed

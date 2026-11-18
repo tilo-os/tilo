@@ -380,9 +380,6 @@ impl VerifiedMembership {
     pub fn workspace_id(&self) -> WorkspaceId {
         self.challenge.workspace_id
     }
-    pub fn host_device_public_key(&self) -> [u8; 32] {
-        self.challenge.host_device_public_key
-    }
     pub fn request_id(&self) -> [u8; 32] {
         self.challenge.request_id
     }

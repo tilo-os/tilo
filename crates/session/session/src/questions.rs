@@ -37,7 +37,7 @@ use tilo_service::{Answer, Question, Questions, Services};
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerState, FileRequest, FileType};
 use tilo_sheets::portal::{
     Body, Device, Dialog, Field, PortalEffect, PortalState, Prompt, PromptField, PromptKind,
-    Remember, Shortcut,
+    Shortcut,
 };
 use tilo_sheets::{SheetState as _, word, words};
 
@@ -75,7 +75,7 @@ enum Plan {
     /// Confirming is the answer; the question asks nothing else.
     Confirm,
     /// The ticked rows are the answer, named as the question names them.
-    Rows { names: Vec<String>, remember: bool },
+    Rows { names: Vec<String> },
     /// The rows are shortcut bindings.
     Bind(Vec<Binding>),
     /// A launcher's name and icon.
@@ -145,6 +145,11 @@ pub(crate) struct Asker {
 }
 
 impl Asker {
+    /// Where the services' questions are asked, when the session has them.
+    pub(crate) const fn questions(&self) -> Option<&Questions> {
+        self.questions.as_ref()
+    }
+
     /// An asker showing its questions on `portal` and `picker` , taking allowances back through
     /// `services` .
     pub(crate) const fn new(
@@ -310,7 +315,6 @@ impl Asker {
         let dialog = Dialog {
             handle: format!("portal-grant:{}:{}", grant.app_id, grant.capability),
             title: word("portal-allowed-title"),
-            heading: grant.app_label.clone(),
             detail: words(
                 "portal-allowed-detail",
                 &[
@@ -639,7 +643,7 @@ impl Shown {
                     ..Answer::default()
                 })
             }
-            Plan::Rows { names, remember } => {
+            Plan::Rows { names } => {
                 let Body::Devices(devices) = &dialog.body else {
                     return Err(word("portal-no-such-field"));
                 };
@@ -650,7 +654,6 @@ impl Shown {
                         .filter(|(device, _)| device.selected)
                         .map(|(_, name)| name.clone())
                         .collect(),
-                    remember: *remember && self.remember,
                     ..Answer::default()
                 })
             }
@@ -755,6 +758,7 @@ fn compose(question: &Question) -> Option<Composed> {
         crate::network::AGENT_QUESTION => agent_question(&question.handle, details)?,
         crate::step_questions::KIND => step_question(&question.handle, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
+        crate::network_reach::KIND => reach(&question.handle, &who, details)?,
         _ => return None,
     };
     Some(Composed {
@@ -798,12 +802,12 @@ fn who(question: &Question) -> String {
     }
 }
 
-/// A sheet that asks the person to allow `detail` , and nothing else.
-fn review(handle: &str, title: String, who: String, detail: String) -> Dialog {
+/// A sheet that asks the person to allow `detail` , and nothing else. Its title says who asks and
+/// what for, so nothing under it repeats the app.
+fn review(handle: &str, title: String, detail: String) -> Dialog {
     Dialog {
         handle: handle.to_owned(),
         title,
-        heading: who,
         detail,
         body: Body::Review,
         confirm_label: word("portal-allow"),
@@ -816,8 +820,8 @@ fn review(handle: &str, title: String, who: String, detail: String) -> Dialog {
 fn access(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: AccessQuestion = serde_json::from_value(details).ok()?;
     let what = what(&asked.capability);
-    let (title, heading, detail) = if let Some(text) = &asked.text {
-        (text.title.clone(), text.subtitle.clone(), text.body.clone())
+    let (title, detail) = if let Some(text) = &asked.text {
+        (text.title.clone(), text.body.clone())
     } else {
         let detail = asked
             .reason
@@ -825,7 +829,6 @@ fn access(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
             .unwrap_or_else(|| word("portal-access-detail"));
         (
             words("portal-access-title", &[("app", who), ("what", &what)]),
-            who.to_owned(),
             detail,
         )
     };
@@ -835,9 +838,37 @@ fn access(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
         allowances.push(ALLOW_ALWAYS);
         labels.push(word("portal-allow-always"));
     }
-    let mut dialog = review(handle, title, heading, detail);
+    let mut dialog = review(handle, title, detail);
+    // An app that words a generic access question itself also gives its subtitle: the app's own
+    // line, not the app named again under a title of ours.
+    dialog.heading = asked.text.map(|text| text.subtitle).unwrap_or_default();
     dialog.body = Body::Choices(labels);
     Some((dialog, Plan::Choose(allowances)))
+}
+
+/// An app the person installed, before it first starts in a workspace: whether it may reach what
+/// its manifest declares. Allowing writes the workspace's network grants for it.
+fn reach(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: crate::network_reach::ReachQuestion = serde_json::from_value(details).ok()?;
+    let any = asked.hosts.iter().any(|host| host == "*");
+    let title = words(
+        "portal-access-title",
+        &[("app", who), ("what", &word("portal-access-network"))],
+    );
+    let detail = word(if any {
+        "portal-network-any"
+    } else {
+        "portal-network-hosts"
+    });
+    let mut dialog = review(handle, title, detail);
+    if !any {
+        dialog.facts = asked
+            .hosts
+            .into_iter()
+            .map(|host| (word("portal-network-site"), host))
+            .collect();
+    }
+    Some((dialog, Plan::Confirm))
 }
 
 /// The MCP server's question: a program of this login wants to work in the workspace in front as an
@@ -850,7 +881,9 @@ fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
         &[("workspace", &asked.workspace), ("agent", &asked.agent)],
     );
     let detail = words("mcp-server-admission-detail", &[("agent", &asked.agent)]);
-    let mut dialog = review(handle, title, who.to_owned(), detail);
+    let mut dialog = review(handle, title, detail);
+    // The program asking is nowhere in the title: it stands under it.
+    who.clone_into(&mut dialog.heading);
     dialog.body = Body::Choices(vec![
         word("portal-allow-once"),
         word("portal-allow-session"),
@@ -897,7 +930,7 @@ fn step_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
             words("step-question-allow-agent", &[("agent", &asked.agent)]),
         ),
     };
-    let mut dialog = review(handle, title, String::new(), detail);
+    let mut dialog = review(handle, title, detail);
     dialog.facts.clone_from(&asked.fields);
     dialog.caution = (!matches!(asked.risk.as_str(), "" | "none" | "low")).then(|| {
         words(
@@ -918,7 +951,6 @@ fn device_unlock(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     let mut dialog = review(
         handle,
         words("network-device-unlock-title", &[("device", &asked.device)]),
-        asked.device.clone(),
         words("network-device-unlock-detail", &[("slot", &asked.slot)]),
     );
     dialog.code = Some(asked.approval_code);
@@ -952,7 +984,6 @@ fn account(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let mut dialog = review(
         handle,
         words("portal-account-title", &[("app", who)]),
-        who.to_owned(),
         detail,
     );
     dialog.confirm_label = word("portal-account-share");
@@ -979,11 +1010,10 @@ fn email(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
             &[("count", &asked.attachments.len().to_string())],
         ));
     }
-    lines.insert(0, words("portal-email-detail", &[("app", who)]));
+    lines.insert(0, word("portal-email-detail"));
     let mut dialog = review(
         handle,
-        word("portal-email-title"),
-        who.to_owned(),
+        words("portal-email-title", &[("app", who)]),
         lines.join("\n"),
     );
     dialog.confirm_label = word("portal-email-open");
@@ -995,7 +1025,6 @@ fn background(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)>
     let mut dialog = review(
         handle,
         words("portal-background-title", &[("app", who)]),
-        who.to_owned(),
         asked.name,
     );
     dialog.body = Body::Choices(vec![
@@ -1018,7 +1047,6 @@ fn wallpaper(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> 
     let mut dialog = review(
         handle,
         words("portal-wallpaper-title", &[("app", who)]),
-        who.to_owned(),
         words(
             "portal-wallpaper-detail",
             &[("app", who), ("where", &where_)],
@@ -1030,12 +1058,14 @@ fn wallpaper(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> 
 
 fn printing(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: PrintQuestion = serde_json::from_value(details).ok()?;
-    let copies = asked.copies.to_string();
+    let copies = ui::i18n::ArgValue::Number(f64::from(asked.copies));
     let mut dialog = review(
         handle,
-        words("portal-print-title", &[("title", &asked.title)]),
-        who.to_owned(),
-        words("portal-print-detail", &[("copies", &copies)]),
+        words(
+            "portal-print-title",
+            &[("app", who), ("title", &asked.title)],
+        ),
+        tilo_sheets::words_with("portal-print-detail", &[("copies", copies)]),
     );
     dialog.selected = asked.selected.min(asked.printers.len().saturating_sub(1));
     dialog.body = Body::Choices(asked.printers.clone());
@@ -1049,7 +1079,6 @@ fn screenshot(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)>
     let mut dialog = review(
         handle,
         words("portal-screenshot-title", &[("app", who)]),
-        who.to_owned(),
         word("portal-screenshot-detail"),
     );
     dialog.confirm_label = word("portal-screenshot-take");
@@ -1061,7 +1090,6 @@ fn usb(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     let mut dialog = review(
         handle,
         words("portal-usb-title", &[("app", who)]),
-        who.to_owned(),
         words("portal-usb-detail", &[("app", who)]),
     );
     dialog.body = Body::Devices(
@@ -1084,7 +1112,6 @@ fn usb(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
                 .iter()
                 .map(|device| device.id.clone())
                 .collect(),
-            remember: false,
         },
     ))
 }
@@ -1099,7 +1126,6 @@ fn app_chooser(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)
     let mut dialog = review(
         handle,
         word("portal-app-choice-title"),
-        String::new(),
         if what.is_empty() {
             word("portal-app-choice-detail-any")
         } else {
@@ -1129,9 +1155,11 @@ fn launcher(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     };
     let mut dialog = review(
         handle,
-        words("portal-launcher-title", &[("name", &asked.name)]),
-        who.to_owned(),
-        words("portal-launcher-detail", &[("app", who)]),
+        words(
+            "portal-launcher-title",
+            &[("app", who), ("name", &asked.name)],
+        ),
+        word("portal-launcher-detail"),
     );
     dialog.body = Body::Launcher {
         name: asked.editable_name.then(|| asked.name.clone()),
@@ -1174,8 +1202,7 @@ fn shortcuts(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> 
     }
     let mut dialog = review(
         handle,
-        word("portal-shortcuts-title"),
-        who.to_owned(),
+        words("portal-shortcuts-title", &[("app", who)]),
         word("portal-shortcuts-detail"),
     );
     dialog.body = Body::Shortcuts(rows);
@@ -1214,7 +1241,6 @@ fn share(handle: &str, who: &str, details: Value, remote: bool) -> Option<(Dialo
             },
             &[("app", who)],
         ),
-        who.to_owned(),
         detail.join("\n"),
     );
     dialog.confirm_label = word("portal-share-share");
@@ -1224,13 +1250,7 @@ fn share(handle: &str, who: &str, details: Value, remote: bool) -> Option<(Dialo
         .map(|source| source.choice.clone())
         .collect();
     if asked.sources.is_empty() {
-        return Some((
-            dialog,
-            Plan::Rows {
-                names,
-                remember: asked.may_remember,
-            },
-        ));
+        return Some((dialog, Plan::Rows { names }));
     }
     dialog.body = if asked.multiple {
         Body::Devices(
@@ -1248,19 +1268,10 @@ fn share(handle: &str, who: &str, details: Value, remote: bool) -> Option<(Dialo
         Body::Answers {
             choices: asked.sources.iter().map(source_label).collect(),
             suggested: 0,
-            remember: asked.may_remember.then(|| Remember {
-                label: word("portal-share-remember"),
-                on: false,
-            }),
+            remember: None,
         }
     };
-    Some((
-        dialog,
-        Plan::Rows {
-            names,
-            remember: asked.may_remember,
-        },
-    ))
+    Some((dialog, Plan::Rows { names }))
 }
 
 /// How the source the app offers reads.
@@ -1468,7 +1479,6 @@ fn cannot_join(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     let dialog = Dialog {
         handle: handle.to_owned(),
         title: say(&asked.title),
-        heading: asked.network.clone(),
         detail: say(&asked.body),
         body: Body::Choices(vec![join.clone()]),
         confirm_label: join,
@@ -1607,6 +1617,7 @@ fn request(question: &Question, asked: &FileChooserQuestion) -> FileRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// The sheet `kind` composes from `details` .
     fn sheet(kind: &str, details: Value) -> Composed {
@@ -1668,6 +1679,65 @@ mod tests {
             );
             assert!(matches!(&shown.plan, Plan::Choose(choices) if choices.len() == 2));
             assert_eq!(asked(false).dialog.alternate_label, None);
+        }
+
+        phase an_installed_app_asks_for_the_sites_it_declares;
+        // An app the person installed lists the sites its manifest declares; one that may reach
+        // any site says so instead. Allowing is the one answer that writes the grants.
+        {
+            let asked = |hosts: &[&str]| {
+                sheet(
+                    crate::network_reach::KIND,
+                    serde_json::to_value(crate::network_reach::ReachQuestion {
+                        hosts: hosts.iter().map(|host| (*host).to_owned()).collect(),
+                    })
+                    .unwrap(),
+                )
+            };
+            let shown = asked(&["api.open-meteo.com", "geocoding-api.open-meteo.com"]);
+            assert_eq!(
+                shown.dialog.title,
+                words(
+                    "portal-access-title",
+                    &[("app", "Notes"), ("what", &word("portal-access-network"))]
+                )
+            );
+            assert_eq!(shown.dialog.detail, word("portal-network-hosts"));
+            let site = word("portal-network-site");
+            assert_eq!(
+                shown.dialog.facts,
+                vec![
+                    (site.clone(), "api.open-meteo.com".to_owned()),
+                    (site, "geocoding-api.open-meteo.com".to_owned()),
+                ]
+            );
+            assert_eq!(shown.dialog.confirm_label, word("portal-allow"));
+            assert!(matches!(shown.plan, Plan::Confirm));
+            let any = asked(&["*"]);
+            assert_eq!(any.dialog.detail, word("portal-network-any"));
+            assert!(any.dialog.facts.is_empty());
+        }
+
+        phase every_app_question_names_the_app_in_its_title_and_never_below_it;
+        // Each title says who asks and what for; the row that named the app again under it is
+        // gone. Other questions share this path, so they lose the row too.
+        {
+            for (kind, details) in [
+                ("portal.access", json!({"capability": "camera", "may_remember": true})),
+                ("portal.email", json!({"addresses": ["ada@example.org"], "cc": [], "bcc": [], "attachments": []})),
+                ("portal.print", json!({"title": "Report", "printers": ["Office"], "selected": 0, "copies": 1})),
+                ("portal.global-shortcuts", json!({"shortcuts": []})),
+                ("portal.launcher", json!({"name": "Docs", "editable_name": false, "editable_icon": false, "icon": ""})),
+                ("portal.screenshot", json!({"modal": true})),
+                ("portal.screencast", json!({"sources": [], "multiple": false, "devices": []})),
+                (crate::network_reach::KIND, json!({"hosts": ["*"]})),
+            ] {
+                let dialog = sheet(kind, details).dialog;
+                assert!(dialog.title.contains("Notes"), "{kind}: {title:?}", title = dialog.title);
+                assert!(dialog.heading.is_empty(), "{kind}: nothing repeats the app");
+            }
+            let one = sheet("portal.print", json!({"title": "Report", "printers": ["Office"], "selected": 0, "copies": 1})).dialog;
+            assert_eq!(one.detail, "1 copy, to the printer you choose.");
         }
 
         phase an_agents_question_shows_its_agent_action_and_risk;

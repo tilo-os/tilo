@@ -20,21 +20,23 @@
 //! arrives: no timer runs while it is connected.
 //!
 //! A session carries changes one way, from the host dialed to the host
-//! dialing. A device governing a workspace another host serves
-//! dials nothing on its own: when that host's session arrives, the device
-//! answers it with one back ([`HostDialer::answer`]) that lasts as long
-//! as it does.
+//! dialing: every holder of a workspace dials every other.
+//!
+//! Where each session stands ([`Link`]) is kept in the workspace's [`Links`]:
+//! reaching the other holder, taking in what it lacks of it, current with
+//! it, or unable to reach it since some time. The holder says so in the
+//! workspace's state, where every device reads which holder is short of what.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
+use tilo_lock::MutexRecover as _;
 use tilo_lock::RwLockRecover as _;
 use tilo_server_session::client::ServerClient;
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::handshake::LiveIdentity;
@@ -98,11 +100,109 @@ async fn arrival(arrivals: &mut tokio::sync::broadcast::Receiver<[u8; 32]>, devi
     }
 }
 
+/// Where this device's session to another holder of a workspace stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Link {
+    /// Not reached since this device started: what it lacks of the other
+    /// is not known yet.
+    Reaching,
+    /// Reached, and taking in what the other holds and this device lacks.
+    CatchingUp,
+    /// Holding everything the other holds.
+    Current,
+    /// Not reached since `since_ns` (ns since the epoch).
+    Unreachable { since_ns: u64 },
+}
+
+/// Where each of a workspace's sessions to its other holders stands, by the
+/// other holder's device, what this device holds back of what they sent for
+/// lack of history, how much of the content the workspace names it lacks,
+/// and a wake-up for whoever says so in the workspace.
+#[derive(Clone, Default)]
+pub struct Links(Arc<LinksInner>);
+
+#[derive(Default)]
+struct LinksInner {
+    links: std::sync::Mutex<BTreeMap<[u8; 32], Link>>,
+    /// The holders a change is held back from until the history it builds
+    /// on arrives.
+    held_from: std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>>,
+    /// Blobs of the content the workspace's files name that this device lacks.
+    content_missing: std::sync::atomic::AtomicU32,
+    changed: tokio::sync::Notify,
+}
+
+impl Links {
+    /// The session to `device` stands at `link`. A holder unreachable before
+    /// stays unreachable since it first was.
+    pub(crate) fn set(&self, device: [u8; 32], link: Link) {
+        let mut links = self.0.links.lock_recover();
+        let link = match (links.get(&device), link) {
+            (Some(Link::Unreachable { since_ns }), Link::Unreachable { .. }) => Link::Unreachable {
+                since_ns: *since_ns,
+            },
+            _ => link,
+        };
+        if links.insert(device, link) != Some(link) {
+            drop(links);
+            self.0.changed.notify_one();
+        }
+    }
+
+    /// No session to `device` is kept any more.
+    pub(crate) fn forget(&self, device: &[u8; 32]) {
+        if self.0.links.lock_recover().remove(device).is_some() {
+            self.0.changed.notify_one();
+        }
+    }
+
+    /// Where each session stands now.
+    pub(crate) fn now(&self) -> BTreeMap<[u8; 32], Link> {
+        self.0.links.lock_recover().clone()
+    }
+
+    /// Wait until a session's link changes, or say it changed at once.
+    pub(crate) async fn changed(&self) {
+        self.0.changed.notified().await;
+    }
+
+    /// Changes from `held_from` are held back for history this device lacks.
+    pub(crate) fn hold_from(&self, held_from: std::collections::BTreeSet<[u8; 32]>) {
+        if *self.0.held_from.lock_recover() != held_from {
+            *self.0.held_from.lock_recover() = held_from;
+            self.0.changed.notify_one();
+        }
+    }
+
+    /// The holders a change is held back from.
+    pub(crate) fn held_from(&self) -> std::collections::BTreeSet<[u8; 32]> {
+        self.0.held_from.lock_recover().clone()
+    }
+
+    /// This device lacks `blobs` of the content the workspace names.
+    pub fn lacks_content(&self, blobs: u32) {
+        if self.0.content_missing.swap(blobs, Ordering::SeqCst) != blobs {
+            self.0.changed.notify_one();
+        }
+    }
+
+    /// How many blobs of the content the workspace names this device lacks.
+    pub(crate) fn content_missing(&self) -> u32 {
+        self.0.content_missing.load(Ordering::SeqCst)
+    }
+
+    /// Have the next [`Self::changed`] return at once.
+    pub(crate) fn touch(&self) {
+        self.0.changed.notify_one();
+    }
+}
+
 /// What an outbound attach session carries: the local endpoint, this host's
 /// own identity (its revocation list read afresh for every dial and
 /// session), the workspaces it hosts and its metrics. `scope`, when given,
-/// is the only workspaces the session offers: a host serving one workspace for
-/// its governor attaches that workspace alone.
+/// is the only workspaces the session offers: a holder of a workspace
+/// beside another attaches that workspace alone. `links`, when given, is told
+/// where the session stands.
 pub struct HostDialer {
     pub endpoint: Endpoint,
     pub identity: LiveIdentity,
@@ -112,6 +212,7 @@ pub struct HostDialer {
     pub workspaces: WorkspaceRegistry,
     pub metrics: Arc<Metrics>,
     pub scope: Option<Vec<WorkspaceId>>,
+    pub links: Option<Links>,
 }
 
 impl HostDialer {
@@ -138,6 +239,7 @@ impl HostDialer {
     ) {
         let device = upstream.device;
         let mut backoff_ms: u64 = 1_000;
+        self.stands(device, Link::Reaching);
         loop {
             let dialed = tokio::select! {
                 dialed = self.dial(&upstream) => Some(dialed),
@@ -147,7 +249,7 @@ impl HostDialer {
                 Some(Ok(client)) => {
                     tracing::info!(%label, "attached to the upstream host");
                     backoff_ms = 1_000;
-                    if let Err(error) = self.run_session(&client, true).await {
+                    if let Err(error) = self.run_session(&client).await {
                         tracing::debug!(%label, "attach session ended: {error}");
                     }
                     // What arrived while the session lasted says nothing
@@ -156,6 +258,7 @@ impl HostDialer {
                 }
                 Some(Err(error)) => {
                     tracing::debug!(%label, "attach dial failed: {error}");
+                    self.unreachable(device);
                 }
                 None => {
                     tracing::debug!(%label, "the upstream's device is back; dialing it again");
@@ -188,57 +291,38 @@ impl HostDialer {
         .map_err(|error| error.to_string())
     }
 
-    /// Answer the host that opened `inbound` here, a host serving a workspace
-    /// this device governs, with one session back to it at `upstream`: what
-    /// its members change there reaches this device that way, as what
-    /// changes here reaches it over its own session. The answer lasts as
-    /// long as `inbound` does. When it cannot be held, `inbound` is ended
-    /// too, and the host, which keeps dialing while it is up, opens it again
-    /// and is answered again: this device keeps no timer for it.
-    pub fn answer(
-        self,
-        upstream: Upstream,
-        inbound: mpsc::Sender<()>,
-        label: String,
-    ) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            let session = async {
-                let client = self.dial(&upstream).await?;
-                tracing::info!(%label, "answered a host serving a workspace governed here");
-                self.run_session(&client, false).await
-            };
-            tokio::select! {
-                result = session => {
-                    if let Err(error) = result {
-                        tracing::debug!(%label, "answer to a host ended: {error}");
-                    }
-                    let _ = inbound.try_send(());
-                }
-                () = inbound.closed() => {}
-            }
-        })
+    /// Tell this session's links that the one to `device` stands at `link`.
+    fn stands(&self, device: [u8; 32], link: Link) {
+        if let Some(links) = &self.links {
+            links.set(device, link);
+        }
     }
 
-    /// One attach session: agree on the workspaces both host (by `hello`,
-    /// or this host's scope when the upstream serves a workspace this device
-    /// governs), subscribe to them, then follow the upstream until the
-    /// session ends.
+    /// The holder `device` was not reached: since now, or since it first was
+    /// not.
+    fn unreachable(&self, device: [u8; 32]) {
+        self.stands(
+            device,
+            Link::Unreachable {
+                since_ns: tilo_clock::unix_now_ns(),
+            },
+        );
+    }
+
+    /// One attach session: agree on the workspaces both hold, subscribe to
+    /// them, then follow the upstream until the session ends.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the session borrows the client and the workspaces and is driven by the select until it ends; it holds no lock"
     )]
-    async fn run_session(&self, client: &ServerClient, hello: bool) -> Result<(), String> {
+    async fn run_session(&self, client: &ServerClient) -> Result<(), String> {
         let hosted_local = self.carried().await;
-        let intersection = if hello {
-            client
-                .send(Envelope::PeerServerHello {
-                    hosted_workspaces: hosted_local.clone(),
-                })
-                .map_err(|_| "outbound closed".to_string())?;
-            negotiate_intersection(client, &hosted_local).await?
-        } else {
-            hosted_local
-        };
+        client
+            .send(Envelope::PeerServerHello {
+                hosted_workspaces: hosted_local.clone(),
+            })
+            .map_err(|_| "outbound closed".to_string())?;
+        let intersection = negotiate_intersection(client, &hosted_local).await?;
         for id in &intersection {
             client
                 .send(Envelope::Subscribe { workspace_id: *id })
@@ -270,9 +354,11 @@ impl HostDialer {
         }
         let session = Session {
             client,
+            own_device: self.identity.cert.device_public_key,
             workspaces: &self.workspaces,
             source: &source,
             metrics: &self.metrics,
+            stands: &|link| self.stands(client.server_peer.device_public_key, link),
         };
         tokio::select! {
             result = session.follow(&intersection) => result,
@@ -333,9 +419,13 @@ async fn negotiate_intersection(
 /// A connected attach session.
 struct Session<'a> {
     client: &'a ServerClient,
+    /// This server's own device, which answers the other holder's asks.
+    own_device: [u8; 32],
     workspaces: &'a WorkspaceRegistry,
     source: &'a crate::peer::StateSource,
     metrics: &'a Arc<Metrics>,
+    /// Tells the session's links where it stands.
+    stands: &'a (dyn Fn(Link) + Sync),
 }
 
 impl Session<'_> {
@@ -358,12 +448,15 @@ impl Session<'_> {
                 } => {
                     if delta_since.is_empty() {
                         answered.remove(&workspace_id);
+                        (self.stands)(Link::Current);
                         continue;
                     }
                     let digest = blake3::hash(&delta_since);
                     if answered.insert(workspace_id, digest) == Some(digest) {
+                        (self.stands)(Link::Current);
                         continue;
                     }
+                    (self.stands)(Link::CatchingUp);
                     self.backfill(workspace_id, delta_since).await?;
                     if intersection.contains(&workspace_id) {
                         self.ask(workspace_id).await?;
@@ -424,15 +517,19 @@ impl Session<'_> {
                     crate::peer::tell_governor(&workspace, &tap, author, body).await;
                 }
             }
-            Envelope::RetiredPresence { workspace_id, .. } => {
+            Envelope::RetiredPresence {
+                workspace_id,
+                payload,
+            } => {
                 if let Some(workspace) = self.workspace(*workspace_id).await {
                     // Presence carries no author on the wire; zero stands
                     // in. Fan-out only compares it to subscribers and keeps
                     // it from other attached hosts.
-                    workspace
-                        .lock()
-                        .await
-                        .fanout_presence(&[0u8; 32], &envelope);
+                    let mut runtime = workspace.lock().await;
+                    runtime.fanout_presence(&[0u8; 32], &envelope);
+                    let authority = runtime.workspace_authority.clone();
+                    drop(runtime);
+                    self.answer_holder(&workspace, authority.as_ref(), *workspace_id, payload);
                 }
             }
             Envelope::NotAuthorised {
@@ -447,6 +544,41 @@ impl Session<'_> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Answer the other holder's own ask for content this server keeps of a
+    /// workspace both hold (the files it lacks, for one): back on this
+    /// session, addressed to that holder's device, which keeps what it asked
+    /// for. What a member of the other holder asks, that member's own
+    /// holder answers; only the holder itself is answered here.
+    fn answer_holder(
+        &self,
+        workspace: &crate::workspace::SharedWorkspace,
+        authority: Option<&crate::workspaces::WorkspaceAuthority>,
+        workspace_id: WorkspaceId,
+        payload: &[u8],
+    ) {
+        let holder = &self.client.server_peer;
+        let Some(asked) = crate::AttributedPresence::decode(payload) else {
+            return;
+        };
+        if asked.author != holder.device_public_key || authority.is_none() {
+            return;
+        }
+        let outbound = self.client.outbound.clone();
+        crate::peer::answer_content(
+            workspace,
+            authority,
+            workspace_id,
+            (self.own_device, holder.device_public_key),
+            holder.user_public_key,
+            asked.body,
+            move |_, envelope| {
+                if outbound.try_send(envelope).is_err() {
+                    tracing::debug!("a piece for the other holder did not fit its session");
+                }
+            },
+        );
     }
 
     /// Take in the changes the upstream backfilled, and fan them out to this
@@ -477,6 +609,14 @@ impl Session<'_> {
         .map_err(|error| error.to_string())?
         .kept()
         .await;
+        // What the governor held back for lack of this history is taken in
+        // with it.
+        let authority = workspace.lock().await.workspace_authority.clone();
+        if let Some(authority) = authority
+            && let Some(workspaces) = authority.workspaces()
+        {
+            workspaces.history_arrived(authority.workspace());
+        }
         Ok(())
     }
 

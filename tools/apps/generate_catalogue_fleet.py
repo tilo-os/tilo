@@ -179,7 +179,7 @@ def own_table(root: pathlib.Path) -> list[tuple[str, str]]:
     for header_path in sorted((root / "apps" / "tl").glob("*/app.tl")):
         header = header_path.read_text(encoding="utf-8").splitlines()[0]
         found = re.match(r'app\s+(\S+)\s+"[^"]*"\s*\((.*)\)', header)
-        if found and re.search(r"\brecords:\s*\.own\b", found.group(2)):
+        if found and re.search(r"\bresources:\s*\.own\b", found.group(2)):
             table.append((found.group(1), f"tl.{found.group(1)}"))
     return table
 

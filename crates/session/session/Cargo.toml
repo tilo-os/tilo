@@ -292,7 +292,7 @@ tilo-color-pipeline = { path = "../color-pipeline" }
 image = { workspace = true, features = ["png"] }
 # An application's themed icon is an SVG as often as a PNG.
 resvg = { version = "0.47", default-features = false }
-tilo-surface-host = { path = "../surface-host" }
+tilo-shell-surface = { path = "../shell-surface" }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
 # action vocabulary.
 tilolang-tilo = { path = "../../platform/tilolang-tilo" }
@@ -380,6 +380,8 @@ tilo-liveness = { path = "../liveness" }
 rustix = { workspace = true, features = ["fs", "process"] }
 # Planning and starting the apps the person opens.
 tilo-app-launch = { path = "../app-launch" }
+# The Windows compatibility service the Windows Apps manager reaches.
+compat-service = { path = "../../windows/compat-service" }
 # The udisks2 names the removable media are read and ejected by. The
 # blocking client is left out: this session speaks to the bus itself.
 block-devices = { path = "../../system/block-devices" }
@@ -467,6 +469,10 @@ media = { package = "tilo-media", path = "../../platform/tilo-media", features =
 # Reporting an ending to a session's apps as its spawner would, with the
 # memory cause a launcher remembers.
 tilo-app-launch = { path = "../app-launch", features = ["test-support"] }
+# A Windows program's launch planned on a computer without the Windows payloads,
+# and the catalogue that routes it.
+compat-service = { path = "../../windows/compat-service", features = ["test-support"] }
+compat-catalogue = { path = "../../windows/compat-catalogue" }
 # The stand-in logind and UPower a power test serves over a socket pair.
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 zbus = { workspace = true, features = ["tokio", "p2p"] }

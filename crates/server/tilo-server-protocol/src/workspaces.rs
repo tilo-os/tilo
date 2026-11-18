@@ -38,6 +38,27 @@ pub struct Workspace {
     /// owner or the person a host keeps it for; and the row of the person the
     /// asking device acts for carries `Member::is_self`.
     pub members: Vec<Member>,
+    /// The holders of it, each as it names itself in its own signed address.
+    #[serde(default)]
+    pub holders: Vec<WorkspaceHolder>,
+}
+
+/// A holder of a workspace, as its own signed address names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceHolder {
+    /// Its device key, hex: what removing it may name it by.
+    pub device: String,
+    /// The person it serves, by their user public key, hex.
+    pub person: String,
+    /// What it calls itself: its server's name from its person's admin
+    /// workspace, or its site's name. Its device's label when it names none.
+    pub label: String,
+    /// Whether it holds the workspace's keys: it reads the workspace. A store
+    /// holds its ciphertext and reads none of it.
+    pub reads: bool,
+    /// Whether the machine under it is rented from a cloud provider, whose
+    /// operator can read what it holds.
+    pub cloud: bool,
 }
 
 /// The person who sent an invitation, as the host signed it into the

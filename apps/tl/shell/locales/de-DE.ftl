@@ -1227,3 +1227,5 @@ d-ce3pp2or = Gezeichneter Platz
 d-ce3pp2or-key = Schlüssel
 
 d-ce3pp2or-size = Größe
+
+d-vi5fveaq = Modellwahl

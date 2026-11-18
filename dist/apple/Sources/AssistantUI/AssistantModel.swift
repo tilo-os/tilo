@@ -53,6 +53,13 @@ public final class AssistantModel {
     public private(set) var fieldCalls = 0
     /// The replies that stand open under a task's line, by the piece the line stands before.
     public private(set) var openReplies: [Item.ID: [Item]] = [:]
+    /// The conversations in which a message the person sent from here was taken up by no turn
+    /// for `takeUpPatience`. A quiet line says so under the message, until a turn begins.
+    private var notTakenUp: Set<Chat> = []
+    /// How long a message the person sent may stand with no turn taking it up before the
+    /// conversation says so.
+    @ObservationIgnored var takeUpPatience: Duration = .seconds(45)
+    @ObservationIgnored private var takeUpWaits: [Chat: Task<Void, Never>] = [:]
 
     /// Called for each piece that arrives after the conversation was first read.
     @ObservationIgnored public var told: ((Item, Chat) -> Void)?
@@ -152,6 +159,12 @@ public final class AssistantModel {
         let before = conversation.items
         conversation.apply(change)
         conversations[chat] = conversation
+        // A turn that begins, or anything that comes after the person's message, ends the wait for one.
+        switch change {
+        case .answering(true): turnBegan(in: chat)
+        case .added(let new) where !new.allSatisfy(AssistantModel.isOwnMessage): turnBegan(in: chat)
+        default: break
+        }
         guard known else { return }
         switch change {
         case .added(let new): for item in new { told?(item, chat) }
@@ -274,7 +287,47 @@ public final class AssistantModel {
             if !sent, self.drafts[chat] == nil { self.drafts[chat] = draft }
             // A file the person picked is held open for the app until it is sent.
             if sent { for file in draft.files { file.url.stopAccessingSecurityScopedResource() } }
+            if sent { self.awaitTurn(in: chat) }
         }
+    }
+
+    /// Whether a quiet line stands under the person's newest message in a conversation: they
+    /// sent it from here, no turn has taken it up for `takeUpPatience`, and none has since.
+    public func isNotTakenUp(_ chat: Chat) -> Bool {
+        notTakenUp.contains(chat) && waitsForTurn(chat)
+    }
+
+    private nonisolated static func isOwnMessage(_ item: Item) -> Bool {
+        if case .message(let message) = item.content { message.author == .person } else { false }
+    }
+
+    /// Whether the newest piece of a conversation is the person's own message, and nobody is
+    /// writing an answer.
+    private func waitsForTurn(_ chat: Chat) -> Bool {
+        let held = conversation(chat)
+        guard !held.isAnswering, let newest = held.items.last else { return false }
+        return AssistantModel.isOwnMessage(newest)
+    }
+
+    /// The person's message went out. Where no turn takes it up within `takeUpPatience`, the
+    /// conversation says so under it: they are not left with words that stand alone and no
+    /// word of why nothing answers.
+    private func awaitTurn(in chat: Chat) {
+        turnBegan(in: chat)
+        let patience = takeUpPatience
+        takeUpWaits[chat] = Task { [weak self] in
+            try? await Task.sleep(for: patience)
+            guard !Task.isCancelled, let self else { return }
+            self.takeUpWaits[chat] = nil
+            if self.waitsForTurn(chat) { self.notTakenUp.insert(chat) }
+        }
+    }
+
+    /// A turn began, or the person wrote again: nothing is said of the message before.
+    private func turnBegan(in chat: Chat) {
+        takeUpWaits[chat]?.cancel()
+        takeUpWaits[chat] = nil
+        notTakenUp.remove(chat)
     }
 
     /// Open a task's replies under its line, or put them away again.
@@ -317,6 +370,13 @@ public final class AssistantModel {
 
     public func decline(_ offer: ConnectionOffer.ID) {
         Task { await self.call { try await self.source.decline(offer) } }
+    }
+
+    /// The person signed in on the page `authenticate` answered, and their browser came back
+    /// to this address. Says whether Tilo took it.
+    @discardableResult
+    public func signedIn(_ offer: ConnectionOffer.ID, at returned: URL) async -> Bool {
+        await call { try await self.source.signedIn(offer, at: returned) }
     }
 
     public func file(of attachment: Attachment.ID) async -> URL? {

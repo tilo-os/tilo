@@ -5,7 +5,7 @@ use crate::widget::TileHost;
 use automerge::ReadDoc;
 use winit::keyboard::{Key, NamedKey};
 
-fn editable_component(host: &ProbeHost, instance: u64) -> AppComponent {
+fn editable_component(host: &ProbeHarness, instance: u64) -> AppComponent {
     runner_probe_definition()
         .instantiate(
             host.prepare_with_permissions(
@@ -35,7 +35,7 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
             services.presence_ctx = ConstructionValue::Ready(presence);
             AppConstructionInputs::component_with_services(inputs, binding, services)
         }
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let component = editable_component(&host, 11);
         let mut app =
             App::from_component_using(component, presentation_inputs(2.0), services).unwrap();
@@ -67,7 +67,7 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let component = editable_component(&host, 11);
         let mut app = App::from_component(component, presentation_inputs(2.0)).unwrap();
         let observed = observe_presentation();
@@ -316,7 +316,7 @@ fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
 fn prepared_presentation_replaces_effective_factors_across_runners_and_setters() {
     for theme_scale in [0.5, 1.0, 1.5, 2.0] {
         for native in [true, false] {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let component = runner_probe_definition()
                 .instantiate(
                     host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
@@ -370,7 +370,7 @@ fn prepared_presentation_replaces_effective_factors_across_runners_and_setters()
     }
 }
 
-fn wait_for_saved_resource(host: &ProbeHost, binding: &crate::bound_dispatch::CallbackBinding) {
+fn wait_for_saved_resource(host: &ProbeHarness, binding: &crate::bound_dispatch::CallbackBinding) {
     assert!(host.records.same_owner(&binding.records));
     host.records.await_submitted(&binding.checkout.id).unwrap();
     let status = host.records.save_status(&binding.checkout.id).unwrap();
@@ -382,7 +382,7 @@ fn wait_for_saved_resource(host: &ProbeHost, binding: &crate::bound_dispatch::Ca
 }
 
 fn assert_saved_body(
-    host: &ProbeHost,
+    host: &ProbeHarness,
     binding: &crate::bound_dispatch::CallbackBinding,
     expected: &str,
 ) {
@@ -439,7 +439,7 @@ tilo_test_env::scenario! {
 
     phase native_idle_model_persists_a_bound_edit_before_any_close;
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let component = editable_component(&host, 11);
         let binding = component.callback_binding();
         let mut app = App::from_component(component, runner_inputs()).unwrap();
@@ -458,7 +458,7 @@ tilo_test_env::scenario! {
     phase prepared_autosave_and_close_retain_original_owners_for_retry;
     {
         {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let component = editable_component(&host, 11);
             let binding = component.callback_binding();
             let mut app = App::from_component(component, runner_inputs()).unwrap();
@@ -473,11 +473,11 @@ tilo_test_env::scenario! {
         }
 
         {
-            let first_host = ProbeHost::new();
+            let first_host = ProbeHarness::new();
             let first = editable_component(&first_host, 11);
             let first_binding = first.callback_binding();
             let mut app = App::from_component(first, runner_inputs()).unwrap();
-            let second_host = ProbeHost::new();
+            let second_host = ProbeHarness::new();
             let mut second = editable_component(&second_host, 22);
             let second_binding = second.callback_binding();
             assert!(!first_binding.records.same_owner(&second_binding.records));
@@ -507,7 +507,7 @@ tilo_test_env::scenario! {
     {
         {
             for mode in 0..3 {
-                let host = ProbeHost::new();
+                let host = ProbeHarness::new();
                 let component = runner_probe_definition()
                     .instantiate(
                         host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
@@ -539,7 +539,7 @@ tilo_test_env::scenario! {
             }
         }
         {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let component = runner_probe_definition()
                 .instantiate(
                     host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
@@ -571,7 +571,7 @@ tilo_test_env::scenario! {
         }
         {
             for mode in 0..3 {
-                let host = ProbeHost::new();
+                let host = ProbeHarness::new();
                 let component = runner_probe_definition()
                     .instantiate(
                         host.prepare_with_permissions(
@@ -711,7 +711,7 @@ impl Runner {
 #[test]
 fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
     {
-        let seed = ProbeHost::new();
+        let seed = ProbeHarness::new();
         let mut component = runner_probe_definition()
             .instantiate(
                 seed.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
@@ -738,7 +738,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             .unwrap();
         let mut results = Vec::new();
         for mode in 0..3 {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let path = app_state::DocStore::workspace_document_dir_at(
                 &host.root(),
                 APP,
@@ -835,7 +835,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let component = runner_probe_definition()
             .instantiate(
                 host.prepare_with_permissions(
@@ -995,7 +995,7 @@ fn request_another_resource(component: &AppComponent) -> crate::resource::Docume
 #[test]
 fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let component = editable_component(&host, 31);
         let first = component.callback_binding();
         let wanted = request_another_resource(&component);
@@ -1019,7 +1019,7 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let component = editable_component(&host, 33);
         let first = component.callback_binding();
         let reopener = component.reopener();
@@ -1050,7 +1050,7 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let component = editable_component(&host, 32);
         let first = component.callback_binding();
         let wanted = request_another_resource(&component);
@@ -1095,7 +1095,7 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
 #[cfg(feature = "native")]
 #[test]
 fn native_idle_model_wake_adopts_requested_component_before_draining() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let component = editable_component(&host, 91);
     let first = component.callback_binding();
     let retained_reopener = component.reopener();
@@ -1231,7 +1231,7 @@ fn a_running_app_takes_contrast_text_size_and_preset_on_the_tick_they_change() {
 /// image stores it builds come from that host too, never the toolkit's own.
 #[test]
 fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let component = editable_component(&host, 37);
     let served = std::rc::Rc::new(std::cell::Cell::new(0_usize));
     let counted = std::rc::Rc::clone(&served);
@@ -1272,7 +1272,7 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
     use std::rc::Rc;
     use std::sync::Arc;
 
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     // The host's loaders, each with the window it draws for, as a page keeps them.
     let loaders: Rc<RefCell<Vec<(HostImageLoader, ServedWindow)>>> = Rc::default();
     let page = Rc::clone(&loaders);

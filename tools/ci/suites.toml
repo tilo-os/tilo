@@ -115,6 +115,7 @@ suites = [
   "os/kernel/tests/test_preprocessing_wrapper.py",
   "os/kernel/tests/test-signing-identity.py",
   "os/tests/composefs_digest_parse.sh",
+  "os/tests/server_update_policy_test.sh",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/interactive_priority.sh",
   "os/tests/board_session.sh",
@@ -831,6 +832,7 @@ inputs = [
   "crates/lang/tilolang/tests/fixtures/",
   "crates/session/session/device-surface.json",
   "apps/settings/surface.toml",
+  "crates/session/settings-service/agent-models-surface.json",
 ]
 readers = [
   "crates/platform/tilolang-tilo/src/bench.rs",
@@ -906,15 +908,15 @@ readers = [
 
 
 [[cargo]]
-package = "tilo-surface-host"
+package = "tilo-shell-surface"
 # The part embeds and compiles the shell package's sources and ids lock, and the packages its
 # views reach (`notes`, `tasks`, `chat`), every file of each; its places' tests publish a notebook
 # from the notes app's sources.
 inputs = ["apps/tl/"]
 readers = [
-  "crates/session/surface-host/src/shell_part.rs",
-  "crates/session/surface-host/src/shell_part/places.rs",
-  "crates/session/surface-host/src/shell_part/tests.rs",
+  "crates/session/shell-surface/src/shell_part.rs",
+  "crates/session/shell-surface/src/shell_part/places.rs",
+  "crates/session/shell-surface/src/shell_part/tests.rs",
 ]
 
 [[cargo]]
@@ -1244,7 +1246,7 @@ readers = [
 [[cargo]]
 package = "app-cli"
 # The canonical downloader proves its staging path against the installed host unit.
-inputs = ["crates/packaging/app-process/systemd/tilo-app-process.service"]
+inputs = ["crates/packaging/package-service/systemd/tilo-package-service.service"]
 readers = ["crates/packaging/app-cli/src/install.rs"]
 
 [[cargo]]
@@ -1484,9 +1486,11 @@ package = "tilo-agent-session"
 # The session tests mount apps against the controlled font fixture and share
 # the browser peer's server test support. Its typed-read tests name the
 # surface the workspace's PDF Viewer publishes, read from the app's own
-# committed file.
+# committed file. One flow starts the calendar server the holder's own tests
+# start, from its source.
 inputs = [
   "apps/pdf-viewer/surface.toml",
+  "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
   "crates/sdk/ui-core/assets/fonts/",
   "crates/session/client/tests/support/",
   "tools/with-test-environment.sh",
@@ -1497,6 +1501,7 @@ readers = [
   "crates/agent/agent-session/src/workspace_actions/tests.rs",
   "crates/agent/agent-session/tests/it.rs",
   "crates/agent/agent-session/tests/workspace_actions/api.rs",
+  "crates/agent/agent-session/tests/workspace_actions/meeting_rundown.rs",
   "crates/agent/agent-session/examples/api-on-server.rs",
   "crates/agent/agent-session/examples/mounted-resource.rs",
 ]
@@ -2204,7 +2209,7 @@ reason = "requires native Flatpak, GPG and bubblewrap user namespaces; the diges
 [[cargo]]
 package = "install"
 # Real signed runtime installation is checked against its broker service grants.
-inputs = ["crates/packaging/app-process/systemd/tilo-app-process.service", "os/usr/lib/systemd/user/tilo-app-process.service"]
+inputs = ["crates/packaging/package-service/systemd/tilo-package-service.service", "os/usr/lib/systemd/user/tilo-package-service.service"]
 readers = ["crates/packaging/install/tests/runtime_package.rs"]
 
 [[unrequired]]

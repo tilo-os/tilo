@@ -102,7 +102,20 @@ public final class TiloEngine: NSObject {
     /// How long an ask may go unanswered before whoever asked is told that no answer came, and
     /// can ask again. A person's server holds one kind of ask open on purpose, for ten seconds
     /// at most; every other answers in a moment, or in seconds where the server is busy.
-    var askPatience: Duration = .seconds(30)
+    ///
+    /// Tilo's page itself ends an ask of a person's server after thirty seconds, looked at
+    /// every half second, and says that no answer came. This bound is a little longer than
+    /// that, so the page's own word comes first, and the engine ends only what a page never
+    /// answers at all.
+    var askPatience: Duration = .seconds(35)
+    /// How long the ask for a person's own workspace may take. Their server makes that
+    /// workspace the first time it is asked for, and the page follows the making for up to
+    /// 160 seconds (10 for the answer, 120 for a making that still goes on, 30 to get in)
+    /// before it says that none came. The engine waits a little longer than the page does.
+    var ownPatience: Duration = .seconds(180)
+    /// How long mounting a live thing may take. The page fetches the thing's app the first
+    /// time it shows one, which on a slow connection takes longer than any ask of a server.
+    var mountPatience: Duration = .seconds(120)
     /// How many frames inside the page were refused their content, for a check.
     private(set) var refusedFrames = 0
 
@@ -133,6 +146,9 @@ public final class TiloEngine: NSObject {
     private var moves = 0
     /// The page in the view was loaded to pair, and has not been loaded again since.
     private var pairs = false
+    /// The leave whose last ask of the page is still out: the page stays until it answered.
+    private var lingering: Int?
+    private var leaves = 0
     /// Loads an address in place of the web view, for a test that fetches nothing.
     var loads: ((URL) -> Void)?
     /// What was looked up in the page's listing since it got in.
@@ -202,14 +218,47 @@ public final class TiloEngine: NSObject {
 
     /// Put the page away. The engine stands nowhere until it is asked to pair or to open
     /// again; the device's key stays in its store.
-    public func leave() {
+    ///
+    /// With `last`, the page is asked one more thing on its way out, and nobody waits for the
+    /// answer: the engine stands away at once, and the page itself is put away when it has
+    /// answered, or when the engine's patience with an ask is over. It is heard no more
+    /// meanwhile, and a page that is asked for meanwhile takes its place.
+    public func leave(asking last: (script: String, arguments: [String: Any])? = nil) {
         retrying?.cancel()
         retrying = nil
         wanted = nil
         wantedWorkspace = nil
         pairs = false
-        view.loadHTMLString("", baseURL: nil)
+        lingering = nil
+        var isIn = false
+        if case .open = state { isIn = true }
         state = .away
+        guard let last, isIn else {
+            view.loadHTMLString("", baseURL: nil)
+            return
+        }
+        leaves += 1
+        let mine = leaves
+        lingering = mine
+        let patience = askPatience
+        let giveUp = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: patience)
+            guard !Task.isCancelled else { return }
+            self?.putAway(mine)
+        }
+        view.callAsyncJavaScript(last.script, arguments: last.arguments, in: nil, in: .page) { [weak self] _ in
+            Task { @MainActor in
+                giveUp.cancel()
+                self?.putAway(mine)
+            }
+        }
+    }
+
+    /// The page whose last ask was out is put away, unless the engine was asked for a page since.
+    private func putAway(_ leave: Int) {
+        guard lingering == leave else { return }
+        lingering = nil
+        view.loadHTMLString("", baseURL: nil)
     }
 
     /// Where the device stands, from now on. The first value is where it stands now.
@@ -338,7 +387,7 @@ public final class TiloEngine: NSObject {
         case .messageView(let message, let conversation):
             ["app": .string(EngineAddress.chat), "view": .object(["message": .string(message), "conversation": .string(conversation)])]
         }
-        return try await ask("return globalThis.__tiloLive.show(id, what)",
+        return try await ask("return globalThis.__tiloLive.show(id, what)", patience: mountPatience,
                              ["id": id, "what": JSON.object(asked).any])["record"]?.string
     }
 
@@ -360,12 +409,15 @@ public final class TiloEngine: NSObject {
                                  completionHandler: nil)
     }
 
-    /// - Parameter hiding: something a person typed into a protected field, which went into
-    ///   this ask. An answer that holds it is handed to nobody.
-    func ask(_ script: String, _ arguments: [String: Any], hiding: String? = nil) async throws -> JSON {
+    /// - Parameters:
+    ///   - patience: how long this ask may go unanswered, where it is one that rightly takes
+    ///     longer than `askPatience`.
+    ///   - hiding: something a person typed into a protected field, which went into this ask.
+    ///     An answer that holds it is handed to nobody.
+    func ask(_ script: String, patience: Duration? = nil, _ arguments: [String: Any], hiding: String? = nil) async throws -> JSON {
         guard case .open = state else { throw Problem.notOpen }
         let id = UUID()
-        let patience = askPatience
+        let patience = patience ?? askPatience
         let answer: String? = await withCheckedContinuation { waiting in
             asked[id] = waiting
             // An answer that never comes ends the ask as well: whoever asked is told that none
@@ -394,6 +446,9 @@ public final class TiloEngine: NSObject {
         if let refusal = read["error"] {
             let code = refusal["code"]?.string ?? "failed"
             if code == "not-open" { throw Problem.notOpen }
+            // The page's own word that a person's server gave no answer within the page's time.
+            // It is no refusal of the server's: whoever asked is told that none came.
+            if code == "unanswered" { throw Problem.noAnswer }
             throw Problem.refused(code: code, reason: refusal["reason"]?.string ?? "")
         }
         return read["ok"] ?? .null
@@ -411,6 +466,7 @@ public final class TiloEngine: NSObject {
     private func go(to address: URL, in workspace: String?, pairing: Bool = false) {
         retrying?.cancel()
         retrying = nil
+        lingering = nil
         stops = 0
         moves = 3
         pairs = pairing
@@ -446,8 +502,9 @@ public final class TiloEngine: NSObject {
     }
 
     fileprivate func heard(_ message: WKScriptMessage) {
-        // Only the site's own page, in the main frame, speaks to the engine.
-        guard message.frameInfo.isMainFrame, TiloEngine.text(of: message.frameInfo.securityOrigin) == settings.origin,
+        // Only the site's own page, in the main frame, speaks to the engine, and not a page
+        // that is on its way out.
+        guard lingering == nil, message.frameInfo.isMainFrame, TiloEngine.text(of: message.frameInfo.securityOrigin) == settings.origin,
               let said = message.body as? [String: Any], let kind = said["kind"] as? String
         else { return }
         switch kind {

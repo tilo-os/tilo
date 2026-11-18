@@ -2532,7 +2532,7 @@ fn assert_bound_broker_route_refused(
 
 #[test]
 fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
-    let host = crate::application_test_support::ProbeHost::new();
+    let host = crate::application_test_support::ProbeHarness::new();
     let definition = crate::application_test_support::definition(collaboration_probe_factory);
     let target = LaunchTarget::New;
     let context = host
@@ -2600,7 +2600,7 @@ fn behaviour_probe_factory(
 }
 
 fn hosted_behaviour_app(create: crate::application::ComponentFactory) -> App {
-    let host = crate::application_test_support::ProbeHost::new();
+    let host = crate::application_test_support::ProbeHarness::new();
     let definition = crate::application_test_support::definition(create);
     let target = LaunchTarget::New;
     let context = host
@@ -3311,7 +3311,7 @@ impl AppWidget for HearsElsewhereProbe {
 /// presence through the component the window binds.
 #[test]
 fn a_step_heard_elsewhere_reaches_the_window_through_its_bound_component() {
-    let probe = crate::application_test_support::ProbeHost::new();
+    let probe = crate::application_test_support::ProbeHarness::new();
     let definition = crate::application_test_support::definition(|mut context, _, _| {
         context
             .initialize_new_resource(|_| Ok(()))

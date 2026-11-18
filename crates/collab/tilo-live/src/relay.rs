@@ -681,6 +681,7 @@ impl Relay {
         let carrier::Accepted {
             session,
             driver,
+            pace,
             mut admission,
             transport,
         } = accepted;
@@ -726,7 +727,7 @@ impl Relay {
             }
         };
         tokio::pin!(revoked);
-        let driver = moq_net::time::run(driver);
+        let driver = pace.drive(driver);
         tokio::pin!(driver);
         let mut last_tick = Instant::now();
         let lapsed = loop {

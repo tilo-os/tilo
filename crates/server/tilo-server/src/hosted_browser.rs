@@ -79,6 +79,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod environment_device;
+mod turn_fills;
+
+pub use turn_fills::{FILL_PAGE_ITEM, Release, Releasing, TurnFill};
 
 use crate::WorkspaceId;
 use crate::certification::CertificationProtocol;
@@ -99,6 +102,9 @@ use tilo_server_protocol::certify::{ConfirmationAnswer, PageDeparture, PendingCo
 use tilo_user_identity::{
     Answered, DeviceCapabilities, DeviceCert, HostApproval, Parties, sign_device_cert,
 };
+
+// A page action handed to a window for a turn this server carries out itself.
+mod turn_pages;
 
 /// The app a hosted workspace opens Browser through.
 pub use ui::apps::BROWSER as APP;
@@ -495,6 +501,9 @@ pub struct HostedBrowsers {
     /// the id the window published them with: a session that reports one
     /// again is told it is asked already rather than asked twice.
     asking: Arc<Mutex<std::collections::HashSet<(WorkspaceId, u32)>>>,
+    /// The page actions this server handed to windows for the turns it carries out itself
+    /// ([`turn_pages`]).
+    turn_pages: turn_pages::TurnPages,
     /// The number naming the next caller waiting for an invocation to move.
     next_waiter: AtomicU64,
     /// How long an environment device that disconnected has to come back
@@ -503,6 +512,9 @@ pub struct HostedBrowsers {
     /// How long a page action's question waits for the person
     /// ([`ANSWER_WAIT`]).
     answer_wait: Duration,
+    /// The fills of a page's field this server handed to windows for the turns it carries
+    /// out itself ([`turn_fills`]).
+    turn_fills: turn_fills::TurnFills,
 }
 
 #[allow(
@@ -527,9 +539,11 @@ impl HostedBrowsers {
             authority: Mutex::default(),
             handed: Arc::default(),
             asking: Arc::default(),
+            turn_pages: turn_pages::TurnPages::default(),
             next_waiter: AtomicU64::new(0),
             reconnect: RECONNECT,
             answer_wait: ANSWER_WAIT,
+            turn_fills: turn_fills::TurnFills::default(),
         }
     }
 
@@ -714,6 +728,29 @@ impl HostedBrowsers {
         self.route_as(workspace_id, caller, Some(certificate), message)
     }
 
+    /// Where a message that invokes nothing goes: what a window reports of an action it holds,
+    /// what a window says of a page action this server handed it for a turn of its own, which
+    /// is taken here since nobody on a connection asked for it, or a caller asking after an
+    /// invocation.
+    fn answered_or_asked_after(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        if let RemoteActionMessage::Confirm {
+            correlation,
+            request,
+        } = message
+        {
+            return self.held_reported(workspace_id, caller, *correlation, request);
+        }
+        if let Some(taken) = self.page_answered(workspace_id, caller, message) {
+            return Some(taken);
+        }
+        self.asked_after(caller, message)
+    }
+
     fn route_as(
         &self,
         workspace_id: WorkspaceId,
@@ -725,6 +762,11 @@ impl HostedBrowsers {
             && let Some(answered) = self.environment_asked(workspace_id, caller, request)
         {
             return Some(answered);
+        }
+        // What a window says of a fill this server handed it for one of its own turns is
+        // taken here: nobody on a connection asked for it.
+        if let Some(taken) = self.fill_answered(workspace_id, caller, message) {
+            return Some(taken);
         }
         // What the window offers is read from the window: a listing of its
         // provider is handed to the device holding it, as its page actions
@@ -739,14 +781,7 @@ impl HostedBrowsers {
             return Some(crate::app_serving::Routing::Device(up.window.device));
         }
         let RemoteActionMessage::Invoke(request) = message else {
-            if let RemoteActionMessage::Confirm {
-                correlation,
-                request,
-            } = message
-            {
-                return self.held_reported(workspace_id, caller, *correlation, request);
-            }
-            return self.asked_after(caller, message);
+            return self.answered_or_asked_after(workspace_id, caller, message);
         };
         let (provider, window) = {
             let open = self.open.lock_recover();
@@ -799,6 +834,16 @@ impl HostedBrowsers {
                 }
                 Err(error) => return answered_with(message, error),
             }
+        }
+        // A page action handed to the window without this host's answer is one
+        // the window holds for the person: what the server says here is why it
+        // could not answer for them, which a key that may operate web pages is
+        // answered for.
+        if operated.is_none()
+            && request.confirmation.is_none()
+            && OPERATING_ACTIONS.contains(&request.target.address.action.as_str())
+        {
+            note_unanswered_handover(workspace_id, request, certificate);
         }
         let request = operated.as_ref().unwrap_or(request);
         match self.meter.admit(&self.account) {
@@ -901,14 +946,31 @@ impl HostedBrowsers {
         let question = asked.question(caller);
         let (answer, answered) = pending();
         let asking = Arc::clone(&self.asking);
+        let taking = self.submission(
+            workspace_id,
+            format!("browser-hold/{}/{held}", hex::encode(window)),
+        );
         tokio::runtime::Handle::current().spawn(async move {
-            let answered_by_person = certification.confirm_for(person, question).await;
-            let result = asked.confirmed(&answered_by_person, &key).map(Box::new);
+            let (result, taken) = match taking.await {
+                Ok(Taking::Answered(answer)) => (answer.map(Box::new), None),
+                Ok(Taking::Taken(taken)) => {
+                    let answered_by_person = certification.confirm_for(person, question).await;
+                    let result = taken
+                        .handing(asked.confirmed(&answered_by_person, &key))
+                        .await
+                        .map(Box::new);
+                    (result, Some(taken))
+                }
+                Err(error) => (Err(error), None),
+            };
             asking.lock_recover().remove(&(workspace_id, held));
             answer.complete(RemoteActionMessage::ConfirmResponse {
                 correlation,
                 result,
             });
+            if let Some(taken) = taken {
+                taken.release().await;
+            }
         });
         Some(crate::app_serving::Routing::Answer(answered))
     }
@@ -947,7 +1009,7 @@ impl HostedBrowsers {
                 let update = entry.stage.state(receipt.invocation);
                 drop(handed);
                 if ran {
-                    self.meter.record(&workspace, &self.account);
+                    self.counted(&workspace);
                 }
                 // The caller's own invocation was answered with "accepted,
                 // it waits": what ran is told to it as the state it follows,
@@ -976,6 +1038,11 @@ impl HostedBrowsers {
                 None
             }
         }
+    }
+
+    /// Count one page action a window of `workspace` says it carried out.
+    fn counted(&self, workspace: &str) {
+        self.meter.record(workspace, &self.account);
     }
 
     /// Ask the person `caller` acts for whether `request` — a page action of
@@ -1010,34 +1077,58 @@ impl HostedBrowsers {
             until_ns: tilo_clock::unix_now_ns().saturating_add(answer_wait_ns(self.answer_wait)),
         };
         let question = asked.question(caller);
+        tracing::info!(
+            workspace = %workspace_id,
+            action = %request.target.address.action,
+            person = %hex::encode(person),
+            "asking the person about a page action"
+        );
         let invocation = request.invocation;
         let mut run = request.clone();
         let handed = Arc::clone(&self.handed);
+        let taking = self.submission(workspace_id, format!("browser-hold/{}", invocation.0));
         tokio::runtime::Handle::current().spawn(async move {
-            let answered = certification.confirm_for(person, question).await;
-            let confirmed = asked.confirmed(&answered, &key);
-            let mut handed = handed.lock_recover();
-            let Some(entry) = handed.get_mut(&invocation) else {
-                // The caller stopped waiting while the person decided: the
-                // action runs not at all.
-                return;
-            };
-            match confirmed {
-                Ok(confirmed) => {
-                    confirmed.apply(&mut run);
-                    entry.stage = Stage::Allowed;
-                    drop(handed);
-                    // The invocation runs once, as the caller asked it, with
-                    // the person's answer: the window that refused it accepts
-                    // this one, and answers the caller itself.
-                    hand.hand(
-                        workspace_id,
-                        (device, person),
-                        window,
-                        RemoteActionMessage::Invoke(run),
-                    );
+            let (confirmed, taken) = match taking.await {
+                // The person answered it already: their answer goes to the
+                // window as it did then, and the window, which keeps what
+                // each invocation did, carries it out at most once.
+                Ok(Taking::Answered(answer)) => (answer, None),
+                Ok(Taking::Taken(taken)) => {
+                    let answered = certification.confirm_for(person, question).await;
+                    (
+                        taken.handing(asked.confirmed(&answered, &key)).await,
+                        Some(taken),
+                    )
                 }
-                Err(error) => over(entry, update_of_error(invocation, &error)),
+                Err(error) => (Err(error), None),
+            };
+            {
+                let mut handed = handed.lock_recover();
+                // A caller that stopped waiting while the person decided
+                // has nothing done for it.
+                if let Some(entry) = handed.get_mut(&invocation) {
+                    match confirmed {
+                        Ok(confirmed) => {
+                            confirmed.apply(&mut run);
+                            entry.stage = Stage::Allowed;
+                            drop(handed);
+                            // The invocation goes once more, as the caller
+                            // asked it, with the person's answer: the window
+                            // that refused it accepts this one, and answers
+                            // the caller itself.
+                            hand.hand(
+                                workspace_id,
+                                (device, person),
+                                window,
+                                RemoteActionMessage::Invoke(run),
+                            );
+                        }
+                        Err(error) => over(entry, update_of_error(invocation, &error)),
+                    }
+                }
+            }
+            if let Some(taken) = taken {
+                taken.release().await;
             }
         });
     }
@@ -1273,11 +1364,76 @@ impl HostedBrowsers {
     /// serves one: what a page action and a session's device name it by.
     #[must_use]
     pub async fn workspace_name(&self, workspace_id: WorkspaceId) -> Option<String> {
-        let workspaces = {
-            let authority = self.authority.lock_recover();
-            authority.as_ref()?.workspaces.clone()?
-        };
-        workspaces.workspace_identity(workspace_id).await
+        self.workspaces()?.workspace_identity(workspace_id).await
+    }
+
+    /// The workspaces this server serves, once it serves them.
+    fn workspaces(&self) -> Option<crate::workspaces::Workspaces> {
+        self.authority.lock_recover().as_ref()?.workspaces.clone()
+    }
+
+    /// Take the page submission `lease` names in `workspace_id`'s own state
+    /// as this server's device, for as long as the person is given to answer
+    /// and their answer to be handed over: of the workspace's holders, the
+    /// one that took it asks the person and hands over their answer, and no
+    /// other does, after a takeover or across a partition alike. A
+    /// submission the person already answered — through this holder or
+    /// another, before a restart or a takeover — is answered as they did,
+    /// from what the workspace kept, and never asked about again.
+    fn submission(
+        &self,
+        workspace_id: WorkspaceId,
+        lease: String,
+    ) -> impl Future<Output = Result<Taking, ActionCallError>> + Send + 'static {
+        let workspaces = self.workspaces();
+        let ttl = self.answer_wait.saturating_add(SUBMISSION_HANDOVER);
+        async move {
+            let unheld = || ActionCallError::Unavailable {
+                reason: "this server holds no copy of the workspace to ask in".into(),
+            };
+            let workspaces = workspaces.ok_or_else(unheld)?;
+            let workspace = workspaces
+                .workspace_identity(workspace_id)
+                .await
+                .ok_or_else(unheld)?;
+            if let Some(answer) = kept_answer(&workspaces, &workspace, &lease).await {
+                return Ok(Taking::Answered(answer));
+            }
+            let device = workspaces.serving_certificate().clone();
+            let claimed = workspaces
+                .author_own_workspace_state(&workspace, &device, |peer| {
+                    peer.workspace_mut().take_lease(
+                        &device,
+                        &lease,
+                        ttl,
+                        tilo_peer_state::unranked(),
+                        std::time::SystemTime::now(),
+                    )
+                })
+                .await
+                .map_err(|error| ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })?;
+            if claimed.is_none() {
+                return Err(ActionCallError::Unavailable {
+                    reason: ANOTHER_HOLDER_ASKS.into(),
+                });
+            }
+            let taken = Submission {
+                workspaces,
+                workspace,
+                lease,
+            };
+            // The merged state may hold an answer given before this holder
+            // took the submission: it is the answer, asked never again.
+            if let Some(answer) =
+                kept_answer(&taken.workspaces, &taken.workspace, &taken.lease).await
+            {
+                taken.release().await;
+                return Ok(Taking::Answered(answer));
+            }
+            Ok(Taking::Taken(taken))
+        }
     }
 
     /// [`Self::workspace_name`], asked again a few times with a growing
@@ -1735,6 +1891,31 @@ pub fn held_of(argument: &tilo_actions::remote::InvokeArgument) -> Option<u32> {
     }
 }
 
+/// What the server says of a page action handed to the window with nobody's
+/// answer: whether the caller's certificate came with it, and whether that
+/// certificate is an agent's that may operate web pages, which is what would
+/// have had this host answer for the person instead of asking them.
+fn note_unanswered_handover(
+    workspace_id: WorkspaceId,
+    request: &InvokeRequest,
+    certificate: Option<&DeviceCert>,
+) {
+    let (agent, browser_pages) = certificate.map_or((false, false), |certificate| {
+        (
+            certificate.capabilities.agent.is_some(),
+            certificate.capabilities.browser_pages,
+        )
+    });
+    tracing::info!(
+        workspace = %workspace_id,
+        action = %request.target.address.action,
+        certificate = certificate.is_some(),
+        agent,
+        browser_pages,
+        "a page action is handed to the window with nobody's answer, so its person is asked"
+    );
+}
+
 /// Whether `certificate` is a key its person let operate web pages in
 /// Browser, asking `request`, which is one of the actions that lets it take
 /// without asking them ([`OPERATING_ACTIONS`]). The key reaches only the
@@ -1745,6 +1926,125 @@ pub fn operates(certificate: &DeviceCert, request: &InvokeRequest) -> bool {
     certificate.capabilities.agent.is_some()
         && certificate.capabilities.browser_pages
         && OPERATING_ACTIONS.contains(&request.target.address.action.as_str())
+}
+
+/// How long past the person's wait a page submission stays taken: time to
+/// hand their answer to the window.
+const SUBMISSION_HANDOVER: Duration = Duration::from_secs(60);
+
+/// Why a holder that did not take a page submission asks nothing about it.
+pub const ANOTHER_HOLDER_ASKS: &str = "another holder of the workspace is asking the person";
+
+/// What came of taking a page submission ([`HostedBrowsers::submission`]).
+enum Taking {
+    /// This server's device took it: it asks the person.
+    Taken(Submission),
+    /// The person already answered it; the answer the workspace kept.
+    Answered(Result<ConfirmedInvocation, ActionCallError>),
+}
+
+/// The person's answer to the page submission `lease`, as a holder of
+/// `workspace` kept it once it was handed over.
+async fn kept_answer(
+    workspaces: &crate::workspaces::Workspaces,
+    workspace: &str,
+    lease: &str,
+) -> Option<Result<ConfirmedInvocation, ActionCallError>> {
+    let done = workspaces.state(workspace).await?.workspace().done(lease)?;
+    match serde_json::from_value(done.answer) {
+        Ok(answer) => Some(answer),
+        Err(error) => {
+            tracing::warn!(%lease, %error, "a kept answer is not one this build reads");
+            None
+        }
+    }
+}
+
+/// A page submission this server's device took in its workspace's state
+/// ([`HostedBrowsers::submission`]).
+struct Submission {
+    workspaces: crate::workspaces::Workspaces,
+    workspace: String,
+    lease: String,
+}
+
+impl Submission {
+    /// `confirmed`, the person's answer, as it may be handed over: only
+    /// while this server still holds the submission. A holder that lost it
+    /// while the person decided — another one took it over, or won it once
+    /// a partition healed — hands over nothing, so the page acts once. The
+    /// person's answer, an approval or a denial, is kept in the workspace
+    /// before it is handed over, so the same submission arriving later at
+    /// any holder is answered with it ([`Taking::Answered`]).
+    async fn handing(
+        &self,
+        confirmed: Result<ConfirmedInvocation, ActionCallError>,
+    ) -> Result<ConfirmedInvocation, ActionCallError> {
+        let ours = self.workspaces.serving_certificate().device_public_key;
+        let held = self
+            .workspaces
+            .state(&self.workspace)
+            .await
+            .and_then(|state| {
+                state
+                    .workspace()
+                    .lease(&self.lease, std::time::SystemTime::now())
+                    .holder
+            })
+            .is_some_and(|holder| holder.device == ours);
+        if !held {
+            return Err(ActionCallError::Unavailable {
+                reason: ANOTHER_HOLDER_ASKS.into(),
+            });
+        }
+        // A question nobody answered is no answer: the next arrival asks.
+        if matches!(confirmed, Ok(_) | Err(ActionCallError::NotPermitted)) {
+            self.keep(&confirmed).await;
+        }
+        confirmed
+    }
+
+    /// Keep `answer` as the person's answer to this submission.
+    async fn keep(&self, answer: &Result<ConfirmedInvocation, ActionCallError>) {
+        let device = self.workspaces.serving_certificate().clone();
+        let kept = match serde_json::to_value(answer) {
+            Ok(answer) => self
+                .workspaces
+                .author_own_workspace_state(&self.workspace, &device, |peer| {
+                    peer.workspace_mut().keep_done(
+                        &device,
+                        &self.lease,
+                        answer,
+                        std::time::SystemTime::now(),
+                    )
+                })
+                .await
+                .map(drop)
+                .map_err(|error| error.to_string()),
+            Err(error) => Err(error.to_string()),
+        };
+        if let Err(error) = kept {
+            tracing::warn!(lease = %self.lease, %error, "the person's answer was not kept");
+        }
+    }
+
+    /// Let the submission go once its answer was handed over.
+    async fn release(self) {
+        let device = self.workspaces.serving_certificate().clone();
+        if let Err(error) = self
+            .workspaces
+            .author_own_workspace_state(&self.workspace, &device, |peer| {
+                peer.workspace_mut().release_lease(
+                    &device,
+                    &self.lease,
+                    std::time::SystemTime::now(),
+                )
+            })
+            .await
+        {
+            tracing::warn!(lease = %self.lease, %error, "a page submission was not let go");
+        }
+    }
 }
 
 /// One page action the person is asked about, and what their answer is
@@ -1816,9 +2116,17 @@ impl Asked {
                     })
             }
             Ok(ConfirmationAnswer::Deny) => Err(ActionCallError::NotPermitted),
-            Err(_) => Err(ActionCallError::Unavailable {
-                reason: UNANSWERED.to_owned(),
-            }),
+            Err(error) => {
+                tracing::warn!(
+                    person = %hex::encode(self.person),
+                    action = %self.request.target.address.action,
+                    %error,
+                    "the person was asked about a page action and no answer came"
+                );
+                Err(ActionCallError::Unavailable {
+                    reason: UNANSWERED.to_owned(),
+                })
+            }
         }
     }
 }

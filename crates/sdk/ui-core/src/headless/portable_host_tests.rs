@@ -1491,8 +1491,8 @@ fn an_agents_comment_is_drawn_in_the_thread_and_on_the_issues_row() {
 }
 
 /// What someone else changed in a field stays only as the hover note saying who and what it held:
-/// the write itself is drawn where it landed while it fades ([`crate::presence::PresenceCtx::draw_writes_in`]),
-/// so the field never keeps their colour after that.
+/// the write itself is drawn where it landed by presence ([`crate::presence::PresenceCtx::draw_writes_in`]),
+/// so the field keeps no colour of theirs of its own.
 #[test]
 fn a_field_changed_by_someone_else_keeps_no_colour_of_theirs() {
     use crate::component::{Bound, Described as _, Person};

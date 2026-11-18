@@ -7,8 +7,11 @@
 //! any member does. So the shell runs there, beside the VM, and this host
 //! only asks:
 //!
-//! 1. the placer which host runs the workspace's VM ([`Request::Place`]);
-//!    while every host is full it answers [`Reply::Busy`], and the run waits,
+//! 1. which machine keeps the workspace's VM: the one whose member holds the
+//!    VM's lease in the workspace (`tilo_peer_state::vm_lease`), read here
+//!    from the workspace's own state; while nobody holds it, the placer, which
+//!    names the first machine with room ([`Request::Place`]); while every
+//!    machine is full it answers [`Reply::Busy`], and the command waits,
 //!    saying so once, never refused for workspace;
 //! 2. that host's member device, over the device action service as this host's own
 //!    device, to run the command line
@@ -79,6 +82,9 @@ pub struct PlacedShells {
     size: VmSize,
     /// This host's device action service and endpoint, once the host runs.
     asking: OnceLock<(ActionService, Endpoint)>,
+    /// The workspaces this host holds, whose VM leases name the machine each
+    /// VM is kept on, and the runtime they are read on.
+    leases: OnceLock<(crate::workspaces::Workspaces, tokio::runtime::Handle)>,
 }
 
 impl PlacedShells {
@@ -140,12 +146,46 @@ impl PlacedShells {
             account,
             size,
             asking: OnceLock::new(),
+            leases: OnceLock::new(),
         }
     }
 
     /// Ask as `action_service`'s device, from `endpoint`: this host's own.
     pub fn ask_from(&self, action_service: ActionService, endpoint: Endpoint) {
         let _ = self.asking.set((action_service, endpoint));
+    }
+
+    /// Read which machine keeps each VM from the VM leases of `workspaces`,
+    /// the workspaces this host holds, on `runtime`.
+    pub fn read_leases(
+        &self,
+        workspaces: crate::workspaces::Workspaces,
+        runtime: tokio::runtime::Handle,
+    ) {
+        let _ = self.leases.set((workspaces, runtime));
+    }
+
+    /// The machine whose member holds `workspace`'s VM lease now, by the name
+    /// the members file gives it; `None` while nobody holds it.
+    pub(crate) fn keeper(&self, workspace: &str) -> Result<Option<String>, String> {
+        let Some((workspaces, runtime)) = self.leases.get() else {
+            return Ok(None);
+        };
+        let lease = tilo_peer_state::vm_lease(ENVIRONMENT);
+        let Some(device) = runtime
+            .block_on(workspaces.lease_holder(workspace, &lease))
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        let device = hex::encode(device);
+        self.members
+            .iter()
+            .find(|(_, member)| member.device == device)
+            .map(|(name, _)| Some(name.clone()))
+            .ok_or_else(|| {
+                format!("the VM of workspace {workspace} is kept by {device}, no VM machine here")
+            })
     }
 
     /// This host's device action service and endpoint, once it runs.
@@ -165,19 +205,15 @@ impl PlacedShells {
         self.size
     }
 
-    /// Where the placer is reached.
-    pub(crate) fn placer(&self) -> &str {
-        &self.placer
-    }
-
     /// The VM hosts' member devices, by the name the placer answers.
     pub(crate) fn members(&self) -> &Members {
         &self.members
     }
 
-    /// The host that runs `workspace`'s VM, which holds its shells and its
-    /// Browser, waiting while none has room and keeping the line that said so
-    /// in `waited`; `None` when `stop` ended the wait.
+    /// The machine that keeps `workspace`'s VM, which holds its shells and its
+    /// Browser: the holder of its lease, else the one the placer names,
+    /// waiting while none has room and keeping the line that said so in
+    /// `waited`; `None` when `stop` ended the wait.
     pub(crate) fn placed(
         &self,
         workspace: &str,
@@ -193,6 +229,9 @@ impl PlacedShells {
         loop {
             if stop.is_some_and(|stop| stop()) {
                 return Ok(None);
+            }
+            if let Some(keeper) = self.keeper(workspace)? {
+                return Ok(Some(keeper));
             }
             match ask_placer(&self.placer, &Request::Place { vm: vm.clone() })? {
                 Reply::Placed { host } => return Ok(Some(host)),
@@ -284,7 +323,12 @@ pub fn read_members(path: &Path) -> Result<Members, String> {
     serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-pub(crate) fn member_address(member: &Member) -> Result<EndpointAddr, String> {
+/// Where `member`'s endpoint is reached.
+///
+/// # Errors
+///
+/// Its device key or address is not usable.
+pub fn member_address(member: &Member) -> Result<EndpointAddr, String> {
     let key: [u8; 32] = hex::decode(&member.device)
         .ok()
         .and_then(|bytes| bytes.try_into().ok())

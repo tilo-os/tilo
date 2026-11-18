@@ -23,7 +23,7 @@ struct Served {
     /// The workspaces made at the start with Ada's page on each, until a test sets one up.
     opened: Vec<(String, Browser)>,
     /// The server itself and what it keeps on its disk, kept until the test ends.
-    _alive: Box<dyn std::any::Any>,
+    alive: Box<dyn std::any::Any>,
     _state: tempfile::TempDir,
     actions: tilo_agent_session::workspace_actions::WorkspaceActions,
     workspaces: Workspaces,
@@ -159,8 +159,18 @@ mod chat_read_direct;
 impl Served {
     /// A server with `count` workspaces on it, Ada's page open on each.
     async fn start(count: usize) -> Self {
+        Self::start_certified(count, 1).await
+    }
+
+    /// [`Self::start`], the server's own device certified at `issued_at_ns`. Every other device
+    /// of the fixture is certified at one early moment, so a later one makes the server's own
+    /// device the newest Ada has.
+    async fn start_certified(count: usize, issued_at_ns: u64) -> Self {
         let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-        let server = enrol(&ada, "tilo-sh", DeviceCapabilities::member());
+        let mut server = enrol(&ada, "tilo-sh", DeviceCapabilities::member());
+        server.cert.issued_at_ns = issued_at_ns;
+        tilo_user_identity::sign_device_cert(&mut server.cert, &ada)
+            .expect("her root certifies the server's own device");
         let browser = enrol(&ada, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
         let (served, actions) = crate::harness::hosted::serving_documents_with_actions(
@@ -179,7 +189,7 @@ impl Served {
         }
         Self {
             opened,
-            _alive: Box::new(served),
+            alive: Box::new(served),
             _state: state,
             actions,
             workspaces,
@@ -500,11 +510,28 @@ pub(super) async fn narrow_agent(
 
 /// Answer the turn `message` gives the agent in `workspace`, on the server, with `model`.
 async fn answered(served: &Served, workspace: &str, message: &Id, model: Model) {
+    answered_knowing(served, workspace, message, model, None).await;
+}
+
+/// [`answered`], by agents told that the devices `placed` holds are the server's own, where
+/// they are told any.
+async fn answered_knowing(
+    served: &Served,
+    workspace: &str,
+    message: &Id,
+    model: Model,
+    placed: Option<tilo_server::environment::EnvironmentRegistry>,
+) {
     let agents = HostAgents::new(
         served.workspaces.clone(),
         served.actions.clone(),
         Some(model),
     );
+    let agents = if let Some(placed) = placed {
+        agents.knowing_placed(placed)
+    } else {
+        agents
+    };
     let deadline = tilo_test_env::hang_deadline();
     let turn = loop {
         let turns = agents.turns(workspace).await.unwrap();
@@ -604,6 +631,239 @@ async fn a_turn_on_the_server_finds_what_its_agents_rules_let_it_read() {
         );
         page.peer.close();
     }
+}
+
+/// What the service's feed of changes answers `caller` after `after`.
+async fn feed(
+    served: &Served,
+    workspace: &str,
+    caller: &Caller,
+    after: Option<String>,
+) -> tilo_actions::remote::ChangePage {
+    use tilo_actions::remote::RemoteActionMessage;
+    let (actions, caller) = (served.actions.clone(), caller.clone());
+    let workspace = WorkspaceId::parse(workspace).unwrap();
+    let answered = tokio::task::spawn_blocking(move || {
+        let asked = RemoteActionMessage::ChangesRequest {
+            correlation: 1,
+            after,
+        };
+        let answer = actions.serve(workspace, &caller, asked)?;
+        answer
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+    })
+    .await
+    .unwrap();
+    match answered {
+        Some(RemoteActionMessage::ChangesResponse {
+            result: Ok(page), ..
+        }) => page,
+        other => panic!("not a page of the feed: {other:?}"),
+    }
+}
+
+/// The feed of changes tells a caller of what it may read and of nothing else, as a search
+/// does. An agent whose rules refuse it what Chat keeps follows the feed outside a turn, held
+/// to the rules the workspace's list keeps for it: it is told nothing of what is said in Chat
+/// after it began to follow, neither the words nor that something of Chat changed. An agent
+/// nothing narrows is told both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_feed_of_changes_tells_an_agent_nothing_of_an_app_its_rules_refuse_it() {
+    let mut served = Served::start(2).await;
+    // What narrows the agent, and whether it is told what is said in Chat.
+    let cases: [(&str, Rules, bool); 2] = [
+        ("an agent nothing narrows", |_| Vec::new(), true),
+        (
+            "an agent refused what Chat keeps",
+            |workspace| vec![reading(chat_in(workspace), "deny")],
+            false,
+        ),
+    ];
+    for (which, rules, told) in cases {
+        let (workspace, page, _) = served.workspace(rules).await;
+        let ada = Served::person(&served.ada, &served.devices.1, &workspace);
+        let agent = ada
+            .clone()
+            .delegated_to(SCOUT.to_owned())
+            .named(SCOUT)
+            .in_agent_session(format!("agent-session:test-feed-{SCOUT}"));
+        let hers = feed(&served, &workspace, &ada, None).await.cursor;
+        let its = feed(&served, &workspace, &agent, None).await.cursor;
+        let now = i64::try_from(tilo_clock::unix_now_ns() / 1_000_000_000).unwrap();
+        served
+            .said_at(
+                &workspace,
+                &served.ada,
+                &conversation_with(&served.ada, SCOUT),
+                ("The feed's word is siskin.", now - 30),
+            )
+            .await;
+        // Her own read of the feed says when the server has taken the sentence in.
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let read = feed(&served, &workspace, &ada, Some(hers.clone())).await;
+            if format!("{read:?}").contains("siskin") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{which}: the feed never tells her what she said: {read:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let read = feed(&served, &workspace, &agent, Some(its)).await;
+        let of_chat: Vec<_> = read
+            .changes
+            .iter()
+            .filter(|change| change.app == CHAT)
+            .collect();
+        assert_eq!(
+            !of_chat.is_empty(),
+            told,
+            "{which}, the changes of what Chat keeps that it is told: {of_chat:?}"
+        );
+        assert_eq!(
+            format!("{read:?}").contains("siskin"),
+            told,
+            "{which}, the words said in Chat: {read:?}"
+        );
+        page.peer.close();
+    }
+}
+
+/// The ask the service holds until a write lands in the workspace wakes a caller only for a
+/// write to something it may read. An agent whose rules refuse it every read of the workspace
+/// waits outside a turn while its person says something in Chat. Once the service has read
+/// what landed, which is what wakes a wait, its person's wait is answered and the agent's is
+/// not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_wakes_no_agent_whose_rules_refuse_it_the_read() {
+    use tilo_actions::remote::{RemoteActionMessage, WatchScope};
+    let mut served = Served::start(1).await;
+    let (workspace, page, _) = served
+        .workspace(|workspace| vec![reading(format!("workspace:{workspace}"), "deny")])
+        .await;
+    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
+    let agent = ada
+        .clone()
+        .delegated_to(SCOUT.to_owned())
+        .named(SCOUT)
+        .in_agent_session(format!("agent-session:test-wait-{SCOUT}"));
+    let id = WorkspaceId::parse(&workspace).unwrap();
+    let held = |caller: &Caller, correlation| {
+        let asked = RemoteActionMessage::ChangedRequest {
+            correlation,
+            scope: WatchScope::Records,
+        };
+        served
+            .actions
+            .serve(id, caller, asked)
+            .expect("the service answers a wait for a change")
+    };
+    // What landed so far is read before anyone waits.
+    let from = feed(&served, &workspace, &ada, None).await.cursor;
+    let began = Instant::now();
+    let (hers, its) = (held(&ada, 1), held(&agent, 2));
+    // The service takes its requests in the order they came: once this one is answered, both
+    // waits are kept.
+    feed(&served, &workspace, &ada, Some(from.clone())).await;
+    let now = i64::try_from(tilo_clock::unix_now_ns() / 1_000_000_000).unwrap();
+    served
+        .said_at(
+            &workspace,
+            &served.ada,
+            &conversation_with(&served.ada, SCOUT),
+            ("The wait's word is dunlin.", now - 30),
+        )
+        .await;
+    // Her read of the feed has the service read what landed, and tells when it has.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let read = feed(&served, &workspace, &ada, Some(from.clone())).await;
+        if format!("{read:?}").contains("dunlin") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the feed never tells her what she said: {read:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // A wait is kept for ten seconds: one that ended by itself was woken by nothing, and says
+    // nothing of whom a write wakes.
+    assert!(
+        began.elapsed() < Duration::from_secs(8),
+        "both waits were still kept when the service read the write: {:?}",
+        began.elapsed()
+    );
+    let (hers, its) = tokio::task::spawn_blocking(move || {
+        let hers = hers
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten();
+        let its = its.wait_timeout(Duration::from_millis(500)).ok().flatten();
+        (hers, its)
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            hers,
+            Some(RemoteActionMessage::ChangedResponse { result: Ok(()), .. })
+        ),
+        "her own wait is answered when she says something: {hers:?}"
+    );
+    assert!(
+        its.is_none(),
+        "an agent refused every read is not answered when a write lands in Chat: {its:?}"
+    );
+    page.peer.close();
+}
+
+/// A write by another device answers a wait for a change by itself: no request to the service
+/// follows the write. A person waits; their page writes the workspace's layout through its own
+/// session, as a colleague's device would write anything; the wait is answered within a second.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_by_another_device_answers_a_wait_for_a_change_within_a_second() {
+    use tilo_actions::remote::{RemoteActionMessage, WatchScope};
+    let mut served = Served::start(1).await;
+    let (workspace, mut page, _) = served.workspace(|_| Vec::new()).await;
+    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
+    let id = WorkspaceId::parse(&workspace).unwrap();
+    let asked = RemoteActionMessage::ChangedRequest {
+        correlation: 1,
+        scope: WatchScope::Records,
+    };
+    let waiting = served
+        .actions
+        .serve(id, &ada, asked)
+        .expect("the service answers a wait for a change");
+    // The service takes its requests in the order they came: once this one is answered, the
+    // wait before it is kept.
+    feed(&served, &workspace, &ada, None).await;
+    let began = Instant::now();
+    page.put_layout();
+    let answered = tokio::task::spawn_blocking(move || {
+        waiting
+            .wait_timeout(Duration::from_secs(1))
+            .map_err(|_still_held| ())
+    })
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            answered,
+            Ok(Some(RemoteActionMessage::ChangedResponse {
+                result: Ok(()),
+                ..
+            }))
+        ),
+        "the wait is answered within a second of another device's write (after {:?}): {answered:?}",
+        began.elapsed()
+    );
+    page.peer.close();
 }
 
 /// What a person tells an agent is found by that person and by a turn of theirs, and by nobody

@@ -17,6 +17,8 @@ pub const WORKSPACE_JOIN_ALPN: &[u8] = b"tilo-workspace-join/1";
 pub const MAX_WORKSPACE_JOIN_REQUEST_BYTES: usize = 256 * 1024;
 /// Largest accepted bootstrap response containing governed workspace state.
 pub const MAX_WORKSPACE_JOIN_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+/// Longest name a holder gives itself in its signed address, in characters.
+pub const MAX_HOLDER_LABEL_CHARS: usize = 80;
 
 /// Proof that a device holds one workspace's keys and serves its join: the workspace, the
 /// device that holds them, and the service key at its endpoint.
@@ -93,6 +95,16 @@ pub struct WorkspaceDeviceHintV1 {
     /// Whether the device runs this workspace's work — its records' actions, their indexes —
     /// for the rest of the person's devices, as its work setting takes it.
     pub runs_work: bool,
+    /// What the holder goes by among the workspace's holders: a server's
+    /// name from its person's admin workspace, or a hosting service's site
+    /// name. Empty when it names none, and the workspace shows its device's
+    /// own label.
+    #[serde(default)]
+    pub label: String,
+    /// Whether the machine under the holder is rented from a cloud provider,
+    /// whose operator can read what the machine holds.
+    #[serde(default)]
+    pub cloud: bool,
     /// The workspace this endpoint serves.
     pub workspace_id: WorkspaceId,
     /// Exact Iroh service address the guest dials.
@@ -334,6 +346,13 @@ impl WorkspaceDeviceHintV1 {
         if self.runs_work && !self.holds_keys {
             return Err(WorkspaceJoinError::Protocol(
                 "a device that runs a workspace's work holds no keys for it".into(),
+            ));
+        }
+        if self.label.chars().count() > MAX_HOLDER_LABEL_CHARS
+            || self.label.chars().any(char::is_control)
+        {
+            return Err(WorkspaceJoinError::Protocol(
+                "a workspace holder's name is not a label".into(),
             ));
         }
         if self.packet_relay_url.is_empty() || self.packet_relay_url.len() > 4096 {

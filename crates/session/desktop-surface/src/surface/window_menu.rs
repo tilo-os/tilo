@@ -847,7 +847,13 @@ fn controls_desktop(tree: &Layout, route: &RouteIds) -> bool {
     let Some((workspace, app)) = holder_of(tree, route) else {
         return false;
     };
-    workspace.holds_desktop_control_at(&app, tilo_clock::unix_now())
+    let control = collab_types::caps::DeviceCap::DesktopControl;
+    workspace.sandbox_decide_at(
+        &app,
+        &collab_types::caps::ResourceRef::Device(control),
+        control.access(),
+        tilo_clock::unix_now(),
+    ) == collab_types::caps::CapDecision::Allow
 }
 
 /// The workspace holding the window at `route` , and the app it runs.

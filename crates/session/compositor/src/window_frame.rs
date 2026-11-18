@@ -99,7 +99,7 @@ impl FrameImages {
         size: (f64, f64),
         scale: f64,
     ) -> Option<std::rc::Rc<FrameImage>> {
-        // A frame that draws nothing around the window (its host paints the card whole) has no
+        // A frame that draws nothing around the window (the shell paints the card whole) has no
         // image at all: only its corners are drawn, from `bands` .
         let shadow = frame.shadow.filter(|shadow| shadow.rgba[3] > 0);
         let edge = frame
@@ -511,7 +511,7 @@ mod tests {
         {
             let frame = WindowFrame::corners(14.0);
             assert!((frame.radius - 14.0).abs() < f64::EPSILON, "corners stay");
-            assert!(frame.shadow.is_none(), "the host draws the lift");
+            assert!(frame.shadow.is_none(), "the shell draws the lift");
             assert!(frame.edge.is_none(), "and the edge");
             assert!(
                 !frame.is_square(),

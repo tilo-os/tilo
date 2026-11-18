@@ -431,3 +431,150 @@ fn an_item_is_asked_for_only_where_a_text_may_be_written() {
     assert!(window.vault.asked.borrow().is_empty());
     assert!(window.fills().is_empty());
 }
+
+/// A visitor's window at `url` whose session is `session`, stood in for: the window, and
+/// what it was synced against.
+fn window_of(url: &str, session: &Rc<crate::session_items::testing::Session>) -> Window {
+    let engine = TestEngine::new();
+    engine.send(WebViewCommand::Navigate(url.into()));
+    let mut widget = BrowserWidget::with_engine_mode(engine.clone(), true, BrowsingMode::Visitor);
+    widget.set_item_requests(session.clone());
+    let (doc, root) = synced(&mut widget);
+    widget.sync(&doc, &root);
+    Window {
+        engine,
+        widget,
+        vault: Rc::new(Vault::default()),
+        doc,
+        root,
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
+fn a_window_whose_session_lends_items_has_a_field_filled_through_its_session() {
+    use crate::session_items::testing::Session;
+    use ui::collaboration::browser_service_sessions::{
+        BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
+    };
+
+    let session = Rc::new(Session::default());
+    let mut window = window_of("https://example.test/login?next=%2Fhome", &session);
+    // The window asks its session whether items are lent, and offers nothing before the
+    // session says so.
+    assert_eq!(session.sent(), [Command::LendsItems {}]);
+    assert!(!offers(&window.widget, "fill-page-item"));
+    session.answers(0, Ok(Reply::ItemsLent { lent: true }));
+    window.widget.sync(&window.doc, &window.root);
+    assert!(offers(&window.widget, "fill-page-item"));
+
+    // A fill asks the session for the item at the site the engine committed, and until the
+    // session answers the engine is asked nothing.
+    let invocation = window
+        .start(
+            "fill-page-item",
+            &json!({"element": "d1e5", "item": ITEM, "reason": "To sign in for you."}),
+        )
+        .unwrap();
+    assert_eq!(
+        session.sent()[1],
+        Command::UseItem {
+            invocation,
+            item: ITEM.into(),
+            origin: "https://example.test".into(),
+        }
+    );
+    window.widget.sync(&window.doc, &window.root);
+    assert!(window.widget.poll_invocation(invocation).is_none());
+    assert!(window.engine.released_fills().is_empty());
+
+    session.answers(1, Session::text(invocation, PASSWORD, "password"));
+    let answer = succeeded(window.settled(invocation));
+    assert_eq!(answer["filled"], true);
+    assert_eq!(answer["site"], "https://example.test");
+    // The engine was written the text once, for the site it was asked for.
+    let written = window.engine.released_fills();
+    assert_eq!(written.len(), 1);
+    assert_eq!(written[0].element, "d1e5");
+    assert_eq!(written[0].at, "https://example.test");
+    assert_eq!(written[0].into, FillInto::Password);
+    assert!(
+        written[0].text.as_deref() == Some(PASSWORD),
+        "the engine was written another text than the session answered"
+    );
+    // Nothing else holds it: not the answer, not what the session was sent, and no print of
+    // what the engine was sent.
+    let printed = format!(
+        "{answer} {:?} {:?}",
+        window.engine.commands(),
+        session.sent()
+    );
+    assert!(
+        !printed.contains(PASSWORD) && !printed.contains("sesame"),
+        "a print holds the item's text"
+    );
+
+    // A refusal ends the fill with the reason the session carried, and that its person is
+    // asked first ends it with the words for whoever asked. Neither reaches the engine.
+    let refused = window.fill("d1e5");
+    session.answers(
+        2,
+        Ok(Reply::item_refused(
+            refused,
+            "Ada said no, so the item is not used.",
+        )),
+    );
+    let failure = failed(window.settled(refused));
+    assert_eq!(failure.code, "browser.page.item_refused");
+    assert_eq!(failure.message, "Ada said no, so the item is not used.");
+    let first = window.fill("d1e5");
+    session.answers(3, Ok(Reply::item_asked(first, "Ada is asked first.")));
+    let failure = failed(window.settled(first));
+    assert_eq!(failure.code, ASKED_FIRST);
+    assert_eq!(failure.message, "Ada is asked first.");
+    assert_eq!(window.engine.released_fills().len(), 1);
+    assert_eq!(session.sent().len(), 4);
+}
+
+#[test]
+fn a_window_whose_session_lends_no_items_or_does_not_say_never_offers_the_fill() {
+    use crate::session_items::testing::Session;
+    use ui::collaboration::browser_service_sessions::{
+        BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
+    };
+
+    // A person's own session: asked once, and the fill is never offered.
+    let session = Rc::new(Session::default());
+    let mut window = window_of("https://example.test/login", &session);
+    session.answers(0, Ok(Reply::ItemsLent { lent: false }));
+    for _ in 0..4 {
+        window.widget.sync(&window.doc, &window.root);
+    }
+    assert!(!offers(&window.widget, "fill-page-item"));
+    assert_eq!(session.sent(), [Command::LendsItems {}]);
+    assert!(
+        window
+            .start("fill-page-item", &json!({"element": "d1e5", "item": ITEM}))
+            .is_err()
+    );
+
+    // A session that refuses the question: asked a bounded number of times, never offered,
+    // and no item is ever asked for.
+    let session = Rc::new(Session::default());
+    let mut window = window_of("https://example.test/login", &session);
+    for _ in 0..40 {
+        if session.busy() {
+            let asked = session.sent().len() - 1;
+            session.answers(asked, Err("private service-session request refused".into()));
+        }
+        window.widget.sync(&window.doc, &window.root);
+    }
+    assert!(!offers(&window.widget, "fill-page-item"));
+    assert!(session.sent().len() <= 6, "{:?}", session.sent());
+    assert!(
+        session
+            .sent()
+            .iter()
+            .all(|sent| *sent == Command::LendsItems {})
+    );
+}

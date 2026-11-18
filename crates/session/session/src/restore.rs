@@ -18,7 +18,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crate::platform::surfaces::DesktopHost;
+use crate::platform::surfaces::ShellDesktop;
 use tilo_app_launch::Launch;
 use tilo_desktop_model::{Layout, TabId, TileContent, WorkspaceId};
 
@@ -28,6 +28,14 @@ use crate::i18n::t_args;
 /// How long a saved window may take to show itself before its tab says it did not open: an app that
 /// started and never mapped is not coming.
 const OPEN_DEADLINE: Duration = Duration::from_secs(15);
+
+/// How long the windows of the apps kept across an in-place restart wait, unshown, for the saved
+/// layout that holds their tabs. The layout reaches a desktop that just started from what the
+/// workspaces hold, after the keepers already answered; a window shown before it is there takes a
+/// new tab, and its own saved tab would be taken for one the app closed. A layout that never
+/// comes (its workspace is not readable on this device any more) shows them as new windows after
+/// this.
+const KEPT_WAIT: Duration = Duration::from_secs(15);
 
 /// The saved windows of a layout, asked for again one at a time.
 #[derive(Default)]
@@ -46,8 +54,14 @@ pub(crate) struct Restore {
     /// Whether the session has begun restoring at all: its first look at the layouts ran, even
     /// when there was nothing to lay out (a device with no workspace yet).
     begun: bool,
-    /// Whether the windows of the apps kept across a restart have been given their tabs and shown.
-    kept_shown: bool,
+    /// The apps kept across a restart whose windows wait, unshown, for the saved tabs they stood
+    /// in to be laid out ([`KEPT_WAIT`]), and since when: they are taken from the launcher once.
+    #[cfg(target_os = "linux")]
+    kept: Vec<tilo_app_launch::Adopted>,
+    kept_since: Option<Instant>,
+    /// Every workspace's layout has been read once, or this session reads none: a tab a kept
+    /// window names that is not laid out by then is gone.
+    read: bool,
     /// What the windows of those apps announce themselves by: a saved tab of one of them that no
     /// window of theirs claimed is a window the app closed while the desktop was away, and is not
     /// asked for again, which would start a second instance of an app that still runs.
@@ -86,6 +100,17 @@ impl Restore {
     /// layouts, whether or not they held any to open.
     pub(crate) fn begin(&mut self) {
         self.begun = true;
+    }
+
+    /// This session reads no workspace's layout at all: what it laid out is all there is.
+    pub(crate) fn without_layouts(&mut self) {
+        self.seeded = true;
+        self.read = true;
+    }
+
+    /// Every workspace's layout has been read once.
+    pub(crate) fn layouts_read(&mut self) {
+        self.read = true;
     }
 
     /// Whether the restore has begun: what says a desktop is usable, beside its first frames.
@@ -160,10 +185,20 @@ impl Restore {
     }
 
     /// When the app asked for a saved window gives up and its tab says so.
+    /// Or when the kept windows stop waiting for their saved layout.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
-        self.opening
+        #[cfg(target_os = "linux")]
+        let kept = self
+            .kept_since
+            .filter(|_| !self.kept.is_empty())
+            .and_then(|since| since.checked_add(KEPT_WAIT));
+        #[cfg(not(target_os = "linux"))]
+        let kept = None;
+        let opening = self
+            .opening
             .as_ref()
-            .and_then(|opening| opening.asked.checked_add(OPEN_DEADLINE))
+            .and_then(|opening| opening.asked.checked_add(OPEN_DEADLINE));
+        opening.into_iter().chain(kept).min()
     }
 
     /// Ask for the next saved window when the one before has come, or say in its tab why it did
@@ -173,7 +208,7 @@ impl Restore {
     /// nothing there, and would not join once the device is admitted.
     pub(crate) fn follow(
         &mut self,
-        desktop: &DesktopHost,
+        desktop: &ShellDesktop,
         apps: Option<&Apps>,
         awaited: &dyn Fn(&str) -> Option<String>,
     ) {
@@ -182,15 +217,28 @@ impl Restore {
             // stay as they are.
             return;
         };
-        let first = self.started() && !self.kept_shown;
-        if first {
-            self.kept_shown = true;
-            self.claim_kept(desktop, apps.take_kept());
-            apps.attach_kept();
+        if self.started() && self.kept_since.is_none() {
+            self.kept_since = Some(Instant::now());
+            #[cfg(target_os = "linux")]
+            {
+                self.kept = apps.take_kept();
+            }
         }
         #[cfg(target_os = "linux")]
-        self.claim_outdated(apps, first);
+        {
+            let shown = self.outdated.len();
+            for keeper in self.claim_kept(desktop) {
+                apps.attach_kept(keeper);
+            }
+            self.claim_outdated(apps, shown);
+        }
         self.release_admitted(desktop, awaited);
+        // A saved tab may be one a kept window is about to claim: no app is started for one
+        // while a kept app still waits for the layout.
+        #[cfg(target_os = "linux")]
+        if !self.kept.is_empty() {
+            return;
+        }
         loop {
             if let Some(opening) = &self.opening {
                 let waiting = desktop.with_policy(|policy| policy.waits_for_window(opening.tab));
@@ -235,17 +283,46 @@ impl Restore {
 
     /// Give each window of an app that stayed running through an in-place restart the saved tab
     /// its keeper was last told it stood in: the tab waits for exactly that window, which comes
-    /// once the app is shown again, and the app is not started a second time. A kept window whose
-    /// tab is gone (the layout changed on another device meanwhile), or that opened while the
-    /// desktop was away, opens as a new window does. A saved tab of a kept app that none of its
-    /// windows claims is one the app closed while the desktop was away: it closes too.
+    /// once the app is shown again, and the app is not started a second time. The keepers to show
+    /// now, by process: an app is shown once the layout holding every tab its keeper named is laid
+    /// out, or every workspace's layout was read and some of them are gone, or after
+    /// [`KEPT_WAIT`]; shown before, its windows would take new tabs. A kept window
+    /// whose tab is gone (the layout changed on another device meanwhile), or that opened while
+    /// the desktop was away, opens as a new window does. A saved tab of a kept app that none of
+    /// its windows claims is one the app closed while the desktop was away: it closes too, which
+    /// is only known once both the keeper described its windows and the layout is laid out.
     #[cfg(target_os = "linux")]
-    fn claim_kept(&mut self, desktop: &DesktopHost, adopted: Vec<tilo_app_launch::Adopted>) {
-        for kept in adopted {
+    fn claim_kept(&mut self, desktop: &ShellDesktop) -> Vec<u32> {
+        if self.kept.is_empty() {
+            return Vec::new();
+        }
+        let waited = self
+            .kept_since
+            .is_some_and(|since| since.elapsed() >= KEPT_WAIT);
+        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.kept)
+            .into_iter()
+            .partition(|kept| {
+                waited || (self.seeded && (self.read || tabs_laid_out(kept, &self.waiting)))
+            });
+        self.kept = waiting;
+        let mut shown = Vec::new();
+        for kept in ready {
             if kept.outdated {
                 self.outdated.push(kept);
                 continue;
             }
+            let as_found = if self.seeded {
+                "in its saved tabs"
+            } else {
+                "as new windows, its saved layout not read"
+            };
+            tracing::info!(
+                target: tilo_startup_metrics::KEPT_APPS_TARGET,
+                app = %kept.launch.app,
+                keeper = kept.pid,
+                windows = kept.windows.len(),
+                "kept across restart: shown {as_found}"
+            );
             for window in &kept.windows {
                 // A window that opened while the desktop was away was told no place.
                 let Some(placement) = window.placement.as_deref() else {
@@ -273,31 +350,42 @@ impl Restore {
                     policy.adopt(&saved.app, saved.tab, Some(window));
                 });
             }
+            shown.push(kept.pid);
             self.kept_apps.push(kept.launch.app.clone());
             self.kept_apps.extend(kept.launch.window_identities);
             self.kept_apps
                 .extend(kept.windows.into_iter().filter_map(|window| window.app_id));
         }
-        let closed: Vec<TabId> = self
-            .waiting
-            .iter()
-            .filter(|saved| self.kept_by_app(&saved.app))
-            .map(|saved| saved.tab)
-            .collect();
-        self.waiting.retain(|saved| !closed.contains(&saved.tab));
-        for tab in closed {
-            desktop.with_policy(|policy| policy.release_tab(tab));
+        // Before the layout is laid out, what of a kept app's is left of it closes as it does
+        // ([`Self::start`]).
+        if self.seeded {
+            let closed: Vec<TabId> = self
+                .waiting
+                .iter()
+                .filter(|saved| self.kept_by_app(&saved.app))
+                .map(|saved| saved.tab)
+                .collect();
+            self.waiting.retain(|saved| !closed.contains(&saved.tab));
+            for tab in closed {
+                desktop.with_policy(|policy| policy.release_tab(tab));
+            }
         }
+        shown
     }
 
     /// The saved tabs of each app still open from before an update, which this desktop cannot
     /// show: each says so, with Restart, and the app is not started a second time beside the one
-    /// that still holds the person's unsaved work. `first` is the pass that took the apps back,
-    /// which also gives one that left no saved tab a tab of its own.
+    /// that still holds the person's unsaved work. The ones from `shown` on were just taken back,
+    /// and one of those that left no saved tab gets a tab of its own.
     #[cfg(target_os = "linux")]
-    fn claim_outdated(&mut self, apps: &Apps, first: bool) {
+    fn claim_outdated(&mut self, apps: &Apps, shown: usize) {
+        let mut fresh = self.outdated.split_off(shown.min(self.outdated.len()));
         self.outdated.retain(|kept| apps.is_launched(kept.id));
-        for kept in &self.outdated {
+        fresh.retain(|kept| apps.is_launched(kept.id));
+        let fresh_from = self.outdated.len();
+        self.outdated.append(&mut fresh);
+        for (index, kept) in self.outdated.iter().enumerate() {
+            let first = index >= fresh_from;
             let ids: Vec<&str> = std::iter::once(kept.launch.app.as_str())
                 .chain(kept.launch.window_identities.iter().map(String::as_str))
                 .collect();
@@ -306,8 +394,8 @@ impl Restore {
                     .into_iter()
                     .partition(|saved| {
                         ids.iter().any(|id| {
-                            tilo_desktop_policy::app_ids_match(id, &saved.app)
-                                || tilo_desktop_policy::app_ids_match(&saved.app, id)
+                            tilo_desktop_model::apps::app_ids_match(id, &saved.app)
+                                || tilo_desktop_model::apps::app_ids_match(&saved.app, id)
                         })
                     });
             self.waiting = rest;
@@ -324,7 +412,7 @@ impl Restore {
     /// Tell the keeper of each window it shows the tab that window stands in, when the layout
     /// changed since the last time: the run after an in-place restart puts the window back there.
     /// A tab keeps its id while it is dragged, so a drag tells nothing until it lands elsewhere.
-    pub(crate) fn tell_placements(&mut self, desktop: &DesktopHost, apps: Option<&Apps>) {
+    pub(crate) fn tell_placements(&mut self, desktop: &ShellDesktop, apps: Option<&Apps>) {
         let Some(apps) = apps else {
             return;
         };
@@ -338,8 +426,8 @@ impl Restore {
     /// Whether `app` is one of the apps kept across the restart this run follows.
     fn kept_by_app(&self, app: &str) -> bool {
         self.kept_apps.iter().any(|kept| {
-            tilo_desktop_policy::app_ids_match(kept, app)
-                || tilo_desktop_policy::app_ids_match(app, kept)
+            tilo_desktop_model::apps::app_ids_match(kept, app)
+                || tilo_desktop_model::apps::app_ids_match(app, kept)
         })
     }
 
@@ -347,7 +435,7 @@ impl Restore {
     /// order they were held, ahead of the ones not asked for yet.
     fn release_admitted(
         &mut self,
-        desktop: &DesktopHost,
+        desktop: &ShellDesktop,
         awaited: &dyn Fn(&str) -> Option<String>,
     ) {
         if self.held.is_empty()
@@ -372,7 +460,7 @@ impl Restore {
 
     /// Ask for `saved` 's window into its own tab. True when an app was asked and its window may
     /// still come.
-    fn open(&mut self, desktop: &DesktopHost, apps: &Apps, saved: Saved) -> bool {
+    fn open(&mut self, desktop: &ShellDesktop, apps: &Apps, saved: Saved) -> bool {
         let Some(launch) = saved.launch else {
             let note = not_installed(&saved.name);
             desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
@@ -424,6 +512,20 @@ impl Restore {
     }
 }
 
+/// Whether every tab the keeper of `kept` named for its windows is laid out, waiting for a window.
+/// A place that names no tab never is: the app waits until every layout was read.
+#[cfg(target_os = "linux")]
+fn tabs_laid_out(kept: &tilo_app_launch::Adopted, waiting: &VecDeque<Saved>) -> bool {
+    kept.windows
+        .iter()
+        .filter_map(|window| window.placement.as_deref())
+        .all(|placement| {
+            waiting
+                .iter()
+                .any(|saved| saved.tab.to_string() == placement)
+        })
+}
+
 /// `tree` without the places a launch left on it that no window came for.
 /// A place stands for a launch the session asked for a moment ago. The session that asked is gone
 /// by the next start, so nothing is on its way to those any more: they are not windows the person
@@ -447,7 +549,7 @@ pub(crate) fn without_unfilled(tree: &mut Layout) {
 /// What `of` reads of the workspace the tab `tab` stands in: its id, which the tab's app is started
 /// into with that workspace's grants.
 fn workspace_holding<T>(
-    desktop: &DesktopHost,
+    desktop: &ShellDesktop,
     tab: TabId,
     of: impl Fn(&tilo_desktop_model::Workspace) -> T,
 ) -> Option<T> {
@@ -679,92 +781,227 @@ mod tests {
         );
     }
 
-    /// After an in-place restart each window of a kept app claims exactly the saved tab its
-    /// keeper was told it stood in. A window whose tab is gone, or that opened while the desktop
-    /// was away, claims none and opens as a new window does; a saved tab of the app that no window
-    /// claims was closed while the desktop was away and closes, so the app, still running, is not
-    /// started a second time. Another app's saved tab still waits for its app.
-    #[test]
+    /// The kept app `org.example.Kept`, its keeper process 50, with windows tagged and placed as
+    /// `windows` says.
     #[cfg(target_os = "linux")]
-    fn each_kept_window_claims_its_own_saved_tab_and_a_closed_ones_tab_goes() {
+    fn kept(windows: &[(&str, Option<&str>)]) -> tilo_app_launch::Adopted {
         use tilo_app_launch::kept::{KeptLaunch, LAUNCH_VERSION, Window};
-        use tilo_desktop_policy::Window as Mapped;
+        tilo_app_launch::Adopted {
+            outdated: false,
+            id: 1,
+            pid: 50,
+            launch: KeptLaunch {
+                version: LAUNCH_VERSION,
+                app: "org.example.Kept".into(),
+                title: "Kept".into(),
+                workspace: "workspace-1".into(),
+                asked: None,
+                window_identities: vec!["org.example.Kept".into()],
+                service: false,
+            },
+            windows: windows
+                .iter()
+                .map(|(tag, placement)| Window {
+                    tag: (*tag).into(),
+                    app_id: Some("org.example.Kept".into()),
+                    title: None,
+                    placement: placement.map(str::to_owned),
+                })
+                .collect(),
+        }
+    }
 
+    /// The saved layout of a kept app's two windows, each in a workspace of its own, and a Notes
+    /// window beside the first: tabs 41 and 43 in the first workspace, 42 in the second.
+    #[cfg(target_os = "linux")]
+    fn kept_layout() -> Layout {
         let kept_app = || TileContent::LocalApp {
             app_id: "org.example.Kept".into(),
             label: "Kept".into(),
             note: String::new(),
         };
-        let mut tree = layout(vec![
-            window(41, kept_app()),
-            window(42, kept_app()),
-            window(43, notes()),
-        ]);
+        let mut tree = layout(vec![window(41, kept_app()), window(43, notes())]);
+        let mut second = Workspace::new(WorkspaceId::from_u128(9), "Second");
+        second.strips = layout(vec![window(42, kept_app())]).workspaces[0]
+            .strips
+            .clone();
+        tree.workspaces.push(second);
         // A window with no tab held for it lands in the workspace in front.
         tree.active = tree.workspaces[0].id();
-        let (host, _policy) = tilo_surface_host::desktop(7, 1.0);
+        tree
+    }
+
+    /// The tab window `id` of the kept app, tagged `tag`, stands in once it maps.
+    #[cfg(target_os = "linux")]
+    fn map(desktop: &crate::platform::surfaces::ShellDesktop, id: u64, tag: &str) -> Option<u64> {
+        desktop.with_policy(|policy| {
+            policy
+                .map(tilo_desktop_policy::Window {
+                    id,
+                    app_id: Some("org.example.Kept".into()),
+                    pid: Some(50),
+                    tag: Some(tag.into()),
+                    ..tilo_desktop_policy::Window::default()
+                })
+                .expect("mapped");
+            policy.tab_of(id)
+        })
+    }
+
+    /// Every tab the desktop holds, in order.
+    #[cfg(target_os = "linux")]
+    fn tabs(desktop: &crate::platform::surfaces::ShellDesktop) -> Vec<u64> {
+        desktop.with_policy(|policy| {
+            policy.handle().read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.tabs().map(|tab| tab.id))
+                    .collect()
+            })
+        })
+    }
+
+    /// After an in-place restart each window of a kept app claims exactly the saved tab its
+    /// keeper was told it stood in, in whichever workspace that is. A window whose tab is gone, or
+    /// that opened while the desktop was away, claims none and opens as a new window does; a
+    /// saved tab of the app that no window claims was closed while the desktop was away and
+    /// closes, so the app, still running, is not started a second time. Another app's saved tab
+    /// still waits for its app.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn each_kept_window_claims_its_own_saved_tab_and_a_closed_ones_tab_goes() {
+        let mut tree = kept_layout();
+        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
         let mut restore = Restore::default();
+        restore.begin();
         assert!(restore.start(&Layout::default(), &mut tree));
-        host.with_policy(|policy| policy.handle().replace_tree(tree.clone()));
-        let placed = |tag: &str, placement: Option<&str>| Window {
-            tag: tag.into(),
-            app_id: Some("org.example.Kept".into()),
-            title: None,
-            placement: placement.map(str::to_owned),
-        };
-        restore.claim_kept(
-            &host,
-            vec![tilo_app_launch::Adopted {
-                outdated: false,
-                id: 1,
-                pid: 50,
-                launch: KeptLaunch {
-                    version: LAUNCH_VERSION,
-                    app: "org.example.Kept".into(),
-                    title: "Kept".into(),
-                    workspace: "workspace-1".into(),
-                    asked: None,
-                    window_identities: vec!["org.example.Kept".into()],
-                    service: false,
-                },
-                windows: vec![
-                    placed("w2", Some("999")),
-                    placed("w1", Some("41")),
-                    placed("w3", None),
-                ],
-            }],
+        desktop.with_policy(|policy| policy.handle().replace_tree(tree.clone()));
+        restore.kept = vec![kept(&[
+            ("w2", Some("999")),
+            ("w1", Some("41")),
+            ("w3", None),
+        ])];
+        restore.kept_since = Some(std::time::Instant::now());
+        assert!(
+            restore.claim_kept(&desktop).is_empty(),
+            "a tab is not laid out, and a workspace may still bring it"
+        );
+        restore.layouts_read();
+        assert_eq!(
+            restore.claim_kept(&desktop),
+            [50],
+            "every layout was read: it shows"
         );
         let waiting: Vec<u64> = restore.waiting.iter().map(|saved| saved.tab).collect();
         assert_eq!(waiting, [43], "only another app's tab still waits");
-        let tabs: Vec<u64> = host.with_policy(|policy| {
-            policy
-                .handle()
-                .read(|tree| tree.workspaces[0].tabs().map(|tab| tab.id).collect())
-        });
         assert_eq!(
-            tabs,
+            tabs(&desktop),
             [41, 43],
             "the tab of the window closed meanwhile goes"
         );
-        let map = |id: u64, tag: &str| {
-            host.with_policy(|policy| {
-                policy
-                    .map(Mapped {
-                        id,
-                        app_id: Some("org.example.Kept".into()),
-                        pid: Some(50),
-                        tag: Some(tag.into()),
-                        ..Mapped::default()
-                    })
-                    .expect("mapped");
-                policy.tab_of(id)
-            })
-        };
         assert_ne!(
-            map(2, "w2"),
+            map(&desktop, 2, "w2"),
             Some(41),
             "a window whose tab is gone takes a new one"
         );
-        assert_eq!(map(1, "w1"), Some(41), "the window takes its own tab");
+        assert_eq!(
+            map(&desktop, 1, "w1"),
+            Some(41),
+            "the window takes its own tab"
+        );
+    }
+
+    /// On a real login the keepers answer before the workspaces' layouts are read. Their windows
+    /// wait unshown until the layout holding their tabs is laid out, and then each takes its own
+    /// tab in its own workspace: none of them opens as a new tab, and none of their saved tabs is
+    /// taken for one the app closed meanwhile. No app is started for a saved tab while they wait.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn kept_windows_that_answer_before_the_layout_wait_for_it_and_take_their_tabs() {
+        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        let mut restore = Restore::default();
+        restore.begin();
+        restore.kept = vec![kept(&[("w1", Some("41")), ("w2", Some("42"))])];
+        restore.kept_since = Some(std::time::Instant::now());
+        assert!(
+            restore.claim_kept(&desktop).is_empty(),
+            "no layout yet: nothing shows"
+        );
+        assert_eq!(restore.kept.len(), 1, "the app still waits");
+        assert!(restore.next_deadline().is_some(), "for a bounded time");
+
+        let mut tree = kept_layout();
+        assert!(restore.start(&Layout::default(), &mut tree));
+        desktop.with_policy(|policy| policy.handle().replace_tree(tree.clone()));
+        assert_eq!(
+            tabs(&desktop),
+            [41, 43, 42],
+            "no saved tab was closed for it"
+        );
+        assert_eq!(
+            restore.claim_kept(&desktop),
+            [50],
+            "the layout came: it shows"
+        );
+        let waiting: Vec<u64> = restore.waiting.iter().map(|saved| saved.tab).collect();
+        assert_eq!(waiting, [43]);
+        assert_eq!(
+            map(&desktop, 1, "w1"),
+            Some(41),
+            "the first window takes its tab"
+        );
+        assert_eq!(
+            map(&desktop, 2, "w2"),
+            Some(42),
+            "the second takes its own, in the other workspace"
+        );
+        assert_eq!(tabs(&desktop), [41, 43, 42], "and no other tab opened");
+    }
+
+    /// A layout that is laid out before it, but holds only some of a kept app's tabs (the other
+    /// workspace's is still being read), keeps the app waiting; a layout that never brings them
+    /// shows it after the wait, as new windows, and the saved tabs of it that come later close
+    /// rather than start the app a second time. A session that reads no layout at all shows a
+    /// kept app at once.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn kept_windows_stop_waiting_for_a_layout_that_does_not_come() {
+        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        let mut partly = Restore::default();
+        partly.begin();
+        let mut first = kept_layout();
+        first.workspaces.truncate(1);
+        assert!(partly.start(&Layout::default(), &mut first));
+        partly.kept = vec![kept(&[("w1", Some("41")), ("w2", Some("42"))])];
+        partly.kept_since = Some(std::time::Instant::now());
+        assert!(
+            partly.claim_kept(&desktop).is_empty(),
+            "one tab is not laid out yet"
+        );
+
+        let mut late = Restore::default();
+        late.begin();
+        late.kept = vec![kept(&[("w1", Some("41")), ("w2", Some("42"))])];
+        late.kept_since = std::time::Instant::now().checked_sub(super::KEPT_WAIT);
+        assert_eq!(late.claim_kept(&desktop), [50], "it waited long enough");
+        let mut tree = kept_layout();
+        assert!(late.start(&Layout::default(), &mut tree));
+        let saved: Vec<u64> = tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.tabs().map(|tab| tab.id))
+            .collect();
+        assert_eq!(
+            saved,
+            [43],
+            "its saved tabs close: its windows are shown already"
+        );
+
+        let mut alone = Restore::default();
+        alone.begin();
+        alone.without_layouts();
+        alone.kept = vec![kept(&[("w1", Some("41"))])];
+        alone.kept_since = Some(std::time::Instant::now());
+        assert_eq!(alone.claim_kept(&desktop), [50], "nothing to wait for");
     }
 }

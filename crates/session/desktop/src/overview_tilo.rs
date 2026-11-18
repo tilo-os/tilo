@@ -31,7 +31,7 @@ pub mod api;
 use std::time::Duration;
 
 use tilo_actions::remote::mcp_server::{self, Reach};
-use tilo_actions::remote::server_account::{HostKind, ServerAccount};
+use tilo_actions::remote::server_account::{ServerAccount, ServerKind};
 use ui::icons::Icon;
 use ui::tokens::PresenceHue;
 use ui::widget::{Fact, Tone};
@@ -133,7 +133,7 @@ pub struct Confirm {
 #[must_use]
 pub fn hosting_relevant(hosts: &[ServerAccount]) -> bool {
     hosts.iter().any(|host| {
-        host.kind != HostKind::Device
+        host.kind != ServerKind::Device
             || host.sells()
             || host
                 .subscription
@@ -182,9 +182,9 @@ pub fn usage_line(hosts: &[ServerAccount], workspace: &str) -> Option<String> {
 /// A host's row: what it is, its plan and what it used.
 fn host_row(index: usize, account: &ServerAccount) -> TiloItem {
     let icon = match account.kind {
-        HostKind::Device => Icon::Monitor,
-        HostKind::SelfHosted => Icon::HardDrive,
-        HostKind::Provider => Icon::Cloud,
+        ServerKind::Device => Icon::Monitor,
+        ServerKind::SelfHosted => Icon::HardDrive,
+        ServerKind::Provider => Icon::Cloud,
     };
     let mut facts: Vec<Fact> = Vec::new();
     match (&account.subscription, account.plan()) {
@@ -215,9 +215,9 @@ fn host_row(index: usize, account: &ServerAccount) -> TiloItem {
         }
         (Some(_), None) => facts.push(Fact::text(t("overview-tilo-no-plan"))),
         (None, _) => facts.push(Fact::text(t(match account.kind {
-            HostKind::Device => "overview-tilo-host-device",
-            HostKind::SelfHosted => "overview-tilo-host-self",
-            HostKind::Provider => "overview-tilo-host-provider",
+            ServerKind::Device => "overview-tilo-host-device",
+            ServerKind::SelfHosted => "overview-tilo-host-self",
+            ServerKind::Provider => "overview-tilo-host-provider",
         }))),
     }
     if let Some(credit) = account.subscription.as_ref().and_then(|s| s.credit.clone()) {

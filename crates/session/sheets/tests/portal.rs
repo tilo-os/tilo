@@ -45,9 +45,8 @@ fn with_modifiers(app: &mut HeadlessApp<PortalApp>, held: &[&str], spec: &str) {
 fn dialog(body: Body) -> Dialog {
     Dialog {
         handle: "request-1".to_owned(),
-        title: "Share your screen?".to_owned(),
-        heading: "Meet".to_owned(),
-        detail: "Meet asks to record your screen".to_owned(),
+        title: "Meet wants to share your screen?".to_owned(),
+        detail: "It gets one picture of the screen as it is now.".to_owned(),
         body,
         confirm_label: "Allow".to_owned(),
         cancel_label: "Cancel".to_owned(),
@@ -137,7 +136,7 @@ tilo_test_env::scenario! {
         }));
         app.settle();
         let nodes = app.harness().a11y_nodes();
-        for name in ["Writer", "Editor", "Allow", "Cancel", "Meet"] {
+        for name in ["Writer", "Editor", "Allow", "Cancel", "Meet wants to share your screen?"] {
             assert!(
                 nodes
                     .iter()

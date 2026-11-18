@@ -12,9 +12,7 @@
 //!    its changes (subscribe, state, publish, replay), listed or not.
 //! 4. An exact member device — within any pending replacement's ceiling — or
 //!    a device of a user root the workspace's signed authority admits is admitted.
-//! 5. On a same-owner home host ([`AdmissionMode::SameOwner`]) the server
-//!    owner's own devices are admitted, and enrolled where the protocol enrols.
-//!    In a workspace this server governs, a device of a person its governance
+//! 5. In a workspace this server governs, a device of a person its governance
 //!    has as a member ([`person_device`]: a browser tab, a new computer of
 //!    theirs) is enrolled when it subscribes: governance records it under its
 //!    person, as the entry does for a further device of a member, so it holds
@@ -37,7 +35,7 @@
 //! - and the protocol is one an agent works on: subscribe, state, publish,
 //!   replay, channel access, remote actions, the live session and content
 //!   discovery. Never compute, environments or governed membership, and
-//!   never by attachment or a same-owner host's enrolment.
+//!   never by attachment or a host's enrolment.
 //!
 //! What it does there is its person's agent's ([`crate::peer`] makes its
 //! caller the agent, for its person): an agent's role cap holds it at
@@ -101,22 +99,19 @@ pub(crate) enum AdmissionMode {
     /// Only exact member devices and admitted user roots.
     #[default]
     Explicit,
-    /// Same-owner home host: the server owner's devices are admitted, and
-    /// enrolled by the protocols that enrol.
-    SameOwner,
     /// Native governance owns admission; nothing is ever auto-enrolled, and
-    /// no later binding or autobind may relax it.
+    /// no later binding may relax it.
     Governed,
 }
 
 impl AdmissionMode {
-    /// The mode a workspace takes when a binding or autobind asks for `requested`:
+    /// The mode a workspace takes when a binding asks for `requested`:
     /// governance, once set, is never relaxed.
     #[must_use]
     pub(crate) const fn rebind(self, requested: Self) -> Self {
         match self {
             Self::Governed => Self::Governed,
-            Self::Explicit | Self::SameOwner => requested,
+            Self::Explicit => requested,
         }
     }
 }
@@ -153,17 +148,6 @@ pub enum WorkspaceOperation {
     DelegateMembership,
 }
 
-/// What a same-owner workspace does with one of its owner's devices it does not
-/// list yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OwnerDevice {
-    /// Admit it and persist it as a member.
-    Enrol,
-    Admit,
-    /// Refuse: this protocol serves only devices already enrolled.
-    Refuse,
-}
-
 impl WorkspaceOperation {
     /// Whether this protocol carries a workspace's changes.
     const fn carries_changes(self) -> bool {
@@ -171,18 +155,6 @@ impl WorkspaceOperation {
             self,
             Self::Subscribe | Self::State | Self::Publish | Self::Replay | Self::KeyAccess
         )
-    }
-
-    const fn owner_device(self) -> OwnerDevice {
-        match self {
-            Self::Subscribe | Self::Compute => OwnerDevice::Enrol,
-            Self::ContentDiscovery | Self::Environment | Self::Live => OwnerDevice::Admit,
-            Self::State | Self::Publish | Self::Replay | Self::RemoteAction | Self::KeyAccess => {
-                OwnerDevice::Refuse
-            }
-            #[cfg(any(test, feature = "agents"))]
-            Self::DelegateMembership => OwnerDevice::Refuse,
-        }
     }
 }
 
@@ -211,7 +183,7 @@ pub async fn admits_person(
     }
     let served: Vec<_> = workspaces.lock().await.values().cloned().collect();
     for workspace in served {
-        if workspace.lock().await.admits_person(&user, &own_user) {
+        if workspace.lock().await.admits_person(&user) {
             return true;
         }
     }
@@ -481,7 +453,7 @@ impl<'a> WorkspaceFacts<'a> {
 }
 
 /// Whether the workspace lists `peer` for `op`: steps 4 to 6 of the rule, with
-/// no certificate, agent, cross-user, local-person or same-owner question. Only for
+/// no certificate, agent, cross-user or local-person question. Only for
 /// a recipient check that has no server trust at hand; everything else asks
 /// [`decide`].
 pub(crate) fn listed(
@@ -532,11 +504,11 @@ pub(crate) fn decide_in(
     if let Some(scope) = peer.cert.capabilities.agent {
         return grant_decision(workspace, peer, scope, op);
     }
-    let own_user = &peer.user_public_key == trust.own_user;
     #[cfg(any(test, feature = "agents"))]
     if op == WorkspaceOperation::DelegateMembership {
         // Never by membership, enrolment or attachment: only this server's
         // user's own agent, inside its delegation, in a workspace governed here.
+        let own_user = &peer.user_public_key == trust.own_user;
         let delegated = own_user
             && trust
                 .delegation(
@@ -553,16 +525,6 @@ pub(crate) fn decide_in(
     }
     if listed(workspace, peer, op) {
         return Decision::Admit;
-    }
-    if workspace.runtime.admission == AdmissionMode::SameOwner
-        && own_user
-        && workspace.within_ceiling(&peer.device_public_key)
-    {
-        match op.owner_device() {
-            OwnerDevice::Enrol => return Decision::AdmitAndEnrol,
-            OwnerDevice::Admit => return Decision::Admit,
-            OwnerDevice::Refuse => {}
-        }
     }
     if op == WorkspaceOperation::Subscribe && workspace.enrols_member_device(peer) {
         return Decision::AdmitAndEnrol;

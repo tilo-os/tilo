@@ -149,6 +149,16 @@ command.
   them: no other device's stream, and no stream of its own beyond those.
   When the workspace's membership moves the epoch, the live session is cut and joins
   again on the keys the server lends then.
+- **It is handed a vault item's text only for a fill the server asked it for.** A turn the
+  server carries out for a person's own agent may have a field of the page filled from an item
+  of that person's vault, by reference. The server hands the window Browser's own
+  `fill-page-item`; the window says which site its engine committed and asks the server for
+  the item's text (`tilo_actions::remote::environment_device`, `use-item`); and the server
+  answers only the Browser's own device, only for a fill it handed that device, naming that
+  item, and once, after the vault's own rule (the item belongs to exactly that origin) and the
+  person's leave, which the first fill at a site asks for in the conversation. The text is
+  sealed to the device's key for that one fill and that one site, so nothing that carries the
+  answer into the VM reads it. Whoever holds that key opens it: the residual risk below.
 - **The residual risk is the key itself:** the workspace's own agent has sudo
   in the VM and can copy the browser device's key. What it gets reaches only
   the Browser record and its page track (no power the agent does not already

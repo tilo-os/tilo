@@ -88,8 +88,6 @@ secrets = "via-host"
 system = "required@1"
 collab = "optional@31"
 tilo-fs = "optional@31"
-# The window's bar shows the app's toolbar (ui::window_toolbar).
-shell-ui   = "optional@35"
 tools = "optional@31"
 # Settings remains usable when the device has no local-model stack.  The
 # Agent Models pane already reports unavailable lifecycle/credential services;
@@ -99,7 +97,7 @@ models = "optional@31"
 model-gateway = "optional@31"
 # The person's languages: which language packs the repositories offer, and
 # installing the one chosen. The host answers Settings that and nothing else.
-app-process = "optional@5"
+package-service = "optional@6"
 
 [entrypoint]
 bin             = "bin/settings"

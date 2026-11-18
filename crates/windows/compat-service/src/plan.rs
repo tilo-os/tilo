@@ -150,9 +150,11 @@ impl SystemRuntimeRegistry {
         }
     }
 
-    /// Planning tests run on hosts that are not Tilo images.
-    #[cfg(test)]
-    pub(crate) const fn assuming_provider() -> Self {
+    /// For tests on computers that are not Tilo images: the runtime payloads
+    /// and the translated provider are taken as present.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub const fn assuming_provider() -> Self {
         Self {
             provider_manifest: None,
             require_payload: false,
@@ -317,18 +319,23 @@ fn runtime_bind(host: &str, sandbox: &str) -> RuntimeBind {
     }
 }
 
+/// The display a Windows program shows its windows on, and the GPU it draws
+/// with: what the caller of a launch gives it at that moment.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HostSession {
+pub struct LaunchDisplay {
     pub uid: u32,
+    /// The directory the display's socket sits directly in: the login's
+    /// runtime directory (`XDG_RUNTIME_DIR`), or the private directory of the
+    /// display a program is kept behind.
+    pub runtime_dir: PathBuf,
     pub wayland_socket: PathBuf,
     pub render_node: PathBuf,
 }
 
-impl HostSession {
+impl LaunchDisplay {
     pub fn validate(&self) -> Result<(), PlanError> {
-        let runtime = PathBuf::from(format!("/run/user/{}", self.uid));
-        if !self.wayland_socket.starts_with(&runtime)
-            || self.wayland_socket.parent() != Some(runtime.as_path())
+        if !self.runtime_dir.is_absolute()
+            || self.wayland_socket.parent() != Some(self.runtime_dir.as_path())
         {
             return Err(PlanError::UnsafeWaylandSocket);
         }
@@ -345,6 +352,72 @@ impl HostSession {
             return Err(PlanError::UnsafeRenderNode);
         }
         Ok(())
+    }
+}
+
+/// Where each launch's program shows its windows. The caller of the service
+/// answers it when a program starts, not when the service starts: a display
+/// that is bound later, or one made for a single launch, is the one the
+/// program gets.
+pub trait LaunchDisplays: Send + Sync + 'static {
+    /// The display a program launched into `workspace_id` gets now, or why
+    /// there is none.
+    fn display_for(&self, workspace_id: &str) -> Result<LaunchDisplay, String>;
+
+    /// A display of its own for `program`, which stays open while the desktop restarts in place,
+    /// with the program behind it: `None` where programs are not kept, and the program then shows
+    /// on [`Self::display_for`]'s and ends with the desktop.
+    fn kept_display(
+        &self,
+        _program: &KeptProgram<'_>,
+    ) -> Option<Result<Box<dyn KeptDisplay>, String>> {
+        None
+    }
+
+    /// The programs started before the desktop last restarted in place, each taken once: they
+    /// were kept, and are open again (or ended while no desktop was there, and say how).
+    fn taken_back(&self) -> Vec<TakenBack> {
+        Vec::new()
+    }
+}
+
+/// A program a launch keeps open through a desktop restart.
+#[derive(Clone, Copy, Debug)]
+pub struct KeptProgram<'a> {
+    /// The app id its windows are shown under.
+    pub app_id: &'a str,
+    /// The name it is shown by.
+    pub display_name: &'a str,
+    /// Its entry in the manager's list: what a later desktop reopens.
+    pub entry_id: &'a str,
+    pub workspace_id: &'a str,
+}
+
+/// The display a kept program shows on, and what starts the program behind it.
+pub trait KeptDisplay: Send {
+    /// The display to plan the program's sandbox for.
+    fn display(&self) -> &LaunchDisplay;
+    /// Start `command` behind the display. A display dropped without starting anything is given
+    /// back.
+    fn start(
+        self: Box<Self>,
+        command: crate::SandboxCommand,
+    ) -> Result<Box<dyn crate::StartedProgram>, crate::ExecutionError>;
+}
+
+/// A kept program a service started before the desktop restarted, as the service after it finds
+/// it.
+pub struct TakenBack {
+    pub entry_id: String,
+    pub workspace_id: String,
+    pub display_name: String,
+    pub program: Box<dyn crate::StartedProgram>,
+}
+
+/// One display for every launch.
+impl LaunchDisplays for LaunchDisplay {
+    fn display_for(&self, _workspace_id: &str) -> Result<LaunchDisplay, String> {
+        Ok(self.clone())
     }
 }
 
@@ -375,10 +448,15 @@ impl NetworkShape {
         if !capabilities.allow_network {
             return Self::Offline;
         }
-        // The decision an app's grants get, with no manifest to add: `*` is
-        // the host network, named hosts a proxy, and grants that are not hosts
-        // in the one grammar (IP literals) nothing.
-        match launcher::egress_proxy::EgressDecision::resolve("off", &[], &capabilities.net_hosts) {
+        // A Windows app declares no network, so it may ask for any host and its
+        // grants decide: `*` is the host network, named hosts a proxy, and
+        // grants that are not hosts in the one grammar (IP literals) nothing.
+        match launcher::egress_proxy::EgressDecision::resolve(
+            "host",
+            &[],
+            &capabilities.net_hosts,
+            false,
+        ) {
             launcher::egress_proxy::EgressDecision::Blocked => Self::Offline,
             launcher::egress_proxy::EgressDecision::Unrestricted => Self::Unrestricted,
             launcher::egress_proxy::EgressDecision::Filtered(_) => Self::Filtered,
@@ -419,8 +497,7 @@ impl LaunchLease {
         let root = PathBuf::from(LEASE_ROOT).join(&self.id);
         let microphone = capabilities
             .devices
-            .iter()
-            .any(|device| device == "microphone");
+            .contains(&collab_types::caps::DeviceCap::Microphone);
         let mut protocols = HashSet::new();
         for audio in &self.audio {
             if !audio.host_socket.starts_with(&root) {
@@ -493,7 +570,7 @@ impl CapsuleCommandPlan {
 pub struct SandboxPlanner<'a, R> {
     store: &'a CapsuleStore,
     runtimes: &'a R,
-    session: &'a HostSession,
+    display: &'a LaunchDisplay,
     icd_search: IcdSearch,
 }
 
@@ -501,13 +578,13 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
     pub fn new(
         store: &'a CapsuleStore,
         runtimes: &'a R,
-        session: &'a HostSession,
+        display: &'a LaunchDisplay,
     ) -> Result<Self, PlanError> {
-        session.validate()?;
+        display.validate()?;
         Ok(Self {
             store,
             runtimes,
-            session,
+            display,
             icd_search: IcdSearch::default(),
         })
     }
@@ -538,8 +615,8 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         let launch_paths = self.store.open_launch_paths(&capsule.id)?;
 
         let wayland =
-            launcher::sandbox::wayland_bind_for(&self.session.wayland_socket, self.session.uid);
-        let gpu = select_for_node(&self.session.render_node, &self.icd_search);
+            launcher::sandbox::wayland_bind_for(&self.display.wayland_socket, self.display.uid);
+        let gpu = select_for_node(&self.display.render_node, &self.icd_search);
         let mut argv = Vec::new();
         launcher::sandbox::push_clean_environment(&mut argv);
         argv.extend(["--unshare-all".to_string()]);
@@ -639,14 +716,14 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         launcher::sandbox::push_wayland_bind(&mut argv, &wayland);
         landlock_write.push(wayland.sandbox_socket.clone());
         launcher::sandbox::push_gpu_selection(&mut argv, &gpu, true);
-        landlock_write.push(self.session.render_node.clone());
+        landlock_write.push(self.display.render_node.clone());
         if route.runtime.layer == Layer::Proton {
             let ntsync = PathBuf::from("/dev/ntsync");
             bind(&mut argv, "--dev-bind", &ntsync, &ntsync);
             landlock_write.push(ntsync);
         }
         landlock_read.extend(gpu.manifest_files());
-        push_audio(&mut argv, lease, self.session.uid, &mut landlock_write);
+        push_audio(&mut argv, lease, self.display.uid, &mut landlock_write);
         if let Some(proxy) = &lease.egress_proxy {
             launcher::sandbox::push_egress_proxy(&mut argv, proxy);
             landlock_write.push(proxy.sandbox_socket.clone());
@@ -718,14 +795,13 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             write_grants: capabilities.rw_paths.len(),
             microphone: capabilities
                 .devices
-                .iter()
-                .any(|device| device == "microphone"),
+                .contains(&collab_types::caps::DeviceCap::Microphone),
             audio_output: !lease.audio.is_empty(),
             latency_sensitive: route.runtime.layer == Layer::Proton,
             lease_id: lease.id.clone(),
             launch_paths,
             runtime_lock_required: runtime.runtime_lock_mount.is_some(),
-            identity_uid: self.session.uid,
+            identity_uid: self.display.uid,
         })
     }
 }
@@ -827,8 +903,7 @@ fn push_private_store_masks(
 fn is_host_microphone_endpoint(capabilities: &CapabilityPlan, source: &Path) -> bool {
     capabilities
         .devices
-        .iter()
-        .any(|device| device == "microphone")
+        .contains(&collab_types::caps::DeviceCap::Microphone)
         && (source == Path::new("/dev/snd")
             || source.file_name().is_some_and(|name| name == "pipewire-0"))
 }
@@ -1011,6 +1086,8 @@ pub enum PlanError {
     RunnerNotInstalled(String),
     #[error("Wayland socket is outside the session runtime directory")]
     UnsafeWaylandSocket,
+    #[error("the program has no display to show its windows on: {0}")]
+    NoDisplay(String),
     #[error("GPU device is not a DRM render node")]
     UnsafeRenderNode,
     #[error("capsule does not match resolved route")]
@@ -1085,10 +1162,11 @@ mod tests {
         (directory, store, state, program)
     }
 
-    fn session() -> HostSession {
-        HostSession {
+    fn session() -> LaunchDisplay {
+        LaunchDisplay {
             uid: 1000,
-            wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
+            runtime_dir: PathBuf::from("/xdg/1000"),
+            wayland_socket: PathBuf::from("/xdg/1000/tilo-ws-test"),
             render_node: PathBuf::from("/dev/dri/renderD999"),
         }
     }
@@ -1662,8 +1740,9 @@ mod tests {
         let socket = runtime.join(format!("tilo-console-{}", std::process::id()));
         let listener = UnixListener::bind(&socket).unwrap();
         drop(listener);
-        let host = HostSession {
+        let host = LaunchDisplay {
             uid,
+            runtime_dir: runtime,
             wayland_socket: socket.clone(),
             render_node: PathBuf::from("/dev/dri/renderD128"),
         };
@@ -1863,7 +1942,7 @@ mod tests {
                     PathBuf::from("/run/user/1000/pipewire-0"),
                     PathBuf::from("/dev/snd"),
                 ],
-                devices: vec!["microphone".to_string()],
+                devices: vec![collab_types::caps::DeviceCap::Microphone],
                 ..CapabilityPlan::empty()
             };
             let lease = LaunchLease {

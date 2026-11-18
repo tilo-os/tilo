@@ -160,12 +160,12 @@ fn factory(
     ))
 }
 fn prepared() -> (
-    ProbeHost,
+    ProbeHarness,
     FrameHarness,
     Observations,
     crate::resource::DocumentCheckout,
 ) {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let definition = definition(factory);
     let observed = Observations::default();
     OBSERVED.with_borrow_mut(|slot| *slot = observed.clone());

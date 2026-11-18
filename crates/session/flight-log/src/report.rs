@@ -580,7 +580,7 @@ pub fn flight_report(path: &Path, events_path: Option<&Path>) -> Value {
     let slow = matching(&lines, |line| line.contains("SLOW-ITER "));
     let panics = matching(&lines, |line| {
         line.contains("panicked at ")
-            || (line.contains("tilo-flight-record-v1") && line.contains("status=134"))
+            || (line.contains("tilo-flight-entry-v1") && line.contains("status=134"))
     });
     let fallback: Vec<String> = matching(&lines, |line| {
         line.contains("DRM direct scanout unavailable")

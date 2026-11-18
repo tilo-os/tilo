@@ -16,9 +16,8 @@
 //!   one tag from being replayed under another (a `DeviceCert`
 //!   signature can never be reinterpreted as a `RevocationEntry`
 //!   signature, no matter how similar the byte layout).
-//! - **Wire-ABI stability**: adding a field forces a new tag
-//!   (`tilo-devcert-v2\0`); we never accidentally accept an old
-//!   signature over a new struct.
+//! - **Wire-ABI stability**: the encoded view is what is signed, so a
+//!   signature over one layout never verifies over another.
 //!
 //! This module holds the postcard helpers + the BLAKE3 wrapper.
 //! The domain-tag constants themselves live next to the types they

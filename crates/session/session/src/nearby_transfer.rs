@@ -19,6 +19,7 @@
 //! shows is that worker's last projection, never a read that could wait on a
 //! disk.
 
+use collab_types::caps::{Access, CapDecision, ResourceRef, Scope};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::{Hash as _, Hasher as _};
 use std::os::unix::ffi::OsStrExt as _;
@@ -38,7 +39,6 @@ use runtime_collab::{
 };
 use tilo_broker_core::services::WorkspaceAuthority;
 use tilo_capture_studio::{Refusal, Sent};
-use tilo_desktop_model::capability::{Capability, FsMode};
 use tilo_lock::MutexRecover as _;
 use tilo_nearby_service::{
     IncomingManifest, MAX_TRANSFER_BYTES, NearbyTransferStore, SecureNearbyDestination,
@@ -1250,24 +1250,35 @@ fn link_of(inner: &Inner) -> Result<&SharedLink, String> {
         .ok_or_else(|| "this session is no certified device of the person's".to_owned())
 }
 
+/// The folders the workspace lets Files reach with `access` , as its sandbox decides it now.
+fn files_folders(workspace: &tilo_desktop_model::Workspace, access: Access) -> Vec<PathBuf> {
+    let now = tilo_clock::unix_now();
+    workspace
+        .app_capabilities_at(FILES_APP_ID, now)
+        .into_iter()
+        .filter_map(|capability| match &capability.scope {
+            Scope::FsPath(path) => Some(path),
+            _ => None,
+        })
+        .filter(|path| {
+            workspace.sandbox_decide_at(
+                FILES_APP_ID,
+                &ResourceRef::FsPath((*path).clone()),
+                access,
+                now,
+            ) == CapDecision::Allow
+        })
+        .map(PathBuf::from)
+        .collect()
+}
+
 /// Open the file `path` names beneath the Files grant that holds it. Files names files by raw
 /// bytes: a name that is not UTF-8 is still one the person may send.
-fn source_from_grants(
-    requested: &Path,
-    grants: &[Capability],
-) -> Result<SecureNearbySource, String> {
-    let mut best: Option<&Path> = None;
-    for capability in grants {
-        let Capability::Filesystem { path, .. } = capability else {
-            continue;
-        };
-        if !requested.starts_with(path) {
-            continue;
-        }
-        if best.is_none_or(|grant| path.components().count() > grant.components().count()) {
-            best = Some(path);
-        }
-    }
+fn source_from_grants(requested: &Path, grants: &[PathBuf]) -> Result<SecureNearbySource, String> {
+    let best = grants
+        .iter()
+        .filter(|path| requested.starts_with(path))
+        .max_by_key(|path| path.components().count());
     let Some(grant) = best else {
         return Err(
             "that file is not one of the files this workspace shared with Files".to_owned(),
@@ -1290,20 +1301,11 @@ fn destinations(
         let Some(workspace) = workspace else {
             return;
         };
-        let now = tilo_clock::unix_now();
-        for capability in workspace
-            .app_grants_snapshot_at(now)
-            .get(FILES_APP_ID)
-            .into_iter()
-            .flatten()
-        {
-            let Capability::Filesystem { path, mode, .. } = capability else {
-                continue;
-            };
-            if *mode != FsMode::ReadWrite || !path.is_dir() {
+        for path in files_folders(workspace, Access::Write) {
+            if !path.is_dir() {
                 continue;
             }
-            let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+            let path = std::fs::canonicalize(&path).unwrap_or(path);
             if !grants.contains(&path) {
                 grants.push(path);
             }
@@ -1940,27 +1942,16 @@ impl Inner {
             .bind_transfer(peer_id, channel, transfer_id, Instant::now())
     }
 
-    /// What Files in `workspace` may read: the filesystem grants its workspace carries for it.
-    fn files_grants(&self, workspace: &str) -> Vec<Capability> {
+    /// What Files in `workspace` may read: the folders its workspace grants it.
+    fn files_grants(&self, workspace: &str) -> Vec<PathBuf> {
         let authority = self.authority.lock_recover().clone();
         let Some(authority) = authority else {
             return Vec::new();
         };
-        let mut grants: Vec<Capability> = Vec::new();
+        let mut grants: Vec<PathBuf> = Vec::new();
         let read = authority.with_workspace(workspace, &mut |workspace| {
-            let Some(workspace) = workspace else {
-                return;
-            };
-            let now = tilo_clock::unix_now();
-            for capability in workspace
-                .app_grants_snapshot_at(now)
-                .get(FILES_APP_ID)
-                .into_iter()
-                .flatten()
-            {
-                if matches!(capability, Capability::Filesystem { .. }) {
-                    grants.push(capability.clone());
-                }
+            if let Some(workspace) = workspace {
+                grants = files_folders(workspace, Access::Read);
             }
         });
         if let Err(error) = read {
@@ -2200,11 +2191,7 @@ mod tests {
 
         phase a_file_outside_every_grant_is_not_sent;
         {
-            let grants = [Capability::Filesystem {
-                path: PathBuf::from("/home/ada/Documents"),
-                mode: FsMode::Read,
-                scope: tilo_desktop_model::capability::GRANT_SESSION,
-            }];
+            let grants = [PathBuf::from("/home/ada/Documents")];
             let refused = source_from_grants(Path::new("/etc/shadow"), &grants);
             assert!(
                 refused.is_err(),
@@ -2241,8 +2228,8 @@ mod transfers_between_devices {
         NearbyTransferCommand, NearbyTransferDestination, NearbyTransferPhase, NearbyTransferReply,
         NearbyTransferSnapshot, NearbyTransferStatus,
     };
-    use tilo_desktop_model::{Capability, FsMode, GRANT_SESSION, Layout, Workspace, WorkspaceId};
-    use tilo_network_actor::HostIdentity;
+    use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
+    use tilo_network_actor::DeviceIdentity;
     use tilo_user_identity::DeviceCapabilities;
     use tilo_workspace_service::apps::services::{
         NearbyTransferRequestContext, NearbyTransferServices as _,
@@ -2326,14 +2313,14 @@ mod transfers_between_devices {
     fn session(folder: &Path) -> Session {
         let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
         let mut workspace = Workspace::new(workspace_id, "Session");
-        workspace.grant_app(
-            "ada",
-            FILES_APP_ID,
-            &Capability::Filesystem {
-                path: folder.to_path_buf(),
-                mode: FsMode::ReadWrite,
-                scope: GRANT_SESSION,
-            },
+        workspace.grant_sandbox(
+            collab_types::caps::CapOverride::grant(
+                tilo_action_policy::Grantee::person("ada"),
+                collab_types::caps::Scope::FsPath(folder.to_string_lossy().into_owned()),
+                collab_types::caps::Access::Write,
+            )
+            .through(FILES_APP_ID)
+            .expiring(collab_types::caps::Expiry::EndOfSession),
         );
         Session {
             tree: Layout {
@@ -2358,7 +2345,7 @@ mod transfers_between_devices {
         let cert = test_server::certified(person, &key, label, DeviceCapabilities::member());
         let client = Client::start(
             Entry {
-                identity: Some(HostIdentity::kept(cert, key)),
+                identity: Some(DeviceIdentity::kept(cert, key)),
                 own: OwnPresence::default(),
                 hosts: Vec::new(),
                 continuity: permitted(),

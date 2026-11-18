@@ -11,7 +11,7 @@ use tilo_actions::{ActionAddress, ApiError};
 use tilo_desktop::osd::{Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_session_core::super_tap::Ask;
-use tilo_session_core::surface::{HostKey, HostLayer, KeyClaim, SurfaceHost};
+use tilo_session_core::surface::{KeyClaim, ShellSurface, SurfaceKey, SurfaceLayer};
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
 use ui::winit::keyboard::{Key, NamedKey};
@@ -226,7 +226,7 @@ fn classify(keysym: u32) -> Option<Hardware> {
 
 /// The device key `key` is, as the session's keys take it: its invocation, with the modifiers on
 /// it read.
-fn device_key(key: &HostKey) -> Option<DeviceKey> {
+fn device_key(key: &SurfaceKey) -> Option<DeviceKey> {
     let hardware = classify(key.keysym)?;
     let mut invocation = match hardware.action {
         HardwareAction::Resource { resource, action } => Invocation::new(resource, action),
@@ -293,7 +293,7 @@ impl NativeKeys {
 
     /// `key` as the session's keys read it: the toolkit's key, the device key it is and the app
     /// shortcut bound to it.
-    pub(crate) fn press(&self, key: &HostKey) -> Press {
+    pub(crate) fn press(&self, key: &SurfaceKey) -> Press {
         let held = key.modifiers;
         let under_chord = held.ctrl || held.alt || held.logo;
         // The toolkit names no Meta keysym; it is the desktop's key on keyboards that send it.
@@ -331,8 +331,8 @@ impl NativeKeys {
     }
 }
 
-impl SurfaceHost for NativeKeys {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for NativeKeys {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
     }
 
@@ -350,7 +350,7 @@ impl SurfaceHost for NativeKeys {
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
-    fn claim_key(&mut self, key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim {
+    fn claim_key(&mut self, key: &SurfaceKey, locked: bool, inhibited: bool) -> KeyClaim {
         // Ctrl+Alt+F1..F12 asks for a virtual terminal. On a bare terminal the session holds the
         // keyboard itself, so the kernel never sees the chord: without this, and from a desktop
         // that cannot give the machine back, the person could not leave it for a text console at
@@ -371,7 +371,7 @@ impl SurfaceHost for NativeKeys {
         self.keys.claim(&self.press(key), locked, inhibited)
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         self.keys.answer(&self.press(key));
     }
 }

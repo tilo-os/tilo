@@ -161,7 +161,7 @@ impl<'a> From<PeerGuard<'a>> for PeerRef<'a> {
 pub struct Governed<'a> {
     /// The workspace's admitted state.
     pub peer: PeerRef<'a>,
-    /// The device answering the join: a device of the workspace's owner.
+    /// The device answering the join: a key holder of the workspace.
     pub host: &'a DeviceCert,
     /// The workspace the log answers for.
     pub workspace_id: WorkspaceId,
@@ -489,7 +489,15 @@ impl JoinLog {
     /// also makes its holder an administrator: an Editor's invitation in the
     /// layout that says so ([`crate::join::issue_administrator_invitation`]),
     /// naming `administrator`'s person as whom it is from. Whoever admits the
-    /// holder checks that person may make administrators.
+    /// holder checks that person may make administrators. The invitation
+    /// names the device that signs it, so only a device the workspace lets
+    /// invite issues one: a holder that is no member never speaks for
+    /// another person.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::issue`], or `signer`'s device may not invite with the
+    /// request's role.
     pub fn issue_as(
         &mut self,
         workspace: &Governed<'_>,
@@ -503,6 +511,15 @@ impl JoinLog {
         let Signer { key, nonce } = signer;
         if makes_administrator && request.role != Role::Editor {
             return Err(JoinError::new("an administrator joins as an Editor"));
+        }
+        let at = system_time(now);
+        workspace.peer.require_member_writer(key, at)?;
+        if makes_administrator {
+            workspace.peer.require_administrator_invitation(key, at)?;
+        } else {
+            workspace
+                .peer
+                .require_invitation_authority(key, request.role, at)?;
         }
         let terms = (
             &request.role,

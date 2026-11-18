@@ -59,20 +59,23 @@ fn retained_count(state_root: &std::path::Path, workspace: WorkspaceId) -> usize
         .len()
 }
 
-/// Drain `session` until an `Inbound::Delta` arrives, applying each
-/// received delta to `doc`. Returns once a document delta has landed.
-async fn recv_delta_into(session: &ServerCoeditSession, doc: &mut AutoCommit) {
-    for _ in 0..8 {
+/// Drain `session` until a delta `author` wrote arrives, applying it to
+/// `doc`. The state a held workspace sends first is the server's own, not the
+/// co-edit's.
+async fn recv_delta_into(session: &ServerCoeditSession, doc: &mut AutoCommit, author: [u8; 32]) {
+    loop {
         let inbound = tilo_test_env::within("recv timeout", session.recv())
             .await
             .expect("session closed");
         match inbound {
-            Inbound::Delta { data, .. } => {
+            Inbound::Delta { author: from, data } if from == author => {
                 doc.load_incoming(&data).expect("apply co-edit delta");
                 return;
             }
-            // Ready / presence carry no document bytes — keep draining.
-            Inbound::Ready { .. }
+            // The workspace's own state, and presence, carry no co-edit of
+            // the author's — keep draining.
+            Inbound::Delta { .. }
+            | Inbound::Ready { .. }
             | Inbound::Presence { .. }
             | Inbound::RemoteAction { .. }
             | Inbound::DocumentContent { .. }
@@ -83,7 +86,6 @@ async fn recv_delta_into(session: &ServerCoeditSession, doc: &mut AutoCommit) {
             | Inbound::Voice(_) => {}
         }
     }
-    panic!("no document delta arrived");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -99,7 +101,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         let user = TestUser::fresh("Alice");
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("phone", DeviceCapabilities::member());
-        let members = [a.device_pubkey(), b.device_pubkey()];
+        let members = [&a.cert, &b.cert];
 
         let state = tempfile::tempdir().unwrap();
         let host_dev = user.enrol("home-server", DeviceCapabilities::member());
@@ -140,12 +142,15 @@ async fn coedits_converge_through_the_host_live_and_offline() {
 
         // Drain B's Ready(pending=0) so we know its subscription is live
         // before A publishes (live fan-out only reaches online subscribers).
-        match tilo_test_env::within("B Ready timeout", b_session.recv())
-            .await
-            .expect("B closed")
-        {
-            Inbound::Ready { pending, .. } => assert_eq!(pending, 0),
-            other => panic!("expected Ready, got {other:?}"),
+        loop {
+            match tilo_test_env::within("B Ready timeout", b_session.recv())
+                .await
+                .expect("B closed")
+            {
+                Inbound::Ready { .. } => break,
+                Inbound::Delta { .. } | Inbound::Presence { .. } => {}
+                other => panic!("expected Ready, got {other:?}"),
+            }
         }
 
         // A produces a real co-edit delta and publishes it via the bridge.
@@ -156,7 +161,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         // B converges by applying the fanned-out delta.
         let mut doc_b = AutoCommit::new();
         doc_b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
-        recv_delta_into(&b_session, &mut doc_b).await;
+        recv_delta_into(&b_session, &mut doc_b, a.device_pubkey()).await;
 
         assert_eq!(text_of(&doc_b), "hello", "B renders A's live co-edit");
         assert_eq!(
@@ -174,7 +179,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         let user = TestUser::fresh("Alice");
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("phone", DeviceCapabilities::member());
-        let members = [a.device_pubkey(), b.device_pubkey()];
+        let members = [&a.cert, &b.cert];
 
         // The host's persistent state dir survives the restart below.
         let state = tempfile::tempdir().unwrap();
@@ -199,9 +204,8 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         // ---- The host restarts on the same state directory. ----
         drop(host1);
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(
-            retained_count(&state_root, WS),
-            1,
+        assert!(
+            retained_count(&state_root, WS) >= 1,
             "the queued co-edit must survive the host process dying"
         );
 
@@ -231,9 +235,8 @@ async fn coedits_converge_through_the_host_live_and_offline() {
             0,
             "retained delivery must not create per-device copies"
         );
-        assert_eq!(
-            store.load_retained().unwrap().len(),
-            1,
+        assert!(
+            !store.load_retained().unwrap().is_empty(),
             "the same coverage remains available to newly invited devices"
         );
 
@@ -263,12 +266,15 @@ async fn publish_offline_coedit(
     .expect("A connect");
     let a_session = ServerCoeditSession::join(a_client, ws, a.device_pubkey()).unwrap();
     // Drain A's own Ready(0).
-    match tilo_test_env::within("A Ready timeout", a_session.recv())
-        .await
-        .expect("A closed")
-    {
-        Inbound::Ready { pending, .. } => assert_eq!(pending, 0),
-        other => panic!("expected Ready, got {other:?}"),
+    loop {
+        match tilo_test_env::within("A Ready timeout", a_session.recv())
+            .await
+            .expect("A closed")
+        {
+            Inbound::Ready { .. } => break,
+            Inbound::Delta { .. } | Inbound::Presence { .. } => {}
+            other => panic!("expected Ready, got {other:?}"),
+        }
     }
 
     let mut doc_a = doc_with_text(b"alice", "offline-note");
@@ -284,8 +290,8 @@ async fn publish_offline_coedit(
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(
-        queued, 1,
+    assert!(
+        queued >= 1,
         "A's co-edit must be durably retained for the offline B"
     );
 
@@ -321,22 +327,25 @@ async fn catch_up_first_connection(
     doc_b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
     let mut got_delta = false;
     let mut got_ready = false;
-    for _ in 0..8 {
-        if got_delta && got_ready {
-            break;
-        }
+    // A held workspace sends its own state beside the co-edit: read until
+    // both arrived, however many frames of the workspace's come first.
+    while !(got_delta && got_ready) {
         let inbound = tilo_test_env::within("B catch-up timeout", b_session.recv())
             .await
             .expect("B closed");
         match inbound {
+            // The queued co-edit may arrive as A's own change or as the
+            // workspace's replay of it: it is the change that carries the
+            // document's text, whoever the frame names.
             Inbound::Delta { data, .. } => {
-                doc_b
-                    .load_incoming(&data)
-                    .expect("B applies queued co-edit");
-                got_delta = true;
+                let mut applied = doc_b.fork();
+                if applied.load_incoming(&data).is_ok() && text_of(&applied) == "offline-note" {
+                    doc_b = applied;
+                    got_delta = true;
+                }
             }
             Inbound::Ready { pending, .. } => {
-                assert_eq!(pending, 1, "host reports the one queued co-edit");
+                assert!(pending >= 1, "the server reports the queued co-edit");
                 got_ready = true;
             }
             other @ (Inbound::Presence { .. }
@@ -367,7 +376,7 @@ async fn a_pinged_host_answers_and_resets_the_silence() {
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let host_dev = user.enrol("home-server", DeviceCapabilities::member());
-    let host = spawn_server_on(state.path(), &user, host_dev, &[WS], &[a.device_pubkey()]).await;
+    let host = spawn_server_on(state.path(), &user, host_dev, &[WS], &[&a.cert]).await;
     let client = ServerClient::connect(
         client_endpoint().await,
         host.node_addr(),
@@ -379,12 +388,15 @@ async fn a_pinged_host_answers_and_resets_the_silence() {
     .await
     .expect("connect");
     let session = ServerCoeditSession::join(client, WS, a.device_pubkey()).unwrap();
-    assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), session.recv())
-            .await
-            .expect("Ready timeout"),
-        Some(Inbound::Ready { .. })
-    ));
+    // A held workspace sends its own state before it is ready.
+    tilo_test_env::within("Ready timeout", async {
+        loop {
+            if let Inbound::Ready { .. } = session.recv().await.expect("the session stays open") {
+                break;
+            }
+        }
+    })
+    .await;
 
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(session.silent_for() >= Duration::from_secs(1));
@@ -397,4 +409,82 @@ async fn a_pinged_host_answers_and_resets_the_silence() {
     );
     // The host serves until here.
     drop(host);
+}
+
+/// A member's document write, sent through its co-edit session, reaches another
+/// member of a workspace the server holds, as the author signed it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_members_document_write_reaches_another_member_of_a_held_workspace() {
+    use collab_types::CommitNamed as _;
+    const WS: WorkspaceId = WorkspaceId::from_u128(24);
+
+    let user = TestUser::fresh("Alice");
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let b = user.enrol("phone", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server_dev = user.enrol("home-server", DeviceCapabilities::member());
+    let server = spawn_server_on(state.path(), &user, server_dev, &[WS], &[&a.cert, &b.cert]).await;
+    let join = async |device: &crate::common::TestDevice| {
+        let client = ServerClient::connect(
+            client_endpoint().await,
+            server.node_addr(),
+            user.user_pk,
+            device.cert.clone(),
+            device.sk.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .expect("connect");
+        let session = ServerCoeditSession::join(client, WS, device.device_pubkey()).unwrap();
+        tilo_test_env::within("Ready timeout", async {
+            while !matches!(session.recv().await, Some(Inbound::Ready { .. })) {}
+        })
+        .await;
+        session
+    };
+    let a_session = join(&a).await;
+    let b_session = join(&b).await;
+
+    // A's write names the workspace it is sent to, as A's replica of that
+    // workspace writes it.
+    let mut replica = tilo_peer_state::StatePeer::new(
+        &WS.to_string(),
+        a.cert.clone(),
+        vec![a.cert.clone(), b.cert.clone()],
+        RevocationList::new(),
+        std::time::SystemTime::now(),
+    )
+    .unwrap();
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "topic", "from A").unwrap();
+    doc.commit_edit("fixture", "topic");
+    let message = replica
+        .publication_mut()
+        .publish_incremental(
+            "so.tilo.notes",
+            "",
+            doc.save_after(&[]),
+            &a.sk,
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+    let body = postcard::to_stdvec(&message).unwrap();
+    let (route, _) = neighbour_wire::retention(&message, false).unwrap();
+    a_session
+        .publish_retained_delta(route, body.clone())
+        .unwrap();
+
+    tilo_test_env::within("A's write at B", async {
+        loop {
+            match b_session.recv().await.expect("B's session stays open") {
+                Inbound::Delta { author, data } if author == a.device_pubkey() => {
+                    assert_eq!(data, body, "B reads the write A signed");
+                    return;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await;
+    drop(server);
 }

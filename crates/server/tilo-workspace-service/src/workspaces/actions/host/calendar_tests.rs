@@ -36,7 +36,7 @@ use tilo_actions::{ActionAddress, InvocationId};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
-use super::super::HostWorkspaceActions as HolderActions;
+use super::super::ServiceWorkspaceActions as HolderActions;
 use super::super::tests::{caller, settled};
 use super::accounts_tests::key_of;
 use crate::workspaces::fixtures::TestHost as TestHolder;
@@ -44,6 +44,14 @@ use crate::workspaces::person_asking::Allowing;
 use crate::workspaces::person_settings::calendars::{self as held, fake_caldav};
 use crate::workspaces::tests::{governor, test_host as test_holder};
 use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
+
+/// A turn this server carries out reads her calendars and changes nothing.
+#[path = "calendar_turn_tests.rs"]
+mod turn;
+
+/// An account connected for reading only is read, and never written to.
+#[path = "calendar_read_only_tests.rs"]
+mod read_only;
 
 /// The sign-in no answer, file or request may show.
 const PASSWORD: &str = "marker-7f3a-calendar-password";

@@ -114,6 +114,10 @@ struct TurnTeam {
     /// none unless the turn is told those skills itself, which what its keeper bounds the
     /// agent to decides too.
     skilled: Option<[u8; 32]>,
+    /// The keeper whose store says which skill the turn's agent, a sub-agent, works by and
+    /// hands on to one it starts: none unless the turn is that sub-agent's own for its keeper
+    /// ([`super::skills::works_by`]).
+    hands_on: Option<[u8; 32]>,
     /// What the turn is offered: nothing for a turn that is not its keeper's own.
     offered: Vec<CatalogueRow>,
 }
@@ -139,6 +143,7 @@ impl TurnTeam {
             workspace_id: scope.workspace_id,
             agent: turn.agent.clone(),
             skilled: super::skills::keeps(turn, &scope.workspace),
+            hands_on: super::skills::works_by(turn),
             offered: Vec::new(),
         };
         let caller = scope.reply(turn).caller;
@@ -414,11 +419,21 @@ impl TurnTeam {
         let Some(named) = skill.map(str::trim).filter(|named| !named.is_empty()) else {
             return Ok(None);
         };
-        let Some(keeper) = &self.skilled else {
+        let Some(keeper) = self.skilled.as_ref().or(self.hands_on.as_ref()) else {
             return Err(super::skills::NOT_HANDED.to_owned());
         };
         if new.coding.is_some() {
             return Err(super::skills::NOT_TO_CODING.to_owned());
+        }
+        if self.skilled.is_none() {
+            // A sub-agent hands on the one skill it works by, as its keeper's store names it.
+            // What the keeper bounds their own agent to, where its line of starters ends,
+            // holds for it as it did when the sub-agent was handed the skill.
+            let list = self.list().await?;
+            let whose = (&self.agent, list.root_of(&self.agent), keeper);
+            return super::skills::handed_on(&self.workspaces, &self.workspace, whose, named)
+                .await
+                .map(Some);
         }
         // What its keeper bounds the agent to holds for the one skill it names as well: this
         // is where a bound refuses a skill to be handed on, before anything is kept of it.

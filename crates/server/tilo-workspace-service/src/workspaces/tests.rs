@@ -4,7 +4,7 @@
 )]
 
 use super::*;
-use crate::service::{HostConfig, HostIdentity, WorkspaceService};
+use crate::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 

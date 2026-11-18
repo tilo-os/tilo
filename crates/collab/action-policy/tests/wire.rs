@@ -91,13 +91,13 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_lifetime_keeps_its_bytes_around_the_retired_task_lifetime;
+    phase a_lifetime_keeps_its_bytes;
     {
         let cases: &[(Lifetime, &[u8])] = &[
             (Lifetime::Once, &[0x00]),
-            (Lifetime::Session("s1".into()), &[0x02, 0x02, b's', b'1']),
-            (Lifetime::Until(5), &[0x03, 0x05]),
-            (Lifetime::UntilRevoked, &[0x04]),
+            (Lifetime::Session("s1".into()), &[0x01, 0x02, b's', b'1']),
+            (Lifetime::Until(5), &[0x02, 0x05]),
+            (Lifetime::UntilRevoked, &[0x03]),
         ];
         for (lifetime, golden) in cases {
             match lifetime {
@@ -106,14 +106,6 @@ tilo_test_env::scenario! {
                 }
             }
         }
-    }
-
-    phase a_grant_given_while_a_task_was_open_still_reads_and_has_expired;
-    {
-        assert_eq!(
-            postcard::from_bytes::<Lifetime>(&[0x01, 0x02, b't', b'1']).unwrap(),
-            Lifetime::Until(0)
-        );
     }
 
     phase a_grant_keeps_its_bytes;
@@ -132,7 +124,7 @@ tilo_test_env::scenario! {
         golden.extend(b"workspace:r");
         golden.extend([0x03, 0x00, 0x01, 0x02]);
         golden.push(0x02);
-        golden.push(0x04);
+        golden.push(0x03);
         golden.extend([0x00, 0x00, 0x01, b'c']);
         stored_as!(&grant, &golden);
     }

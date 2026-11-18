@@ -21,8 +21,8 @@ use tilo_server_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
 use super::{
-    CANCEL_INVITATION, GovernedServer, HostWorkspaceActions, INVITATIONS, MAIL_INVITATION, MEMBERS,
-    NAME, UNLIST, VERBS, WAIT_LIST,
+    CANCEL_INVITATION, GovernedServer, INVITATIONS, MAIL_INVITATION, MEMBERS, NAME,
+    ServiceWorkspaceActions, UNLIST, VERBS, WAIT_LIST,
 };
 use crate::app_serving::AppActionServer as _;
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
@@ -138,16 +138,16 @@ pub(super) fn request(workspace: &str, verb: &str, argument: Value) -> InvokeReq
 /// as actions.
 pub(super) async fn governed(
     workspaces: &Workspaces,
-) -> (String, WorkspaceId, HostWorkspaceActions) {
+) -> (String, WorkspaceId, ServiceWorkspaceActions) {
     let summary = workspaces.create("Team").await.unwrap();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     (summary.workspace, summary.workspace_id, host)
 }
 
 /// The verbs `caller` is offered on the workspace `workspace_id` carries.
 async fn offered(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     caller: &Caller,
 ) -> Vec<String> {
@@ -167,7 +167,7 @@ async fn offered(
 
 /// `request` by `caller`: what it produced, or why not.
 async fn invoke(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     caller: &Caller,
     request: InvokeRequest,
@@ -741,7 +741,7 @@ async fn the_owners_own_request_confirms_removing_a_member() {
 #[tokio::test]
 async fn a_host_without_apps_answers_only_its_workspaces_governance() {
     let server = GovernedServer {
-        governance: HostWorkspaceActions::new(),
+        governance: ServiceWorkspaceActions::new(),
         apps: None,
     };
     let someone = Caller::authenticated([1; 32], [2; 32]);
@@ -924,7 +924,7 @@ fn dev_release(publisher: &str, version: &str, surface: u8) -> Value {
 /// the workspace does not carry: no version is recorded.
 async fn an_editor_installs_nothing(
     workspaces: &Workspaces,
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     workspace: &str,
     editor: &DeviceCert,
@@ -959,7 +959,7 @@ async fn an_editor_installs_nothing(
 /// refused.
 async fn a_developer_installs_its_own_build(
     workspaces: &Workspaces,
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     workspace: &str,
     owner: &DeviceCert,
@@ -1084,7 +1084,7 @@ async fn a_developer_chooses_the_version_of_an_app_the_whole_workspace_runs() {
 /// `request` of the person's own settings, asked by the device `device`
 /// certifies in the workspace `workspace_id` carries.
 pub(super) async fn ask_own(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     device: &DeviceCert,
     verb: &str,
@@ -1179,7 +1179,7 @@ fn model_requests(provider: &str) -> Vec<(&'static str, Value)> {
 /// What `other` sees of the person's providers, and that naming
 /// `provider` reaches nothing of theirs.
 async fn reaches_none_of_hers(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     other: &DeviceCert,
     provider: &str,
@@ -1357,7 +1357,7 @@ async fn no_agent_reaches_a_persons_model_providers() {
 /// A provider `person` links as `adding` says, its `key` kept and its models
 /// asked for: the provider's id.
 async fn links_a_provider(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     person: &DeviceCert,
     adding: &Value,
@@ -1573,9 +1573,10 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
 /// What a service on this device's own network says to whoever asks it.
 const SAID_INSIDE: &str = "what a service inside says";
 
-/// Which holders keep a workspace is its owners' decision: another person's
-/// device asking to list, add or remove them is answered as a workspace
-/// that offers no such action, and nothing is asked of the site it names.
+/// Which holders keep a workspace, and how many copies it keeps, is its
+/// owners' decision: to another person's device listing, adding or removing
+/// them or choosing the copies is no action it has, and nothing is asked of
+/// the site it names.
 #[tokio::test]
 async fn only_an_owner_chooses_a_workspaces_holders() {
     use test_http::{Reply, Responder};
@@ -1591,6 +1592,7 @@ async fn only_an_owner_chooses_a_workspaces_holders() {
         (super::SERVERS, json!({})),
         (super::ADD_SERVER, json!({ "origin": site.url() })),
         (super::REMOVE_SERVER, json!({ "server": site.url() })),
+        (super::SET_COPIES, json!({ "key_holders": 1 })),
     ] {
         let asked = request(&workspace, verb, argument);
         assert_eq!(

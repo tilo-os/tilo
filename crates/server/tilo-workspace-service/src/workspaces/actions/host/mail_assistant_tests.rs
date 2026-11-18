@@ -29,7 +29,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
-use super::super::HostWorkspaceActions;
+use super::super::ServiceWorkspaceActions;
 use super::super::tests::{caller, settled};
 use super::accounts_tests::{asking, key_of};
 use crate::workspaces::fixtures::TestHost;
@@ -46,7 +46,7 @@ const ASSISTANT: &str = "assistant";
 struct Setup {
     servers: Arc<Watched>,
     workspaces: Workspaces,
-    host: HostWorkspaceActions,
+    host: ServiceWorkspaceActions,
     device: DeviceCert,
     workspace_id: WorkspaceId,
     _server: TestHost,
@@ -61,7 +61,7 @@ impl Setup {
         let workspaces = server.workspaces().clone();
         let servers = Arc::new(Watched::answering());
         workspaces.carry_mail_through(servers.clone());
-        let host = HostWorkspaceActions::new();
+        let host = ServiceWorkspaceActions::new();
         host.attach(workspaces.clone());
         let device = key_of(&SigningKey::from_bytes(&rand::random()), "studio");
         keep(

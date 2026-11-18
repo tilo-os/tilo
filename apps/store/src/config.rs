@@ -2,13 +2,13 @@
 //! `$XDG_CONFIG_HOME/tilo-store/`, the list `app repo` edits.
 //!
 //! The sandboxed Store has a home of its own, so it never reads that file
-//! itself: it asks the app host, which runs `app repo list --json` as the
+//! itself: it asks the package service, which runs `app repo list --json` as the
 //! person ([`repositories`]). A copy in the sandbox would be a second list
 //! `app repo` never edits.
 //!
 //! **Owned by [`app_cli::config`]**, not by this app. The desktop's search
 //! box reads the same file to decide what software the machine could open,
-//! and the privileged app host verifies installs against it, so a second
+//! and the privileged package service verifies installs against it, so a second
 //! definition of its shape would eventually mean the store, the palette and
 //! the installer disagreed about which registries exist. The shared crate is
 //! the owner because the app, the compositor and the host all depend on it.
@@ -24,7 +24,7 @@ pub use app_cli::config::{
 };
 
 pub fn repositories(
-    host: Option<&app_process::client::BlockingClient>,
+    host: Option<&package_service::client::BlockingClient>,
 ) -> Result<RegistriesFile, String> {
     let Some(host) = host else {
         return Ok(app_cli::config::load_registries_no_seed());
@@ -72,7 +72,7 @@ mod tests {
             assert_eq!(config_dir().as_deref(), Some(td.path()));
         }
 
-        // Case `without_an_app_process_nothing_is_written`.
+        // Case `without_an_package_service_nothing_is_written`.
         // The Store's own reading never seeds a list in its sandbox.
         {
             let td = TempDir::new().unwrap();

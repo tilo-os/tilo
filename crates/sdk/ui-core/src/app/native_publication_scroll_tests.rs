@@ -225,11 +225,11 @@ fn scroll_probe_factory(
 #[cfg(unix)]
 fn bound_scroll_app(
     root: PublicationProbeRoot,
-) -> (App, crate::application_test_support::ProbeHost) {
+) -> (App, crate::application_test_support::ProbeHarness) {
     use crate::application_test_support::{
         APP, DEVICE, author, provenance, runner_inputs, runner_permissions,
     };
-    let mut host = crate::application_test_support::ProbeHost::new();
+    let mut host = crate::application_test_support::ProbeHarness::new();
     let workspace = "00000000-0000-0000-0000-000000000074";
     host.records = host.owners.open(APP, workspace).unwrap();
     host.views = Rc::new(
@@ -304,7 +304,7 @@ struct ViewScrollFixture {
     syncs: Rc<Cell<usize>>,
     declarations: Rc<Cell<usize>>,
     paragraphs: usize,
-    _host: Option<crate::application_test_support::ProbeHost>,
+    _host: Option<crate::application_test_support::ProbeHarness>,
 }
 
 impl ViewScrollFixture {

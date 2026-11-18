@@ -722,3 +722,58 @@ async fn a_task_goes_on_when_the_automation_it_waits_for_comes() {
         )
         .await;
 }
+
+/// A look reads what a workspace owes and enters a turn's place a moment later, when the turn
+/// it read about may have ended. An issue's turn is begun once all the same: entered again
+/// with what was read before its answer, it counts no second session, asks no model and says
+/// nothing more in the issue's thread. The same holds for the turn of a wait that ended, read
+/// at the wait's own moment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_issues_turn_read_before_its_answer_is_not_begun_again() {
+    let given = given().await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = given.started(looks_then_answers(1_000, Arc::clone(&asked)));
+
+    // What a look reads: the turn the issue is owed. It is answered, and its place is free.
+    let read = given.answered(&agents, now_ms()).await;
+    assert_eq!(asked.lock().unwrap().len(), 2, "it looked, then answered");
+    assert_eq!(given.said().await.len(), 1);
+
+    // The look that read before the answer enters the place only now.
+    Box::pin(agents.answer(&given.workspace, &read))
+        .await
+        .unwrap();
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        2,
+        "the issue is asked of the model once"
+    );
+    assert_eq!(given.said().await.len(), 1, "one answer in its thread");
+    assert_eq!(
+        given.held().await.work.unwrap().sessions,
+        1,
+        "and one session counted on it"
+    );
+
+    // It waits two days. The turn of that wait's end is read at its moment, and answered.
+    let until = now_ms() + 2 * DAY_MS;
+    given.waits_for_a_reply(until).await;
+    let waited = given.answered(&agents, until).await;
+    assert_eq!(waited.cause, format!("waited-{until}"));
+    assert_eq!(asked.lock().unwrap().len(), 4, "the later session");
+
+    // Entered again with that reading, it is not begun a second time either.
+    Box::pin(agents.answer(&given.workspace, &waited))
+        .await
+        .unwrap();
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        4,
+        "the wait's end is asked of the model once"
+    );
+    assert_eq!(given.held().await.work.unwrap().sessions, 2);
+    assert_eq!(given.said().await.len(), 2);
+    given
+        .nothing_owed(&agents, until + DAY_MS, "answered once")
+        .await;
+}

@@ -117,13 +117,13 @@ type Ran = ([u8; 32], tilo_actions::InvocationId, Vec<[u8; 32]>);
 /// A host's jobs that take anything offered and answer the work they were
 /// given back: which work a run was given is what its answer names.
 #[derive(Default)]
-struct Recorded {
+struct Jobs {
     ran: std::sync::Mutex<Vec<Ran>>,
     /// How many more jobs it says it can start, when it keeps count.
     free: std::sync::Mutex<Option<u32>>,
 }
 
-impl Recorded {
+impl Jobs {
     /// The same jobs, already running as much as they take on.
     fn at_capacity() -> Self {
         Self {
@@ -138,7 +138,7 @@ impl Recorded {
     }
 }
 
-impl HostJobs for Recorded {
+impl HostJobs for Jobs {
     fn runs(&self, _workspace: &str, _work: &neighbour_wire::offer::Work) -> bool {
         true
     }
@@ -209,7 +209,7 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("ActionService").await.unwrap();
-    let jobs = Arc::new(Recorded::default());
+    let jobs = Arc::new(Jobs::default());
     let serving: Arc<dyn HostJobs> = jobs.clone();
     workspaces.run_jobs(serving);
 
@@ -375,7 +375,7 @@ async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Permits").await.unwrap();
-    let jobs = Arc::new(Recorded::default());
+    let jobs = Arc::new(Jobs::default());
     let serving: Arc<dyn HostJobs> = jobs.clone();
     workspaces.run_jobs(serving);
 
@@ -455,7 +455,7 @@ async fn a_host_at_its_capacity_answers_an_offer_as_taken_by_nobody() {
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Busy").await.unwrap();
-    let jobs = Arc::new(Recorded::at_capacity());
+    let jobs = Arc::new(Jobs::at_capacity());
     let serving: Arc<dyn HostJobs> = jobs;
     workspaces.run_jobs(serving);
 
@@ -493,6 +493,78 @@ async fn a_host_at_its_capacity_answers_an_offer_as_taken_by_nobody() {
     assert!(
         choice.is_local(),
         "the job stays where it was asked: {choice}"
+    );
+
+    endpoint.close().await;
+    server.shutdown().await;
+}
+
+/// A host its person's entry says runs no work answers every offer as taking
+/// none, whatever its job runner could run, so work lands only where its
+/// entry allows it; the same host set to run work answers as it always did.
+#[tokio::test]
+async fn a_device_whose_entry_takes_no_work_declines_every_offer() {
+    use neighbour_wire::offer::{Decline, Route};
+    use tilo_peer_state::actions::OFFER_DEADLINE;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
+    let created = workspaces.create("Quiet").await.unwrap();
+    let jobs = Arc::new(Jobs::default());
+    let serving: Arc<dyn HostJobs> = jobs;
+    workspaces.run_jobs(serving);
+
+    let (device_key, device_cert) = guest_device();
+    entry_join(
+        workspaces,
+        &cert,
+        &created.workspace,
+        (&device_key, &device_cert),
+        62,
+    )
+    .await;
+    let (endpoint, action_service) = asking_device(&device_key).await;
+    let ask = |endpoint: &iroh::Endpoint,
+               action_service: &tilo_peer_state::actions::ActionService| {
+        action_service.offers(
+            endpoint,
+            [server.node_addr()],
+            &created.workspace,
+            &Route::new("so.tilo.notes", "notes.root", "insert"),
+            &offered_work([0xc4; 32]),
+            tilo_actions::InvocationId::new(),
+            OFFER_DEADLINE,
+        )
+    };
+    workspaces.set_offer(Offer::none());
+    let declined = tokio::time::timeout(Duration::from_secs(20), ask(&endpoint, &action_service))
+        .await
+        .expect("the round finishes")
+        .expect("the round completes");
+    assert_eq!(
+        declined
+            .considered
+            .first()
+            .map(|candidate| candidate.verdict),
+        Some(Err(Decline::NotTakingWork)),
+        "a host the entry says runs no work takes none of it: {declined}"
+    );
+    assert!(declined.is_local(), "the job stays where it was asked");
+
+    // The same host, its entry now naming what it offers, answers the runner.
+    workspaces.set_offer(Offer::of(500, true, 2));
+    let taking = tokio::time::timeout(Duration::from_secs(20), ask(&endpoint, &action_service))
+        .await
+        .expect("the round finishes")
+        .expect("the round completes");
+    assert!(
+        taking
+            .considered
+            .first()
+            .is_some_and(|candidate| candidate.verdict.is_ok()),
+        "a host the entry says runs work offers it: {taking}"
     );
 
     endpoint.close().await;

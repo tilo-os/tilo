@@ -92,6 +92,12 @@ pub struct ServerConfig {
     #[serde(default = "default_work")]
     pub work: WorkSetting,
 
+    /// Whether the machine this keeper works on is rented from a cloud provider, whose operator
+    /// can read everything on it. A keeper declares it in the address it signs for each
+    /// workspace, so every member reads that the provider can read theirs too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rented: bool,
+
     /// Services requested by the operator. Runtime advertisement is clamped
     /// to the protocols started by the composite home peer and its live residency
     /// proof.
@@ -156,6 +162,7 @@ impl Default for ServerConfig {
             packet_relay_url: None,
             trust_policy: TrustPolicy::default(),
             work: default_work(),
+            rented: false,
             services: default_services(),
             web_entry: None,
             max_workspace_grants: None,

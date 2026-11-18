@@ -278,6 +278,7 @@ tilo_test_env::scenario! {
                 users: vec!["ab".repeat(32)],
             },
             work: WorkSetting::own_person(),
+            rented: false,
             services: ServiceCapabilities::home_peer(),
             web_entry: None,
             max_workspace_grants: None,

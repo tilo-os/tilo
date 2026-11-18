@@ -11,7 +11,7 @@
 //! retained-checkpoint replacement and the live checkpoint check decode one.
 //!
 //! The adapter is injected, not looked up: a host takes one when it opens
-//! ([`HostConfig::shell_payloads`](crate::service::HostConfig::shell_payloads),
+//! ([`ServiceConfig::shell_payloads`](crate::service::ServiceConfig::shell_payloads),
 //! [`NeighbourPayloads`] by default) and hands it to the compactor and to every
 //! workspace store it opens, and the peer session asks the store of the
 //! workspace it serves. Workspace governance still uses the desktop's
@@ -147,7 +147,7 @@ pub trait ShellPayloads: Send + Sync + 'static {
 }
 
 /// The desktop's adapter, as a host
-/// ([`HostConfig::new`](crate::service::HostConfig::new)) and
+/// ([`ServiceConfig::new`](crate::service::ServiceConfig::new)) and
 /// [`WorkspaceStore::open`](crate::store::WorkspaceStore::open) wire it.
 #[must_use]
 pub fn neighbour() -> Arc<dyn ShellPayloads> {

@@ -17,13 +17,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tilo_workspace_service::apps::services::{
-    ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
-    DisplayControlServices, DriveServices, FileClipboardServices, LauncherServices,
-    NearbyTransferServices, ProcessServices, PublishedResources, RealtimeServices,
-    ShortcutLibraryServices, SpeakerServices, WifiContinuityServices, WorkspaceControlServices,
-    WorkspaceGrants, WorkspaceMemberships,
-};
 use tilo_broker_core::services::{
     ContentStoreServices, DocumentChangeServices, DocumentIndexChanges, KeyboardShortcutServices,
     LegacyWorkspaceProjection, LocalPersonServices, OwnDeviceActions, SearchIndexServices,
@@ -31,6 +24,13 @@ use tilo_broker_core::services::{
 };
 use tilo_broker_core::steps::{ContinuationServices, HostStepServices};
 use tilo_workspace_keys::KeyProvider;
+use tilo_workspace_service::apps::services::{
+    ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
+    DisplayControlServices, DriveServices, FileClipboardServices, LauncherServices,
+    NearbyTransferServices, ProcessServices, PublishedResources, RealtimeServices,
+    ShortcutLibraryServices, SpeakerServices, WifiContinuityServices, WorkspaceControlServices,
+    WorkspaceGrants, WorkspaceMemberships,
+};
 
 /// What this session serves of one service.
 pub(crate) enum BrokerService<T> {

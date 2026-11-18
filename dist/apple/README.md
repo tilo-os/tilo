@@ -300,7 +300,23 @@ the server, and `setUpEvent` sets up what comes at a time. A secret goes to the 
 the question is answered with the item's reference: the conversation holds nothing else of
 it. Where the page says which workspace is the person's own, the app goes there, because
 that is where the assistant lives. What Tilo cannot do from an app yet is refused with a
-sentence: tasks, files, pausing the assistant, a password manager, connections.
+sentence: tasks, files, pausing the assistant, a password manager.
+
+**A service by its address.** The person gives their assistant a service's address. Their
+server looks at it and asks them in their conversation whether to connect it: a question that
+keeps the service's card beside its words (`tilo.connections`, `propose`). The app draws that
+question as the card (`AssistantTilo/Connections.swift`). "Not now" is their no and
+"Authenticate" their yes, both Chat's own answer, and the yes is what adds the service on
+their server. Where the service wants a sign-in, the app begins it as the person on this
+device and opens the service's own page in the system's sign-in sheet
+(`ASWebAuthenticationSession`), which comes back to an address in a scheme of the app's own
+(`SignInReturn`). Nothing of a sign-in is typed into the app; what the sheet comes back with
+goes to the person's server as what a protected field holds, and to nobody else. The card
+keeps no state of its own: it stands by the question and by the person's connections as
+their server lists them, which the app asks on the way in, after its own calls, and once
+more when a card says their server added a service that the list as last read does not hold.
+The assistant view's "Connections" shows that same list, newest first: each service by its
+own name, when it was added and how many commands it offers, or that nobody is signed in to it.
 
 **Which agent is the assistant, and the first time.** When its device gets in, the app asks
 the workspace's server, as the person on this device, which agents the workspace keeps
@@ -386,6 +402,13 @@ typed, and every character stays: Markdown's own signs are out of sight, except 
 the person is writing in (`Markdown.marks`, `Markdown.hidden`, `FieldStyle`). Return sends and
 Shift Return makes a line; on an iPhone's glass keyboard Return makes a line and the arrow
 sends. Attachments and dictation stand under the field, and dictation is the shell's.
+
+**A file in a message** is shown with the name and the size Chat gives. In Tilo a file that a
+message carries is content its workspace keeps and the message names (Chat's `attachments`):
+`ChatMessage.files` reads them, `TiloFiles` hands them to the views, and a file's tag says its
+name and its size (`Attachment.words`). The app keeps nothing of a file. Tilo's page hands a
+native app no way to a file's content yet, so pressing a file and sending one each say so in a
+sentence: nothing is read from a picked file, and nothing is fetched.
 
 **A secret** is typed into the system's protected field. What is typed lives in that one view
 until Save hands it to `AssistantSource.keep`, and the field is emptied before the call. It is
@@ -552,9 +575,12 @@ written into the bundles, never into the sources. Without an identity the Mac ap
 nobody: it runs on the Mac that built it, a later build cannot read the keys it kept, and it
 has no share extension.
 
-The icon of both apps is one drawing, `Bundle/AppIcon.svg`: Tilo's mark. The repository keeps
-no pictures, so `build.sh` draws it at every size a bundle carries when the bundle is made:
-the Mac's icon, and the two files the iPhone's `Info.plist` names.
+Each app has one drawing for its icon, so the two are told apart at a glance: Tilo Shell's is
+`Bundle/AppIcon.svg`, Tilo's mark on its light ground; Tilo Assistant's is
+`AssistantBundle/AppIcon.svg`, a message on Tilo's blue with the mark's three parts as three
+dots. The repository keeps no pictures, so `build.sh` draws an app's drawing at every size a
+bundle carries when the bundle is made: the Mac's icon, and the two files the iPhone's
+`Info.plist` names.
 
 `--check` runs the app with nothing on screen and prints one line per fact: who signed it,
 whether it is sandboxed, whether the web view offers a secure context, WebGPU with an adapter,

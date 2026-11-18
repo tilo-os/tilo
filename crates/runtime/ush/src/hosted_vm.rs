@@ -145,6 +145,27 @@ impl HostedPrograms {
 }
 
 /// The shares a policy's grants make: writable directories read-write,
+/// How long the hosted-VM service is given to say which VMs it keeps.
+const STATUS_PATIENCE: Duration = Duration::from_secs(5);
+
+/// The VMs the hosted-VM service at `socket` keeps, each as its workspace and
+/// environment; none when no service answers there.
+#[must_use]
+pub fn kept(socket: &Path) -> Vec<(String, String)> {
+    let Ok(Some(Reply::Status { vms, .. })) =
+        control::ask(socket, &Request::Status, STATUS_PATIENCE)
+    else {
+        return Vec::new();
+    };
+    vms.into_iter()
+        .filter_map(|vm| {
+            vm.vm
+                .split_once('/')
+                .map(|(workspace, environment)| (workspace.to_owned(), environment.to_owned()))
+        })
+        .collect()
+}
+
 /// readable ones read-only.
 #[must_use]
 pub fn shares_of(writable: Vec<PathBuf>, readable: Vec<PathBuf>) -> Vec<ShareRequest> {

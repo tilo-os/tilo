@@ -132,6 +132,9 @@ pub(crate) const REMOVE_SERVER: &str = "server.remove";
 /// Moving the workspace from one server to another: the new one keeps it
 /// as well, then the old one keeps it no more.
 pub(crate) const MOVE_SERVER: &str = "server.move";
+/// How many copies the workspace wants kept: key holders, which hold its
+/// keys and take its work, and stores, which keep its ciphertext.
+pub(crate) const SET_COPIES: &str = "copies.set";
 /// What checks choosing the workspace's servers: its owners', which no grant
 /// of its governance gives ([`Workspaces::chooses_servers`]).
 const CHOOSES_SERVERS: &str = "choose-servers";
@@ -203,7 +206,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 26] = [
+const VERBS: [Verb; 27] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -287,6 +290,13 @@ const VERBS: [Verb; 26] = [
         check: CHOOSES_SERVERS,
         kind: roles::GOVERNANCE_KIND,
         params: move_server_params,
+    },
+    Verb {
+        id: SET_COPIES,
+        label: "Choose how many copies it keeps",
+        check: CHOOSES_SERVERS,
+        kind: roles::GOVERNANCE_KIND,
+        params: copies_params,
     },
     Verb {
         id: NAME,
@@ -486,12 +496,41 @@ fn add_member_params() -> Vec<ActionParam> {
 }
 
 fn add_server_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "origin",
-        ParamType::Text,
-        "The other server's site, like https://tilo.sh. You must be let in there, and it may \
-         refuse by its own rules.",
-    )]
+    vec![
+        ActionParam::required(
+            "origin",
+            ParamType::Text,
+            "The other server's site, like https://tilo.sh. You must be let in there, and it may \
+             refuse by its own rules.",
+        ),
+        ActionParam::optional(
+            "role",
+            ParamType::Text,
+            "`key_holder` (the default): it holds the workspace's keys, reads it and takes its \
+             work, without becoming a member. `store`: it keeps and forwards it encrypted and \
+             reads none of it.",
+        )
+        .with_choices(HOLDER_ROLES),
+    ]
+}
+
+/// How a holder may hold a workspace, as [`tilo_peer_state::CopyRole`] spells it.
+const HOLDER_ROLES: [&str; 2] = ["key_holder", "store"];
+
+fn copies_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::optional(
+            "key_holders",
+            ParamType::Integer,
+            "Holders that hold its keys and take its work. Leave both out for the default: one \
+             of each once a server holds it, and the devices it has otherwise.",
+        ),
+        ActionParam::optional(
+            "stores",
+            ParamType::Integer,
+            "Holders that keep it encrypted and read none of it.",
+        ),
+    ]
 }
 
 fn remove_server_params() -> Vec<ActionParam> {
@@ -841,6 +880,19 @@ fn check_of(action: &str) -> Option<&'static str> {
         .chain(&OWNER_CONFIRMED)
         .find(|verb| verb.id == action)
         .map(|verb| verb.check)
+}
+
+/// The certificate `device` is in `cert`'s chain of issuers: the key that
+/// minted `cert`, or one that stood in for the person when it was minted.
+fn minting_issuer(cert: &DeviceCert, device: &[u8; 32]) -> Option<DeviceCert> {
+    let mut issuer = cert.issuer.as_deref();
+    while let Some(cert) = issuer {
+        if cert.device_public_key == *device {
+            return Some(cert.clone());
+        }
+        issuer = cert.issuer.as_deref();
+    }
+    None
 }
 
 /// Whether `action` with `args` by a device of `owner`'s person or not needs
@@ -1195,8 +1247,9 @@ impl Workspaces {
 
     /// The workspace `workspace_id` carries and the certificate of `caller`'s
     /// device in it, for the key that reads and revokes its own grants: the
-    /// device must be one the workspace admitted, and the grant may be any of
-    /// the person's, a key for one workspace included.
+    /// device must be one the workspace admitted, or one whose key it admitted
+    /// (the key that minted it), and the grant may be any of the person's, a
+    /// key for one workspace included.
     async fn grant_device(
         &self,
         workspace_id: WorkspaceId,
@@ -1210,7 +1263,11 @@ impl Workspaces {
             .peer()
             .certificates()
             .into_iter()
-            .find(|cert| cert.device_public_key == *device)
+            .find_map(|cert| {
+                (cert.device_public_key == *device)
+                    .then_some(cert.clone())
+                    .or_else(|| minting_issuer(&cert, device))
+            })
             .or_else(|| (host.device_public_key == *device).then(|| host.clone()))?;
         drop(workspace);
         (cert.user_public_key == *user).then_some((governed, cert))
@@ -1552,7 +1609,7 @@ impl Workspaces {
                 self.governance_invitations(action, call).await
             }
             ADD_MEMBER => self.governance_add_member(call).await,
-            SERVERS | ADD_SERVER | REMOVE_SERVER | MOVE_SERVER => {
+            SERVERS | ADD_SERVER | REMOVE_SERVER | MOVE_SERVER | SET_COPIES => {
                 self.governance_hosts(action, call).await
             }
             WAIT_LIST | UNLIST | MAIL_INVITATION => self.governance_wait_list(action, call).await,
@@ -1943,7 +2000,9 @@ impl Workspaces {
     }
 
     /// The workspace's servers, having another keep it as well, and having one
-    /// keep it no more: each answers the servers as they are then.
+    /// keep it no more: each answers the servers as they are then. Choosing how
+    /// many copies it keeps answers the same, and each says where its copies
+    /// stand.
     async fn governance_hosts(
         &self,
         action: &str,
@@ -1954,7 +2013,13 @@ impl Workspaces {
         } = call;
         let confirmed = match action {
             ADD_SERVER => {
-                self.add_server(workspace, args.required_text("origin")?)
+                let role = args
+                    .text("role")?
+                    .map(|role| serde_json::from_value(Value::String(role.to_owned())))
+                    .transpose()
+                    .map_err(|_| invalid("`role` is `key_holder` or `store`"))?
+                    .unwrap_or(tilo_peer_state::CopyRole::KeyHolder);
+                self.add_server(workspace, args.required_text("origin")?, role)
                     .await
                     .map_err(|error| refused(&error))?;
                 None
@@ -1973,13 +2038,39 @@ impl Workspaces {
                 .await
                 .map_err(|error| refused(&error))?,
             ),
+            SET_COPIES => {
+                let count = |name| {
+                    args.integer(name)?
+                        .map(u32::try_from)
+                        .transpose()
+                        .map_err(|_| invalid(format!("`{name}` is too large")))
+                };
+                let (key_holders, stores) = (count("key_holders")?, count("stores")?);
+                let policy = (key_holders.is_some() || stores.is_some()).then(|| {
+                    tilo_peer_state::CopyPolicy {
+                        key_holders: key_holders.unwrap_or(0),
+                        stores: stores.unwrap_or(0),
+                    }
+                });
+                self.choose_copies(workspace, policy)
+                    .await
+                    .map_err(|error| refused(&error))?;
+                None
+            }
             _ => None,
         };
         let hosts = self
             .keeping_devices(workspace)
             .await
             .map_err(|error| refused(&error))?;
+        let copies = self
+            .copies(workspace)
+            .await
+            .map_err(|error| refused(&error.to_string()))?;
         let mut answered = json!({ "workspace": workspace, "servers": hosts });
+        if let Some(fields) = answered.as_object_mut() {
+            fields.insert("copies".into(), json!(copies));
+        }
         if let (Some(confirmed), Some(fields)) = (confirmed, answered.as_object_mut()) {
             // A host that could not be reached is no longer named to anyone,
             // and lets the workspace go once it hears so.
@@ -2099,7 +2190,7 @@ struct GovernanceCall<'a> {
 
 /// The workspaces' governance as an action host, attached once the workspaces open.
 #[derive(Clone)]
-pub(crate) struct HostWorkspaceActions {
+pub(crate) struct ServiceWorkspaceActions {
     shared: Arc<Shared>,
 }
 
@@ -2117,7 +2208,7 @@ struct Shared {
     account_follows: Mutex<std::collections::HashMap<InvocationId, [u8; 32]>>,
 }
 
-impl HostWorkspaceActions {
+impl ServiceWorkspaceActions {
     /// Governance for workspaces [`attach`](Self::attach)ed later. Call it inside
     /// the runtime the server runs on.
     #[must_use]
@@ -2374,7 +2465,7 @@ fn succeeded(invocation: InvocationId, value: serde_json::Value) -> InvocationSt
 /// Answer that `invocation` runs, record it so, and record how it ends once
 /// `work` does: the caller follows it there.
 fn still_running(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     invocation: InvocationId,
     work: tokio::task::JoinHandle<Result<serde_json::Value, ActionCallError>>,
 ) -> InvocationReceipt {
@@ -2412,11 +2503,11 @@ fn failed(invocation: InvocationId, message: &str) -> InvocationState {
     )
 }
 
-/// [`HostWorkspaceActions`] for the workspace one workspace carries, or (with no
+/// [`ServiceWorkspaceActions`] for the workspace one workspace carries, or (with no
 /// workspace) for the host's own operations asked of it directly.
 #[derive(Clone)]
 struct InWorkspace {
-    host: HostWorkspaceActions,
+    host: ServiceWorkspaceActions,
     workspace_id: Option<WorkspaceId>,
     /// The caller's device certificate, as the transport verified it.
     certificate: Option<DeviceCert>,
@@ -2711,7 +2802,7 @@ const PROVIDERS: [&str; 11] = [
 /// host's own operations ([`HOST_ACTIONS_PROVIDER`]), and the app action server its
 /// embedder supplied for everything else.
 pub(crate) struct GovernedServer {
-    pub(crate) governance: HostWorkspaceActions,
+    pub(crate) governance: ServiceWorkspaceActions,
     /// Answers everything else, when the embedder serves apps.
     pub(crate) apps: Option<Arc<dyn AppActionServer>>,
 }

@@ -1,4 +1,4 @@
-//! What the compositor draws hosted surfaces' frames with.
+//! What the compositor draws surfaces' frames with.
 //!
 //! A frame a surface drew on the GPU is shown from the dma-buf it drew into, imported as any
 //! client's is: nothing passes through memory. A frame drawn on the CPU (a machine with no GPU to
@@ -21,15 +21,15 @@ use smithay::backend::renderer::element::texture::{TextureRenderBuffer, TextureR
 use smithay::backend::renderer::{ContextId, ImportAll, ImportDma, ImportMem, Renderer};
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Size, Transform};
 
-use tilo_session_core::surface::{HostBuffers, HostFrame, Region};
+use tilo_session_core::surface::{Region, SurfaceBuffers, SurfaceFrame};
 
 use crate::render::OutputRenderElement;
 
-/// The one format hosted surfaces draw their GPU frames in: R, G, B, A bytes in memory, as their
+/// The one format surfaces draw their GPU frames in: R, G, B, A bytes in memory, as their
 /// renderer draws, in a linear layout every GPU that imports dma-bufs reads.
 const FRAME_FORMAT: Fourcc = Fourcc::Abgr8888;
 
-/// The render node hosted surfaces allocate the buffers of their GPU frames on: the compositor's,
+/// The render node surfaces allocate the buffers of their GPU frames on: the compositor's,
 /// once it imports their format there.
 static FRAMES_NODE: OnceLock<PathBuf> = OnceLock::new();
 
@@ -44,7 +44,7 @@ pub(crate) fn offer_gpu_frames(node: Option<&Path>, formats: &[Format]) {
     }
 }
 
-/// The render node a hosted surface allocates its GPU frames' buffers on, as `/dev/dri/renderD128`:
+/// The render node a surface allocates its GPU frames' buffers on, as `/dev/dri/renderD128`:
 /// `None` where the compositor imports none (no GPU, or none that reads them), and the surface
 /// draws on the CPU.
 #[must_use]
@@ -52,7 +52,7 @@ pub fn gpu_frames_node() -> Option<&'static Path> {
     FRAMES_NODE.get().map(PathBuf::as_path)
 }
 
-/// The buffers the hosted surfaces' frames are drawn from, by the frame they hold.
+/// The buffers the surfaces' frames are drawn from, by the frame they hold.
 #[derive(Debug, Default)]
 pub(crate) struct Uploads {
     frames: RefCell<HashMap<usize, Drawn>>,
@@ -62,7 +62,7 @@ pub(crate) struct Uploads {
 #[derive(Debug)]
 struct Drawn {
     /// The frame's pixels, watched so a frame the surface dropped takes its buffer with it (a
-    /// surface that resized, a host that went).
+    /// surface that resized, a surface that went).
     frame: tilo_session_core::surface::FrameWatch,
     shown: Shown,
 }
@@ -95,7 +95,7 @@ impl std::fmt::Debug for OnGpu {
     }
 }
 
-/// Where a hosted layer is drawn: at `at` (physical), the part `src` of its frame scaled to `size`.
+/// Where a surface layer is drawn: at `at` (physical), the part `src` of its frame scaled to `size`.
 #[derive(Clone, Copy)]
 pub(crate) struct Placed {
     pub at: Point<f64, Physical>,
@@ -112,7 +112,7 @@ impl Uploads {
     pub(crate) fn element<R>(
         &self,
         renderer: &mut R,
-        frame: &HostFrame,
+        frame: &SurfaceFrame,
         placed: Placed,
     ) -> Result<Option<OutputRenderElement<R>>, R::Error>
     where
@@ -157,7 +157,7 @@ impl Uploads {
     /// Take what `frame` changed since it was last drawn here: into its memory buffer for a frame
     /// drawn on the CPU, as the buffer to show and the parts to draw again for one drawn on the
     /// GPU.
-    fn refresh(&self, frame: &HostFrame) {
+    fn refresh(&self, frame: &SurfaceFrame) {
         let Some(changed) = frame.take_changed() else {
             return;
         };
@@ -235,7 +235,7 @@ impl Uploads {
 }
 
 impl OnGpu {
-    fn new(buffers: &Arc<HostBuffers>, size: (i32, i32)) -> Self {
+    fn new(buffers: &Arc<SurfaceBuffers>, size: (i32, i32)) -> Self {
         let dmabufs = buffers
             .buffers
             .iter()

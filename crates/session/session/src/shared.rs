@@ -2,7 +2,7 @@
 //! each workspace's shared desktop, the workspace's history, the windows left open, and what the
 //! sheets and settings asked for.
 
-use crate::platform::surfaces::WidgetHost;
+use crate::platform::surfaces::WidgetSurface;
 use tilo_session_core::presence::{Place, Step, Target};
 use tilo_sheets::SheetState as _;
 
@@ -40,7 +40,10 @@ impl Shared {
                 std::time::Duration::from_secs(5),
             );
         }
-        if crate::termination::asked() {
+        // The apps a login's end takes with it leave the workspaces' layouts as they were. An
+        // in-place restart keeps them, so the last thing the person moved is written for the desktop
+        // that follows instead of being lost with the one that saw it.
+        if crate::termination::asked() && !crate::restart::restarting() {
             tilo_durable_writer::global().flush();
             return;
         }
@@ -54,6 +57,12 @@ impl Shared {
                 std::time::Duration::from_secs(5),
             );
         }
+        // What the layout keeps of the kept apps' windows, their keepers keep too: the windows
+        // take the tabs the write just saved in the session that follows.
+        #[cfg(target_os = "linux")]
+        self.restore
+            .borrow_mut()
+            .tell_placements(&self.desktop, self.launch.as_deref());
         tilo_durable_writer::global().flush();
     }
 
@@ -65,6 +74,7 @@ impl Shared {
         // the windows this device left open are being asked for, or there are none to ask for.
         self.restore.borrow_mut().begin();
         let Some(engine) = &self.engine else {
+            self.restore.borrow_mut().without_layouts();
             return;
         };
         self.desktops.attach_engine(engine);
@@ -119,6 +129,9 @@ impl Shared {
             }
             self.handle.replace_tree(tree.clone());
             self.handle.set_opened_by(self.desktops.opened_by());
+        }
+        if self.desktops.all_read(&tree) {
+            self.restore.borrow_mut().layouts_read();
         }
     }
 
@@ -284,7 +297,7 @@ impl Shared {
         if self.activity.take_woken() || described {
             // A window asked the activity model something, or what the history reads moved: the
             // shell draws a frame, which serves it.
-            self.desktop.with_widgets(WidgetHost::relayout);
+            self.desktop.with_widgets(WidgetSurface::relayout);
         }
     }
 
@@ -490,9 +503,28 @@ impl Shared {
         }
         self.tell_agent_bindings_lost();
         self.asker.follow();
+        self.follow_reach();
         self.shortcut_guide.follow();
         self.app_sheets.follow(self.downloaded_apps().as_ref());
     }
+    /// Lend the apps what decides whether a launch starts now: an app of a workspace that has not
+    /// admitted this device yet is not started, and whoever asked hears why at once
+    /// (`Apps::spawn`); an app the person installed waits on what they let it reach.
+    pub(crate) fn lend_to_apps(&self) {
+        let Some(launch) = &self.launch else {
+            return;
+        };
+        if let Some(engine) = &self.engine {
+            let (engine, handle) = (std::sync::Arc::clone(engine), self.handle.clone());
+            launch.lend_admission(std::rc::Rc::new(move |workspace: &str| {
+                crate::mcp_server::awaited_reason(&engine, &handle, workspace)
+            }));
+        }
+        if let Some(questions) = self.asker.questions() {
+            launch.lend_questions(questions.clone());
+        }
+    }
+
     /// One anchored surface at a time, whichever side opened it.
     /// The shell's own popovers and the shell's views are two stacks that meet here: a popover that
     /// came up over a shell surface takes that surface down — the person is looking at the menu

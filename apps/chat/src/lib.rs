@@ -65,7 +65,6 @@ pub mod events;
 mod external;
 pub mod feedback;
 pub mod geometry;
-mod host_model;
 pub mod i18n;
 pub mod identity;
 mod image_arrival;
@@ -79,6 +78,7 @@ pub mod mention;
 pub mod message_view;
 pub mod messages;
 pub mod model;
+mod model_stream;
 mod moderation;
 pub mod paint;
 pub mod parts;
@@ -110,7 +110,7 @@ impl ChatApp {
     /// Bind a mount-local model capability supplied by the host.
     #[must_use]
     pub fn with_models(mut self, models: ui::models::Models) -> Self {
-        self.host_model.models = models;
+        self.model_stream.models = models;
         self
     }
 }

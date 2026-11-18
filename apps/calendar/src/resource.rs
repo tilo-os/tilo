@@ -62,8 +62,20 @@ fn uuid(id: &Id) -> Result<Uuid, Refusal> {
 
 pub(crate) fn fingerprint(event: &Event) -> String {
     use std::hash::Hasher as _;
+    // An event's guests and the occurrences that stand apart are kept under their ids, in
+    // no order of their own. An event made from an entry holds them as the entry named them,
+    // and one read back from the document holds them in the order of their ids. What a
+    // server holds of an event must read the same either way, or an event nobody changed is
+    // owed its server again: so they stand in the order of their ids here.
+    let mut event = event.clone();
+    event
+        .attendees
+        .sort_by_cached_key(|guest| tilo_resource::Identified::id(guest).as_str().to_owned());
+    event
+        .occurrence_overrides
+        .sort_by_cached_key(|apart| tilo_resource::Identified::id(apart).as_str().to_owned());
     let mut hasher = fnv::FnvHasher::default();
-    hasher.write(crate::caldav::event_body(event).as_bytes());
+    hasher.write(crate::caldav::event_body(&event).as_bytes());
     format!("{:016x}", hasher.finish())
 }
 

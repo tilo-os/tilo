@@ -95,6 +95,22 @@ impl StatePeer {
             .map_err(|error| error.to_string())
     }
 
+    /// A device that may admit a member's further device: a current member's,
+    /// or one of the workspace's key-holding holders, which keeps the
+    /// workspace's keys without being a member.
+    pub(super) fn require_admitting_writer(
+        &self,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        if self.require_member_writer(key, now).is_ok()
+            || self.holder_certificate(&key.device_public_key()).is_some()
+        {
+            return Ok(());
+        }
+        self.require_member_writer(key, now)
+    }
+
     /// `device`'s certificate when it is one of the owner's devices, current
     /// at `now`: the owner's own device publishes the records they wrote, from
     /// any device their root certifies, so no one device of theirs is needed

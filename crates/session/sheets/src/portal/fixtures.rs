@@ -55,8 +55,8 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             confirm_label: "Open".to_owned(),
             ..base(
                 "app-choice",
-                "Choose an app",
-                "Files",
+                "Open with what?",
+                "",
                 "Files wants to open notes.md",
             )
         },
@@ -64,8 +64,8 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             body: Body::Choices(strings(&["Allow once", "Allow for 1 hour", "Always allow"])),
             ..base(
                 "action-grant",
-                "Let Scribe use Mail?",
-                "Mail",
+                "Scribe wants to change Mail",
+                "",
                 "Sensitive: it acts for you where others can see it.",
             )
         },
@@ -135,9 +135,9 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             ]),
             ..base(
                 "usb",
-                "Use USB devices?",
-                "Chromium",
-                "Chromium asks to use these devices.",
+                "Give Chromium USB devices?",
+                "",
+                "Chromium gets the ticked devices.",
             )
         },
         Some("shortcuts") => Dialog {
@@ -156,9 +156,9 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             confirm_label: "Save shortcuts".to_owned(),
             ..base(
                 "shortcuts",
-                "Global shortcuts",
-                "Voice",
-                "Press the keys for a shortcut; Backspace clears it.",
+                "Let Voice set global shortcuts?",
+                "",
+                "Choose a row, then press the keys. Backspace clears it.",
             )
         },
         Some("launcher") => Dialog {
@@ -170,9 +170,9 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             confirm_label: "Add".to_owned(),
             ..base(
                 "launcher",
-                "Add to launcher?",
-                "Browser",
-                "https://docs.tilo.so",
+                "Let Browser add “Tilo Docs” to your apps?",
+                "",
+                "The image it supplied has been checked.",
             )
         },
         Some("window-transfer") => Dialog {
@@ -291,7 +291,7 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             ..base(
                 "cannot-join",
                 "Couldn't join Cafe",
-                "Cafe",
+                "",
                 "Enter the password to connect.",
             )
         },
@@ -321,7 +321,6 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
         ),
         Some("allowed") => Dialog {
             title: "Allowed for good".to_owned(),
-            heading: "Meet".to_owned(),
             detail: "Meet may now use your screen without asking. \
                      Revoke it to make Tilo ask again next time."
                 .to_owned(),
@@ -333,9 +332,9 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
             confirm_label: "Share".to_owned(),
             ..base(
                 "review",
-                "Share your screen?",
-                "Meet",
-                "Meet asks to record your screen\nEntire screen",
+                "Meet wants to share your screen?",
+                "",
+                "Entire screen",
             )
         },
     }

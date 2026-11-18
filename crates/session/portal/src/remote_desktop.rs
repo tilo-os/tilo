@@ -454,7 +454,7 @@ impl RemoteDesktop {
             let persist_mode = option::<u32>(&options, "persist_mode").unwrap_or(0);
             ensure(persist_mode <= 2)?;
             let restore = restore_key(&options)
-                .and_then(|key| self.portal.grants.get(&key, &auth.caller.app_id))
+                .and_then(|key| self.portal.grants.get(&key, &auth.caller))
                 .filter(|grant| grant.devices != 0);
             let mut devices = restore.as_ref().map_or_else(
                 || option::<u32>(&options, "types").unwrap_or(device_type::ALL),
@@ -509,14 +509,9 @@ impl RemoteDesktop {
                     == Some(SessionKind::RemoteDesktop),
             )?;
             let remote = self.portal.remotes.begin(path)?;
-            let mut selection = self.portal.casts.selection(path);
-            if let Some(selection) = &mut selection {
-                selection.persist_mode = remote.persist_mode;
+            let selection = self.portal.casts.selection(path);
+            if selection.is_some() {
                 ensure(self.portal.casts.begin(path))?;
-            }
-            let mut restore = remote.restore.clone();
-            if let Some(grant) = &mut restore {
-                grant.persist_mode = grant.persist_mode.max(remote.persist_mode.min(1));
             }
             let request = handle.as_str();
             let shared = self
@@ -533,20 +528,18 @@ impl RemoteDesktop {
                             request,
                             caller: &auth.caller,
                             selection: selection.as_ref(),
-                            restore: restore.as_ref(),
+                            restore: remote.restore.as_ref(),
+                            persist_mode: remote.persist_mode,
                             kind: REMOTE_DESKTOP_QUESTION,
                             devices: remote.devices,
                         },
                     ),
                 )
                 .await;
-            let mut shared = shared.inspect_err(|_| {
+            let shared = shared.inspect_err(|_| {
                 self.portal.casts.finish(path, None);
                 self.portal.remotes.finish(path, false);
             })?;
-            if remote.restore.is_none() {
-                shared.persist_mode = shared.persist_mode.min(remote.persist_mode);
-            }
             let nodes: Vec<u32> = shared.streams.iter().map(|(_, s)| s.node_id).collect();
             let started = self.portal.remotes.finish(path, true);
             if !started

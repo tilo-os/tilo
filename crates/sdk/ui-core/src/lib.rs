@@ -303,12 +303,12 @@ pub mod host_operation {
         resource_operation_handlers, start_in_children, start_operation,
     };
 }
+mod app_core;
 #[cfg_attr(
     not(any(feature = "native", test)),
     expect(dead_code, reason = "only a native host's frame culls its draw")
 )]
 pub(crate) mod draw_cull;
-mod host_core;
 pub mod mentions;
 pub mod own_paint;
 pub mod published;
@@ -542,8 +542,8 @@ pub use widget::name_field::{NameField, NameFieldOutcome};
 // without knowing the module layout.
 pub use history_source::groups as history_groups;
 pub use history_source::sentence::{
-    AuthorParts, acting_line, attribution_hover, author_line, author_parts, author_spoken,
-    wire_author_line, writer_badge,
+    AuthorParts, attribution_hover, author_line, author_parts, author_spoken, wire_author_line,
+    writer_badge,
 };
 pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
@@ -560,10 +560,6 @@ pub use widget::history::author_face;
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
 pub use gesture::{DragSelect, Granularity};
-pub use history_source::invocation_undo::{
-    InvocationUndoReport, StepOutcome, StepState, refuse_invocation, undo_invocation, undo_step,
-    unreachable_steps,
-};
 pub use history_source::invocations::{
     AgentSession, InvocationStep, forget_invocation, invocation_starting_at, read_invocations,
     record_invocation, record_invocation_with_details,

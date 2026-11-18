@@ -1386,9 +1386,7 @@ mod tests {
                 );
 
                 for message in [
-                    FloatingSurfaceClientMessage::OpenCaptureStudio {
-                        mode: CaptureStudioProtocolMode::PictureInPicture,
-                    },
+                    FloatingSurfaceClientMessage::PickPictureInPictureArea,
                     FloatingSurfaceClientMessage::SourceCleared { id: "call".into() },
                     FloatingSurfaceClientMessage::DestinationPresented { id: "call".into() },
                     FloatingSurfaceClientMessage::Suspend {

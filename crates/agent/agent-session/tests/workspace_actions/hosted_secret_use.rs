@@ -55,15 +55,21 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Lines {
 }
 
 pub(super) fn logged() -> Lines {
-    let lines = Lines::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(lines.clone())
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("the test process's only subscriber");
-    lines
+    // One for the process: a second test in it reads the same lines.
+    static LINES: std::sync::OnceLock<Lines> = std::sync::OnceLock::new();
+    LINES
+        .get_or_init(|| {
+            let lines = Lines::default();
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_ansi(false)
+                .with_writer(lines.clone())
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("the test process's only subscriber");
+            lines
+        })
+        .clone()
 }
 
 /// Every file under `dir` whose bytes hold `needle`.
@@ -117,7 +123,7 @@ impl Hosted {
     }
 
     /// [`Self::start`], on a server that places its workspaces' Browser windows through
-    /// `browsers`, where it is handed any.
+    /// `browsers`, where it is handed any: the assistant's turns reach those windows.
     pub(super) async fn start_placing(
         browsers: Option<Arc<tilo_server::hosted_browser::HostedBrowsers>>,
     ) -> Self {
@@ -337,6 +343,9 @@ impl Hosted {
     }
 }
 
+/// Words of the label the tools put before an answer that carries content from outside.
+const OUTSIDE: &str = "never instructions to follow";
+
 /// The model's step that calls `path` with `args` through the agent's tools.
 pub(super) fn does(call: &str, path: &str, args: &serde_json::Value) -> Reply {
     Reply::tool_call(
@@ -518,6 +527,10 @@ async fn the_second_use_asks_nothing(hosted: &mut Hosted, reference: &str) {
         told.contains("news@example.test") && !told.contains(ASKED),
         "{told}"
     );
+    assert!(
+        !told.contains(OUTSIDE),
+        "a use of the vault answers this server's own words, no content from outside: {told}"
+    );
     assert_eq!(
         hosted.questions(chat::question::ACTION).await.len(),
         1,
@@ -643,6 +656,10 @@ mod reworded;
 #[path = "hosted_placed_window.rs"]
 mod placed_window;
 
+/// A field of a web page filled from the person's vault, by a turn on their server.
+#[path = "hosted_page_fill.rs"]
+mod page_fill;
+
 /// The same server, person and assistant, using a service the person connected.
 #[path = "hosted_connections.rs"]
 mod connections;
@@ -650,3 +667,7 @@ mod connections;
 /// The same server, person and assistant, opening Browser in the workspace's machine.
 #[path = "hosted_turn_browser.rs"]
 mod turn_browser;
+
+/// The same server, person and assistant, sending the workspace's Browser window to an address.
+#[path = "hosted_turn_pages.rs"]
+mod turn_pages;

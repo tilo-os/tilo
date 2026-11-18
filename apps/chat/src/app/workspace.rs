@@ -111,11 +111,6 @@ impl ChatApp {
                 (!people.is_empty()).then(|| (channel.id.clone(), people))
             })
             .collect();
-        self.agent_people = presence
-            .names
-            .keys()
-            .filter_map(|id| Some((id.clone(), presence.acting_for(id)?.clone())))
-            .collect();
         self.workspace_names
             .retain(|id, _| presence.names.contains_key(id));
         self.workspace_colors

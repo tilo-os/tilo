@@ -51,7 +51,7 @@ fn engine_of(
     listed: Option<WorkspaceId>,
 ) -> Engine {
     Engine::open(
-        tilo_network_actor::HostIdentity::kept(cert.clone(), key.clone()),
+        tilo_network_actor::DeviceIdentity::kept(cert.clone(), key.clone()),
         Some(state),
         listed,
         crate::platform::membership_check::of_this_session(),

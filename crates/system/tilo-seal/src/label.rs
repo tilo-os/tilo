@@ -54,10 +54,16 @@ pub enum Label {
     /// One sender's media keys, sealed to the device that may publish with
     /// them and to no other.
     SenderMediaKeys,
+    /// A text a person's vault released for one site's page, sealed to the
+    /// device that holds that page's window and to no other.
+    ReleasedPageText,
+    /// The private half of a person's rollback floor key, sealed to their
+    /// secret-sync key.
+    RollbackFloorKey,
 }
 
 impl Label {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 30] = [
         Self::ServerEnrollOffer,
         Self::ServerEnrollRequest,
         Self::ServerEnrollResponse,
@@ -86,6 +92,8 @@ impl Label {
         Self::SealedInvitation,
         Self::DocumentContent,
         Self::SenderMediaKeys,
+        Self::ReleasedPageText,
+        Self::RollbackFloorKey,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -120,6 +128,8 @@ impl Label {
             Self::SealedInvitation => "tilo-seal/v1/sealed-invitation",
             Self::DocumentContent => "tilo-seal/v1/record-content",
             Self::SenderMediaKeys => "tilo-seal/v1/sender-media-keys",
+            Self::ReleasedPageText => "tilo-seal/v1/released-page-text",
+            Self::RollbackFloorKey => "tilo-seal/v1/rollback-floor-key",
         }
     }
 

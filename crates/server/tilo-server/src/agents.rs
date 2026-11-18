@@ -332,12 +332,11 @@ pub struct AgentOptions {
 ///
 /// A placer is named, but its members or account are not usable.
 pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
-    Ok(Arc::new(
-        match crate::placed_shells::PlacedShells::shared_from_env()? {
-            Some(placed) => HostShells::Placed(placed),
-            None => HostShells::Here(ush::workspace_shell::WorkspaceShells::from_env(state)),
-        },
-    ))
+    let placed = crate::placed_shells::PlacedShells::shared_from_env()?;
+    Ok(Arc::new(match placed {
+        Some(placed) => HostShells::Placed(placed),
+        None => HostShells::Here(ush::workspace_shell::WorkspaceShells::from_env(state)),
+    }))
 }
 
 /// What a host lends its workspaces' records service: a model that looks
@@ -358,11 +357,15 @@ pub enum HostShells {
 }
 
 impl HostShells {
-    /// Ask VM hosts' members, if any, as `server`'s own device, and have the
+    /// Ask VM hosts' members, if any, as `server`'s own device, reading which
+    /// keeps each workspace's VM from the workspaces' VM leases, and have the
     /// workspaces' machines branched and deleted with them.
     fn serve_from(&self, server: &Server) {
         if let (Self::Placed(placed), Some(workspaces)) = (self, server.workspaces()) {
             placed.ask_from(workspaces.action_service(), server.endpoint());
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                placed.read_leases(workspaces.clone(), runtime);
+            }
         }
         if let (Some(machines), Some(workspaces)) = (self.machines(), server.workspaces()) {
             workspaces.machines(machines);

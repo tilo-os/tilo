@@ -93,7 +93,7 @@ mod tests {
             &user,
             CapOverride::grant(
                 Grantee::person("ada"),
-                Scope::Device("camera".to_string()),
+                Scope::Device(collab_types::caps::DeviceCap::Camera),
                 Access::Read,
             )
             .through("terminal"),
@@ -1150,6 +1150,39 @@ mod tests {
             next_session.passive_unread, after_change,
             "the baseline persists, so the next session still counts only that change"
         );
+    }
+
+    #[test]
+    fn a_joined_workspace_first_seen_here_lists_what_others_did_since_joining() {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("after the epoch");
+        let hour = std::time::Duration::from_secs(3600);
+        for (joined, news) in [
+            (now.saturating_sub(hour), true),
+            (now.saturating_add(hour), false),
+        ] {
+            let (mut tree, workspace, _) = peers_busy_workspace();
+            tree.desktop
+                .workspaces
+                .iter_mut()
+                .find(|held| held.id() == workspace)
+                .expect("the workspace")
+                .policy
+                .joined
+                .insert(
+                    crate::activity::testing::LOCAL_USER.to_string(),
+                    u64::try_from(joined.as_millis()).expect("a time"),
+                );
+            let mut pane = native_pane();
+            pane.load_frontiers();
+            pane.refresh(&mut tree);
+            assert_eq!(
+                pane.passive_unread > 0,
+                news,
+                "what a member did after the reader joined is news, and only that"
+            );
+        }
     }
 
     #[test]

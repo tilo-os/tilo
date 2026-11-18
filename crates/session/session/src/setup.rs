@@ -10,10 +10,10 @@ use std::rc::Rc;
 use std::sync::{Mutex, PoisonError};
 use std::task::Waker;
 
-use crate::platform::surfaces::{Placement, WidgetHost};
+use crate::platform::surfaces::{Placement, WidgetSurface};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
-use tilo_session_core::surface::HostKey;
-use tilo_session_core::surface::{HostLayer, Scroll, SurfaceHost};
+use tilo_session_core::surface::SurfaceKey;
+use tilo_session_core::surface::{Scroll, ShellSurface, SurfaceLayer};
 
 use tilo_onboarding_session::view::OnboardingView;
 use tilo_session_core::surfaces::{Published, through_api};
@@ -91,13 +91,13 @@ enum Surface {
     /// The setup app's own view: its API publishes its actions, and its own signal says when the
     /// person finished it.
     Ceremony {
-        widgets: WidgetHost,
+        widgets: WidgetSurface,
         api: SharedApi,
         finished: Rc<dyn Fn() -> bool>,
     },
     /// The wait for the clock, which has no actions of its own.
     WaitForClock {
-        widgets: WidgetHost,
+        widgets: WidgetSurface,
         wait: ClockWait,
     },
 }
@@ -107,7 +107,7 @@ pub(crate) struct Setup {
     surface: Surface,
     /// The outputs this layer covers, as the compositor last told a view: replayed to a view that
     /// replaces another, which is only told when the outputs themselves change.
-    outputs: Vec<tilo_session_core::surface::HostedOutput>,
+    outputs: Vec<tilo_session_core::surface::SurfaceOutput>,
 }
 
 impl Setup {
@@ -173,13 +173,13 @@ impl Setup {
     }
 
     /// The widget tree on the layer now.
-    fn widgets(&self) -> &WidgetHost {
+    fn widgets(&self) -> &WidgetSurface {
         match &self.surface {
             Surface::Ceremony { widgets, .. } | Surface::WaitForClock { widgets, .. } => widgets,
         }
     }
 
-    fn widgets_mut(&mut self) -> &mut WidgetHost {
+    fn widgets_mut(&mut self) -> &mut WidgetSurface {
         match &mut self.surface {
             Surface::Ceremony { widgets, .. } | Surface::WaitForClock { widgets, .. } => widgets,
         }
@@ -214,8 +214,8 @@ fn ceremony(view: OnboardingView, placement: Placement) -> Surface {
 
 /// A tree covering every output and taking the keyboard: what stands in front of the session withholds
 /// it.
-fn covering(root: Box<dyn ui::Widget>, placement: Placement) -> WidgetHost {
-    WidgetHost::new(root, placement, false)
+fn covering(root: Box<dyn ui::Widget>, placement: Placement) -> WidgetSurface {
+    WidgetSurface::new(root, placement, false)
         .named("Setup")
         .covering_outputs()
         .with_keyboard(Rc::new(|| true))
@@ -293,8 +293,8 @@ impl Published for Setup {
     }
 }
 
-impl SurfaceHost for Setup {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for Setup {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         if self.up() {
             self.widgets().layers()
         } else {
@@ -338,7 +338,7 @@ impl SurfaceHost for Setup {
         self.up()
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         self.widgets_mut().key(key);
     }
 
@@ -367,7 +367,7 @@ impl SurfaceHost for Setup {
         self.widgets_mut().set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::SurfaceOutput]) {
         self.outputs = outputs.to_vec();
         self.widgets_mut().outputs_changed(outputs);
     }

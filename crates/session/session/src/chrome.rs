@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::platform::surfaces::{Placement as SurfacePlacement, WidgetHost};
+use crate::platform::surfaces::{Placement as SurfacePlacement, WidgetSurface};
 use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::{
@@ -779,7 +779,7 @@ pub(crate) fn host(
     emoji: &tilo_desktop::emoji::EmojiLink,
     overlays: &Overlays,
     switcher: &tilo_desktop::window_switcher::Switcher,
-) -> WidgetHost {
+) -> WidgetSurface {
     let ChromeWiring {
         intents,
         asks,
@@ -841,7 +841,7 @@ pub(crate) fn host(
         size: (1, 1),
         scale: options.scale,
     };
-    let mut host = WidgetHost::new(Box::new(chrome), placement, false).named("Top bar");
+    let mut host = WidgetSurface::new(Box::new(chrome), placement, false).named("Top bar");
     host.set_theme((options.presentation)().theme);
     // The chrome draws the overview, so the overview's flight asks frames of the chrome alone.
     overview.drawn_on(host.host().motion_surface());

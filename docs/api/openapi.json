@@ -4191,13 +4191,16 @@
               "null"
             ],
             "description": "After a removal or a move: whether the server let go confirmed it no\nlonger keeps the workspace. One that was not reached is no longer\nnamed to anyone, and lets the workspace go once it hears so."
+          },
+          "copies": {
+            "description": "How many copies the workspace wants kept and where they stand."
           }
         },
         "required": [
           "workspace",
           "servers"
         ],
-        "description": "The servers keeping the workspace, the one asked first, and after a\nremoval or a move whether the server let go confirmed it."
+        "description": "The servers keeping the workspace, the one asked first, each with the\nname it goes by, whether it reads the workspace and whether its machine is\na cloud provider's; after a removal or a move whether the server let go\nconfirmed it."
       },
       "KeptServer": {
         "type": "object",
@@ -4213,6 +4216,21 @@
           "here": {
             "type": "boolean",
             "description": "Whether this is the server asked."
+          },
+          "label": {
+            "type": "string",
+            "description": "What it calls itself, as its own signed address names it.",
+            "default": ""
+          },
+          "reads": {
+            "type": "boolean",
+            "description": "Whether it holds the workspace's keys and reads it; a store keeps its\nciphertext and reads none of it.",
+            "default": false
+          },
+          "cloud": {
+            "type": "boolean",
+            "description": "Whether its machine is rented from a cloud provider, whose operator\ncan read what it holds too.",
+            "default": false
           }
         },
         "required": [

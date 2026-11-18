@@ -119,20 +119,24 @@ impl HostedWorkspaces {
         *self.0.inbound.lock_recover() = Some(actions);
     }
 
-    /// Where `workspace` is placed, when a host other than this device runs its records.
+    /// Where `workspace` is placed, when a holder other than this device takes its work: any
+    /// holder that does, the workspace's holders being equal.
     fn placed(&self, workspace: &str) -> Option<Placed> {
         let id = WorkspaceId::parse(workspace)?;
-        let hint = self
+        let hints = self
             .0
             .engine
             .owner()
-            .with_current(id, |view| Ok(view.transport_hint()?.clone()))
+            .with_current(id, |view| Ok(view.keeping_devices()))
             .ok()?;
         let own = self.0.engine.identity().device_cert.device_public_key;
-        placed_on_host(&hint, own).map(|host| Placed {
-            workspace: workspace.to_owned(),
-            workspace_id: host.workspace_id,
-            host,
+        hints.iter().find_map(|hint| {
+            let host = placed_on_host(hint, own)?;
+            Some(Placed {
+                workspace: workspace.to_owned(),
+                workspace_id: host.workspace_id,
+                host,
+            })
         })
     }
 
@@ -547,6 +551,8 @@ mod tests {
             version: 1,
             holds_keys: true,
             runs_work,
+            label: String::new(),
+            cloud: false,
             workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).unwrap(),
             endpoint_addr: iroh::EndpointAddr::new(
                 iroh::EndpointId::from_bytes(&cert.device_public_key).unwrap(),

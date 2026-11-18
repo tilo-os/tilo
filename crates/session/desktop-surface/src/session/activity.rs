@@ -86,9 +86,9 @@ impl Follow {
 struct State {
     follows: HashMap<InvocationId, Follow>,
     asks: Vec<ActivityAsk>,
-    /// The revision the model's reads were last served at: how a host knows that what an app
-    /// follows may read differently.
-    served: Option<u64>,
+    /// How many new results the model's reads have sent: how the session knows that what an app
+    /// follows reads differently.
+    served: u64,
 }
 
 /// The windows' end: what [`super::DesktopSession`] routes to under [`wire::PROVIDER`].
@@ -344,10 +344,11 @@ impl ActivityRequests {
         }
     }
 
-    /// The revision the model last served its reads at: a host that tells apps when what they
-    /// follow may read differently watches it.
+    /// How many new results the model's reads have sent: a session that tells apps when what they
+    /// follow reads differently watches it. A read followed after the model last moved still
+    /// counts its first result.
     #[must_use]
-    pub fn served_revision(&self) -> Option<u64> {
+    pub fn served_revision(&self) -> u64 {
         self.api.state.lock_recover().served
     }
 
@@ -377,7 +378,7 @@ impl ActivityRequests {
         let read_at = model.revision();
         let mut woken = Vec::new();
         let mut state = self.api.state.lock_recover();
-        state.served = Some(read_at);
+        let mut answered = 0_u64;
         for (invocation, value) in reads {
             let Some(open) = state.follows.get_mut(&invocation) else {
                 continue;
@@ -408,8 +409,10 @@ impl ActivityRequests {
                     };
                 }
             }
+            answered = answered.wrapping_add(1);
             woken.append(&mut open.waiters);
         }
+        state.served = state.served.wrapping_add(answered);
         drop(state);
         wake(woken);
     }
@@ -449,4 +452,48 @@ impl ActivityRequests {
 #[must_use]
 pub fn activity_requests(woken: Arc<AtomicBool>) -> ActivityRequests {
     Api::new(woken).requests()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A model that answers every read with its action and never moves.
+    struct Still;
+
+    impl ActivityReads for Still {
+        fn revision(&self) -> u64 {
+            7
+        }
+        fn read(&mut self, action: &str, _arguments: &Map<String, Value>) -> Result<Value, String> {
+            Ok(Value::String(action.to_owned()))
+        }
+    }
+
+    #[test]
+    fn a_read_followed_after_the_model_settled_still_tells_the_session() {
+        let requests = activity_requests(Arc::new(AtomicBool::new(false)));
+        let caller = Caller::local_person("ben");
+        let follow = |action: &str| {
+            let invocation = InvocationId::new();
+            requests
+                .follow(&caller, invocation, action, Map::new())
+                .expect("followed");
+            invocation
+        };
+        follow(wire::SUMMARY);
+        requests.serve(&mut Still);
+        let told = requests.served_revision();
+        let feed = follow(wire::FEED);
+        requests.serve(&mut Still);
+        assert_eq!(
+            requests.served(&feed),
+            Some(Ok(Value::String(wire::FEED.into())))
+        );
+        assert_ne!(
+            requests.served_revision(),
+            told,
+            "the session learns that the new read has its answer"
+        );
+    }
 }

@@ -26,7 +26,7 @@ use tilo_user_identity::{
     sign_device_cert,
 };
 
-use super::super::HostWorkspaceActions;
+use super::super::ServiceWorkspaceActions;
 use super::super::tests::{caller, settled};
 use crate::workspaces::tests::{governor, guest_device, test_host};
 use crate::workspaces::{IssueInvitationRequest, OwnWorkspaceOffer, WaitListSecrets, Workspaces};
@@ -41,7 +41,7 @@ fn own_request(argument: Value) -> InvokeRequest {
 }
 
 async fn invoke(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     device: &DeviceCert,
     request: InvokeRequest,
 ) -> Result<Value, ActionCallError> {
@@ -53,7 +53,7 @@ async fn invoke(
 }
 
 pub(super) async fn create_own(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     device: &DeviceCert,
     argument: Value,
 ) -> Result<CreatedWorkspace, ActionCallError> {
@@ -100,7 +100,11 @@ pub(super) async fn let_in(workspaces: &Workspaces, home: &str, person: [u8; 32]
         .signed_invitation
 }
 
-async fn offered(host: &HostWorkspaceActions, device: &DeviceCert, caller: &Caller) -> Vec<String> {
+async fn offered(
+    host: &ServiceWorkspaceActions,
+    device: &DeviceCert,
+    caller: &Caller,
+) -> Vec<String> {
     let query = CatalogueQuery {
         provider: Some(HOST_ACTIONS_PROVIDER.into()),
         max_results: 100,
@@ -167,7 +171,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let (_, guest) = guest_device();
 
@@ -310,7 +314,7 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
     let home = open(&workspaces).await;
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let (_, guest) = guest_device();
     let_in(&workspaces, &home, guest.user_public_key).await;
@@ -395,7 +399,7 @@ async fn the_account_read_lists_every_workspace_of_their_own_with_no_bound_on_ho
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
     let home = open(&workspaces).await;
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let (_, guest) = guest_device();
     let_in(&workspaces, &home, guest.user_public_key).await;
@@ -494,7 +498,7 @@ async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces().clone();
     let home = open(&workspaces).await;
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let (_, guest) = guest_device();
     let_in(&workspaces, &home, guest.user_public_key).await;
@@ -604,7 +608,7 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
     let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
@@ -724,7 +728,7 @@ async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
             storage_bytes: 1,
         })
         .unwrap();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let other = workspaces.create("Lounge").await.unwrap();
     assert!(workspaces.admit_own_through(&other.workspace));
@@ -769,7 +773,7 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
     let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
@@ -878,7 +882,7 @@ fn as_key(cert: &DeviceCert) -> Caller {
 
 /// The person's own workspace `argument` asks for, as `cert`'s key asks.
 async fn own_as_key(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     cert: &DeviceCert,
     argument: Value,
 ) -> CreatedWorkspace {
@@ -896,7 +900,7 @@ async fn own_as_key(
 
 /// `verb` of `workspace`'s governance with `argument`, asked by `cert`'s key.
 async fn govern(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     workspace: &tilo_server_session::workspaces::WorkspaceListing,
     cert: &DeviceCert,
     verb: &str,
@@ -922,7 +926,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
 
     // Ada's backend makes her workspace with her server key and enters it.
@@ -1041,7 +1045,7 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
 
     let ada = SigningKey::from_bytes(&rand::random());
@@ -1120,7 +1124,7 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
 
 /// `person`'s server key, certified and entered into `workspace` as the person's own.
 async fn entered(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     workspaces: &Workspaces,
     workspace: &tilo_server_session::workspaces::WorkspaceListing,
     person: &SigningKey,
@@ -1137,7 +1141,7 @@ async fn entered(
 
 /// `cert` asks the host to add `person` to `workspace` as `role`, named "Someone".
 async fn add_member(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     workspace: &tilo_server_session::workspaces::WorkspaceListing,
     cert: &DeviceCert,
     person: &SigningKey,
@@ -1160,7 +1164,7 @@ async fn add_member(
 /// `device`'s person asks this host to list its workspaces, as the entry's
 /// account path does.
 async fn listed_for(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     device: &DeviceCert,
 ) -> Vec<tilo_server_session::workspaces::WorkspaceListing> {
     let mut ask = own_request(json!({}));
@@ -1180,7 +1184,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
 
     // Ada's backend makes her workspace, enters it as her, and invites a
@@ -1340,7 +1344,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     // A person's server key makes a workspace for a customer, and keeps it.
     let root = SigningKey::from_bytes(&rand::random());
@@ -1452,7 +1456,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
 /// workspaces, the listed workspace, a stranger who left an address there,
 /// and the state directory they live in.
 async fn held_host() -> (
-    HostWorkspaceActions,
+    ServiceWorkspaceActions,
     Workspaces,
     String,
     tilo_user_identity::DeviceCert,
@@ -1467,7 +1471,7 @@ async fn held_host() -> (
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     // The site's home workspace: its entry, or an invitation into it, is the
     // one way to workspaces of one's own here.
@@ -1856,7 +1860,7 @@ async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_sta
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let home = open(workspaces).await;
     let root = SigningKey::from_bytes(&rand::random());
@@ -1909,7 +1913,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let home = open(workspaces).await;
     let root = SigningKey::from_bytes(&rand::random());
@@ -1983,7 +1987,7 @@ async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let home = open(workspaces).await;
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
 
     let ada = SigningKey::from_bytes(&rand::random());

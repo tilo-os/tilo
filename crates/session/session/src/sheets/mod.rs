@@ -10,8 +10,8 @@ pub(crate) mod mount;
 
 use crate::platform::surfaces::{AppProcess, Placement};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
-use tilo_session_core::surface::{HostKey, KeyClaim, Scroll};
-use tilo_session_core::surface::{HostLayer, SurfaceHost};
+use tilo_session_core::surface::{KeyClaim, Scroll, SurfaceKey};
+use tilo_session_core::surface::{ShellSurface, SurfaceLayer};
 
 use tilo_session_core::surfaces::Published;
 use tilo_sheets::SheetState;
@@ -86,7 +86,7 @@ pub(crate) struct Sheet<S: SheetState> {
     host: AppProcess,
     state: S,
     /// The displays as the compositor last said they are.
-    outputs: Vec<tilo_session_core::surface::HostedOutput>,
+    outputs: Vec<tilo_session_core::surface::SurfaceOutput>,
     role: Role,
 }
 
@@ -215,7 +215,7 @@ impl<S: SheetState> Sheet<S> {
 /// covers the rectangle all of them make.
 fn covering(
     named: Option<Place>,
-    outputs: &[tilo_session_core::surface::HostedOutput],
+    outputs: &[tilo_session_core::surface::SurfaceOutput],
     every: bool,
 ) -> Option<(i32, i32, i32, i32)> {
     let shown = || {
@@ -319,7 +319,7 @@ impl<S: SheetState> Published for Sheet<S> {
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(self)
+        ShellSurface::wants_keyboard(self)
     }
 
     /// The lock view is the one sheet that shows while the session is locked, so its actions (and
@@ -330,14 +330,14 @@ impl<S: SheetState> Published for Sheet<S> {
     }
 }
 
-impl<S: SheetState> SurfaceHost for Sheet<S> {
+impl<S: SheetState> ShellSurface for Sheet<S> {
     /// What the person typed into a secret field of the sheet's card: a capture draws such a sheet
     /// as the placeholder, the display keeps showing it.
     fn withholds_captures(&self) -> bool {
         self.host.withholds_captures()
     }
 
-    fn layers(&self) -> Vec<HostLayer> {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         if !self.drawn() {
             return Vec::new();
         }
@@ -396,7 +396,7 @@ impl<S: SheetState> SurfaceHost for Sheet<S> {
         self.above_lock()
     }
 
-    fn claim_key(&mut self, key: &HostKey, _locked: bool, _inhibited: bool) -> KeyClaim {
+    fn claim_key(&mut self, key: &SurfaceKey, _locked: bool, _inhibited: bool) -> KeyClaim {
         // The card's own two keys: the primary answer on Enter, the way out on Escape. Ordinary
         // typing is the field's.
         let answers = self.role == Role::AskingAboutTyping
@@ -412,7 +412,7 @@ impl<S: SheetState> SurfaceHost for Sheet<S> {
         }
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         // A press that began before the sheet was shown is not the person's answer to it: they
         // were already typing when it came up, and the loop routed that press after it. A press
         // that starts with the sheet in sight still acts.
@@ -463,7 +463,7 @@ impl<S: SheetState> SurfaceHost for Sheet<S> {
         self.host.set_backdrops(images);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::SurfaceOutput]) {
         self.outputs = outputs.to_vec();
         self.follow_place();
     }
@@ -621,13 +621,13 @@ mod tests {
     use super::{Place, covering};
 
     const RIGHT: Place = (1000, 0, 1000, 700);
-    const LEFT_SHOWN: tilo_session_core::surface::HostedOutput =
-        tilo_session_core::surface::HostedOutput {
+    const LEFT_SHOWN: tilo_session_core::surface::SurfaceOutput =
+        tilo_session_core::surface::SurfaceOutput {
             rect: (0, 0, 1000, 700),
             scale: 1.0,
         };
-    const RIGHT_SHOWN: tilo_session_core::surface::HostedOutput =
-        tilo_session_core::surface::HostedOutput {
+    const RIGHT_SHOWN: tilo_session_core::surface::SurfaceOutput =
+        tilo_session_core::surface::SurfaceOutput {
             rect: (1000, 0, 1000, 700),
             scale: 1.0,
         };
@@ -673,11 +673,11 @@ mod tests {
                 Some((0, 0, 2000, 700))
             );
             // One display above the other, and one that shows nothing at all.
-            let above = tilo_session_core::surface::HostedOutput {
+            let above = tilo_session_core::surface::SurfaceOutput {
                 rect: (0, -800, 1000, 800),
                 scale: 2.0,
             };
-            let blank = tilo_session_core::surface::HostedOutput {
+            let blank = tilo_session_core::surface::SurfaceOutput {
                 rect: (0, 0, 0, 0),
                 scale: 1.0,
             };

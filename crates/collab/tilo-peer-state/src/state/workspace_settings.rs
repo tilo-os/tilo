@@ -77,10 +77,6 @@ impl StatePeer {
                     .collect();
                 self.governance_mut().put_governed_grants(&grants, key, now)
             }
-            // Retired with app consent in the person's settings
-            // ([`crate::workspace_membership::SettingsChange::GrantAppAction`]);
-            // `validate` refuses them, so they never reach here.
-            SettingsChange::GrantAppAction(_) | SettingsChange::RevokeAppAction(_) => Ok(false),
             SettingsChange::GrantSandbox { capability } => {
                 let by = tilo_action_policy::MemberId::person(person_of(&member)?.to_owned());
                 grant_sandbox(&mut workspace, capability, by)?;

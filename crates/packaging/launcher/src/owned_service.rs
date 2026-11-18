@@ -506,9 +506,7 @@ fn validate_service_manifest(
             || manifest.kind != "service"
             || !manifest.required_runtimes.is_empty()
             || !manifest.sandbox.portals.is_empty()
-            || !manifest.sandbox.services.is_empty()
-            || !manifest.sandbox.fs.read.is_empty()
-            || !manifest.sandbox.fs.write.is_empty())
+            || !manifest.sandbox.services.is_empty())
     {
         return Err(RunError::InvalidServiceLaunch(
             "Retained I/O manifest authority differs".into(),

@@ -51,7 +51,7 @@ What the runtime may carry is a rule of its own. It holds the SDK and crates
 several apps share; never an engine only one or two apps use, an OS daemon or other OS-internal crate (the filesystem, the
 launcher, the app process, the install CLI, the peer transport) and nothing no
 app reaches. An app that calls into such a crate links it itself and gets only
-the code it calls; the Store, for one, depends on `app-process` without its
+the code it calls; the Store, for one, depends on `package-service` without its
 default `service` feature, and Settings, Agent and Canvas depend on
 `tilo-model-gateway` without its: the daemon's provider clients, on-device
 model service and subject-model runtime (rten) stay in the gateway, and an

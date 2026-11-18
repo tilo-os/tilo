@@ -313,13 +313,17 @@ pub(super) async fn handle_presence(
         let authority = wr.workspace_authority.clone();
         drop(wr);
         if let Some(body) = asks {
+            let (host, member) = (*session.own_device_public_key, peer.device_public_key);
             answer_content(
                 &ws,
                 authority.as_ref(),
                 workspace_id,
-                (*session.own_device_public_key, peer.device_public_key),
+                (host, member),
                 peer.user_public_key,
                 body,
+                move |runtime, envelope| {
+                    runtime.route_content(&host, &member, envelope);
+                },
             );
         }
     }
@@ -407,13 +411,17 @@ pub(super) async fn handle_content_want(
     wr.fanout_presence(&peer.device_public_key, &env);
     let authority = wr.workspace_authority.clone();
     drop(wr);
+    let (host, member) = (*session.own_device_public_key, peer.device_public_key);
     answer_content(
         &ws,
         authority.as_ref(),
         workspace_id,
-        (*session.own_device_public_key, peer.device_public_key),
+        (host, member),
         peer.user_public_key,
         frame,
+        move |runtime, envelope| {
+            runtime.route_content(&host, &member, envelope);
+        },
     );
     Ok(None)
 }
@@ -422,14 +430,17 @@ pub(super) async fn handle_content_want(
 /// from what this host keeps ([`crate::workspaces::WorkspaceContent`]), to the
 /// member's device alone, off the connection's task: reading the content
 /// may touch the disk. A host that governs no workspace here keeps none of it,
-/// and says so, so the member stops counting on it.
-fn answer_content(
+/// and says so, so the member stops counting on it. Each piece goes where
+/// `deliver` sends it: to a member's session here, or back on the session
+/// to the other holder that asked.
+pub(crate) fn answer_content(
     ws: &Arc<tokio::sync::Mutex<crate::workspace::WorkspaceRuntime>>,
     authority: Option<&crate::workspaces::WorkspaceAuthority>,
     workspace_id: WorkspaceId,
     (host, member): ([u8; 32], [u8; 32]),
     member_user: [u8; 32],
     body: Vec<u8>,
+    deliver: impl Fn(&crate::workspace::WorkspaceRuntime, Envelope) + Send + 'static,
 ) {
     let served = authority.and_then(|authority| {
         authority
@@ -463,9 +474,8 @@ fn answer_content(
         }
         let runtime = ws.lock().await;
         for frame in frames {
-            runtime.route_content(
-                &host,
-                &member,
+            deliver(
+                &runtime,
                 Envelope::DocumentContent {
                     workspace_id,
                     to_device_public_key: member,

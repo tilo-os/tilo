@@ -42,7 +42,18 @@ unset SOURCE_DATE_EPOCH
 layers=${TILO_OCI_LAYERS:-false}
 b build --layers="$layers" --timestamp "$timestamp" --format oci -f "$containerfile" -t localhost/publish:build "$@" "$context"
 rm -f "$out/image.oci.tar"
-b push --compression-format gzip --force-compression localhost/publish:build "oci-archive:$out/image.oci.tar"
+# The archive is what the checks that need this one are handed, and t keys them by its bytes
+# as much as by the image: buildah's oci-archive carries the time of the copy, so one image
+# left a different archive in every build and every dependant ran again. Push the layout it
+# writes instead and pack that, as rpms-build.sh packs its snapshot: the same names, in the
+# same order, with the same times, so the same image is the same archive.
+layout=$scratch/oci-layout
+rm -rf "$layout"
+mkdir -p "$layout"
+b push --compression-format gzip --force-compression localhost/publish:build "oci:$layout"
+tar -C "$layout" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \
+  --mode=u=rwX,go=rX -cf "$out/image.oci.tar" oci-layout index.json blobs
+rm -rf "$layout"
 archive_digest "$out/image.oci.tar" > "$out/digest"
 [[ $(cat "$out/digest") =~ ^sha256:[0-9a-f]{64}$ ]] || die 'no manifest digest in the archive'
 printf 'built %s\n' "$(cat "$out/digest")"

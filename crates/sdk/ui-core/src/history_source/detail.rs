@@ -218,3 +218,9 @@ mod tests {
         }
     }
 }
+
+/// What a screen reader says for the agent `name`: the name with what it is, since the agent
+/// mark beside it on screen is nothing a reader can hear. Never shown as a name.
+pub fn agent_spoken_label(name: &str) -> String {
+    crate::i18n::widget_format("member-agent-spoken", &[("name", name.into())])
+}

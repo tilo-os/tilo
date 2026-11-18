@@ -162,26 +162,6 @@ pub enum ManifestError {
     ImageTree(String),
     #[error("a language pack {0}")]
     LanguagePack(String),
-    #[error(
-        "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
-         choose where it writes.\n  \
-         The launcher gives every app one directory — per workspace, per package — and points HOME, \
-         XDG_DATA_HOME, XDG_CONFIG_HOME, XDG_STATE_HOME and XDG_CACHE_HOME inside it. Remove \
-         the `[sandbox.fs]` block; anything the app writes under those paths already lands \
-         there.\n  \
-         Access to a path outside it is a capability the user grants at runtime, not a line in \
-         a manifest."
-    )]
-    FsWriteDeclared { package: String, entry: String },
-    #[error(
-        "package `{package}` declares `sandbox.fs.read = [{entry:?}]`, and an app does not \
-         choose what it reads.\n  \
-         Every app gets the same system read profile (loader and C library, fonts, GPU loader \
-         manifests, CA bundle, timezone data). Remove the `[sandbox.fs]` block.\n  \
-         Anything the profile does not cover — a user's documents, /usr/bin, /var/workspace, a \
-         device node — is a capability the user grants at runtime, not a line in a manifest."
-    )]
-    FsReadDeclared { package: String, entry: String },
 }
 
 /// Validate the manifest against schema rules that don't require
@@ -191,15 +171,12 @@ pub enum ManifestError {
 /// # Errors
 ///
 /// Returns the specific [`ManifestError`] variant for the first invariant
-/// violated. Validation proceeds through filesystem policy (writes before
-/// reads), platforms and capabilities, continuity and accessibility, package
-/// version, required runtimes and runtime entrypoint, runtime dependency and
-/// provides, service protocol, kind-specific entrypoint, image metadata,
-/// provider/resource/service declarations, publisher identity and signature,
-/// then target compatibility.
+/// violated. Validation proceeds through platforms and capabilities,
+/// continuity and accessibility, package version, required runtimes and
+/// runtime entrypoint, runtime dependency and provides, service protocol,
+/// kind-specific entrypoint, image metadata, provider/resource/service
+/// declarations, publisher identity and signature, then target compatibility.
 pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
-    validate_filesystem_policy(m)?;
-
     validate_platforms(m).and_then(|()| validate_capabilities(m))?;
 
     validate_store_listing(m)?;
@@ -260,27 +237,6 @@ fn validate_previously(m: &Manifest) -> Result<(), ManifestError> {
         if old.trim().is_empty() || *old == m.package.id || !seen.insert(old.as_str()) {
             return Err(ManifestError::BadPreviously(old.clone()));
         }
-    }
-    Ok(())
-}
-
-/// Publishers cannot grant themselves filesystem access.
-fn validate_filesystem_policy(m: &Manifest) -> Result<(), ManifestError> {
-    // Filesystem policy first — the check most likely to reject a
-    // package a publisher believed was fine, so it's the line they read
-    // rather than the fourth error after a semver nit. Writes before
-    // reads: a package asking for `/` is the more alarming of the two.
-    if let Some(entry) = m.sandbox.fs.write.first() {
-        return Err(ManifestError::FsWriteDeclared {
-            package: m.package.id.clone(),
-            entry: entry.clone(),
-        });
-    }
-    if let Some(entry) = m.sandbox.fs.read.first() {
-        return Err(ManifestError::FsReadDeclared {
-            package: m.package.id.clone(),
-            entry: entry.clone(),
-        });
     }
     Ok(())
 }
@@ -1137,10 +1093,6 @@ namespaces = []
 seccomp = "tilo-default"
 landlock = "strict"
 
-[sandbox.fs]
-read = []
-write = []
-
 [sandbox.net]
 mode = "off"
         "#;
@@ -1471,30 +1423,12 @@ mode = "off"
         phase validation_stages_preserve_first_error_order;
         {
             let mut manifest = minimal_runtime_manifest();
-            manifest.sandbox.fs.write = vec!["/".into()];
-            manifest.sandbox.fs.read = vec!["/etc/shadow".into()];
             manifest.continuity.required = vec![ContinuityFacet::Semantic];
             manifest.package.version = "invalid".into();
             manifest.package.service_protocol = Some(crate::manifest::ServiceProtocol {
                 name: "invalid/contract".into(),
                 version: 0,
             });
-            assert_eq!(
-                validate_manifest(&manifest),
-                Err(ManifestError::FsWriteDeclared {
-                    package: manifest.package.id.clone(),
-                    entry: "/".into(),
-                })
-            );
-            manifest.sandbox.fs.write.clear();
-            assert_eq!(
-                validate_manifest(&manifest),
-                Err(ManifestError::FsReadDeclared {
-                    package: manifest.package.id.clone(),
-                    entry: "/etc/shadow".into(),
-                })
-            );
-            manifest.sandbox.fs.read.clear();
             assert_eq!(
                 validate_manifest(&manifest),
                 Err(ManifestError::SemanticContinuityWithoutPresentation)

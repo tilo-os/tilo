@@ -620,7 +620,7 @@ pub fn build_bwrap_argv_for_entry(
     // anything more specific keeps the empty namespace and uses the egress proxy, since `--share-net`
     // is all-or-nothing.
     argv.push("--unshare-all".to_string());
-    if egress_decision(manifest, capabilities).shares_host_network() {
+    if egress_decision(manifest, capabilities, payload_root).shares_host_network() {
         argv.push("--share-net".to_string());
     }
     argv.push("--die-with-parent".to_string());
@@ -674,7 +674,7 @@ pub fn build_bwrap_argv_for_entry(
     // The system read profile: fixed, identical for every package, fed by no manifest field.
     crate::profile::push_system_profile(
         &mut argv,
-        egress_decision(manifest, capabilities).shares_host_network(),
+        egress_decision(manifest, capabilities, payload_root).shares_host_network(),
     );
 
     // User-granted capabilities after the system profile (read-write wins over read-only).
@@ -741,15 +741,17 @@ pub fn build_bwrap_argv_for_entry(
     argv
 }
 
-/// The outbound access this launch resolves to.
+/// The outbound access this launch of the package at `payload_root` resolves to.
 pub fn egress_decision(
     manifest: &ManifestView,
     capabilities: &CapabilityPlan,
+    payload_root: &Path,
 ) -> crate::egress_proxy::EgressDecision {
     let decision = crate::egress_proxy::EgressDecision::resolve(
         &manifest.sandbox.net.mode,
         &manifest.sandbox.net.hosts,
         &capabilities.net_hosts,
+        crate::system_stats::image_shipped(payload_root),
     );
     // Applied here, not at the check: the namespace decision and the check must come from the same
     // answer, or the app gets an empty namespace with nothing to reach through it.
@@ -966,9 +968,6 @@ mod tests {
                     mode: net_mode.to_string(),
                     hosts: Vec::new(),
                 },
-                // A manifest names no path here — one that did would be refused before reaching this
-                // builder; see `manifest::enforce_fs_policy`.
-                fs: crate::manifest::Fs::default(),
                 services: BTreeMap::new(),
                 portals: BTreeMap::new(),
                 ..Default::default()
@@ -1267,17 +1266,19 @@ mod tests {
                 assert!(argv.windows(2).any(|w| w[0] == "--dev" && w[1] == "/dev"));
             }
             {
+                // `host` outside the image is the most the app may ask for: it shares the network
+                // once a person granted any host, not before.
                 let m = mk_manifest("host");
-                let argv = build_bwrap_argv(
-                    &m,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
-                assert!(argv.iter().any(|a| a == "--share-net"));
+                let argv = |plan: &CapabilityPlan| {
+                    build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, plan)
+                };
+                assert!(!argv(&CapabilityPlan::empty()).iter().any(|a| a == "--share-net"));
+                let granted = CapabilityPlan {
+                    allow_network: true,
+                    net_hosts: vec!["*".to_owned()],
+                    ..CapabilityPlan::empty()
+                };
+                assert!(argv(&granted).iter().any(|a| a == "--share-net"));
             }
             {
                 let m = mk_manifest("off");
@@ -1358,24 +1359,6 @@ mod tests {
                         "profile entry {entry} missing from argv: {argv:?}"
                     );
                 }
-                // A manifest that still carries `fs` fields changes nothing — the builder doesn't read
-                // them.
-                let mut hostile = mk_manifest("off");
-                hostile.sandbox.fs.write.push("/".to_string());
-                hostile.sandbox.fs.read.push("/home/alice/.ssh".to_string());
-                let hostile_argv = build_bwrap_argv(
-                    &hostile,
-                    Path::new("/host/pkg"),
-                    None,
-                    &[],
-                    None,
-                    None,
-                    &CapabilityPlan::empty(),
-                );
-                assert_eq!(
-                    argv, hostile_argv,
-                    "a manifest naming paths must produce byte-identical argv to one that names none"
-                );
                 // The payload mount stays a hard `--ro-bind`: a package whose own payload is missing
                 // genuinely cannot run.
                 assert!(
@@ -2152,10 +2135,10 @@ mod tests {
 
     /// Deterministic stand-in for the host's device nodes, so a camera assertion doesn't depend on the
     /// test machine owning one.
-    fn fake_device_paths(device: &str) -> Vec<PathBuf> {
+    fn fake_device_paths(device: collab_types::caps::DeviceCap) -> Vec<PathBuf> {
         match device {
-            "camera" => vec![PathBuf::from("/dev/video0")],
-            "microphone" => vec![PathBuf::from("/dev/snd")],
+            collab_types::caps::DeviceCap::Camera => vec![PathBuf::from("/dev/video0")],
+            collab_types::caps::DeviceCap::Microphone => vec![PathBuf::from("/dev/snd")],
             _ => Vec::new(),
         }
     }
@@ -2163,9 +2146,21 @@ mod tests {
     /// Build the argv the launcher would really produce for `app_id`, through the same production path
     /// as `run_with`; only the device-node lookup is substituted.
     fn argv_with_caps(app_id: &str, caps: &[CapOverride], now: u64) -> Vec<String> {
-        let m = mk_manifest("off");
-        let plan = CapabilityPlan::for_app_with(app_id, caps, Some(now), fake_device_paths);
-        build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &plan)
+        let mut m = mk_manifest("host");
+        m.capabilities.push("camera".to_owned());
+        argv_declared(&m, app_id, caps, now)
+    }
+
+    /// [`argv_with_caps`] for an app whose manifest is `m`.
+    fn argv_declared(
+        m: &ManifestView,
+        app_id: &str,
+        caps: &[CapOverride],
+        now: u64,
+    ) -> Vec<String> {
+        let caps = crate::capabilities::declared(m, caps.to_vec());
+        let plan = CapabilityPlan::for_app_with(app_id, &caps, Some(now), fake_device_paths);
+        build_bwrap_argv(m, Path::new("/host/pkg"), None, &[], None, None, &plan)
     }
 
     /// Every bind triple in an argv, as `(flag, src, dst)`.
@@ -2436,8 +2431,6 @@ mod tests {
                         && w[2] == "/var/workspace/books"),
                     "a Write capability must produce a read-write bind: {argv:?}"
                 );
-                // Scoped to the granted path: the manifest's own `fs.read` declarations legitimately emit
-                // read-only binds of their own.
                 for (flag, src, _dst) in bind_triples(&argv) {
                     if src == "/var/workspace/books" {
                         assert!(
@@ -2456,7 +2449,7 @@ mod tests {
 
                 let caps = vec![app_grant(
                     "so.tilo.meet",
-                    Scope::Device("camera".to_string()),
+                    Scope::Device(collab_types::caps::DeviceCap::Camera),
                     Access::Read,
                 )];
                 let with = argv_with_caps("so.tilo.meet", &caps, 1_000);
@@ -2466,13 +2459,18 @@ mod tests {
                         && w[2] == "/dev/video0"),
                     "a camera capability must bind the device node: {with:?}"
                 );
+                let undeclared = argv_declared(&mk_manifest("host"), "so.tilo.meet", &caps, 1_000);
+                assert!(
+                    !undeclared.iter().any(|a| a.starts_with("/dev/video")),
+                    "a camera the manifest does not declare is never bound: {undeclared:?}"
+                );
             }
             {
                 let caps = vec![
                     fs_grant("so.tilo.other", "/var/workspace/secrets", Access::Write),
                     app_grant(
                         "so.tilo.other",
-                        Scope::Device("camera".to_string()),
+                        Scope::Device(collab_types::caps::DeviceCap::Camera),
                         Access::Read,
                     ),
                     app_grant(
@@ -2670,7 +2668,7 @@ mod tests {
                     "an app without `gpu` has no /dev/dri at all"
                 );
                 let mut gpu = mk_manifest("off");
-                gpu.capabilities.push(crate::gpu::CAPABILITY.to_string());
+                gpu.capabilities.push("gpu".to_owned());
                 assert!(
                     grants_drm(crate::gpu::granted(&gpu, &none, true), &none),
                     "an app the image ships declaring `gpu` gets the device, narrowed"
@@ -2680,7 +2678,7 @@ mod tests {
                     "an app the person installed declaring `gpu` waits for their grant"
                 );
                 let mut person = CapabilityPlan::empty();
-                person.devices.push(crate::gpu::CAPABILITY.to_string());
+                person.devices.push(crate::gpu::CAPABILITY);
                 assert!(crate::gpu::granted(&gpu, &person, false));
                 assert!(
                     !crate::gpu::granted(&off, &person, false),
@@ -2693,59 +2691,49 @@ mod tests {
                     grants_drm(false, &granted),
                     "a user-granted node must be narrowed too"
                 );
-
-                // Only the `gpu` capability counts.
-                let mut hostile = mk_manifest("off");
-                hostile.sandbox.fs.write.push("/dev/dri".to_string());
-                assert_eq!(
-                    crate::gpu::granted(&hostile, &none, true),
-                    crate::gpu::granted(&mk_manifest("off"), &none, true),
-                    "a manifest entry must not change the GPU decision"
-                );
             }
         }
 
         phase network_capabilities_decide_namespace_and_egress_proxy;
         {
+            // An app outside the image that may ask for any host (`host`) reaches what its grants
+            // name, and nothing before a person granted it.
+            let asks_anything = mk_manifest("host");
+            let argv = |caps: &[CapOverride]| argv_with_caps("so.tilo.mail", caps, 1_000);
             {
-                // The manifest says net.mode = "off": without a capability the sandbox keeps the empty
-                // network namespace, and no packet can leave.
-                let isolated = argv_with_caps("so.tilo.mail", &[], 1_000);
+                let isolated = argv(&[]);
                 assert!(
                     !isolated.iter().any(|a| a == "--share-net"),
-                    "no network capability must leave the netns unshared: {isolated:?}"
+                    "no network grant must leave the netns unshared: {isolated:?}"
                 );
-
-                let caps = vec![app_grant(
+                let caps = [app_grant(
                     "so.tilo.mail",
                     Scope::NetHost("*".to_string()),
                     Access::Write,
                 )];
-                let granted = argv_with_caps("so.tilo.mail", &caps, 1_000);
+                let granted = argv(&caps);
                 assert!(
                     granted.iter().any(|a| a == "--share-net"),
                     "a grant for `*` is unrestricted access and shares the namespace: {granted:?}"
                 );
             }
             {
-                let caps = vec![app_grant(
+                let caps = [app_grant(
                     "so.tilo.mail",
                     Scope::NetHost("github.com".to_string()),
                     Access::Write,
                 )];
-                let argv = argv_with_caps("so.tilo.mail", &caps, 1_000);
-
+                let argv = argv(&caps);
                 assert!(
                     !argv.iter().any(|a| a == "--share-net"),
-                    "a grant naming one host must NOT hand the app the host's whole network — that \
-                 equivalence between `github.com` and `*` is the bug this closes: {argv:?}"
+                    "a grant naming one host must NOT hand the app the host's whole network: {argv:?}"
                 );
 
-                // And the grant does reach a mechanism now: the check decision comes from the same manifest
-                // + capability pair that built the argv above.
+                // The check decision comes from the same manifest and capability pair that built
+                // the argv above.
                 let plan =
                     CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1_000), |_| Vec::new());
-                let decision = egress_decision(&mk_manifest("off"), &plan);
+                let decision = egress_decision(&asks_anything, &plan, Path::new("/host/pkg"));
                 let policy = decision.policy().unwrap_or_else(|| {
                     panic!("a named host must resolve to a filtered egress policy, got {decision:?}")
                 });
@@ -2753,6 +2741,11 @@ mod tests {
                 assert!(
                     !policy.permits("evil.example.com"),
                     "the allowlist must exclude what it does not name: {policy:?}"
+                );
+                // A manifest that asks for no network is not given any by a grant.
+                assert_eq!(
+                    egress_decision(&mk_manifest("off"), &plan, Path::new("/host/pkg")),
+                    crate::egress_proxy::EgressDecision::Blocked
                 );
             }
             {

@@ -95,7 +95,7 @@ class PrepareTestShardScript(unittest.TestCase):
         self.assertEqual(exported, "TILO_IMAGER_TEST_CACHE_ROOT=$TREE/target/ci/imager-test-fs\n")
 
     def test_installer_consumers_build_the_installer_fixture(self) -> None:
-        for package in ("app-cli", "app-process"):
+        for package in ("app-cli", "package-service"):
             with self.subTest(package=package):
                 calls, _ = self.prepare(f"-p {package}")
                 measured = [call for call in calls if call.startswith("tools/ci/measure.sh ")]

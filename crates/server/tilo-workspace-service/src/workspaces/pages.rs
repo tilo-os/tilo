@@ -20,17 +20,18 @@ use tilo_action_policy::roles::governance;
 use tilo_peer_state::join::VerifiedRedemption;
 use tilo_server_protocol::workspaces::{
     Inviter, JoinReply, PendingInvite, PreAdmission, Role, ServerEntry, WaitListEntry, Workspace,
-    WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
+    WorkspaceHolder, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
+use super::hosts::holders_of;
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedWorkspace, IssueInvitationRequest,
     IssuedInvitation, RemoveMemberRequest, SetMemberRoleRequest, WorkspaceSummary, Workspaces,
     system_time,
 };
-use crate::host_authority::HostOperation;
+use crate::service_authority::ServiceOperation;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
@@ -92,14 +93,15 @@ impl Presented {
     }
 
     /// The verified redemption, for an invitation `workspace` issued and
-    /// still holds redeemable.
+    /// still holds redeemable, at the device answering for it.
     fn redeem(
         &self,
         workspace: &GovernedWorkspace,
+        answering: &DeviceCert,
         now: u64,
     ) -> Result<VerifiedRedemption, CollaborationError> {
         workspace.collaboration().redeem_on_connection(
-            &workspace.governed(),
+            &workspace.governed(answering),
             &self.invitation,
             &self.cert,
             self.request_id,
@@ -110,11 +112,13 @@ impl Presented {
 
 /// `workspace` as a page sees it, with `summary` its people as its
 /// governance keeps them, `certificates` the devices it records, `owners` the
-/// people it is kept for and `reader` the person the page's device acts for.
+/// people it is kept for, `holders` the holders of it and `reader` the person
+/// the page's device acts for.
 fn page_workspace(
     summary: WorkspaceSummary,
     certificates: &[DeviceCert],
     owners: &BTreeSet<String>,
+    holders: Vec<WorkspaceHolder>,
     reader: [u8; 32],
 ) -> Workspace {
     let members: Vec<_> = summary
@@ -159,6 +163,7 @@ fn page_workspace(
         name: summary.name,
         generation: summary.generation,
         members,
+        holders,
     }
 }
 
@@ -583,7 +588,7 @@ impl Workspaces {
         }
         match request {
             WorkspacesRequest::AddServer { origin, .. } => {
-                self.add_server(&workspace, &origin)
+                self.add_server(&workspace, &origin, tilo_peer_state::CopyRole::KeyHolder)
                     .await
                     .map_err(CollaborationError::new)?;
             }
@@ -697,7 +702,7 @@ impl Workspaces {
         self.authorize(
             device,
             None,
-            WorkspaceOp::Host(HostOperation::PreAdmit),
+            WorkspaceOp::Host(ServiceOperation::PreAdmit),
             now,
         )?;
         grant.verify()?;
@@ -748,7 +753,7 @@ impl Workspaces {
         self.authorize(
             device,
             None,
-            WorkspaceOp::Host(HostOperation::CreateWorkspace),
+            WorkspaceOp::Host(ServiceOperation::CreateWorkspace),
             now,
         )?;
         let created = self.create(name).await?;
@@ -767,7 +772,7 @@ impl Workspaces {
         self.authorize(
             device,
             None,
-            WorkspaceOp::Host(HostOperation::CreateWorkspace),
+            WorkspaceOp::Host(ServiceOperation::CreateWorkspace),
             now,
         )?;
         if !self.inner.workspaces.lock().await.contains_key(workspace)
@@ -789,7 +794,7 @@ impl Workspaces {
         self.authorize(
             device,
             None,
-            WorkspaceOp::Host(HostOperation::ListWorkspaces),
+            WorkspaceOp::Host(ServiceOperation::ListWorkspaces),
             now,
         )?;
         let workspaces = self
@@ -809,11 +814,13 @@ impl Workspaces {
             let summary = self.people(&workspace);
             let certificates = workspace.peer().certificates();
             let owners = owners_of(&workspace);
+            let holders = holders_of(&workspace.peer().governance().keeping_devices());
             drop(workspace);
             listed.push(page_workspace(
                 summary,
                 &certificates,
                 &owners,
+                holders,
                 device.user_public_key,
             ));
         }
@@ -890,11 +897,13 @@ impl Workspaces {
         let summary = self.people(&workspace);
         let certificates = workspace.peer().certificates();
         let owners = owners_of(&workspace);
+        let holders = holders_of(&workspace.peer().governance().keeping_devices());
         drop(workspace);
         Ok(WorkspacesReply::Workspace(page_workspace(
             summary,
             &certificates,
             &owners,
+            holders,
             device.user_public_key,
         )))
     }
@@ -1203,9 +1212,11 @@ impl Workspaces {
             )
             .await?;
         let workspace = workspace.lock().await;
-        let join = workspace
-            .collaboration()
-            .inspect(&workspace.governed(), invitation, now)?;
+        let join = workspace.collaboration().inspect(
+            &workspace.governed(self.serving_certificate()),
+            invitation,
+            now,
+        )?;
         Ok(JoinReply::Invitation {
             workspace: workspace.workspace().to_owned(),
             workspace_id: workspace.workspace_id(),
@@ -1333,7 +1344,7 @@ impl Workspaces {
         if workspace.admitted_device(request_id) == Some(device) {
             return Self::admitted(&workspace, device, now);
         }
-        let redemption = presented.redeem(&workspace, now)?;
+        let redemption = presented.redeem(&workspace, self.serving_certificate(), now)?;
         let invite_id = redemption.join().invite_id();
         if workspace.redeemed(invite_id) {
             return Err(CollaborationError::new("invitation was already redeemed"));
@@ -1592,7 +1603,7 @@ impl Workspaces {
     {
         let redemption = join
             .presented
-            .redeem(workspace, now)
+            .redeem(workspace, self.serving_certificate(), now)
             .map_err(|error| Box::new(Err(error)))?;
         let invite_id = redemption.join().invite_id();
         if workspace.redeemed(invite_id) || !invites.insert(invite_id) {
@@ -1658,7 +1669,7 @@ mod tests {
             devices: std::collections::BTreeMap::new(),
         };
         let name = |summary: WorkspaceSummary, certs: &[DeviceCert]| {
-            page_workspace(summary, certs, &BTreeSet::new(), [0; 32]).members[0]
+            page_workspace(summary, certs, &BTreeSet::new(), Vec::new(), [0; 32]).members[0]
                 .name
                 .clone()
         };

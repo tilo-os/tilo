@@ -266,6 +266,11 @@ fn superseded_peer_outcome_is_quiet_but_protocol_failure_is_counted() {
     assert!(finish_peer_outcome(Err(PeerError::Superseded), &metrics, &[7; 32]).is_ok());
     assert_eq!(metrics.snapshot().subscriber_dropped, 0);
 
+    // A device the server does not admit ended with a refusal, not an error:
+    // it is neither reported as a failed session nor counted as a lost one.
+    assert!(finish_peer_outcome(Err(PeerError::NotAdmitted), &metrics, &[7; 32]).is_ok());
+    assert_eq!(metrics.snapshot().subscriber_dropped, 0);
+
     assert!(
         finish_peer_outcome(
             Err(PeerError::Protocol("authorization changed".into())),

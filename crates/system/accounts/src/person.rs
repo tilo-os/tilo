@@ -5,7 +5,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use tilo_resource::{Collection, Id, Invoke, Model, ModelError, Refusal, SharedResource, resource};
+use tilo_resource::{
+    ActionCx, Collection, Id, Invoke, Model, ModelError, Refusal, SharedResource, resource,
+};
 
 use crate::{Account, AccountId, AccountStore, AccountTypeId};
 
@@ -187,7 +189,7 @@ impl PersonAccounts {
             // actions. A normal sign-in must not silently reverse them.
             return Ok(());
         }
-        self.save_account(
+        self.keep_account(
             id,
             TILO_IDENTITY_TYPE.into(),
             display_name,
@@ -198,15 +200,52 @@ impl PersonAccounts {
     }
 
     /// Save an account: add it, or replace the one with its id.
+    ///
+    /// What an account that is kept is, and how it connects, is its person's
+    /// own to change, at a device of theirs. Its secret is kept under its id
+    /// and follows it to whatever server its settings name, and a calendar
+    /// account connected for reading only says so in those settings. So
+    /// whoever acts for them gives an account another name and turns one off
+    /// or on, and is refused anything else of an account that is kept
+    /// ([`theirs_alone`]). It adds none either: under the id of an account
+    /// that was removed a secret may still be kept, which the accounts do not
+    /// know.
     #[action]
     pub fn save_account(
         &mut self,
+        cx: &mut ActionCx,
         #[param("The account's id, which its secret is kept under")] id: String,
         #[param("The kind of account, such as email or caldav")] type_id: String,
         #[param("The name shown for it")] display_name: String,
         #[param("Its connection settings, without any secret")] config: serde_json::Value,
         #[param("Whether it is in use")] enabled: bool,
         #[param("Avatar tint")] tint: u8,
+    ) -> Result<(), Refusal> {
+        if acts_for_its_person(cx) {
+            let refused = match self.accounts.get(&Id::from_raw(id.clone())) {
+                Some(kept) => theirs_alone(kept, &type_id, &config),
+                None => Some(ADDED_BY_ITS_PERSON),
+            };
+            if let Some(why) = refused {
+                return Err(Refusal::from(why));
+            }
+        }
+        self.keep_account(id, type_id, display_name, config, enabled, tint)
+    }
+
+    /// Keep an account as [`Self::save_account`] does once it may: for code
+    /// of this device that fills the person's accounts itself.
+    ///
+    /// # Errors
+    /// The account names no id or no kind.
+    pub fn keep_account(
+        &mut self,
+        id: String,
+        type_id: String,
+        display_name: String,
+        config: serde_json::Value,
+        enabled: bool,
+        tint: u8,
     ) -> Result<(), Refusal> {
         if id.trim().is_empty() || type_id.trim().is_empty() {
             return Err(Refusal::from("an account needs an id and a type"));
@@ -229,8 +268,15 @@ impl PersonAccounts {
     }
 
     /// Remove account.
+    ///
+    /// An account that is kept is its person's own to remove, at a device of
+    /// theirs: removed and saved anew it would be another account under the
+    /// id its secret is kept under.
     #[action]
-    pub fn remove_account(&mut self, account: Id) -> Result<(), Refusal> {
+    pub fn remove_account(&mut self, cx: &mut ActionCx, account: Id) -> Result<(), Refusal> {
+        if acts_for_its_person(cx) && self.accounts.contains(&account) {
+            return Err(Refusal::from(REMOVED_BY_ITS_PERSON));
+        }
         let removed = self
             .accounts
             .remove(&account)
@@ -265,6 +311,58 @@ impl PersonAccounts {
         self.active.insert(type_id, account.as_str().to_owned());
         Ok(())
     }
+}
+
+/// What whoever acts for a person is told when it would change what an
+/// account of theirs is or how it connects.
+const THEIRS_ALONE: &str = "What an account is and how it connects is its person's own to change, \
+                            at a device of theirs. Whoever acts for them names one anew or turns \
+                            one off";
+/// What it is told when it would add an account.
+const ADDED_BY_ITS_PERSON: &str = "An account is its person's own to add, at a device of theirs: a \
+                                   secret may still be kept under its id";
+/// What it is told when that would lift an account's reading only.
+const READING_ONLY: &str = "This account is connected for reading only, which is its person's \
+                            own to change: only they, at a device of theirs, save it without \
+                            that word or remove it";
+/// What it is told when it would remove an account.
+const REMOVED_BY_ITS_PERSON: &str =
+    "An account is its person's own to remove, at a device of theirs";
+
+/// Whether the action applying now was invoked by somebody acting for the
+/// person (an agent, a bot, an automation, a device that is not theirs) and
+/// not by the person themselves at a device of theirs. An action nobody
+/// invoked is this device's own code filling the person's accounts, and is
+/// not.
+fn acts_for_its_person(cx: &ActionCx) -> bool {
+    cx.invoked_by()
+        .is_some_and(|by| by.direct_person().is_none())
+}
+
+/// Whether `config` says its account is connected for reading only: at the
+/// account, or under its calendar settings.
+fn reading_only(config: &serde_json::Value) -> bool {
+    ["/read_only", "/calendar/read_only"]
+        .iter()
+        .any(|at| config.pointer(at).and_then(serde_json::Value::as_bool) == Some(true))
+}
+
+/// Why making the account `kept` one of `type_id` with `config` is its
+/// person's own to do, where it is: none for a change that leaves what the
+/// account is and how it connects as they are.
+fn theirs_alone(
+    kept: &PersonAccount,
+    type_id: &str,
+    config: &serde_json::Value,
+) -> Option<&'static str> {
+    if kept.type_id == type_id && kept.config == *config {
+        return None;
+    }
+    Some(if reading_only(&kept.config) && !reading_only(config) {
+        READING_ONLY
+    } else {
+        THEIRS_ALONE
+    })
 }
 
 impl SharedResource for PersonAccounts {
@@ -691,5 +789,285 @@ mod tests {
         let projected = person;
         assert!(projected.is_projection());
         assert!(replica.state().unwrap().taking_in(&projected).is_empty());
+    }
+
+    /// A calendar account as its person keeps it for reading only.
+    fn reading_only(more: &[(&str, serde_json::Value)]) -> serde_json::Value {
+        let mut config = serde_json::json!({
+            "server_url": "https://dav.example/", "username": "ada", "read_only": true,
+        });
+        for (name, value) in more {
+            config[*name] = value.clone();
+        }
+        config
+    }
+
+    /// The edit that saves the account `id` of `type_id` with `config`.
+    fn saving(id: &str, type_id: &str, config: serde_json::Value) -> Invoke<PersonAccounts> {
+        PersonAccounts::SAVE_ACCOUNT.with((
+            id.into(),
+            type_id.into(),
+            "Work".into(),
+            config,
+            true,
+            0,
+        ))
+    }
+
+    /// What the account `id` keeps as its settings in `replica`; none when
+    /// it is gone.
+    fn kept(replica: &Replica<PersonAccounts>, id: &str) -> Option<serde_json::Value> {
+        replica
+            .state()
+            .unwrap()
+            .accounts
+            .get(&Id::from_raw(id))
+            .map(|account| account.config.clone())
+    }
+
+    /// An account connected for reading only stays so against whoever acts
+    /// for its person. An agent on a device of theirs does not save it again
+    /// without that word, at the account or under its calendar settings, and
+    /// does not remove it, which would be the same once it saved it anew.
+    /// The person themselves, at a device of theirs, does both.
+    #[test]
+    fn only_its_person_lifts_reading_only_or_removes_such_an_account() {
+        let person = "ab".repeat(32);
+        let mut hers = Replica::<PersonAccounts>::new().as_invoker(&person);
+        hers.apply(saving("work", "caldav", reading_only(&[])))
+            .unwrap();
+        hers.apply(saving(
+            "cloud",
+            "nextcloud",
+            serde_json::json!({
+                "server_url": "https://cloud.example/",
+                "calendar": {"read_only": true, "calendars": []},
+            }),
+        ))
+        .unwrap();
+
+        // An agent on a device of hers, acting for her.
+        let mut agent = Replica::<PersonAccounts>::load(&hers.save())
+            .unwrap()
+            .as_agent_for("helper", &person);
+        let said = agent
+            .apply(saving(
+                "work",
+                "caldav",
+                serde_json::json!({"server_url": "https://dav.example/", "username": "ada"}),
+            ))
+            .err()
+            .map(|refusal| format!("{refusal:?}"));
+        let said = said.expect("an agent saved a read-only account again without the word");
+        assert!(
+            said.contains("reading only"),
+            "it is refused in words: {said}"
+        );
+        let unsaid = agent.apply(saving(
+            "work",
+            "caldav",
+            reading_only(&[("read_only", serde_json::json!(false))]),
+        ));
+        assert!(unsaid.is_err(), "nor with the word said to be false");
+        let under = agent.apply(saving(
+            "cloud",
+            "nextcloud",
+            serde_json::json!({
+                "server_url": "https://cloud.example/",
+                "calendar": {"calendars": []},
+            }),
+        ));
+        assert!(
+            under.is_err(),
+            "nor where the word stands under its calendar settings"
+        );
+        let removed = agent.apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("work")));
+        assert!(
+            removed.is_err(),
+            "an agent removed a read-only account, to save it anew without the word"
+        );
+        assert_eq!(kept(&agent, "work"), Some(reading_only(&[])));
+        assert_eq!(
+            kept(&agent, "cloud").unwrap()["calendar"]["read_only"],
+            true
+        );
+        // What keeps the word, it may save: the name shown.
+        agent
+            .apply(PersonAccounts::SAVE_ACCOUNT.with((
+                "work".into(),
+                "caldav".into(),
+                "Work calendar".into(),
+                reading_only(&[]),
+                true,
+                0,
+            )))
+            .unwrap();
+
+        // She herself, at a device of hers, saves it without the word, and
+        // removes it.
+        hers.apply(saving(
+            "work",
+            "caldav",
+            serde_json::json!({"server_url": "https://dav.example/", "username": "ada"}),
+        ))
+        .unwrap();
+        assert_eq!(kept(&hers, "work").unwrap().get("read_only"), None);
+        hers.apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("cloud")))
+            .unwrap();
+        assert_eq!(kept(&hers, "cloud"), None);
+    }
+
+    /// A mail account's settings, reading at `incoming`.
+    fn mail(incoming: &str) -> serde_json::Value {
+        serde_json::json!({"incoming": incoming, "outgoing": "smtp.example", "username": "ada"})
+    }
+
+    /// A calendar account's settings, at `address`.
+    fn calendar(address: &str) -> serde_json::Value {
+        serde_json::json!({"server_url": address, "username": "ada"})
+    }
+
+    /// Her accounts as she keeps them at a device of hers: a mail account,
+    /// a calendar account, and one she added and removed again. Whether a
+    /// secret is still kept under that one's id is not her accounts' to
+    /// know.
+    fn her_accounts(person: &str) -> Replica<PersonAccounts> {
+        let mut hers = Replica::<PersonAccounts>::new().as_invoker(person);
+        hers.apply(saving("ada@example.test", "email", mail("imap.example")))
+            .unwrap();
+        hers.apply(saving("work", "caldav", calendar("https://dav.example/")))
+            .unwrap();
+        hers.apply(saving("old@example.test", "email", mail("imap.example")))
+            .unwrap();
+        hers.apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("old@example.test")))
+            .unwrap();
+        hers
+    }
+
+    /// What an account is and where it signs in is its person's own to
+    /// change. Its password is kept under its id and follows it, so an agent
+    /// on a device of theirs that saved a mail or a calendar account whole
+    /// with another server under the same id would have that password sent
+    /// there. It is refused that, another kind under the same id, the
+    /// removal that would let it save the account anew, and adding an
+    /// account at all: under the id of an account that was removed a secret
+    /// may still be kept.
+    #[test]
+    fn only_its_person_changes_what_an_account_is_and_where_it_signs_in() {
+        let person = "ab".repeat(32);
+        let mut hers = her_accounts(&person);
+        // An agent on a device of hers, acting for her.
+        let mut agent = Replica::<PersonAccounts>::load(&hers.save())
+            .unwrap()
+            .as_agent_for("helper", &person);
+        let elsewhere = "imap.elsewhere.example";
+        let mut taken = Vec::new();
+        for (what, id, edit) in [
+            (
+                "a mail account saved whole with another server",
+                "ada@example.test",
+                saving("ada@example.test", "email", mail(elsewhere)),
+            ),
+            (
+                "a calendar account saved whole with another address",
+                "work",
+                saving("work", "caldav", calendar("https://dav.elsewhere.example/")),
+            ),
+            (
+                "an account saved as another kind",
+                "work",
+                saving("work", "webdav", calendar("https://dav.example/")),
+            ),
+            (
+                "an account added under the id of one she removed",
+                "old@example.test",
+                saving("old@example.test", "email", mail(elsewhere)),
+            ),
+            (
+                "an account added under a new id",
+                "news@example.test",
+                saving("news@example.test", "email", mail(elsewhere)),
+            ),
+            (
+                "an account removed",
+                "ada@example.test",
+                PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("ada@example.test")),
+            ),
+        ] {
+            let refused = agent
+                .apply(edit)
+                .err()
+                .map(|refusal| format!("{refusal:?}"));
+            match refused {
+                Some(said) => assert!(said.contains("its person's own"), "{what}: {said}"),
+                None => taken.push(format!("{what}, and it then keeps {:?}", kept(&agent, id))),
+            }
+        }
+        assert!(
+            taken.is_empty(),
+            "an agent acting for her changed her accounts: {taken:#?}"
+        );
+        assert_eq!(kept(&agent, "ada@example.test"), Some(mail("imap.example")));
+        assert_eq!(kept(&agent, "work"), Some(calendar("https://dav.example/")));
+        assert_eq!(kept(&agent, "old@example.test"), None);
+    }
+
+    /// Whoever acts for a person gives an account another name and turns
+    /// one off. The device's own code, with nobody invoking, and the person
+    /// themselves, at a device of theirs, change their accounts as before.
+    #[test]
+    fn a_name_is_anyones_to_give_and_the_person_changes_their_accounts_as_before() {
+        let person = "ab".repeat(32);
+        let mut hers = her_accounts(&person);
+        let mut agent = Replica::<PersonAccounts>::load(&hers.save())
+            .unwrap()
+            .as_agent_for("helper", &person);
+        agent
+            .apply(PersonAccounts::SAVE_ACCOUNT.with((
+                "work".into(),
+                "caldav".into(),
+                "Team calendar".into(),
+                calendar("https://dav.example/"),
+                false,
+                3,
+            )))
+            .unwrap();
+        let renamed = agent.state().unwrap();
+        let work = renamed.accounts.get(&Id::from_raw("work")).unwrap();
+        assert_eq!(
+            (work.display_name.as_str(), work.enabled),
+            ("Team calendar", false)
+        );
+
+        // The device's own code, with nobody invoking.
+        let mut device = Replica::<PersonAccounts>::load(&agent.save()).unwrap();
+        device
+            .apply(saving("news@example.test", "email", mail("imap.example")))
+            .unwrap();
+        device
+            .apply(saving(
+                "news@example.test",
+                "email",
+                mail("imap.moved.example"),
+            ))
+            .unwrap();
+        device
+            .apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("news@example.test")))
+            .unwrap();
+
+        // She herself, at a device of hers.
+        hers.apply(saving(
+            "ada@example.test",
+            "email",
+            mail("imap.moved.example"),
+        ))
+        .unwrap();
+        assert_eq!(
+            kept(&hers, "ada@example.test"),
+            Some(mail("imap.moved.example"))
+        );
+        hers.apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("work")))
+            .unwrap();
+        assert_eq!(kept(&hers, "work"), None);
     }
 }

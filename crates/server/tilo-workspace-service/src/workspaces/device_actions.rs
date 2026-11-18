@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use neighbour_wire::offer::{Answer, Power, Query, Route, Work};
+use neighbour_wire::offer::{Answer, Decline, Power, Query, Route, Work};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationLog,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, Reservation,
@@ -94,6 +94,53 @@ struct Offered {
     work: Work,
 }
 
+/// What a host offers the workspaces it holds, as the entry its person keeps
+/// of it in their admin workspace says ([`Workspaces::set_offer`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Offer {
+    /// Gigabytes of storage it offers its workspaces.
+    pub storage_gb: u64,
+    /// Whether it runs its workspaces' actions and jobs.
+    pub compute: bool,
+    /// How many Linux machines it runs for its workspaces at once.
+    pub machines: u32,
+}
+
+impl Offer {
+    /// What a device takes before any entry says anything about it: it runs
+    /// no work for anyone.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            storage_gb: 0,
+            compute: false,
+            machines: 0,
+        }
+    }
+
+    /// What an entry naming `storage_gb`, `compute` and `machines` offers.
+    #[must_use]
+    pub const fn of(storage_gb: u64, compute: bool, machines: u32) -> Self {
+        Self {
+            storage_gb,
+            compute,
+            machines,
+        }
+    }
+}
+
+impl Default for Offer {
+    /// What a host answers with before any entry is applied to it: its work
+    /// setting alone decides ([`HostOffering`]).
+    fn default() -> Self {
+        Self {
+            storage_gb: 0,
+            compute: true,
+            machines: u32::MAX,
+        }
+    }
+}
+
 /// How many offers this host remembers at once. A device asks and then
 /// invokes at once; what it is not invoked on within this many later offers
 /// is forgotten.
@@ -107,6 +154,9 @@ const MAX_OFFERED: usize = 256;
 /// actions, as it always did.
 pub(crate) struct HostWork {
     jobs: std::sync::RwLock<Option<Arc<dyn HostJobs>>>,
+    /// What this host offers, as its person's entry for it says
+    /// ([`Workspaces::set_offer`]); it takes no work until one is set.
+    offer: std::sync::RwLock<Offer>,
     /// The workspaces this host governs, as the action service decides them: who may
     /// run an action here is what its workspace's policy grants them.
     workspaces: Arc<WorkspacesMap>,
@@ -116,6 +166,16 @@ pub(crate) struct HostWork {
 }
 
 impl HostWork {
+    /// Set what this host offers its workspaces.
+    pub(crate) fn set_offer(&self, offer: Offer) {
+        *self.offer.write_recover() = offer;
+    }
+
+    /// What this host offers its workspaces.
+    pub(crate) fn offer(&self) -> Offer {
+        *self.offer.read_recover()
+    }
+
     /// The work this host answered the offer `invocation` for, made by the
     /// device `from`: what an invocation arriving here runs, or nothing when
     /// it names no offer of its own.
@@ -195,6 +255,7 @@ impl HostWork {
     fn new(workspaces: Arc<WorkspacesMap>) -> Arc<Self> {
         Arc::new(Self {
             jobs: std::sync::RwLock::default(),
+            offer: std::sync::RwLock::default(),
             workspaces,
             offered: std::sync::Mutex::default(),
             log: std::sync::Mutex::default(),
@@ -266,6 +327,11 @@ struct HostOffering {
 
 impl Offering for HostOffering {
     fn report(&self, from: [u8; 32], whose: &Whose, offer: &Query) -> Answer {
+        // What its person's entry says it offers decides first: a server set
+        // not to run work declines it, whatever else it could run.
+        if !self.work.offer().compute {
+            return Answer::declining(Decline::NotTakingWork);
+        }
         let jobs = self.work.jobs.read_recover().clone();
         let takes = jobs
             .as_ref()

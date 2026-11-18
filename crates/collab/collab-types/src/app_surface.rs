@@ -178,6 +178,15 @@ fn surface_of(app_id: &str) -> Option<std::sync::Arc<crate::surface::SurfaceFile
         .clone()
 }
 
+/// The kind of `app_id`'s own record of a workspace, the first its surface declares: the resource
+/// whose `open` shows an item of that record. `None` when this process holds no surface for it.
+#[must_use]
+pub fn primary_kind(app_id: &str) -> Option<String> {
+    surface_of(app_id)?
+        .resource(None)
+        .map(|surface| surface.kind.clone())
+}
+
 /// The person-record kinds `app_id`'s surface declares (its
 /// `ResourceApp::PERSON_RESOURCES`): the records it may keep in, or read from,
 /// the person's own workspace. Empty when this process holds no surface for

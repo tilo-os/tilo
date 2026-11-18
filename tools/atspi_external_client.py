@@ -360,7 +360,7 @@ def wait_for_shell_node(shell: AtspiClient, name: str, *, editable: bool = False
     )
 
 
-def app_process(pid: int) -> int:
+def package_service(pid: int) -> int:
     """The app behind an AT-SPI connection. A sandboxed app reaches the bus
     through the launcher's filtered proxy, so the bus reports the proxy's pid;
     the app is the launcher's descendant that is neither a proxy nor bwrap."""
@@ -473,13 +473,13 @@ def wait_for_new_app(address: str, before: set[str], app_name: str) -> tuple[str
             if bus in before:
                 continue
             if is_app_connection(AtspiClient(address, bus)):
-                return bus, app_process(pid)
+                return bus, package_service(pid)
         time.sleep(POLL_SECONDS * 4)
     seen = []
     for bus, pid in sorted(bus_pids(address).items()):
         if bus in before:
             continue
-        process = app_process(pid)
+        process = package_service(pid)
         try:
             name = AtspiClient(address, bus).property(ROOT_PATH, "Name").strip()
         except CheckError as error:

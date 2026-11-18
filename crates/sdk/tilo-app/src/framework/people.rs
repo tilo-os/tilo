@@ -103,7 +103,7 @@ impl Actor {
         if self.agent() {
             chip.with_lead(ChipLead::Agent(colour))
                 // The mark says agent to the eye; a reader hears it in words.
-                .with_accessible_name(ui_core::history_source::agent_display_label(&self.name))
+                .with_accessible_name(ui_core::history_source::agent_spoken_label(&self.name))
         } else {
             chip.with_face(self.name.clone(), colour)
         }
@@ -391,9 +391,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                 // What a reader hears keeps the kind in words: the agent mark beside the name is
                 // not something a screen reader can see.
                 let spoken = if agent {
-                    ui_core::history_source::agent_display_label(&name)
+                    ui_core::history_source::agent_spoken_label(&name)
                 } else {
-                    name.clone()
+                    name
                 };
                 let chip = chip.with_accessible_name(&format!("{label}: {spoken}"));
                 let chip = if agent { chip.tone(Tone::Info) } else { chip };

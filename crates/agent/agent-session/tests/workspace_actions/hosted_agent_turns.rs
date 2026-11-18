@@ -416,9 +416,56 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
     let unasked = Arc::new(Mutex::new(Vec::new()));
     let agents = HostAgents::new(
         workspaces.clone(),
-        actions,
+        actions.clone(),
         Some(never_asked(Arc::clone(&unasked))),
     );
+    // The turn that could not work stopped the work on its issue: nothing is owed until its
+    // person says something new, and the turn read before that stop begins nothing again.
+    agents.answer(&workspace, &turns[0]).await.unwrap();
+    let kept_in = tasks::part::chain().part(0).as_str().to_owned();
+    assert_eq!(
+        said(tracker(&workspaces, &workspace, &kept_in).await).len(),
+        1,
+        "what was read before the work stopped is not begun a second time"
+    );
+    assert!(
+        agents.turns(&workspace).await.unwrap().is_empty(),
+        "work that stopped asks nothing until its person says something new"
+    );
+    // They write in the issue's thread, and the turn that owes now is the one answered.
+    let issue = tracker(&workspaces, &workspace, &kept_in)
+        .await
+        .issues
+        .iter()
+        .next()
+        .unwrap()
+        .0
+        .clone();
+    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(
+        actions,
+        WorkspaceId::parse(&workspace).unwrap(),
+    );
+    let asking =
+        tilo_actions::remote::Caller::authenticated(keeper, browser.cert.device_public_key)
+            .in_workspace(&workspace);
+    let route = DocumentRoute {
+        app_id: TASKS.into(),
+        cluster_id: workspace.clone(),
+        document: kept_in.clone(),
+    };
+    let words = serde_json::json!({"issue": issue.as_str(), "text": "I linked one: try again."});
+    tilo_server::workspace_agents::invoke_named(
+        &service,
+        &asking,
+        &route,
+        &tasks::model::issue_resource(&issue),
+        "comment",
+        words.as_object().unwrap().clone(),
+    )
+    .await
+    .expect("the person writes in the issue's thread");
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "{turns:?}");
     agents.answer(&workspace, &turns[0]).await.unwrap();
     assert!(
         unasked.lock().unwrap().is_empty(),

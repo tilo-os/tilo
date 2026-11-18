@@ -4,8 +4,8 @@
 //! person. Each server is one of their devices and takes part in it. Its
 //! [`SERVERS`] record says, per server, what that server should be: its name,
 //! which workspaces it holds and how (an encrypted store or a key holder that
-//! takes work), how much it offers (storage, compute, machines), which update
-//! channel it follows and when it may restart for maintenance, how it unlocks
+//! takes work), how much it offers (storage, compute, machines), which updates
+//! it follows and when it may restart for maintenance, how it unlocks
 //! after a boot, and whether it was retired. Every change is a typed action on
 //! that record ([`Servers`]), so it has history and an author, and the device
 //! admin route, an agent or a script change it the same way. A server applies
@@ -16,11 +16,21 @@
 //! that does not hold it yet makes it ([`ensure_admin_workspace`]), and a
 //! server enrolled into the person's identity enters itself on its first start
 //! ([`enroll`]).
+//!
+//! A device of the person that holds a workspace attaches the servers its
+//! document names as holders, and only those: one action on the document
+//! chooses the holder and names it in the workspace
+//! ([`applied::reconcile`]). Each server applies its own entry's offer to what
+//! it answers devices, its update policy to what it follows, and a retired
+//! server lets go of everything it holds.
 
 use tilo_resource::{Collection, Id, Invoke, Model, Refusal, Replica, resource};
 use tilo_user_identity::DeviceCert;
 
 use crate::workspaces::Workspaces;
+
+pub mod applied;
+pub mod policy;
 
 /// The admin workspace's record of the person's servers.
 pub const SERVERS: (&str, &str) = ("so.tilo.servers", "servers");
@@ -35,8 +45,9 @@ pub const KEY_HOLDER: &str = "key-holder";
 /// The ways a server unlocks after a boot: an owner's device approves it, its
 /// TPM unseals its keys, or someone types a passphrase at it.
 pub const UNLOCK_POLICIES: [&str; 3] = ["owner-device", "tpm", "passphrase"];
-/// The update channels a server follows.
-pub const UPDATE_CHANNELS: [&str; 2] = ["stable", "main"];
+/// The updates a server follows: the releases (`stable`), or the images built
+/// from the development branch (`dev`).
+pub const UPDATES: [&str; 2] = ["stable", "dev"];
 const MINUTES_PER_DAY: u32 = 24 * 60;
 const MAX_LABEL: usize = 80;
 
@@ -51,6 +62,10 @@ pub struct Servers {
 pub struct Server {
     /// The name people see for it.
     pub label: String,
+    /// Where it is dialled, as its own endpoint advertises it (JSON), kept so
+    /// a device of its person can hand it a workspace. Empty until it
+    /// enrolled one.
+    pub endpoint: String,
     /// The workspaces it holds, by workspace id.
     pub holds: Collection<Holding>,
     /// Gigabytes of storage it offers its workspaces.
@@ -59,9 +74,9 @@ pub struct Server {
     pub compute: bool,
     /// How many Linux machines it runs for its workspaces at once.
     pub machines: u32,
-    /// The update channel it follows ([`UPDATE_CHANNELS`]); empty for the one
-    /// its image came with.
-    pub update_channel: String,
+    /// The updates it follows ([`UPDATES`]); empty for the ones its image
+    /// came with.
+    pub updates: String,
     /// When its daily maintenance window starts, in minutes after midnight UTC.
     pub maintenance_start: u32,
     /// How long the window lasts in minutes; 0 for no window.
@@ -71,6 +86,9 @@ pub struct Server {
     pub unlock: String,
     /// Retired: the person took it out of service, and it serves nothing.
     pub retired: bool,
+    /// The public half (PEM) of the key its TPM's rollback floor takes
+    /// approvals from, as the server says; empty until it said.
+    pub floor_key: String,
 }
 
 /// How a server holds one workspace.
@@ -83,7 +101,7 @@ pub struct Holding {
 impl Servers {
     /// What the record holds, read through
     /// [`fields`](tilo_resource::read::fields): each server's name, what it
-    /// holds and offers, its update channel, its maintenance window and how
+    /// holds and offers, the updates it follows, its maintenance window and how
     /// it unlocks. The person's agent or a script reads what their servers
     /// are set to as it reads any record.
     ///
@@ -122,21 +140,33 @@ impl Server {
 
 #[resource(kind = "tilo.servers", read_content = Servers::read_document)]
 impl Servers {
-    /// Take a server into the person's servers, named `label`. A server
-    /// already there keeps its configuration.
+    /// Take a server into the person's servers, named `label` and dialled at
+    /// `endpoint` (its own address, JSON). A server already there keeps its
+    /// configuration and takes its new address, which changes as it is
+    /// reached.
     #[action(external)]
-    pub fn enroll_server(&mut self, device: String, label: String) -> Result<(), Refusal> {
+    pub fn enroll_server(
+        &mut self,
+        device: String,
+        label: String,
+        endpoint: String,
+    ) -> Result<(), Refusal> {
         let device = Id::from_raw(device);
         validate_device(&device)?;
         let label = validate_label(&label)?;
-        if self.servers.get(&device).is_none() {
-            self.servers.push(
-                device,
-                Server {
-                    label,
-                    ..Server::default()
-                },
-            );
+        let endpoint = validate_endpoint(&endpoint)?;
+        match self.servers.get_mut(&device) {
+            Some(server) => server.endpoint = endpoint,
+            None => {
+                self.servers.push(
+                    device,
+                    Server {
+                        label,
+                        endpoint,
+                        ..Server::default()
+                    },
+                );
+            }
         }
         Ok(())
     }
@@ -199,13 +229,13 @@ impl Servers {
         Ok(())
     }
 
-    /// Set the update channel a server follows.
+    /// Set the updates a server follows.
     #[action(external)]
-    pub fn set_update_channel(&mut self, device: Id, channel: String) -> Result<(), Refusal> {
-        if !UPDATE_CHANNELS.contains(&channel.as_str()) {
-            return Err(Refusal::new("unknown update channel"));
+    pub fn set_updates(&mut self, device: Id, updates: String) -> Result<(), Refusal> {
+        if !UPDATES.contains(&updates.as_str()) {
+            return Err(Refusal::new("unknown updates a server follows"));
         }
-        self.server(&device)?.update_channel = channel;
+        self.server(&device)?.updates = updates;
         Ok(())
     }
 
@@ -239,6 +269,14 @@ impl Servers {
         Ok(())
     }
 
+    /// Say which key (public half, PEM) a server's rollback floor takes
+    /// approvals from.
+    #[action(external)]
+    pub fn set_floor_key(&mut self, device: Id, key: String) -> Result<(), Refusal> {
+        self.server(&device)?.floor_key = key;
+        Ok(())
+    }
+
     /// Retire a server: it serves nothing from then on. Its entry stays, so
     /// its device is never taken in again as a new server.
     #[action(external)]
@@ -262,6 +300,15 @@ fn validate_device(device: &Id) -> Result<(), Refusal> {
         .ok()
         .filter(|()| device.as_str() == hex::encode(key))
         .ok_or_else(|| Refusal::new("a server is named by its device key"))
+}
+
+/// `endpoint` as a server's address, spelled as its own endpoint advertises
+/// it: parsed here so nothing later reads a dial address out of arbitrary
+/// text.
+fn validate_endpoint(endpoint: &str) -> Result<String, Refusal> {
+    let wrong = || Refusal::new("a server's endpoint is its own dial address");
+    let address = serde_json::from_str::<iroh_base::EndpointAddr>(endpoint).map_err(|_| wrong())?;
+    serde_json::to_string(&address).map_err(|_| wrong())
 }
 
 fn validate_label(label: &str) -> Result<String, Refusal> {
@@ -347,21 +394,52 @@ pub async fn read(workspaces: &Workspaces) -> Result<Servers, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Enter this host's device into its person's servers, named `label`, making
-/// the admin workspace first where this host has none: what a server enrolled
-/// into the person's identity does on its first start.
+/// The name the admin workspace gives the server `device`: what the
+/// workspaces it holds show it by. `None` where its entry names it nowhere,
+/// and the keeper goes by its device's label.
+pub async fn name(workspaces: &Workspaces, device: &[u8; 32]) -> Option<String> {
+    read(workspaces)
+        .await
+        .ok()?
+        .active(device)
+        .map(|server| server.label.clone())
+        .filter(|label| !label.is_empty())
+}
+
+/// Enter this host's device into its person's servers, named `label` and
+/// dialled at `endpoint`, making the admin workspace first where this host has
+/// none: what a server enrolled into the person's identity does on its first
+/// start, and again whenever the address it is reached at changed.
 ///
 /// # Errors
 /// The admin workspace could not be made, or the entry written.
-pub async fn enroll(workspaces: &Workspaces, cert: &DeviceCert) -> Result<String, String> {
+pub async fn enroll(
+    workspaces: &Workspaces,
+    cert: &DeviceCert,
+    endpoint: &iroh_base::EndpointAddr,
+) -> Result<String, String> {
     let admin = ensure_admin_workspace(workspaces).await?;
+    let endpoint = serde_json::to_string(endpoint).map_err(|error| error.to_string())?;
+    if read(workspaces)
+        .await?
+        .servers
+        .get(&device_id(&cert.device_public_key))
+        .is_some_and(|server| server.endpoint == endpoint)
+    {
+        // Nothing about it changed: a start that finds its own entry as it
+        // stands writes no history.
+        return Ok(admin);
+    }
     let action = Servers::ENROLL_SERVER.with((
         hex::encode(cert.device_public_key),
         cert.device_label.clone(),
+        endpoint,
     ));
     apply(workspaces, action).await?;
     Ok(admin)
 }
+
+pub mod floor;
 
 #[cfg(test)]
 mod tests;

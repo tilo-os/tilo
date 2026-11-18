@@ -1,5 +1,5 @@
 //! Real Wayland clients against a headless compositor: windows are mapped where the policy says,
-//! composited with hosted layers on top, and input reaches whoever it belongs to.
+//! composited with surface layers on top, and input reaches whoever it belongs to.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -59,10 +59,10 @@ use tilo_compositor::{
     WindowPlacement, WindowPolicy,
 };
 use tilo_session_core::surface::{
-    BackdropImage, BackdropRequest, HostKey, KeyClaim, WindowCover, WindowPicture,
+    BackdropImage, BackdropRequest, KeyClaim, SurfaceKey, WindowCover, WindowPicture,
 };
 use tilo_session_core::surface::{
-    HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, SurfaceHost,
+    ShellSurface, SurfaceDrag, SurfaceFrame, SurfaceIme, SurfaceLayer, SurfaceTextInput,
 };
 use wayland_client::Connection;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
@@ -614,7 +614,7 @@ fn a_click_into_a_window_takes_the_keyboard_from_an_open_launcher() {
         closes_on_press_elsewhere: true,
         ..HostLog::default()
     }));
-    compositor.add_host(Rc::new(RefCell::new(Square::new(
+    compositor.add_surface(Rc::new(RefCell::new(Square::new(
         (500, 400, 40, 40),
         [0, 255, 0, 255],
         Rc::clone(&log),
@@ -658,8 +658,8 @@ struct Chords {
     log: Rc<RefCell<HostLog>>,
 }
 
-impl SurfaceHost for Chords {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for Chords {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
     }
 
@@ -671,7 +671,7 @@ impl SurfaceHost for Chords {
 
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 
-    fn claim_key(&mut self, key: &HostKey, _locked: bool, inhibited: bool) -> KeyClaim {
+    fn claim_key(&mut self, key: &SurfaceKey, _locked: bool, inhibited: bool) -> KeyClaim {
         if key.keycode != KEY_X || !key.modifiers.logo {
             return KeyClaim::Pass;
         }
@@ -683,16 +683,16 @@ impl SurfaceHost for Chords {
         }
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         self.log.borrow_mut().keys.push(key.clone());
     }
 }
 
 #[test]
-fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window() {
+fn a_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Rc::new(RefCell::new(Square::new(
+    compositor.add_surface(Rc::new(RefCell::new(Square::new(
         (0, 0, 10, 10),
         [0, 255, 0, 255],
         Rc::clone(&log),
@@ -749,10 +749,10 @@ fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window()
 }
 
 #[test]
-fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
+fn surfaces_draw_above_windows_and_take_the_pointer_over_them() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Rc::new(RefCell::new(Square::new(
+    compositor.add_surface(Rc::new(RefCell::new(Square::new(
         (300, 220, 40, 40),
         [0, 255, 0, 255],
         Rc::clone(&log),
@@ -764,7 +764,7 @@ fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
     assert_eq!(
         frame.pixel(320, 240),
         Some([0, 255, 0, 255]),
-        "hosted layer on top"
+        "surface layer on top"
     );
     assert_eq!(
         frame.pixel(250, 200),
@@ -816,10 +816,10 @@ fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
 }
 
 #[test]
-fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
+fn a_surface_apps_drag_carries_its_icon_under_the_pointer() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Rc::new(RefCell::new(Square::new(
+    compositor.add_surface(Rc::new(RefCell::new(Square::new(
         (0, 0, 40, 40),
         [0, 255, 0, 255],
         Rc::clone(&log),
@@ -827,18 +827,18 @@ fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
     assert_eq!(shown(&mut compositor, 10, 10), Some([0, 255, 0, 255]));
 
     // A 20x20 yellow icon (a frame's pixels are RGBA), its hotspot two pixels in from its top left.
-    let icon = HostFrame::from_pixels((20, 20), [255, 255, 0, 255].repeat(20 * 20));
+    let icon = SurfaceFrame::from_pixels((20, 20), [255, 255, 0, 255].repeat(20 * 20));
     compositor
         .input(InputEvent::PointerMotion { x: 5.0, y: 5.0 })
         .unwrap();
     assert!(
         compositor
-            .start_host_drag(HostDrag {
+            .start_surface_drag(SurfaceDrag {
                 offer: vec![("text/plain".into(), b"dragged".to_vec())],
                 icon: Some((icon, (2, 2))),
             })
             .unwrap(),
-        "the hosted app's drag starts"
+        "the surface app's drag starts"
     );
     assert_eq!(
         shown(&mut compositor, 10, 10),
@@ -1247,7 +1247,7 @@ fn a_tablet_pad_follows_the_keyboard_focus_to_a_client_that_takes_tablets() {
 fn a_surface_below_the_windows_shows_and_takes_the_pointer_only_around_them() {
     let mut compositor = headless(Box::new(StackPolicy));
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Rc::new(RefCell::new(
+    compositor.add_surface(Rc::new(RefCell::new(
         Square::new((0, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log)).below(),
     )));
     let mut client = mapped_client(&mut compositor, "over", (200, 100), [255, 0, 0, 255]);
@@ -1308,7 +1308,7 @@ fn the_window_behind_a_floating_card_shows_under_its_shadow() {
     compositor.set_window_frame(WindowFrame::corners(0.0));
     let log = Rc::new(RefCell::new(HostLog::default()));
     let square = Square::new((640, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log));
-    compositor.add_host(Rc::new(RefCell::new(square.below())));
+    compositor.add_surface(Rc::new(RefCell::new(square.below())));
     let _under = mapped_client(&mut compositor, "under", (400, 300), [255, 0, 0, 255]);
     let _float = mapped_client(&mut compositor, "float", (200, 100), [0, 255, 0, 255]);
     let mut windows = compositor.windows();
@@ -1370,7 +1370,7 @@ fn floating_windows_stand_as_the_shell_stacks_their_cards() {
     compositor.set_window_frame(WindowFrame::corners(0.0));
     let log = Rc::new(RefCell::new(HostLog::default()));
     let square = Square::new((0, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log));
-    compositor.add_host(Rc::new(RefCell::new(square.below())));
+    compositor.add_surface(Rc::new(RefCell::new(square.below())));
     let _first = mapped_client(&mut compositor, "first", (200, 100), [0, 255, 0, 255]);
     let _second = mapped_client(&mut compositor, "second", (200, 100), [255, 255, 0, 255]);
     let windows = compositor.windows();
@@ -1558,7 +1558,7 @@ tilo_test_env::scenario! {
         // The window covers 220..420 x 190..290: the region's right and lower part is red, the rest
         // background.
         let handed = Rc::new(RefCell::new(Vec::new()));
-        compositor.add_host(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
+        compositor.add_surface(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
         compositor.draw_frame().expect("a frame");
         let first = handed.borrow_mut().pop().flatten().expect("a backdrop");
         assert_eq!(first.texels, (40, 20));
@@ -1702,12 +1702,12 @@ fn a_closed_window_is_drawn_where_and_as_big_as_it_stood() {
     assert_eq!(shown(&mut compositor, 640, 480), Some(BACKGROUND));
 }
 
-/// A hosted surface of translucent material over (200, 180, 80, 40),
+/// A surface of translucent material over (200, 180, 80, 40),
 /// keeping the backdrops it is handed.
 struct Frosted(Rc<RefCell<Vec<Option<BackdropImage>>>>);
 
-impl SurfaceHost for Frosted {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for Frosted {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
     }
 
@@ -1737,11 +1737,11 @@ fn a_backdrop_follows_the_effects_the_windows_are_drawn_with() {
     let mut compositor = headless(Box::new(StackPolicy));
     let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
     let handed = Rc::new(RefCell::new(Vec::new()));
-    compositor.add_host(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
+    compositor.add_surface(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
     compositor.draw_frame().expect("a frame");
     handed.borrow_mut().clear();
 
-    // The desktop slides the window 200 px left: it now covers the left of the hosted surface's
+    // The desktop slides the window 200 px left: it now covers the left of the surface's
     // region, where nothing stood before.
     let (info, _) = compositor.windows()[0].clone();
     compositor.set_window_effect(
@@ -1834,7 +1834,7 @@ fn a_policy_that_declines_fullscreen_keeps_the_window_where_it_is() {
 }
 
 #[test]
-fn a_hosted_apps_copy_is_offered_under_every_text_name_and_read_back() {
+fn a_surface_apps_copy_is_offered_under_every_text_name_and_read_back() {
     use std::io::Read as _;
     let mut compositor = headless(Box::new(StackPolicy));
     compositor
@@ -2772,7 +2772,7 @@ fn a_confined_pointer_stops_at_the_edge_of_its_region() {
 fn an_inhibiting_client_keeps_the_desktops_chords_until_focus_or_the_release_chord() {
     let log = Rc::new(RefCell::new(HostLog::default()));
     let mut compositor = headless(Box::<Columns>::default());
-    compositor.add_host(Rc::new(RefCell::new(Chords {
+    compositor.add_surface(Rc::new(RefCell::new(Chords {
         log: Rc::clone(&log),
     })));
     let mut vm = mapped_client(&mut compositor, "vm", (250, 200), [255, 0, 0, 255]);
@@ -2835,13 +2835,13 @@ fn an_inhibiting_client_keeps_the_desktops_chords_until_focus_or_the_release_cho
     );
 }
 
-/// A hosted surface that only records how long the display holds a frame.
+/// A surface that only records how long the display holds a frame.
 struct Paced {
     heard: Rc<RefCell<Vec<Duration>>>,
 }
 
-impl SurfaceHost for Paced {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for Paced {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
     }
 
@@ -2859,7 +2859,7 @@ impl SurfaceHost for Paced {
 }
 
 #[test]
-fn a_hosted_surface_hears_how_long_the_display_holds_a_frame() {
+fn a_surface_hears_how_long_the_display_holds_a_frame() {
     let heard = Rc::new(RefCell::new(Vec::new()));
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).unwrap();
     compositor
@@ -2868,7 +2868,7 @@ fn a_hosted_surface_hears_how_long_the_display_holds_a_frame() {
             ..OutputConfig::new("HEADLESS-1", 640, 480)
         })
         .unwrap();
-    compositor.add_host(Rc::new(RefCell::new(Paced {
+    compositor.add_surface(Rc::new(RefCell::new(Paced {
         heard: Rc::clone(&heard),
     })));
     compositor.render().unwrap();

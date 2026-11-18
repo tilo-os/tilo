@@ -172,3 +172,8 @@ app-framework = { package = "tilo-app", path = "../../sdk/tilo-app" }
 
 [lints]
 workspace = true
+
+# The person's store reaching their other devices is served by the apps module.
+[[test]]
+name = "personal_links"
+required-features = ["apps"]

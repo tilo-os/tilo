@@ -29,11 +29,19 @@ pub(super) async fn audit_subscriber_access(
 ) -> Result<bool, PeerError> {
     let mut watched = true;
     // Server-wide first, so a revoked or untrusted device ends even with no
-    // bound workspace left to ask.
+    // bound workspace left to ask. A connection that holds no workspace here
+    // had no access to lose: it ends as a refusal, and only one that held a
+    // subscription meets the protocol-violation close for changed authority.
     session
         .trust()
         .cert(peer, unix_now_ns())
-        .map_err(|reason| PeerError::Protocol(reason.reason().into()))?;
+        .map_err(|reason| {
+            if subscribed.is_empty() {
+                PeerError::NotAdmitted
+            } else {
+                PeerError::Protocol(reason.reason().into())
+            }
+        })?;
     let mut gone = Vec::new();
     for workspace_id in subscribed.iter().copied() {
         if session
@@ -90,8 +98,8 @@ pub(super) fn action_peer_admitted(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<(), Refusal> {
-    // Private authority is explicit and current: a same-owner workspace enrols an
-    // owner device on Subscribe, never here.
+    // Private authority is explicit and current: a governed workspace enrols a
+    // member's device on Subscribe, never here.
     if !session_peer_authorized(peer, session)
         || !session.admits(wr, peer, WorkspaceOperation::RemoteAction)
     {

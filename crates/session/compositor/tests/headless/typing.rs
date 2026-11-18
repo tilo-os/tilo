@@ -99,10 +99,10 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A hosted surface with the keyboard on it, in `layout` , recording the keys it types.
+/// A surface with the keyboard on it, in `layout` , recording the keys it types.
 fn typing_field(compositor: &mut Compositor, layout: &KeyboardLayout) -> Rc<RefCell<HostLog>> {
     let log = Rc::new(RefCell::new(HostLog::default()));
-    compositor.add_host(Rc::new(RefCell::new(Square::new(
+    compositor.add_surface(Rc::new(RefCell::new(Square::new(
         (0, 0, 10, 10),
         [0, 255, 0, 255],
         Rc::clone(&log),

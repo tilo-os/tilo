@@ -1,23 +1,21 @@
 //! Workspaces this server governs.
 //!
-//! A shared workspace needs one authority that decides who is in it: it
-//! issues invitations, admits the device that redeems one, changes roles and
-//! removes members, and publishes each decision as signed workspace governance
-//! every member verifies. Here that authority is the server hosting the workspace.
-//! Its own device is the workspace's governor: it keeps the workspace's [`StatePeer`],
-//! publishes governance as its own retained changes of the workspace,
-//! and hands the governed member set to the server's admission after every
-//! decision, so a member it admits can subscribe at once and a member it
-//! removes is cut off.
+//! A shared workspace needs one authority that decides who is in it: it issues
+//! invitations, admits the device that redeems one, changes roles and removes
+//! members, and publishes each decision as signed workspace governance every
+//! member verifies. Here that authority is the service. Its own device is the
+//! workspace's governor: it keeps the workspace's [`StatePeer`], publishes
+//! governance as its own retained changes of the workspace, and hands the
+//! governed member set to the service's admission after every decision, so a
+//! member it admits can subscribe at once and a member it removes is cut off.
 //!
 //! Workspaces are administered as their own `tilo.workspace` governance actions,
-//! and the host's own operations (creating, listing and entering workspaces) as
-//! `tilo.host` actions (`actions`), or, from a page, over HTTPS: by devices
+//! and the service's own operations (creating, listing and entering workspaces)
+//! as `tilo.host` actions (`actions`), or, from a page, over HTTPS: by devices
 //! of the server's own user, and by other members as far as the workspace's
-//! governance lets them (`authority`, one decision for every entry).
-//! Any device redeems an invitation over the shared workspace-join
-//! protocol, and a page over HTTPS, where someone the workspace lets invite then
-//! admits it.
+//! governance lets them (`authority`, one decision for every entry). Any device
+//! redeems an invitation over the shared workspace-join protocol, and a page
+//! over HTTPS, where someone the workspace lets invite then admits it.
 
 mod actions;
 /// The invitation actions a member asks a workspace for, beside its `invite`.
@@ -35,6 +33,7 @@ mod bootstrap;
 mod branch;
 pub use branch::{BranchContent, Branched};
 mod channel_governance;
+mod commit;
 mod mcp_server;
 pub(crate) use bootstrap::member_bootstrap;
 mod collaboration;
@@ -55,7 +54,7 @@ mod device_actions_tests;
 mod device_keys;
 mod follow;
 mod removals;
-pub use device_actions::HostJobs;
+pub use device_actions::{HostJobs, Offer};
 pub use follow::ResourceWrite;
 #[cfg(test)]
 mod device_rejoin_tests;
@@ -68,13 +67,16 @@ mod holding;
 pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owners, work_takes};
 mod host_invitations;
 mod hosts;
-pub use hosts::KeepingDevice;
 /// Wait until this host is reached through a relay, before it names its own
 /// address anywhere ([`tilo_endpoint_reachability::await_relay`]).
 pub use tilo_endpoint_reachability::await_relay;
 mod link_follow;
 mod session_carry;
 pub(crate) use link_follow::carry_admitted;
+mod carried;
+use carried::Carried;
+mod clock;
+pub(crate) use clock::system_time;
 mod listing;
 mod memberships;
 mod own;
@@ -124,6 +126,7 @@ use publication::{Change, SinceBase, starts_over, withdraws};
 use publication::{MAX_PUBLICATION_TAIL, MIN_PUBLICATION_TAIL_BYTES, based};
 mod document_format;
 mod publisher;
+mod record_authority;
 #[cfg(feature = "agents")]
 pub mod repaired_documents;
 mod revocations;
@@ -156,7 +159,6 @@ use std::time::Duration;
 use tilo_peer_state::store::{Appetite, Store as LinkStore};
 
 use ed25519_dalek::SigningKey;
-use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
 use tilo_peer_state::replica::PeerGuard;
 
@@ -167,7 +169,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
-pub(crate) use actions::{GovernedServer, HostWorkspaceActions};
+pub(crate) use actions::{GovernedServer, ServiceWorkspaceActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompletion, MemberPlace};
 pub use listing::EntryRefusal;
@@ -685,9 +687,17 @@ impl GovernedWorkspace {
         crate::timing::window("workspace.commit.record", copying);
         // A member admitted from now on is given the workspace as it stands,
         // not what was withdrawn before they joined.
-        // The workspace's compacted base stays with the device that made it:
-        // every other holder publishes only its own changes after it.
-        let makes_base = record.owner.device_public_key == key.verifying_key().to_bytes();
+        // One device makes the workspace's compacted base, the one its
+        // governance names for it, so every holder agrees which, and the next
+        // one takes over when that one stops holding the workspace; every
+        // other holder publishes only its own changes after it. A workspace
+        // naming no holder of its owner's with its keys keeps it with the
+        // device that made it.
+        let base_maker = candidate
+            .governance()
+            .base_maker()
+            .unwrap_or(record.owner.device_public_key);
+        let makes_base = base_maker == key.verifying_key().to_bytes();
         let started_over = makes_base
             && (starts_over(&record.outgoing)
                 || (self.since_base == SinceBase::Withdrew
@@ -811,78 +821,10 @@ impl GovernedWorkspace {
     }
 }
 
+use commit::{
+    durable_messages, for_members, prepare_governance, publication, select_exact_admission,
+};
 use tilo_peer_state::workspace_membership::valid_workspace_name as valid_name;
-
-/// Keep exact admission evidence in the governor's copy of the workspace. A
-/// member of a workspace whose channels are sealed writes its records sealed,
-/// and the governor follows those writes into its copy: with exact evidence
-/// it keeps each one as the record's ciphertext history and acknowledges
-/// it in its next governance change. Without it a sealed write only marks
-/// the record encrypted, and every later change of the workspace (letting the
-/// next person in among them) is refused as incomplete encryption state.
-/// A workspace committed before this selection takes it on its next commit.
-///
-/// The copy also writes under the host's own actor
-/// ([`tilo_peer_state::workspace_host_actor`]): a device hosting its own workspaces
-/// never writes one workspace from two documents under one actor.
-fn select_exact_admission(peer: &mut StatePeer) -> Result<(), String> {
-    peer.write_as_workspace_host();
-    peer.select_exact_admissions()
-        .map_err(|error| format!("workspace exceeds exact admission bounds: {error}"))
-}
-
-fn prepare_governance(
-    peer: &mut StatePeer,
-    key: &SigningKey,
-    now: SystemTime,
-) -> Result<(), String> {
-    peer.governance_mut()
-        .reconcile_administrator_grants(key, now)?;
-    peer.media_mut().reconcile_media_governance(key, now)?;
-    peer.media().validate_media_governance_for_publication()
-}
-
-/// What `candidate` publishes for the workspace's records, as its changes
-/// since the governor's copy in `peer`: the messages a commit sends on, and
-/// the records one that starts the workspace over must still publish.
-fn durable_messages(
-    candidate: &mut StatePeer,
-    peer: &StatePeer,
-    (key, now): (&SigningKey, SystemTime),
-    generation: u64,
-) -> Result<Vec<neighbour_wire::NeighbourMsg>, String> {
-    candidate
-        .publication_mut()
-        .durable_mutation_messages(peer, key, now, generation)
-}
-
-/// Whether the workspace publishes `message` of a commit to its members. The
-/// governor's compaction of a record's sealed history bounds its own copy:
-/// every member already holds each write it covers, and the server retains
-/// those writes for whoever joins later, so sending it on would push the
-/// whole record to every member each time the history fills, for nothing.
-/// It stays in the governor's durable copy alone.
-fn for_members(message: &neighbour_wire::NeighbourMsg) -> bool {
-    !matches!(
-        message,
-        neighbour_wire::NeighbourMsg::AppDocument { envelope, .. }
-            if envelope.kind == collab_types::OpKind::Compaction
-    )
-}
-
-fn publication(
-    message: &neighbour_wire::NeighbourMsg,
-    checkpoint: bool,
-) -> Result<Publication, String> {
-    let (_, kind) = neighbour_wire::retention(message, checkpoint)
-        .ok_or("workspace governance message has no retention channel")?;
-    Ok(Publication {
-        bytes: postcard::to_stdvec(message)
-            .map_err(|error| error.to_string())?
-            .into(),
-        checkpoint: kind == Retention::Checkpoint,
-    })
-}
 
 /// The extension of the marker beside a workspace file this host released.
 const RELEASED: &str = "released";
@@ -913,6 +855,9 @@ pub(crate) struct WorkspaceServices {
     /// The work this device takes: it serves a workspace placed on it only when the setting
     /// takes the placing person's work.
     pub(crate) work: tilo_server_protocol::WorkSetting,
+    /// What this keeper says of itself among the holders of the workspaces it serves, which
+    /// its signed address carries.
+    pub(crate) holder: Arc<std::sync::RwLock<HolderClaim>>,
     /// Each device whose session to this host authenticated: a host it
     /// dials and could not reach is dialled again then.
     pub(crate) arrivals: crate::attach::Arrivals,
@@ -922,10 +867,28 @@ pub(crate) struct WorkspaceServices {
     pub(crate) channels: Option<DeviceKeyGroups>,
 }
 
+impl WorkspaceServices {
+    /// What this keeper says of itself among a workspace's holders.
+    pub(crate) fn holder(&self) -> HolderClaim {
+        self.holder.read_recover().clone()
+    }
+}
+
 /// The workspaces this server governs.
 #[derive(Clone)]
 pub struct Workspaces {
     inner: Arc<WorkspacesInner>,
+}
+
+/// What a keeper says of itself among the holders of the workspaces it serves.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HolderClaim {
+    /// What it calls itself: its server's name from its person's admin workspace, or its site's
+    /// name. Empty for its device's own label.
+    pub(crate) label: String,
+    /// Whether the machine under it is rented from a cloud provider, whose operator can read
+    /// what it holds.
+    pub(crate) cloud: bool,
 }
 
 struct WorkspacesInner {
@@ -959,6 +922,9 @@ struct WorkspacesInner {
     calls: Arc<voice::Calls>,
     /// The workspace UUID after each settled governance decision.
     changes: tokio::sync::broadcast::Sender<String>,
+    /// The workspace UUID each time this device's copy turns current with
+    /// another of its holders ([`Workspaces::holders_reached`]).
+    reached: tokio::sync::broadcast::Sender<String>,
     /// Each workspace deleted here, and its server workspace
     /// ([`Workspaces::deletions`]).
     deletions: tokio::sync::broadcast::Sender<(String, WorkspaceId)>,
@@ -1105,7 +1071,6 @@ impl WorkspaceAuthority {
         self.workspaces.upgrade().map(|inner| Workspaces { inner })
     }
 
-    /// The governed workspace.
     pub fn workspace(&self) -> &str {
         &self.workspace
     }
@@ -1118,56 +1083,6 @@ impl WorkspaceAuthority {
             workspace: workspace.to_owned(),
         }
     }
-}
-
-/// `host`, serving with the certificate the workspace records under `dir`
-/// name, when they are the same device: the record's authority is the one the
-/// workspace was made with, and every comparison a host makes for its
-/// workspace is exact. A record of another device — or one too old to read —
-/// leaves the host's own, and opening refuses it as before.
-fn host_serving(mut host: WorkspaceServices, dir: &Path) -> WorkspaceServices {
-    let names = std::fs::read_dir(dir).ok().into_iter().flatten().flatten();
-    for entry in names {
-        let path = entry.path();
-        if path
-            .extension()
-            .is_none_or(|extension| extension != "workspace")
-        {
-            continue;
-        }
-        let Ok(authority) = document_authority(&path) else {
-            continue;
-        };
-        if authority.device_public_key == host.cert.device_public_key
-            && authority.user_public_key == host.cert.user_public_key
-            && authority.capabilities == host.cert.capabilities
-        {
-            host.cert = authority;
-        }
-        break;
-    }
-    host
-}
-
-/// The certificate a workspace record names as its authority, read from the
-/// record's own bytes: the record starts with its version, the workspace's
-/// UUID text, the workspace's id and its name, and the authority is the fifth
-/// field.
-fn document_authority(path: &Path) -> Result<DeviceCert, String> {
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    let mut rest: &[u8] = &bytes;
-    let (_, tail) = postcard::take_from_bytes::<u32>(rest).map_err(|error| error.to_string())?;
-    rest = tail;
-    let (_, tail) = postcard::take_from_bytes::<String>(rest).map_err(|error| error.to_string())?;
-    rest = tail;
-    let (_, tail) =
-        postcard::take_from_bytes::<WorkspaceId>(rest).map_err(|error| error.to_string())?;
-    rest = tail;
-    let (_, tail) = postcard::take_from_bytes::<String>(rest).map_err(|error| error.to_string())?;
-    rest = tail;
-    let (cert, _) =
-        postcard::take_from_bytes::<DeviceCert>(rest).map_err(|error| error.to_string())?;
-    Ok(cert)
 }
 
 impl std::fmt::Debug for Workspaces {
@@ -1206,6 +1121,20 @@ impl Workspaces {
         device.group_keys(&route.cluster_id, create).await
     }
 
+    /// Set what this host offers its workspaces, as the entry its person keeps
+    /// of it in their admin workspace says: whether it runs their actions and jobs,
+    /// how much storage it offers and how many machines it runs. What devices
+    /// offering it work are answered with follows it.
+    pub fn set_offer(&self, offer: Offer) {
+        self.inner.jobs.set_offer(offer);
+    }
+
+    /// What this host offers its workspaces ([`Self::set_offer`]).
+    #[must_use]
+    pub fn offer(&self) -> Offer {
+        self.inner.jobs.offer()
+    }
+
     /// Every record this host holds of `workspace`, by the app whose document
     /// it is and its id: what its members' pages and agents may name there,
     /// whether or not a device's session has been sent it. A public workspace
@@ -1227,7 +1156,7 @@ impl Workspaces {
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
         // A workspace a host made keeps the certificate it made it with: a host
         // renamed since serves with the record's own, verified.
-        let host = host_serving(host, &dir);
+        let host = record_authority::host_serving(host, &dir);
         let workspaces = Arc::new(device_actions::WorkspacesMap::default());
         let (action_service, jobs) = device_actions::action_service(
             Arc::clone(&workspaces),
@@ -1250,6 +1179,7 @@ impl Workspaces {
                 calls: Arc::default(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
+                reached: tokio::sync::broadcast::Sender::new(64),
                 deletions: tokio::sync::broadcast::channel(64).0,
                 branches: tokio::sync::broadcast::channel(64).0,
                 branch_content: std::sync::RwLock::default(),
@@ -1401,7 +1331,7 @@ impl Workspaces {
 
     /// The certificate this host serves its workspaces with: its own, or the
     /// one a workspace it opened was made with, when a build renamed the
-    /// host's since (see [`host_serving`]).
+    /// host's since (see [`record_authority::host_serving`]).
     #[must_use]
     pub fn serving_certificate(&self) -> &DeviceCert {
         &self.inner.host.cert
@@ -1517,14 +1447,14 @@ impl Workspaces {
         Ok(summary)
     }
 
-    /// Stop governing and serving `workspace`: its workspace admits nobody from
+    /// Let go of and stop serving `workspace`: its workspace admits nobody from
     /// now on, which ends its sessions here, and the host leaves it closed
     /// when it opens again. Its files stay on disk. A device releases a
     /// workspace after moving it to another host, whose hints its members follow.
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, or the release could not be recorded
+    /// The workspace is not held here, or the release could not be recorded
     /// or its access narrowed.
     pub async fn release(&self, workspace: &str) -> Result<(), String> {
         let _releasing = self.inner.releasing.lock().await;
@@ -1535,7 +1465,7 @@ impl Workspaces {
             .await
             .get(workspace)
             .cloned()
-            .ok_or("this host does not govern that workspace")?;
+            .ok_or("this host does not hold that workspace")?;
         let mut governed = governed.lock().await;
         // Recorded first: a host stopped halfway keeps it released.
         let marker = governed.path.with_extension(RELEASED);
@@ -1571,7 +1501,6 @@ impl Workspaces {
             .access
             .replace(
                 workspace_id,
-                true,
                 GovernedAccess {
                     member_devices: Vec::new(),
                     member_user_roots: Vec::new(),
@@ -1953,11 +1882,11 @@ impl Workspaces {
             .await
             .get(workspace)
             .cloned()
-            .ok_or_else(|| CollaborationError::new("this server does not govern that workspace"))
+            .ok_or_else(|| CollaborationError::new("this server does not hold that workspace"))
     }
 
-    /// Pin the workspace, admitting only its governed members, and
-    /// follow its members' writes: create the records they start and keep the
+    /// Hold the workspace, admitting only the members its governance names,
+    /// and follow its members' writes: create the records they start and keep the
     /// governor's copy of the others current, as calls bind to chat records.
     ///
     /// Members' changes stay retained as signed tails: members write directly,
@@ -2001,9 +1930,8 @@ impl Workspaces {
             host.access.state_root().to_path_buf(),
             host.access.shell_payloads(),
             workspace_id,
-            true,
             crate::workspace_access::AdmissionMode::Governed,
-            crate::peer::MAX_AUTOBOUND_WORKSPACES,
+            crate::peer::MAX_HELD_WORKSPACES,
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -2093,7 +2021,9 @@ impl Workspaces {
         };
         #[cfg(any(feature = "agents", feature = "web"))]
         self.found_retained(workspace, &state, &retained).await;
-        self.recall_retained(&mut *state.lock().await, retained);
+        let mut governed = state.lock().await;
+        self.recall_retained(&mut governed, retained);
+        self.retry_held(&mut governed).await;
     }
 
     /// Found every record of `workspace` that `retained` holds a write of and
@@ -2167,6 +2097,10 @@ impl Workspaces {
     /// from its first write. Asked once per record until the first answer.
     #[cfg(any(feature = "agents", feature = "web"))]
     fn join_soon(&self, workspace: &mut GovernedWorkspace, app: String, record: String) {
+        // A store of the workspace's ciphertext is never let into its group.
+        if self.holds_as_store(workspace) {
+            return;
+        }
         if !workspace.asking.insert((app.clone(), record.clone())) {
             return;
         }
@@ -2451,18 +2385,75 @@ impl Workspaces {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Result<(), String> {
-        let host = &self.inner.host;
         let workspace = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
         let mut workspace = workspace.lock().await;
+        if !self.take_topology(&mut workspace, author, message).await? {
+            // Held back for history this device lacks: the history the
+            // server keeps is taken in again, and the change with it.
+            self.replay_soon(workspace.workspace().to_owned());
+            return Ok(());
+        }
+        self.retry_held(&mut workspace).await;
+        Ok(())
+    }
+
+    /// Try again the changes held back for history (`take_topology`), now
+    /// that something landed: those whose history arrived are taken in, the
+    /// others held on.
+    async fn retry_held(&self, workspace: &mut GovernedWorkspace) {
+        loop {
+            let held = workspace.holders.take_held();
+            if held.is_empty() {
+                break;
+            }
+            let mut took = false;
+            for (author, message) in held {
+                match self.take_topology(workspace, author, message).await {
+                    Ok(taken) => took |= taken,
+                    Err(error) => {
+                        tracing::warn!(workspace = %workspace.workspace(), %error, "a change held back for its history was refused");
+                    }
+                }
+            }
+            if !took {
+                break;
+            }
+        }
+        workspace.holders.say_held();
+    }
+
+    /// Take `message`, `author`'s change to the workspace's state, into
+    /// `workspace`. Whether it was taken: a change another holder sent that
+    /// builds on history this device lacks is held back
+    /// ([`holding::Holders::hold`]) until that history arrives, and the
+    /// workspace's copy status says so; a member's windows built on a
+    /// history the workspace started over from are refused.
+    async fn take_topology(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        author: [u8; 32],
+        message: neighbour_wire::NeighbourMsg,
+    ) -> Result<bool, String> {
+        let host = &self.inner.host;
         if let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = &message {
             let missing = unbuildable_windows::missing_history(
                 workspace.peer().admitted_workspace(),
                 changes,
             )?;
             if missing > 0 {
+                let from_holder = workspace
+                    .peer()
+                    .governance()
+                    .keeping_devices()
+                    .iter()
+                    .any(|hint| hint.host.device_public_key == author);
+                if from_holder {
+                    workspace.holders.hold(author, message);
+                    return Ok(false);
+                }
                 return Err(self.unbuildable_windows(workspace.workspace(), missing));
             }
         }
@@ -2472,7 +2463,7 @@ impl Workspaces {
             .receive_from(TransportOrigin::RetainedServerDelta(author), message, now)
             .map_err(|error| error.to_string())?;
         if !outcome.changed {
-            return Ok(());
+            return Ok(true);
         }
         // A member removed takes every way in the workspace handed them with
         // them: an invitation issued to them before, still unredeemed,
@@ -2498,7 +2489,8 @@ impl Workspaces {
             Ok(state)
         })?;
         workspace.keep_out_removed(&removed, author_person, tilo_clock::unix_now_ns())?;
-        self.settle(&mut workspace).await
+        self.settle(workspace).await?;
+        Ok(true)
     }
 
     /// Refound `record` of `app` from what the governor itself can still read,
@@ -2829,7 +2821,7 @@ impl Workspaces {
         );
         let dropped = host
             .access
-            .replace(workspace.workspace_id(), true, access)
+            .replace(workspace.workspace_id(), access)
             .await
             .map_err(|error| error.to_string())?;
         crate::timing::event("workspace.settle.access", accessing, 0);
@@ -2864,7 +2856,7 @@ impl Workspaces {
         let settling = crate::timing::start();
         let device_access = workspace.peer().governance().access_of(&members, now)?;
         host.access
-            .replace_access(workspace.workspace_id(), true, device_access)
+            .replace_access(workspace.workspace_id(), device_access)
             .await
             .map_err(|error| error.to_string())?;
         crate::timing::event("workspace.settle.device_access", settling, 0);
@@ -2978,22 +2970,4 @@ impl Workspaces {
     fn revocations(&self) -> RevocationList {
         self.inner.host.revocations.read_recover().clone()
     }
-}
-
-fn system_time(now_ns: u64) -> SystemTime {
-    SystemTime::UNIX_EPOCH
-        .checked_add(Duration::from_nanos(now_ns))
-        .unwrap_or(SystemTime::UNIX_EPOCH)
-}
-/// How a member's write reached the governor, which decides whether the host
-/// still has to keep what it carries.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Carried {
-    /// Over the member's server session: the server kept it before the
-    /// governor was told, so it is replayed to whoever catches up already.
-    Kept,
-    /// Some way the server keeps nothing of, the workspace's direct link or
-    /// a device's entry: the host keeps it for the members on server
-    /// sessions and whoever catches up later.
-    Unkept,
 }

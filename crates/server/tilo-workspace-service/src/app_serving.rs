@@ -4,7 +4,7 @@
 //! [`Envelope::RemoteAction`](tilo_server_protocol::transport::Envelope::RemoteAction) frames between
 //! devices of a workspace without executing them. A process that embeds the
 //! relay and *does* host apps supplies an [`AppActionServer`] to the host
-//! ([`HostConfig::apps`](crate::service::HostConfig::apps)); frames addressed
+//! ([`ServiceConfig::apps`](crate::service::ServiceConfig::apps)); frames addressed
 //! to the host's own device are then answered by it, and a server advertises
 //! its `app_serving` service.
 //! Without one, the capability stays off and such frames are refused as

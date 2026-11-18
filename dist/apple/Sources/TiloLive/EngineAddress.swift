@@ -49,8 +49,13 @@ public enum EngineAddress {
     /// A pairing link as the engine opens it: the same site, the same workspace and the same
     /// secret, on the page that shows Chat alone. Nil for a link into another site, or one that
     /// carries nothing to pair with.
+    ///
+    /// A link the site's own computer made under a name only it can use is read as this site's,
+    /// as the shell reads it (`SitePolicy.inSite`): the code and the link a person's page shows
+    /// on that computer are the ones a phone scans or is handed. The link is judged whole, by
+    /// where it leads: an address written inside it adds no name.
     public static func pairing(_ link: URL, of settings: ShellSettings) -> URL? {
-        guard SitePolicy.origin(of: link) == settings.origin,
+        guard let link = SitePolicy(settings: settings).inSite(link),
               ["", "/", "/app/"].contains(link.path(percentEncoded: true)),
               let fragment = link.fragment(percentEncoded: true)
         else { return nil }
@@ -59,5 +64,28 @@ public enum EngineAddress {
               pieces[1].split(separator: "&").contains(where: { $0.hasPrefix("pair=") && $0.count > "pair=".count })
         else { return nil }
         return URL(string: "\(settings.origin)/app/#\(workspace)/\(chat)?\(pieces[1])")
+    }
+
+    /// The site a pairing link is from, where that is another Tilo site than this app's: the
+    /// name and port it leads to, and nothing else of the link. Nil for a link this app pairs
+    /// with, and for one that would pair nowhere.
+    ///
+    /// A link is another site's pairing link when it would pair here were it this site's: its
+    /// path, its query and what follows its `#` are judged by `pairing` under this site's
+    /// origin, so what a pairing link looks like is said in one place. What is written so is
+    /// only judged and never opened: a link of another site stays refused. It is for telling a
+    /// person where the code they scanned is from. Where the two sites differ only in http and
+    /// https, the name carries which, so that the two do not read the same.
+    public static func pairingElsewhere(_ link: URL, of settings: ShellSettings) -> String? {
+        guard pairing(link, of: settings) == nil, link.user(percentEncoded: true) == nil,
+              let from = SitePolicy.origin(of: link), from != settings.origin
+        else { return nil }
+        var written = settings.origin + link.path(percentEncoded: true)
+        if let query = link.query(percentEncoded: true) { written += "?\(query)" }
+        if let route = link.fragment(percentEncoded: true) { written += "#\(route)" }
+        guard let here = URL(string: written), pairing(here, of: settings) != nil else { return nil }
+        // An origin is `scheme://name[:port]`: the name and port are what follows its two slashes.
+        func name(_ origin: String) -> String { String(origin.drop { $0 != "/" }.dropFirst(2)) }
+        return name(from) == name(settings.origin) ? from : name(from)
     }
 }

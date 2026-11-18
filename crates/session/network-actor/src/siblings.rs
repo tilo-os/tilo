@@ -9,9 +9,9 @@ use iroh::EndpointAddr;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use tokio::sync::mpsc;
 
-use crate::own_service::workspace_service::{HostConfig, WorkspaceService};
+use crate::own_service::workspace_service::{ServiceConfig, WorkspaceService};
 use crate::own_service::{OwnService, workspace_service};
-use crate::{Actor, HostIdentity, NetCmd, OwnServing};
+use crate::{Actor, DeviceIdentity, NetCmd, OwnServing};
 
 /// One of the person's devices, running.
 pub struct Sibling {
@@ -72,7 +72,7 @@ pub(crate) async fn spawn_ticking(
         crate::loopback_endpoint(Some(iroh::SecretKey::from_bytes(&key.to_bytes()))).await;
     let addr = endpoint.addr();
     let (local, protocols) = OwnService::deferred();
-    let identity = HostIdentity::kept(cert.clone(), key.clone());
+    let identity = DeviceIdentity::kept(cert.clone(), key.clone());
     let (cmd, task) = Actor::spawn_with_heartbeat(
         endpoint.clone(),
         lookup.clone(),
@@ -87,11 +87,11 @@ pub(crate) async fn spawn_ticking(
         Vec::new(),
     );
     let host = WorkspaceService::open(
-        HostConfig::new(
+        ServiceConfig::new(
             state.join("workspace-service"),
             tilo_server_protocol::WorkSetting::none(),
         ),
-        workspace_service::HostIdentity {
+        workspace_service::ServiceIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: key,
             device_cert: cert.clone(),

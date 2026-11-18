@@ -31,7 +31,6 @@ pub mod process_link;
 #[cfg(unix)]
 pub mod request_rendezvous;
 pub mod retained_role;
-pub mod runtime_request;
 pub mod service_socket;
 pub mod tools;
 

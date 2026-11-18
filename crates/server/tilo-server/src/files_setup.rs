@@ -257,7 +257,7 @@ mod tests {
                 id: String::default(),
                 grantee: Grantee::person(hex::encode(person)),
                 app: None,
-                scope: Scope::Device("camera".into()),
+                scope: Scope::Device(collab_types::caps::DeviceCap::Camera),
                 access: Access::Write,
                 effect: Effect::Grant,
                 expiry: Expiry::Never,

@@ -1526,7 +1526,7 @@ mod tests {
     /// This device's engine, opened again under `state` as a session that starts afresh does.
     fn reopened(
         state: &tempfile::TempDir,
-        identity: &tilo_identity::identity_store::HostIdentity,
+        identity: &tilo_identity::identity_store::DeviceIdentity,
     ) -> Engine {
         let engine = Engine::open(
             identity.clone(),
@@ -1539,7 +1539,7 @@ mod tests {
         engine
     }
 
-    fn identity() -> tilo_identity::identity_store::HostIdentity {
+    fn identity() -> tilo_identity::identity_store::DeviceIdentity {
         let person = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
         let mut cert = tilo_user_identity::DeviceCert {
@@ -1553,7 +1553,7 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-        tilo_identity::identity_store::HostIdentity::kept(cert, device)
+        tilo_identity::identity_store::DeviceIdentity::kept(cert, device)
     }
 
     /// Write `doc` into `workspace` as `record` of `app` , sealed, as an app's first write is.

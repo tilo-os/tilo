@@ -24,7 +24,7 @@ use tilo_server_session::workspaces::{
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::super::tests::{caller, settled};
-use super::super::{GovernedServer, HostWorkspaceActions};
+use super::super::{GovernedServer, ServiceWorkspaceActions};
 use crate::app_serving::AppActionServer as _;
 use crate::workspaces::tests::{governor, guest_device, test_host};
 use tilo_server_protocol::WorkspaceId;
@@ -58,7 +58,11 @@ fn host_request(action: &str, argument: Value) -> InvokeRequest {
 }
 
 /// What `device` is offered of the host's operations, asked of the host.
-async fn offered(host: &HostWorkspaceActions, device: &DeviceCert, caller: &Caller) -> Vec<String> {
+async fn offered(
+    host: &ServiceWorkspaceActions,
+    device: &DeviceCert,
+    caller: &Caller,
+) -> Vec<String> {
     let query = CatalogueQuery {
         provider: Some(HOST_ACTIONS_PROVIDER.into()),
         max_results: 100,
@@ -75,7 +79,7 @@ async fn offered(host: &HostWorkspaceActions, device: &DeviceCert, caller: &Call
 
 /// `request` by `device`, its certificate as the transport verified it.
 async fn invoke(
-    host: &HostWorkspaceActions,
+    host: &ServiceWorkspaceActions,
     device: &DeviceCert,
     request: InvokeRequest,
 ) -> Result<Value, ActionCallError> {
@@ -92,7 +96,7 @@ async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let laptop = owners_laptop();
 
@@ -196,7 +200,7 @@ async fn the_servers_person_creates_a_workspace_with_an_administrators_invitatio
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(server.workspaces().clone());
     let laptop = owners_laptop();
 
@@ -237,7 +241,7 @@ async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_acti
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let laptop = owners_laptop();
     let created = workspaces.create("Plans").await.unwrap();
@@ -272,7 +276,7 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let host = HostWorkspaceActions::new();
+    let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
     let workspace = workspaces.create("Mine").await.unwrap();
     let laptop = owners_laptop();

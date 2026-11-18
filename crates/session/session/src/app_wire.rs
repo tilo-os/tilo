@@ -20,15 +20,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
-use tilo_workspace_service::apps::NativePeerBrokerConfig;
-use tilo_workspace_service::apps::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
-use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
-use tilo_workspace_service::apps::services::{
-    ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
-    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
-    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
-    WifiContinuityServices, WorkspaceMemberships,
-};
 use tilo_actions::ApiError;
 use tilo_broker_core::services::{
     ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
@@ -38,6 +29,15 @@ use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
 use tilo_workspace_keys::KeyProvider;
+use tilo_workspace_service::apps::NativePeerBrokerConfig;
+use tilo_workspace_service::apps::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
+use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
+use tilo_workspace_service::apps::services::{
+    ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
+    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
+    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
+    WifiContinuityServices, WorkspaceMemberships,
+};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::activity_provider::ActivityWire;
@@ -443,6 +443,10 @@ pub struct Hosted {
     /// well as in this desktop: what their other devices' records reach this
     /// session's apps through. `None` on a session that keeps none.
     pub personal: Option<tilo_peer_state::PersonalSync>,
+    /// What Browser's asks for vault items are answered with: nothing in a person's own
+    /// session, and the workspace's server's word where this session holds a workspace's
+    /// Browser.
+    pub item_lending: std::sync::Arc<crate::item_lending::ItemLending>,
     /// What the broker hands the apps that have a record open: shared with
     /// the person's store, so a write of theirs reaches an app here on the
     /// same route this device's own writes do.
@@ -551,9 +555,11 @@ pub(crate) fn owner_publisher(
     engine.map_or_else(PeerPublisher::disabled, |engine| {
         PeerPublisher::with_optional_owner_commit(
             None,
-            std::sync::Arc::new(tilo_workspace_service::apps::owner_commits::NativeOwnerCommits::new(
-                engine, records,
-            )),
+            std::sync::Arc::new(
+                tilo_workspace_service::apps::owner_commits::NativeOwnerCommits::new(
+                    engine, records,
+                ),
+            ),
         )
     })
 }
@@ -1102,6 +1108,7 @@ fn broker_services(
         nearby,
         file_clipboard,
         personal,
+        item_lending,
         fanout: _,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
@@ -1115,8 +1122,8 @@ fn broker_services(
     let steps_fabric = fabric.clone();
     // The certificate checks this session's broker decides a join and a
     // retained action against: the session's own, or one of the tests'.
-    let certificates: std::sync::Arc<dyn tilo_workspace_service::apps::CertificateAuthority> = certificates
-        .unwrap_or_else(|| {
+    let certificates: std::sync::Arc<dyn tilo_workspace_service::apps::CertificateAuthority> =
+        certificates.unwrap_or_else(|| {
             std::sync::Arc::new(tilo_identity_authority::NativeCertificates::default())
         });
     // This person's settings on this device: each app reaches its own entries
@@ -1147,6 +1154,7 @@ fn broker_services(
         engine.as_ref().map(|engine| {
             std::sync::Arc::new(crate::service_sessions::ServiceSessions::new(
                 std::sync::Arc::clone(engine),
+                std::sync::Arc::clone(&item_lending),
             )) as std::sync::Arc<dyn BrowserServiceSessionServices>
         });
     BrokerServices {
@@ -1284,7 +1292,10 @@ fn broker_services(
         // screenshot and a file alike, and the receiving device's person
         // chooses where it lands there.
         nearby_transfer: BrokerService::when(nearby.map(|nearby| {
-            nearby as std::sync::Arc<dyn tilo_workspace_service::apps::services::NearbyTransferServices>
+            nearby
+                as std::sync::Arc<
+                    dyn tilo_workspace_service::apps::services::NearbyTransferServices,
+                >
         })),
         // A person copies and cuts in Files and pastes the copy in another
         // folder or another app: what they copied is offered here, and every
@@ -1299,7 +1310,8 @@ fn broker_services(
             std::sync::Arc::new(SessionGrants::new(
                 engine,
                 std::sync::Arc::clone(&grants_layout),
-            )) as std::sync::Arc<dyn tilo_workspace_service::apps::services::WorkspaceGrants>
+            ))
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::WorkspaceGrants>
         })),
         launchable_catalogue: BrokerService::when(launchable_catalogue),
         document_content: BrokerService::when(document_content.map(|content| content.route())),
@@ -1477,9 +1489,18 @@ pub(crate) struct AppWire {
     /// The person's own store open to their other devices, held so its links
     /// and the writes it keeps end with the session.
     pub(crate) _personal: Option<tilo_workspace_service::apps::personal::Links>,
+    /// What Browser's asks for vault items are answered with, shared with the service that
+    /// answers them.
+    pub(crate) item_lending: std::sync::Arc<crate::item_lending::ItemLending>,
 }
 
 impl AppWire {
+    /// What Browser's asks for vault items are answered with: a session that holds a
+    /// workspace's Browser says so here, and names who asks its server.
+    pub(crate) fn item_lending(&self) -> std::sync::Arc<crate::item_lending::ItemLending> {
+        std::sync::Arc::clone(&self.item_lending)
+    }
+
     /// Say this device's call where everyone in the workspace reads it, and take
     /// in what they say of theirs: the channel a person is in and who is in
     /// each channel's call, which is what this session's apps show of calls.
@@ -1522,7 +1543,9 @@ impl AppWire {
 
     /// The route to one window's app, for the step of a move it is asked for:
     /// what answers on the window's continuation channel.
-    pub(crate) fn handoff(&self) -> tilo_workspace_service::apps::collab_broker::SessionFollowDispatcher {
+    pub(crate) fn handoff(
+        &self,
+    ) -> tilo_workspace_service::apps::collab_broker::SessionFollowDispatcher {
         self.broker.follow_dispatcher()
     }
 
@@ -1530,7 +1553,8 @@ impl AppWire {
     /// through, while it takes work.
     pub(crate) fn agent_broker(
         &self,
-    ) -> Option<std::sync::Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>> {
+    ) -> Option<std::sync::Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>>
+    {
         self.broker.fanout.app_broker()
     }
 
@@ -1734,6 +1758,7 @@ mod tests {
                 std::sync::Arc::new(|| ()),
             )),
             personal: None,
+            item_lending: std::sync::Arc::default(),
             fanout: std::sync::Arc::new(FanoutState::new()),
             endpoint: None,
         }
@@ -2174,14 +2199,14 @@ mod tests {
     }
 
     /// A device of a person, certified for their root, that holds workspaces.
-    fn held_identity() -> tilo_identity::identity_store::HostIdentity {
+    fn held_identity() -> tilo_identity::identity_store::DeviceIdentity {
         let key = ed25519_dalek::SigningKey::from_bytes(&[0x34; 32]);
         let cert = tilo_peer_state::owner::testing::member_certificate(
             &ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]),
             &key,
             "Laptop",
         );
-        tilo_identity::identity_store::HostIdentity::kept(cert, key)
+        tilo_identity::identity_store::DeviceIdentity::kept(cert, key)
     }
 
     /// Every service the broker offers is decided here: served, served where

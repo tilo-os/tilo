@@ -22,7 +22,7 @@ use tilo_compositor::clipboard_history::{
     History, PASSWORD_MANAGER_HINT_MIME, Pulled, SECRET_MIME, TEXT_MIME, kept_mime,
 };
 use tilo_compositor::{Compositor, Selection, StackPolicy};
-use tilo_session_core::surface::{HostLayer, SurfaceHost};
+use tilo_session_core::surface::{ShellSurface, SurfaceLayer};
 
 use crate::harness::{
     TestClient, headless, mapped_client, pump as pump_many, pump_one as pump, settle,
@@ -88,8 +88,8 @@ fn a_data_device_bound_after_the_focus_is_offered_the_selection() {
 /// A surface of the session's own that holds the keyboard, as the shell's search does.
 struct Typed;
 
-impl SurfaceHost for Typed {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for Typed {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
     }
 
@@ -154,7 +154,7 @@ fn a_clients_copy_is_read_as_its_bytes_arrive_and_secrets_are_kept_out() {
 
     // The shell's search takes the keys before the app's copy reaches the compositor: the copy,
     // made while the app had them, is still taken.
-    compositor.add_host(Rc::new(RefCell::new(Typed)));
+    compositor.add_surface(Rc::new(RefCell::new(Typed)));
     compositor
         .dispatch(Duration::from_millis(2))
         .expect("dispatch");

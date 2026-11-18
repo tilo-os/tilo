@@ -598,8 +598,10 @@ pub struct NewMember {
     pub name: Option<String>,
 }
 
-/// The servers keeping the workspace, the one asked first, and after a
-/// removal or a move whether the server let go confirmed it.
+/// The servers keeping the workspace, the one asked first, each with the
+/// name it goes by, whether it reads the workspace and whether its machine is
+/// a cloud provider's; after a removal or a move whether the server let go
+/// confirmed it.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Servers {
     /// The workspace's id.
@@ -610,6 +612,9 @@ pub struct Servers {
     /// named to anyone, and lets the workspace go once it hears so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmed: Option<bool>,
+    /// How many copies the workspace wants kept and where they stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copies: Option<Value>,
 }
 
 /// One server keeping the workspace.
@@ -622,6 +627,17 @@ pub struct KeptServer {
     pub person: String,
     /// Whether this is the server asked.
     pub here: bool,
+    /// What it calls itself, as its own signed address names it.
+    #[serde(default)]
+    pub label: String,
+    /// Whether it holds the workspace's keys and reads it; a store keeps its
+    /// ciphertext and reads none of it.
+    #[serde(default)]
+    pub reads: bool,
+    /// Whether its machine is rented from a cloud provider, whose operator
+    /// can read what it holds too.
+    #[serde(default)]
+    pub cloud: bool,
 }
 
 /// Another server to keep the workspace as well.

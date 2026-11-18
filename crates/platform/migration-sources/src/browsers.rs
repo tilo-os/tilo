@@ -219,7 +219,7 @@ pub fn firefox_sections(ini: &str) -> Vec<(String, String, Option<bool>)> {
         {
             let value = value.trim();
             match key.trim() {
-                "Name" => *name = value.to_owned(),
+                "Name" => value.clone_into(name),
                 "Path" => *path = Some(value.to_owned()),
                 "IsRelative" => *relative = Some(value == "1"),
                 _ => {}
@@ -236,7 +236,7 @@ const MAX_LOGIN_DATABASE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_LOGINS: usize = 10_000;
 
 /// The passwords `profile` saved, decrypted: Firefox's through NSS (as Thunderbird's), a
-/// Chromium-family browser's from `Login Data` with its OSCrypt key.
+/// Chromium-family browser's from `Login Data` with its `OSCrypt` key.
 ///
 /// # Errors
 /// See [`LoginsError`]: none saved, a primary password the person has to type, or unreadable.
@@ -277,7 +277,7 @@ fn bounded_read(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// A Chromium-family profile's `Login Data`, each password decrypted with its OSCrypt key:
+/// A Chromium-family profile's `Login Data`, each password decrypted with its `OSCrypt` key:
 /// `v10` with Chromium's fixed one, `v11` with the one the system keyring keeps for the brand.
 fn chromium_logins(profile: &BrowserProfile) -> Result<Vec<SavedLogin>, LoginsError> {
     use std::io::Write as _;

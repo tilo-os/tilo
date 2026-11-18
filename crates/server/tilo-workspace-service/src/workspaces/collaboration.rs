@@ -23,7 +23,7 @@ use tilo_action_policy::roles::governance;
 
 use super::authority::WorkspaceOp;
 use super::{GovernedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
-use crate::host_authority::HostOperation;
+use crate::service_authority::ServiceOperation;
 use tilo_lock::MutexRecover as _;
 
 /// Where [`Workspaces::add_member`] puts a person.
@@ -93,9 +93,10 @@ pub(super) struct Written {
 }
 
 impl GovernedWorkspace {
-    /// The workspace as its join log reads it: committed now.
-    pub(super) fn governed(&self) -> Governed<'_> {
-        governed(&self.record, self.peer().into())
+    /// The workspace as its join log reads it: committed now, answered by
+    /// `answering`, the device that answers its joins here.
+    pub(super) fn governed<'a>(&'a self, answering: &'a DeviceCert) -> Governed<'a> {
+        governed(&self.record, self.peer().into(), answering)
     }
 
     /// The workspace as its join log reads it, from the state the caller
@@ -103,8 +104,9 @@ impl GovernedWorkspace {
     pub(super) fn governed_from<'a>(
         &'a self,
         peer: &'a tilo_peer_state::StatePeer,
+        answering: &'a DeviceCert,
     ) -> Governed<'a> {
-        governed(&self.record, peer.into())
+        governed(&self.record, peer.into(), answering)
     }
 
     /// Keep the people `removed` out of the workspace's public entry for the
@@ -126,14 +128,17 @@ impl GovernedWorkspace {
     }
 }
 
-/// `record` and `peer`, a workspace's committed state, as its join log reads it.
+/// `record` and `peer`, a workspace's committed state, as its join log reads
+/// it, answered by `answering`: the device that answers this workspace's
+/// joins here, which need not be the device that governs it.
 fn governed<'a>(
     record: &'a WorkspaceDocumentEntry,
     peer: tilo_peer_state::join_log::PeerRef<'a>,
+    answering: &'a DeviceCert,
 ) -> Governed<'a> {
     Governed {
         peer,
-        host: &record.owner,
+        host: answering,
         workspace_id: record.workspace_id,
         generation: record.generation,
         // A newcomer admits the workspace's governance alone: one message
@@ -277,7 +282,7 @@ impl Workspaces {
         let transport = vec![self.transport_hint(workspace)?];
         let mut log = workspace.collaboration().clone();
         let issued = log.issue_as(
-            &workspace.governed(),
+            &workspace.governed(self.serving_certificate()),
             administrator,
             request,
             makes_administrator,
@@ -348,10 +353,6 @@ impl Workspaces {
 
     /// Admit `device`, a device of this server's own user, to `workspace` as its
     /// owner. Returns whether governance changed.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked until its decision is committed, published and answered"
-    )]
     pub async fn enter(
         &self,
         workspace: &str,
@@ -361,9 +362,24 @@ impl Workspaces {
         self.authorize(
             device,
             None,
-            WorkspaceOp::Host(HostOperation::EnterWorkspace),
+            WorkspaceOp::Host(ServiceOperation::EnterWorkspace),
             now,
         )?;
+        self.admit_entering(workspace, device, now).await
+    }
+
+    /// Admit `device`, whose entry was decided, to `workspace`; a key keeps
+    /// the grant it entered under. Returns whether governance changed.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked until its decision is committed, published and answered"
+    )]
+    pub(crate) async fn admit_entering(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        now: u64,
+    ) -> Result<bool, CollaborationError> {
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
         // A key whose grant this workspace records as revoked never enters it
@@ -381,41 +397,41 @@ impl Workspaces {
             )));
         }
         let mut candidate = workspace.peer().clone();
-        if !candidate.admit_certificate(device.clone(), &self.inner.host.key, system_time(now))? {
+        let admitted =
+            candidate.admit_certificate(device.clone(), &self.inner.host.key, system_time(now))?;
+        if admitted {
+            let state = workspace.collaboration().clone();
+            workspace.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
+                Ok(state)
+            })?;
+            self.settle(&mut workspace).await?;
+        } else if !self
+            .inner
+            .host
+            .access
+            .projects_access(workspace.workspace_id(), device.device_public_key)
+            .await
+        {
             // Admitted already, but an earlier entry can have been cut off
             // between committing the admission and settling it (its page
             // closed meanwhile): the server would then decide the device's
             // changes against device_access that leave it out. Settle what
             // governance holds before answering.
-            if !self
-                .inner
-                .host
-                .access
-                .projects_access(workspace.workspace_id(), device.device_public_key)
-                .await
-            {
-                self.settle(&mut workspace).await?;
-            }
-            return Ok(false);
+            self.settle(&mut workspace).await?;
         }
-        let state = workspace.collaboration().clone();
-        workspace.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
-            Ok(state)
-        })?;
-        self.settle(&mut workspace).await?;
-        // The workspace keeps the grant it admitted, so every holder and every
-        // API server reads the same grant from the workspace itself.
+        // The workspace keeps the grant of every key it admitted, so every
+        // holder and every API server reads the same grant from the workspace
+        // itself, whichever way the key came in.
         if let Some(scope) = device.capabilities.agent {
-            self.record_grant(&mut workspace, device, scope, now)
-                .await?;
+            self.keep_grant(&mut workspace, device, scope, now).await?;
         }
-        Ok(true)
+        Ok(admitted)
     }
 
-    /// Record the grant `cert` was admitted under in `workspace`'s governance,
+    /// Keep the grant `cert` was admitted under in `workspace`'s governance,
     /// reaching `scope`, authored by this host: the workspace's holders and
     /// the API servers that read them see it from then on.
-    async fn record_grant(
+    async fn keep_grant(
         &self,
         workspace: &mut GovernedWorkspace,
         cert: &DeviceCert,
@@ -644,7 +660,7 @@ impl Workspaces {
         self.authorize(
             administrator,
             None,
-            WorkspaceOp::Host(HostOperation::PutWorkspaceGrants),
+            WorkspaceOp::Host(ServiceOperation::PutWorkspaceGrants),
             now,
         )?;
         let workspace = self.workspace(workspace).await?;
@@ -680,7 +696,7 @@ impl Workspaces {
         self.authorize(
             administrator,
             None,
-            WorkspaceOp::Host(HostOperation::PutWorkspaceGrants),
+            WorkspaceOp::Host(ServiceOperation::PutWorkspaceGrants),
             now,
         )?;
         let workspace = self.workspace(workspace).await?;
@@ -767,7 +783,7 @@ impl Workspaces {
         self.authorize(
             administrator,
             None,
-            WorkspaceOp::Host(HostOperation::SetAdministrator),
+            WorkspaceOp::Host(ServiceOperation::SetAdministrator),
             now,
         )?;
         let workspace = self.workspace(workspace).await?;
@@ -1146,6 +1162,30 @@ impl Workspaces {
         Ok(answer)
     }
 
+    /// The device holding `workspace`'s lease `lease` now, if any: the one
+    /// whose claim wins it in the workspace's own state, as every device that
+    /// holds the workspace reads it.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    pub async fn lease_holder(
+        &self,
+        workspace: &str,
+        lease: &str,
+    ) -> Result<Option<[u8; 32]>, CollaborationError> {
+        let now = system_time(tilo_clock::unix_now_ns());
+        Ok(self
+            .workspace(workspace)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .workspace()
+            .lease(lease, now)
+            .holder
+            .map(|claim| claim.device))
+    }
+
     /// Install a bot as a governed member of `workspace`, update its program,
     /// renew its delegation or uninstall it
     /// ([`WorkspaceMembershipCommand::InstallBot`],
@@ -1178,7 +1218,7 @@ impl Workspaces {
         self.authorize(
             administrator,
             None,
-            WorkspaceOp::Host(HostOperation::GovernBot),
+            WorkspaceOp::Host(ServiceOperation::GovernBot),
             now,
         )?;
         command.validate()?;
@@ -1499,7 +1539,9 @@ impl Workspaces {
         let (admitted, committed) = {
             let shared = workspace.peer.shared();
             let mut replica = shared.lock();
-            let mut held = HeldWorkspace::new(key, workspace, &mut replica);
+            let mut held =
+                HeldWorkspace::new(key, self.serving_certificate(), workspace, &mut replica);
+
             let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, key, now);
             (admitted, held.committed)
         };
@@ -1508,6 +1550,19 @@ impl Workspaces {
             let settling = crate::timing::start();
             self.settle(workspace).await?;
             crate::timing::event("join.admit.settle", settling, joins.len() as u64);
+            // The workspace keeps the grant of every key it admitted, so every
+            // holder and every API server reads the same grant from the
+            // workspace itself, whichever way the key came in.
+            if let Ok(answers) = &admitted {
+                for (join, answer) in joins.iter().zip(answers) {
+                    let certificate = join.redemption.certificate();
+                    if answer.is_ok()
+                        && let Some(scope) = certificate.capabilities.agent
+                    {
+                        self.keep_grant(workspace, certificate, scope, now).await?;
+                    }
+                }
+            }
             // Someone invited from the wait list is in now: their entry
             // leaves it.
             workspace.forget_joined_wait_list();
@@ -1617,6 +1672,9 @@ impl Workspaces {
 /// committed that its members have not been sent yet.
 struct HeldWorkspace<'a> {
     key: &'a SigningKey,
+    /// The device answering this workspace's joins: this server's own, which
+    /// need not be the device that governs the workspace.
+    answering: &'a DeviceCert,
     workspace: &'a mut GovernedWorkspace,
     /// The workspace's state, held for the decision: a member's write reaches
     /// the replica over the link it syncs on, without this workspace's lock.
@@ -1628,11 +1686,13 @@ struct HeldWorkspace<'a> {
 impl<'a> HeldWorkspace<'a> {
     const fn new(
         key: &'a SigningKey,
+        answering: &'a DeviceCert,
         workspace: &'a mut GovernedWorkspace,
         replica: &'a mut tilo_peer_state::StatePeer,
     ) -> Self {
         Self {
             key,
+            answering,
             workspace,
             replica,
             staged: false,
@@ -1647,7 +1707,7 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
     }
 
     fn governed(&self) -> Governed<'_> {
-        self.workspace.governed_from(self.replica)
+        self.workspace.governed_from(self.replica, self.answering)
     }
 
     fn log(&self) -> &CollaborationState {
@@ -1672,7 +1732,10 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
             peer,
             (self.key, system_time(now)),
             super::Change::Other,
-            |record, peer| log(&governed(record, peer.into())).map_err(|error| error.to_string()),
+            |record, peer| {
+                log(&governed(record, peer.into(), self.answering))
+                    .map_err(|error| error.to_string())
+            },
         )?;
         // The commit wrote the whole record, the log staged before
         // included.
@@ -1692,7 +1755,10 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
             peer,
             (self.key, system_time(now)),
             super::Change::Admission,
-            |record, peer| log(&governed(record, peer.into())).map_err(|error| error.to_string()),
+            |record, peer| {
+                log(&governed(record, peer.into(), self.answering))
+                    .map_err(|error| error.to_string())
+            },
         )?;
         self.staged = false;
         self.committed = true;
@@ -1728,7 +1794,12 @@ impl JoinWorkspaces for Workspaces {
             // one it is committed over.
             let shared = locked.peer.shared();
             let mut replica = shared.lock();
-            let mut held = HeldWorkspace::new(&self.inner.host.key, &mut locked, &mut replica);
+            let mut held = HeldWorkspace::new(
+                &self.inner.host.key,
+                self.serving_certificate(),
+                &mut locked,
+                &mut replica,
+            );
             let answer = decide(&mut held);
             (answer, held.staged, held.committed)
         };

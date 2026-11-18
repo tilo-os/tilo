@@ -239,6 +239,8 @@ impl ActivityTree for ActivitySnapshot {
         .map(|_| ())
     }
     fn commit_activity_change(&mut self) {
+        // What the model wrote is a change of the document: left open, nothing after it reads.
+        let _ = tilo_resource::history::commit_stamped(&mut self.doc);
         let Some(commit) = self.commit.clone() else {
             return;
         };

@@ -1747,8 +1747,10 @@ fn a_choice_of_several_rows_outlasts_the_rows_the_app_sends_again() {
         list.model().index_of(&first).is_some() && list.model().index_of(&second).is_some(),
         "the list holds the rows the app sent"
     );
-    list.selection_mut().select_only(first.clone());
-    list.selection_mut().toggle(second.clone());
+    let mut chosen = list.selection();
+    chosen.select_only(first.clone());
+    chosen.toggle(second.clone());
+    list.set_selection(chosen);
     assert_eq!(
         list.selection().len(list.model().len()),
         2,

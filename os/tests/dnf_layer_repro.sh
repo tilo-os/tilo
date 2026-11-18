@@ -159,4 +159,49 @@ assert transactions == 2, (
     f'{transactions} rootfs RUNs run dnf; each ships its own copy of the rpm database. '
     'Add a transaction to the package RUN in packages instead.')
 PY
+
+# The fast CI image installs over a distro base and is keyed by its digest, so what its
+# package transactions stamp has to be the build's date rather than the wall clock, and
+# the state they leave that is not package content has to be gone by the time the image is
+# committed: a DNF transaction added here without either moves the image in every build.
+# The clock is the transactions' alone: rpm reads SOURCE_DATE_EPOCH for the install times
+# it stamps and checks signatures against the real clock, so nothing may put a fixed
+# clock in front of the packages (a mirror's newest update has to install).
+python3 - "$repo/os/Containerfile.ci-fast" <<'PY'
+import sys
+
+source = open(sys.argv[1], encoding='utf-8').read()
+stage = source.split('ARG TILO_BUILD_EPOCH\n', 1)[1]
+first_dnf = stage.index('dnf install')
+for setup in ('COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/tilo/finalize-rpmdb',
+              'COPY --chmod=0755 os/scripts/clean-dnf-layer-state.sh /usr/libexec/tilo/clean-dnf-layer-state',
+              'test -n "${TILO_BUILD_EPOCH}"'):
+    assert stage.index(setup) < first_dnf, setup
+for banned in ('LD_PRELOAD', 'build-clock', 'dnf-fixed-time'):
+    assert banned not in stage, f'os/Containerfile.ci-fast gives the transactions {banned}'
+lines = stage.splitlines()
+transactions = [index for index, line in enumerate(lines) if 'dnf install' in line
+                and not line.lstrip().startswith('#')]
+assert transactions, 'os/Containerfile.ci-fast installs no packages'
+for index in transactions:
+    assert any('SOURCE_DATE_EPOCH="${TILO_BUILD_EPOCH}"' in earlier
+               for earlier in lines[max(0, index - 3):index]), lines[index]
+# Nothing after the last transaction may write package state: the finalization comes
+# once they are all done, and what serves them only is taken out of the image in the
+# same instruction, before the image is committed.
+finalize = stage.index('/usr/libexec/tilo/finalize-rpmdb \\')
+assert finalize > stage.rindex('dnf install')
+assert stage.index('rm -f /usr/libexec/tilo/finalize-rpmdb') > finalize
+assert stage.index('rmdir /usr/libexec/tilo') > finalize
+assert stage.index('test ! -s /etc/machine-id') > finalize
+assert stage.index('rm -rf /var/lib/dnf') > finalize
+assert stage.rindex('\nCOPY ') < finalize
+assert stage.rindex('\nADD ') < finalize if '\nADD ' in stage else True
+# A directory the transactions create carries the kernel's time, and --timestamp does not
+# date directories: only pinning every directory's time makes the layer the build's.
+assert '--mount=type=bind,source=os/scripts/pin-directory-times.py' in stage
+pin = stage.index('tilo-pin-directory-times.py / "${TILO_BUILD_EPOCH}"')
+assert pin > finalize and pin > stage.index('rmdir /usr/libexec/tilo')
+assert stage.rindex('&&') < pin
+PY
 echo 'fixed DNF/RPM transaction time, package ownership and layer cleanup: ok'

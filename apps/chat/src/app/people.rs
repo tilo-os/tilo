@@ -20,10 +20,7 @@ impl ChatApp {
     /// about a third's name is a difference nobody can settle. So the workspace
     /// answers, and a peer only ever supplies its id.
     pub fn display_name(&self, id: &MemberId) -> String {
-        if let Some(name) = Some(id)
-            .filter(|member| !member.is_person())
-            .and_then(|member| self.known_agent_name(member.id()))
-        {
+        if let Some(name) = self.agent_name(id, None) {
             return name;
         }
         if self.is_me(id)
@@ -104,7 +101,7 @@ impl ChatApp {
             }
             return crate::identity::unnamed_label(id);
         }
-        if let Some(agent) = self.acting_name(id, None, None, crate::identity::RoleWord::InName) {
+        if let Some(agent) = self.agent_name(id, None) {
             return agent;
         }
         let named = self.display_name(id);
@@ -120,35 +117,21 @@ impl ChatApp {
         crate::identity::unnamed_label(id)
     }
 
-    /// What to call the agent or app `id`: the name it wrote under (`kept`), else the workspace's
-    /// name for it, with the person it acted for as `acting` kept it where it wrote, else as
-    /// presence says ("Helper for Ada"), after it left too. `None` for anyone else.
-    pub(crate) fn acting_name(
-        &self,
-        id: &MemberId,
-        acting: Option<&ui::tilo_resource::Acting>,
-        kept: Option<&str>,
-        word: crate::identity::RoleWord,
-    ) -> Option<String> {
-        let name = kept
+    /// What to call the agent or app `id`: what the workspace calls it, numbered while another
+    /// member goes by that name too, as every surface names it; else the name it wrote under
+    /// (`kept`), after it left. A person's line keeps the name it wrote under. `None` for anyone
+    /// else.
+    pub(crate) fn agent_name(&self, id: &MemberId, kept: Option<&str>) -> Option<String> {
+        let kept = kept
             .map(str::trim)
             .filter(|name| !name.is_empty())
-            .map(str::to_owned)
-            .or_else(|| {
-                Some(id)
-                    .filter(|member| !member.is_person())
-                    .and_then(|member| self.known_agent_name(member.id()))
-            })?;
-        let person = acting
-            .and_then(crate::identity::acted_for)
-            .or_else(|| self.agent_people.get(id));
-        Some(crate::identity::acting_label(
-            &name,
-            person,
-            word,
-            |person| self.user_name(person),
-            |person| self.is_me(person),
-        ))
+            .map(str::to_owned);
+        if id.is_person() {
+            return kept;
+        }
+        self.known_agent_name(id.id())
+            .map(|name| self.workspace_labels.label(id.id(), &name))
+            .or(kept)
     }
 
     /// How a narrow line names someone: their given name, so a line that

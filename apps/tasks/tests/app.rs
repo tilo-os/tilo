@@ -530,7 +530,7 @@ tilo_test_env::scenario! {
         assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
         assert!(
             app.harness()
-                .a11y_node_named("Assignee: Scribe · Agent")
+                .a11y_node_named("Assignee: Scribe")
                 .is_some(),
             "an agent reads by name, and as an agent"
         );

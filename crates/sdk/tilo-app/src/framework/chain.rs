@@ -1903,7 +1903,7 @@ impl ChainState {
             .map_err(ActionError::Refused)?;
         drop(parts);
         self.may(&*action)?;
-        let head = self.core.parts.borrow().keys().next_back().copied();
+        let newest = self.core.parts.borrow().keys().next_back().copied();
         match self
             .core
             .open_or_start(index)
@@ -1911,7 +1911,8 @@ impl ChainState {
         {
             Opened::Held => {}
             Opened::Started => {
-                if let Some(previous) = head.filter(|head| head.checked_add(1) == Some(index)) {
+                if let Some(previous) = newest.filter(|newest| newest.checked_add(1) == Some(index))
+                {
                     self.carry(previous, index, invoker)?;
                 }
             }
@@ -2007,12 +2008,12 @@ impl ChainState {
                 Opened::Asked => return Ok(Write::Arriving),
             }
         }
-        let head = self.core.parts.borrow().keys().next_back().copied();
+        let newest = self.core.parts.borrow().keys().next_back().copied();
         let mut written = Vec::with_capacity(per_part.len());
         let mut created = Vec::new();
         for (index, members) in &per_part {
             let index = *index;
-            if let Some(previous) = head.filter(|head| head.checked_add(1) == Some(index)) {
+            if let Some(previous) = newest.filter(|newest| newest.checked_add(1) == Some(index)) {
                 self.carry(previous, index, invoker)?;
             }
             let place = members

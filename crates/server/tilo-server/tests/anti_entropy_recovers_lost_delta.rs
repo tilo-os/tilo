@@ -14,8 +14,8 @@
 //! copy was drained and deleted. The lagging peer advertises its heads
 //! (`SyncRequest`); the host replies with the missing changes
 //! (`SyncResponse`) computed against that materialized doc; the peer
-//! applies them and converges — asserted on Automerge documents (identical
-//! `get_heads()`) through the `Server` / `ServerClient` path.
+//! applies them and converges — asserted on Automerge documents (B holds
+//! A's heads) through the `Server` / `ServerClient` path.
 
 #![allow(
     clippy::unwrap_used,
@@ -59,12 +59,9 @@ async fn publish_offline_edit(
     a_client
         .send(Envelope::Subscribe { workspace_id: ws })
         .unwrap();
-    // Drain A's Ready(0).
-    match tilo_test_env::within("A Ready timeout", a_client.recv())
-        .await
-        .expect("A closed")
-    {
-        Envelope::Ready { pending_deltas, .. } => assert_eq!(pending_deltas, 0),
+    // Drain A's Ready, past the state the held workspace sends first.
+    match crate::common::next(&a_client, |env| matches!(env, Envelope::Ready { .. })).await {
+        Envelope::Ready { .. } => {}
         other => panic!("expected Ready, got {other:?}"),
     }
 
@@ -82,16 +79,18 @@ async fn publish_offline_edit(
         })
         .unwrap();
 
-    let mut queued = 0;
-    // Polls for up to 30 s; only a hang uses the whole budget.
+    // Polls for up to 30 s; only a hang uses the whole budget. The held
+    // workspace queues state of its own beside A's edit, so the edit is found
+    // by its bytes.
+    let mut queued = false;
     for _ in 0..1200 {
-        queued = pending_count(pending_dir);
-        if queued >= 1 {
+        queued = crate::common::queued_carries(pending_dir, &d1);
+        if queued {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(queued, 1, "A's edit is queued for the offline B");
+    assert!(queued, "A's edit is queued for the offline B");
     (a_client, doc_a)
 }
 
@@ -143,7 +142,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     let user = TestUser::fresh("Alice");
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("phone", DeviceCapabilities::member());
-    let members = [a.device_pubkey(), b.device_pubkey()];
+    let members = [&a.cert, &b.cert];
 
     let state = tempfile::tempdir().unwrap();
     let host_dev = user.enrol("home-server", DeviceCapabilities::member());
@@ -197,18 +196,11 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     .await
     .expect("B reconnect (2)");
     b2.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
-    match tilo_test_env::within("B Ready timeout", b2.recv())
-        .await
-        .expect("B closed")
-    {
-        // The queue is empty — no catch-up delta is delivered.
-        Envelope::Ready { pending_deltas, .. } => {
-            assert_eq!(
-                pending_deltas, 0,
-                "queue is empty; subscribe alone cannot recover d1"
-            );
-        }
-        other => panic!("expected Ready(0), got {other:?}"),
+    // The queue is empty — no catch-up delta is delivered — and the replay
+    // carries only the workspace's own state, never the lost change.
+    match crate::common::next(&b2, |env| matches!(env, Envelope::Ready { .. })).await {
+        Envelope::Ready { .. } => {}
+        other => panic!("expected Ready, got {other:?}"),
     }
 
     // B starts from nothing and is divergent from A.
@@ -230,11 +222,16 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
         "host backfilled the lost change via anti-entropy"
     );
 
+    // B converges on A: it holds A's very change, not a copy of its text. The
+    // held workspace's materialized document carries the workspace's own
+    // state too, so B holds more than A, never less.
     assert_eq!(doc_b.str_at(&ROOT, "note").as_deref(), Some("recover-me"));
-    assert_eq!(
-        doc_b.get_heads(),
-        doc_a.get_heads(),
-        "anti-entropy reconciles B to convergence despite the drained-and-lost delta"
+    assert!(
+        doc_a
+            .get_heads()
+            .iter()
+            .all(|head| doc_b.get_change_by_hash(head).is_some()),
+        "anti-entropy gives B A's own change despite the drained-and-lost delta"
     );
 
     drop(a_client);

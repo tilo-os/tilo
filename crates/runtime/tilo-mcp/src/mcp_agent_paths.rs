@@ -76,6 +76,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// resolved as the tools resolve one, and handed over as the reference an
     /// app takes (its app, kind, id and label). Any other value is the caller's
     /// own reference, passed as given.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one pass over the parameters: each kind of address a caller writes is bound in place"
+    )]
     pub(super) async fn bind_resource_arguments(
         &self,
         descriptor: &ActionDescriptor,

@@ -123,7 +123,7 @@ impl Provenance {
         // A reader hears what the chip's mark says to the eye: that an agent wrote it.
         let name: ArgValue = match &self.actor {
             Some(actor) if actor.agent() => {
-                ui_core::history_source::agent_display_label(&self.name).into()
+                ui_core::history_source::agent_spoken_label(&self.name).into()
             }
             _ => self.name.clone().into(),
         };

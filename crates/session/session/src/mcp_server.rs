@@ -205,10 +205,8 @@ struct Waiting {
     /// The workspace as the person reads it.
     workspace_name: String,
     session: AgentSessionId,
-    /// The program the answer is remembered for (`claude-code`), and what the shell calls the
-    /// session (`Claude Code #2`).
+    /// The program the answer is remembered for (`claude-code`).
     agent: String,
-    shown: String,
     /// The question up for it; dropping it withdraws the question.
     asked: Option<Asked>,
     decide: tokio::sync::oneshot::Sender<Consent>,
@@ -706,25 +704,23 @@ impl Loop {
                 .then(|| facts.proposed())
         });
         if let Some(agent) = ahead {
-            let (instance, shown) = self.agent_of(&agent, &facts);
-            tracing::info!(client = %facts.client, pid = facts.pid, %instance, %workspace, "MCP server: what the person said ahead of time admits this client");
-            let consent = as_member(members, &facts, (&workspace, person), shown);
+            tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "MCP server: what the person said ahead of time admits this client");
+            let consent = as_member(members, &facts, (&workspace, person));
             self.sessions.admit(&session, &consent, &agent, &name);
             let _ = decide.send(consent);
             return;
         }
         let agent = remembered.unwrap_or_else(|| facts.proposed());
-        let (proposed, shown) = self.agent_of(&agent, &facts);
         let details = serde_json::to_value(Admission {
             workspace: name.clone(),
-            agent: proposed.clone(),
+            agent: facts.client.clone(),
         })
         .unwrap_or_default();
         let label = facts.subject();
         tracing::info!(
             client = %facts.client,
             pid = facts.pid,
-            agent = %proposed,
+            %agent,
             %workspace,
             "MCP server: asking the person"
         );
@@ -741,39 +737,9 @@ impl Loop {
             workspace_name: name,
             session,
             agent,
-            shown,
             asked: Some(asked),
             decide,
         });
-    }
-
-    /// The agent of its own the client `facts` describes is admitted as, when the person admits it
-    /// as `agent`, and how their shell shows it: its instance among the clients of that agent at its
-    /// place (`claude-code@host#2`, `Claude Code #2`, `Claude Code in dev #2`). An agent from
-    /// another device names its device already (`claude-code@laptop-3f2a`).
-    fn agent_of(&mut self, agent: &str, facts: &Facts) -> (String, String) {
-        let at = if facts.origin.is_some() {
-            agent.to_owned()
-        } else {
-            format!("{agent}@{}", facts.entrance.place())
-        };
-        let (id, instance) = self.environments.instance(&at);
-        let instance = instance.to_string();
-        let shown = match &facts.entrance {
-            Origin::Environment(environment) => words(
-                "mcp-server-session-in-environment",
-                &[
-                    ("client", &facts.client),
-                    ("environment", &environment.name),
-                    ("instance", &instance),
-                ],
-            ),
-            Origin::Host => words(
-                "mcp-server-session",
-                &[("client", &facts.client), ("instance", &instance)],
-            ),
-        };
-        (id, shown)
     }
 
     /// Settle the questions the person answered — or whose client left — and let the admitted
@@ -823,12 +789,7 @@ impl Loop {
             tilo_portal::consent::ALLOW_ALWAYS => Memory::Always,
             _ => return Consent::Refuse(word("mcp-server-declined")),
         };
-        let consent = as_member(
-            members,
-            &waiting.facts,
-            (&waiting.workspace, person),
-            waiting.shown.clone(),
-        );
+        let consent = as_member(members, &waiting.facts, (&waiting.workspace, person));
         self.sessions.admit(
             &waiting.session,
             &consent,
@@ -909,21 +870,18 @@ impl Loop {
 }
 
 /// How the session finds or adds the person's agent member for an MCP client in a workspace: by
-/// workspace id and client name, answering the agent's id once the roster the broker reads lists
-/// it ([`Shared::mcp_member`]). A connection admitted on this answer joins the broker at once, on
+/// workspace id and client name, answering the agent's id and the name the workspace calls it by
+/// once the roster the broker reads lists it ([`Shared::mcp_member`]). A connection admitted on this answer joins the broker at once, on
 /// its own thread, so the answer never names an agent the broker would not find.
-pub(crate) type Members<'a> = dyn Fn(&str, &str) -> Result<String, String> + 'a;
+pub(crate) type Members<'a> = dyn Fn(&str, &str) -> Result<(String, String), String> + 'a;
 
 /// Admit the client `facts` describes, in `workspace` for `person`, as the person's agent member
-/// for its client, shown as `name`; refused where that member cannot be found, added or listed.
-fn as_member(
-    members: &Members<'_>,
-    facts: &Facts,
-    (workspace, person): (&str, &str),
-    name: String,
-) -> Consent {
+/// for its client, under the name the workspace calls that member by: every connection of it reads
+/// as the member, and the shell tells two of them apart by where each works from, beside the name.
+/// Refused where that member cannot be found, added or listed.
+fn as_member(members: &Members<'_>, facts: &Facts, (workspace, person): (&str, &str)) -> Consent {
     match members(workspace, &facts.client) {
-        Ok(agent) => Consent::Admit {
+        Ok((agent, name)) => Consent::Admit {
             workspace: workspace.to_owned(),
             agent,
             person: person.to_owned(),
@@ -1884,7 +1842,7 @@ fn connect(
 
 /// What an agent session is admitted for: the workspace it works in, the person who admitted it
 /// (whom the agent acts for), the agent member it is a session of, the session, and the name the
-/// person reads it by (`Claude Code #2`).
+/// person reads it by (`Claude Code`).
 struct Admitted<'a> {
     workspace: &'a str,
     person: &'a str,

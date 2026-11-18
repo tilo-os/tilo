@@ -296,6 +296,10 @@ impl OverviewPanel {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one card painted top to bottom: its name, its facts, its people and its shares"
+    )]
     fn paint_here_workspace(
         &self,
         ctx: &mut ui::paint::PaintCtx<'_>,
@@ -1152,7 +1156,7 @@ fn paint_share_row(
 ) {
     let theme = ctx.theme;
     let tokens = &theme.tokens;
-    let colors = &tokens.colors;
+    let palette = &tokens.colors;
     let body = tokens.typography.style(TextRole::Body);
     let caption = tokens.typography.style(TextRole::Caption);
     let (_, body_h) = ctx.text.measure_style("Ag", None, &body);
@@ -1163,7 +1167,7 @@ fn paint_share_row(
         ctx.transform,
         Rect::new(row.x0, cy - glyph / 2.0, row.x0 + glyph, cy + glyph / 2.0),
         ui::icons::Icon::ExternalLink,
-        colors.text_tertiary,
+        palette.text_tertiary,
         ui::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
     // Who holds it stands right, as their own chips: a face and the name they go by, the most
@@ -1191,7 +1195,7 @@ fn paint_share_row(
     ctx.text.draw_style(
         ctx.scene,
         &what,
-        colors.text_primary,
+        palette.text_primary,
         ctx.transform.pre_translate((what_x, body_top).into()),
         None,
         &body,
@@ -1208,7 +1212,7 @@ fn paint_share_row(
             ctx.text.draw_style(
                 ctx.scene,
                 &can_edit,
-                colors.text_tertiary,
+                palette.text_tertiary,
                 ctx.transform.pre_translate(
                     (after, row.y0 + (row.height() - f64::from(can_h)) / 2.0).into(),
                 ),
@@ -1283,30 +1287,29 @@ fn chips_that_fit(
         return (0, 0.0);
     }
     let total_of = |shown: usize| {
-        widths[..shown].iter().sum::<f64>() + between * f64_of_usize(shown.saturating_sub(1))
+        widths.iter().take(shown).sum::<f64>() + between * f64_of_usize(shown.saturating_sub(1))
     };
     let mut shown = 0usize;
     for (at, w) in widths.iter().enumerate() {
         let candidate = total_of(at) + w;
-        let left = widths.len() - at - 1;
+        let left = widths.len().saturating_sub(at.saturating_add(1));
         let reserve = if left > 0 { between + more(left) } else { 0.0 };
         if candidate + reserve > width {
             break;
         }
-        shown = at + 1;
+        shown = at.saturating_add(1);
     }
-    let left = widths.len() - shown;
-    if left == 0 {
+    if shown == widths.len() {
         return (shown, total_of(shown));
     }
     // The count of those left out takes its own width: drop a chip until it fits.
-    let mut shown = shown;
     loop {
-        let count_width = if shown > 0 { between } else { 0.0 } + more(widths.len() - shown);
+        let count_width =
+            if shown > 0 { between } else { 0.0 } + more(widths.len().saturating_sub(shown));
         if total_of(shown) + count_width <= width || shown == 0 {
             return (shown, total_of(shown) + count_width);
         }
-        shown -= 1;
+        shown = shown.saturating_sub(1);
     }
 }
 

@@ -48,12 +48,18 @@ pub(crate) mod certificate_renewal;
 mod delegates;
 pub(crate) use bot_members::requests_in as bot_requests_in;
 pub use bot_members::{InstalledBot, RequestedBot};
+mod copies;
+mod device_rows;
+pub use copies::{
+    COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, HELD_COPIES_KEY, HeldCopy, HolderCopy,
+    Missing, Shortfall,
+};
 mod leases;
-pub use leases::{CLOCK_SKEW_NS, LEASES_KEY, Lease, LeaseClaim, unranked};
+pub use leases::{CLOCK_SKEW_NS, LEASES_KEY, Lease, LeaseClaim, unranked, vm_lease, vm_rank};
 mod bot_schedules;
 pub use bot_schedules::{BOT_SCHEDULES_KEY, trigger_mark};
-mod mail_sends;
-pub use mail_sends::{MAIL_SENDS_KEY, MailSent, mail_send_lease};
+mod done;
+pub use done::{DONE_KEY, Done, mail_send_lease};
 #[cfg(test)]
 mod bot_schedules_tests;
 #[cfg(test)]
@@ -82,7 +88,7 @@ mod workspace_grants;
 pub use workspace_grants::workspace_grants_of;
 mod keeping_devices;
 pub use keeping_devices::{
-    WORKSPACE_KEEPING_DEVICES_KEY, keeping_device_keys_of, keeping_devices_of,
+    WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_device_keys_of, keeping_devices_of,
 };
 mod personal;
 pub(crate) mod seed;

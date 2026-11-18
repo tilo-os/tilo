@@ -33,7 +33,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::a11y::AccessNode;
 use crate::accesskit_bridge::{build_presentation_tree_bound, build_tree_update_bound};
-use crate::host_core::{ControlHost as _, HostCore as _, KeyHost as _};
+use crate::app_core::{AppCore as _, ControlCore as _, KeyCore as _};
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
@@ -420,7 +420,7 @@ pub struct FrameHarness {
     palette_window: Option<Rect>,
     /// Pointer position, buttons held and where the last press landed until a key is pressed: a
     /// confirmation sits over the window pressed in.
-    pointer: crate::host_core::PointerPlace,
+    pointer: crate::app_core::PointerPlace,
     /// The cards the root presents over it: the frame has one window, so it
     /// stands them itself, as every one-window shell does.
     cards: crate::shell_cards::ShellCards,
@@ -553,7 +553,7 @@ pub struct FrameHarness {
     /// above everything else.
     placed_pointers: Vec<crate::presence::PeerCursor>,
     /// Hover tooltips, driven by host input ([`Self::send_host_event`]).
-    tooltips: crate::host_core::TooltipLayer,
+    tooltips: crate::app_core::TooltipLayer,
     /// The last frame drew a motion before its end, so a host whose frames come slower than the motion
     /// lasts owes the frame that draws it at rest.
     settle_frame_owed: bool,
@@ -584,7 +584,7 @@ pub struct FrameHarness {
     /// Whether the surface this tree draws has the keyboard: its fields keep their text and selection
     /// without it, and paint no caret ([`crate::caret_owner`]).
     keyboard_held: bool,
-    /// [`crate::host_core::KeyHost::keyboard_entry_owed`].
+    /// [`crate::app_core::KeyCore::keyboard_entry_owed`].
     keyboard_entry_owed: bool,
     /// Whether this layout's keyboard came from a control answering by name alone; the frame
     /// snapshot of where the keyboard was outranks a name.
@@ -1491,7 +1491,7 @@ impl FrameHarness {
             window_refusal: None,
             ordinary_palette_return_focus: None,
             palette_window: None,
-            pointer: crate::host_core::PointerPlace::default(),
+            pointer: crate::app_core::PointerPlace::default(),
             cards: crate::shell_cards::ShellCards::default(),
             search_pending: false,
             root_lifetime: uuid::Uuid::new_v4(),
@@ -1546,7 +1546,7 @@ impl FrameHarness {
             presence_redraw: false,
             drawn_action_markers: Vec::new(),
             placed_pointers: Vec::new(),
-            tooltips: crate::host_core::TooltipLayer::default(),
+            tooltips: crate::app_core::TooltipLayer::default(),
             settle_frame_owed: false,
             permissions: PermissionContext::permissive(),
             modifiers: winit::event::Modifiers::default(),
@@ -3157,7 +3157,7 @@ impl FrameHarness {
         if result.is_ok() {
             self.activate_requested_app();
             self.apply_focus_request();
-            crate::host_core::KeyHost::hand_owed_keyboard(self);
+            crate::app_core::KeyCore::hand_owed_keyboard(self);
             // The cards the root presents stand where the floating column puts
             // them, and are told so, before the frame draws and takes input.
             self.follow_cards();
@@ -6822,7 +6822,9 @@ impl FrameHarness {
     }
 
     /// [`Self::start_bound_job_for`] within `ambient`: the task the invoker is carrying out (an agent's
-    /// run, its purpose), recorded with every edit the operation makes.
+    /// run, its purpose), recorded with every edit the operation makes. The operation runs under the
+    /// invocation id `ambient` names, the one its host admitted the call under, and its changes keep
+    /// that id in their history; a fresh id when it names none.
     pub fn start_bound_job_within(
         &mut self,
         invoker: Option<tilo_actions::ActionInvoker>,
@@ -6839,7 +6841,9 @@ impl FrameHarness {
     > {
         self.invalidate_local();
         self.pump_component_wakes();
-        let invocation = tilo_actions::InvocationId::new();
+        let invocation = ambient
+            .and_then(|ambient| ambient.source_invocation)
+            .unwrap_or_default();
         let delivered = invoker.map(|invoker| {
             let context = ambient
                 .cloned()
@@ -7202,7 +7206,10 @@ impl FrameHarness {
                 confirmed,
                 broker_admitted: false,
                 invocation,
-                source_invocation: None,
+                // The id the host admitted the call under, when the operation adopted it.
+                source_invocation: ambient
+                    .and_then(|ambient| ambient.source_invocation)
+                    .filter(|admitted| *admitted == invocation),
                 ambient,
                 scope: None,
                 route: None,
@@ -7296,7 +7303,7 @@ impl FrameHarness {
                 }
                 let argument = match &request.arguments {
                     crate::bound_dispatch::ControlContinuationArguments::Json(json) => {
-                        Some(crate::host_core::json_argument(json))
+                        Some(crate::app_core::json_argument(json))
                     }
                     crate::bound_dispatch::ControlContinuationArguments::Text(text) => {
                         Some(text.clone())
@@ -7306,7 +7313,7 @@ impl FrameHarness {
                 let author = tilo_actions::Actor::Member(self.author.clone());
                 self.invoke_local_target(
                     &request.target,
-                    &crate::host_core::ResourceInvocation::new(&request.address, &author)
+                    &crate::app_core::ResourceInvocation::new(&request.address, &author)
                         .argument(argument.as_deref())
                         .confirmed(true),
                 )
@@ -8270,9 +8277,9 @@ impl FrameHarness {
         .map_err(crate::bound_dispatch::BoundActionError::Dispatch)
         .and_then(|snapshots| crate::bound_dispatch::select_bound_target(&snapshots, address, None))
         .map_err(crate::bound_dispatch::BoundActionError::into_api)?;
-        let argument = crate::host_core::json_argument(arguments);
+        let argument = crate::app_core::json_argument(arguments);
         let author = tilo_actions::Actor::Member(self.author.clone());
-        let request = crate::host_core::ResourceInvocation::new(address, &author)
+        let request = crate::app_core::ResourceInvocation::new(address, &author)
             .argument(Some(&argument))
             .confirmed(confirmed);
         match selected {
@@ -8519,9 +8526,9 @@ fn session_api(
         .map(|api| api as &mut dyn crate::session_api::SessionApi)
 }
 
-impl crate::host_core::HostCore for FrameHarness {
-    fn tree(&self) -> crate::host_core::HostTree<'_> {
-        crate::host_core::HostTree {
+impl crate::app_core::AppCore for FrameHarness {
+    fn tree(&self) -> crate::app_core::AppTree<'_> {
+        crate::app_core::AppTree {
             state: &self.state,
             root: self.root.as_ref(),
             history: self.history.as_deref(),
@@ -8534,8 +8541,8 @@ impl crate::host_core::HostCore for FrameHarness {
         }
     }
 
-    fn document(&mut self) -> crate::host_core::HostDocument<'_> {
-        crate::host_core::HostDocument {
+    fn document(&mut self) -> crate::app_core::HostDocument<'_> {
+        crate::app_core::HostDocument {
             state: &mut self.state,
             bindings: &self.bindings,
             node_map: &self.node_map,
@@ -8590,8 +8597,8 @@ impl crate::host_core::HostCore for FrameHarness {
         &mut self.layout_maps
     }
 
-    fn layout_mut(&mut self) -> crate::host_core::HostLayout<'_> {
-        crate::host_core::HostLayout {
+    fn layout_mut(&mut self) -> crate::app_core::HostLayout<'_> {
+        crate::app_core::HostLayout {
             taffy: &mut self.taffy,
             node_map: &mut self.node_map,
             bindings: &mut self.bindings,
@@ -8607,8 +8614,8 @@ impl crate::host_core::HostCore for FrameHarness {
         self.composition_changed()
     }
 
-    fn remount_parts(&mut self) -> crate::host_core::HostRemount<'_> {
-        crate::host_core::HostRemount {
+    fn remount_parts(&mut self) -> crate::app_core::HostRemount<'_> {
+        crate::app_core::HostRemount {
             root: self.root.as_mut(),
             state: &self.state,
             theme: &self.theme,
@@ -8639,8 +8646,8 @@ impl crate::host_core::HostCore for FrameHarness {
         self.root.as_mut()
     }
 
-    fn focus_parts(&mut self) -> crate::host_core::HostFocus<'_> {
-        crate::host_core::HostFocus {
+    fn focus_parts(&mut self) -> crate::app_core::HostFocus<'_> {
+        crate::app_core::HostFocus {
             root: self.root.as_mut(),
             history: self.history.as_mut(),
             node_map: &self.node_map,
@@ -8679,7 +8686,7 @@ impl crate::host_core::HostCore for FrameHarness {
     }
 }
 
-impl crate::host_core::KeyHost for FrameHarness {
+impl crate::app_core::KeyCore for FrameHarness {
     fn modifiers(&self) -> &winit::event::Modifiers {
         &self.modifiers
     }
@@ -8735,8 +8742,8 @@ impl crate::host_core::KeyHost for FrameHarness {
         self.invalidate_local();
     }
 
-    fn root_event(&mut self) -> Option<crate::host_core::RootEvent<'_>> {
-        Some(crate::host_core::RootEvent {
+    fn root_event(&mut self) -> Option<crate::app_core::RootEvent<'_>> {
+        Some(crate::app_core::RootEvent {
             root: self.root.as_mut(),
             state: &mut self.state,
             modifiers: &self.modifiers,
@@ -8747,7 +8754,7 @@ impl crate::host_core::KeyHost for FrameHarness {
     }
 }
 
-impl crate::host_core::ControlHost for FrameHarness {
+impl crate::app_core::ControlCore for FrameHarness {
     fn local_author(&self) -> &crate::permissions::MemberId {
         &self.author
     }
@@ -8822,7 +8829,7 @@ impl crate::host_core::ControlHost for FrameHarness {
     fn invoke_bound_control(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
-        request: &crate::host_core::ResourceInvocation<'_>,
+        request: &crate::app_core::ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let invocation = request.invocation.unwrap_or_default();
         let result = crate::bound_dispatch::invoke_resource_action(
@@ -8855,7 +8862,7 @@ impl crate::host_core::ControlHost for FrameHarness {
 
     fn invoke_outer_control(
         &mut self,
-        request: &crate::host_core::ResourceInvocation<'_>,
+        request: &crate::app_core::ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let address = request.address;
         let argument = request.argument;
@@ -9006,7 +9013,7 @@ mod tests {
     /// frame keeps the viewport it stood in.
     #[test]
     fn a_component_takes_the_place_of_the_root_a_host_waited_with() {
-        use crate::application_test_support::ProbeHost;
+        use crate::application_test_support::ProbeHarness;
         let mut frame = FrameHarness::new_with_controlled_inputs(
             State::new(),
             Box::new(Button::new("waiting", "Arriving")),
@@ -9019,7 +9026,7 @@ mod tests {
             frame.component_resource().is_none(),
             "a bare root shows no component's record"
         );
-        let owner = ProbeHost::new();
+        let owner = ProbeHarness::new();
         let (component, _) = crate::widget::control_result_probe::component(&owner, 11, true);
         let record = component.record().id.clone();
         frame
@@ -11397,10 +11404,10 @@ mod tests {
     #[test]
     fn local_control_results_report_refusal_confirmation_and_success() {
         {
-            use crate::application_test_support::ProbeHost;
+            use crate::application_test_support::ProbeHarness;
             use crate::widget::{Column, TileHost};
             for closed in [false, true] {
-                let owner = ProbeHost::new();
+                let owner = ProbeHarness::new();
                 let (component, sibling_seen) =
                     crate::widget::control_result_probe::component(&owner, 11, false);
                 let (legacy, legacy_seen) = crate::widget::control_result_probe::Probe::new(false);
@@ -11430,9 +11437,9 @@ mod tests {
         }
 
         {
-            use crate::application_test_support::{ProbeHost, runner_inputs};
+            use crate::application_test_support::{ProbeHarness, runner_inputs};
             for accepted in [false, true] {
-                let owner = ProbeHost::new();
+                let owner = ProbeHarness::new();
                 let (component, observed) =
                     crate::widget::control_result_probe::component(&owner, 11, accepted);
                 let binding = component.callback_binding();

@@ -288,12 +288,19 @@ impl ChannelSession {
                     ready(channel.nearby_transfer_dispatch(&channel.route().app_id, body))
                 }
                 // The secret answer moves onto the wire without a copy left
-                // behind.
-                Service::BrowserServiceSession => ready(
-                    channel
-                        .browser_service_session_dispatch(body)
-                        .map(|mut reply| std::mem::take(&mut *reply)),
-                ),
+                // behind. An item's use is waited for here, by the answer, and
+                // never by the dispatch that started it.
+                Service::BrowserServiceSession => channel
+                    .browser_service_session_dispatch(body)
+                    .map_err(failed)
+                    .map(|reply| -> Answering {
+                        Box::pin(async move {
+                            reply
+                                .await
+                                .map(|mut reply| std::mem::take(&mut *reply))
+                                .map_err(Refusal::refusal)
+                        })
+                    }),
                 Service::WifiContinuity => channel
                     .wifi_continuity_dispatch(&channel.route().app_id, body)
                     .map_err(failed)
@@ -810,12 +817,14 @@ impl JoinedChannel {
     }
 
     /// Answer a private service-session command from an app's own route:
-    /// the Browser's website sessions, or an account secret for the app the
-    /// owner releases it to.
+    /// the Browser's website sessions, an account secret for the app the
+    /// owner releases it to, or a vault item's text for one of Browser's
+    /// page actions. Only the last is waited for: it comes from outside this
+    /// process, so this hands back its answer and returns.
     pub(super) fn browser_service_session_dispatch(
         &self,
         bytes: &[u8],
-    ) -> Result<zeroize::Zeroizing<Vec<u8>>, BrokerError> {
+    ) -> Result<Answer<zeroize::Zeroizing<Vec<u8>>>, BrokerError> {
         let refused = || BrokerError::failed("private service-session request refused".into());
         // Only the person's own app connection: never an agent's. Which app
         // may ask what is decided per request.
@@ -828,7 +837,14 @@ impl JoinedChannel {
             self.verified_identity.actor_key.clone(),
             read,
         );
-        delegate_browser_service_session_command(&self.state.services, &context, bytes)
+        if let Some(awaited) = item_use::delegate_item_use(
+            self.state.services.browser_service_sessions.as_ref(),
+            &context,
+            bytes,
+        ) {
+            return awaited;
+        }
+        delegate_browser_service_session_command(&self.state.services, &context, bytes).map(ready)
     }
 
     /// Answer a speaker-group command, JSON both ways. Only the certified

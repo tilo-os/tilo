@@ -10,7 +10,7 @@ pub use runtime_portal::process_binding::ExecutingPeer;
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
@@ -37,7 +37,7 @@ pub const COMPAT_SERVICE: &str = "compat";
 pub const SYSTEM_SERVICE: &str = "system";
 /// Hosted model planning is performed by this per-user, desktop-owned gateway.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
-pub const APP_HOST_SERVICE: &str = "app-process";
+pub const PACKAGE_SERVICE: &str = "package-service";
 /// The person's messaging accounts (`tilo-messaging`).
 pub const MESSAGING_SERVICE: &str = "messaging";
 /// The shell runtime's supervisor.
@@ -64,6 +64,8 @@ const BLOB_CHILD_FD: i32 = 30;
 const IDENTITY_CHILD_FD: i32 = 31;
 /// Slot of the automatic chooser service.
 const CHOOSER_CHILD_FD: i32 = 32;
+/// Where the shell-UI connection every window gets lands in the sandbox.
+const SHELL_UI_CHILD_FD: i32 = 35;
 /// Slot of the automatic render broker connection (`tilo_render_protocol::broker`).
 const RENDER_CHILD_FD: i32 = 34;
 /// Slots bwrap reads its two seccomp programs from (`--add-seccomp-fd`).
@@ -79,6 +81,7 @@ pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
     CHOOSER_CHILD_FD,
+    SHELL_UI_CHILD_FD,
     RENDER_CHILD_FD,
     CLONE3_COMPAT_SECCOMP_CHILD_FD,
     BASELINE_SECCOMP_CHILD_FD,
@@ -128,15 +131,14 @@ fn child_fd_reserved(fd: i32) -> bool {
     }
     false
 }
-/// Settings holds `app-process` for the person's languages alone: the host answers it which language packs
+/// Settings holds `package-service` for the person's languages alone: the host answers it which language packs
 /// are offered and installs one, never the Store's package-management interface (the host decides by
 /// the app id stamped on the connection).
 use tilo_app_id::apps::SETTINGS as SETTINGS_APP_ID;
 use tilo_app_id::apps::STORE as STORE_APP_ID;
-pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
-/// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON handoff.
-const APP_HOST_HANDOFF_FRAMING: Framing = Framing::big_endian(1024).reject_empty();
-const COMPAT_PROTOCOL_VERSION: u16 = 1;
+/// The version of the handoff the launcher writes the compatibility service, apart from the
+/// version of the requests the app then sends.
+pub const COMPAT_HANDOFF_PROTOCOL: u16 = 1;
 /// The compatibility service's handoff: a little-endian `u32` length, then JSON.
 pub const COMPAT_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024).reject_empty();
 /// The model gateway's handoff: a little-endian `u32` length, then JSON.
@@ -200,9 +202,9 @@ pub enum ServiceError {
         source: std::io::Error,
     },
     #[error(
-        "service `app-process` is restricted to the Store, and to Settings for its language packs"
+        "service `package-service` is restricted to the Store, and to Settings for its language packs"
     )]
-    AppProcessUnauthorized,
+    PackageServiceUnauthorized,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -229,43 +231,48 @@ pub fn identity_socket() -> PathBuf {
     socket_for(IDENTITY_SERVICE)
 }
 
-/// Authenticate the optional shell-UI channel before the child enters its sandbox.
-pub fn authenticate_shell_ui_bind(
-    resolved: &[ResolvedService],
-    app_id: &str,
-    egress: &crate::egress_proxy::EgressDecision,
-) -> Result<(), ServiceError> {
-    let Some(service) = resolved
-        .iter()
-        .find(|service| service.name == SHELL_UI_SERVICE)
-    else {
-        return Ok(());
-    };
-    let path = socket_for(SHELL_UI_SERVICE);
-    // Duplicate only for a temporary writer; the original descriptor remains owned by
-    // `ResolvedService` for the child handoff.
-    let borrowed = unsafe { BorrowedFd::borrow_raw(service.host_fd()) };
-    let owned = borrowed
-        .try_clone_to_owned()
-        .map_err(|source| ServiceError::OpenFailed {
-            path: path.clone(),
-            source,
-        })?;
-    let mut stream = UnixStream::from(owned);
-    let mut frame = serde_json::to_vec(&serde_json::json!({
+/// The first line on a shell-UI connection: the app it speaks for, and whether its launch may know
+/// the network's state.
+pub fn shell_ui_handshake(app_id: &str, network_status_allowed: bool) -> Vec<u8> {
+    let mut frame = serde_json::json!({
         "protocol": SHELL_UI_LAUNCH_PROTOCOL,
         "app_id": app_id,
-        "network_status_allowed": !matches!(egress, crate::egress_proxy::EgressDecision::Blocked),
-    }))
-    .map_err(|error| ServiceError::OpenFailed {
-        path: path.clone(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
-    })?;
+        "network_status_allowed": network_status_allowed,
+    })
+    .to_string()
+    .into_bytes();
     frame.push(b'\n');
+    frame
+}
+
+/// Connect a window to the session shell, naming its app before the app can write: every window
+/// describes its controls, bar and cards there, so people and agents reach them in any app.
+pub fn resolve_shell_ui_bind(
+    app_id: &str,
+    egress: &crate::egress_proxy::EgressDecision,
+    no_services: bool,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    let path = socket_for(SHELL_UI_SERVICE);
+    if no_services || !path.exists() {
+        return Ok(None);
+    }
+    let mut stream = match UnixStream::connect(&path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "shell-ui service refused connection");
+            return Ok(None);
+        }
+    };
+    let allowed = !matches!(egress, crate::egress_proxy::EgressDecision::Blocked);
     stream
-        .write_all(&frame)
+        .write_all(&shell_ui_handshake(app_id, allowed))
         .and_then(|()| stream.flush())
-        .map_err(|source| ServiceError::OpenFailed { path, source })
+        .map_err(|source| ServiceError::OpenFailed { path, source })?;
+    Ok(Some(ResolvedService {
+        name: SHELL_UI_SERVICE.to_string(),
+        host: OwnedFd::from(stream),
+        child_fd: SHELL_UI_CHILD_FD,
+    }))
 }
 
 /// Connect the per-session identity broker and authenticate the launch context before the sandboxed app
@@ -690,9 +697,9 @@ fn authenticate_service(
         };
     }
 
-    if name == APP_HOST_SERVICE {
-        let launch = context.ok_or(ServiceError::AppProcessUnauthorized)?;
-        write_app_process_handoff(stream, launch.app_id).map_err(|source| {
+    if name == PACKAGE_SERVICE {
+        let launch = context.ok_or(ServiceError::PackageServiceUnauthorized)?;
+        write_package_service_handoff(stream, launch.app_id).map_err(|source| {
             ServiceError::OpenFailed {
                 path: path.to_path_buf(),
                 source,
@@ -721,16 +728,8 @@ fn write_ush_handoff(
     stream.flush()
 }
 
-fn write_app_process_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(&serde_json::json!({
-        "protocol": 1,
-        "app_id": app_id,
-    }))
-    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let frame = APP_HOST_HANDOFF_FRAMING.encode(&bytes)?;
-    stream.write_all(&APP_HOST_LAUNCH_MAGIC)?;
-    stream.write_all(&frame)?;
-    stream.flush()
+fn write_package_service_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
+    package_service::wire::write_handoff(stream, app_id)
 }
 
 fn resolve_service_binds_inner(
@@ -744,16 +743,16 @@ fn resolve_service_binds_inner(
     let mut out = Vec::with_capacity(services.len());
 
     for (name, req) in services {
-        if name == SYSTEM_SERVICE || name == IDENTITY_SERVICE {
+        if name == SYSTEM_SERVICE || name == IDENTITY_SERVICE || name == SHELL_UI_SERVICE {
             continue;
         }
         let path = socket_for(name);
 
-        if name == APP_HOST_SERVICE
+        if name == PACKAGE_SERVICE
             && context
                 .is_none_or(|launch| ![STORE_APP_ID, SETTINGS_APP_ID].contains(&launch.app_id))
         {
-            return Err(ServiceError::AppProcessUnauthorized);
+            return Err(ServiceError::PackageServiceUnauthorized);
         }
 
         if no_services {
@@ -832,7 +831,7 @@ fn write_compat_handoff(
     workspace_id: &str,
 ) -> std::io::Result<()> {
     let value = serde_json::json!({
-        "protocol": COMPAT_PROTOCOL_VERSION,
+        "protocol": COMPAT_HANDOFF_PROTOCOL,
         "app_id": app_id,
         "workspace_id": workspace_id,
     });
@@ -891,7 +890,7 @@ mod image_interface_tests {
             COMPAT_SERVICE,
             SYSTEM_SERVICE,
             MODEL_GATEWAY_SERVICE,
-            APP_HOST_SERVICE,
+            PACKAGE_SERVICE,
             USH_SERVICE,
             "tools",
             "models",
@@ -1199,8 +1198,10 @@ mod tests {
                     })
                 );
 
-                let bytes = written(|stream| write_app_process_handoff(stream, "so.tilo.notes"));
-                assert_eq!(handshake(b"QAH1", APP_HOST_HANDOFF_FRAMING, &bytes), app_only);
+                let bytes = written(|stream| write_package_service_handoff(stream, "so.tilo.notes"));
+                let handoff = package_service::wire::read_handoff(&mut bytes.as_slice())
+                    .expect("the package service handoff");
+                assert_eq!(handoff.app_id, "so.tilo.notes");
             }
             {
                 use std::io::Read;
@@ -1366,41 +1367,6 @@ mod tests {
                 assert_eq!(handoff["app_id"], "so.tilo.notes");
                 assert_eq!(handoff["workspace_id"], "workspace-7");
             }
-            {
-                use std::io::{BufRead, BufReader};
-
-                let dir = tempfile::tempdir().unwrap();
-                let _env = runtime_dir_env(dir.path());
-                let root = ensure_services_root().unwrap();
-                let listener =
-                    std::os::unix::net::UnixListener::bind(root.join("shell-ui.sock")).unwrap();
-                let mut services = BTreeMap::new();
-                services.insert(
-                    SHELL_UI_SERVICE.to_string(),
-                    crate::manifest::service_req("optional@1"),
-                );
-                for (mode, hosts, allowed) in [
-                    ("off", Vec::new(), false),
-                    ("host", Vec::new(), true),
-                    ("allowlist", vec!["example.com".to_owned()], true),
-                    ("allowlist", Vec::new(), false),
-                ] {
-                    let egress = crate::egress_proxy::EgressDecision::resolve(mode, &hosts, &[]);
-                    let resolved = resolve_service_binds(&services, false).unwrap();
-                    authenticate_shell_ui_bind(&resolved, "so.tilo.chat", &egress).unwrap();
-
-                    let (stream, _) = listener.accept().unwrap();
-                    let mut line = String::new();
-                    BufReader::new(stream).read_line(&mut line).unwrap();
-                    let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-                    assert_eq!(handshake["protocol"], SHELL_UI_LAUNCH_PROTOCOL);
-                    assert_eq!(handshake["app_id"], "so.tilo.chat");
-                    assert_eq!(
-                        handshake["network_status_allowed"], allowed,
-                        "{mode}: {hosts:?}"
-                    );
-                }
-            }
         }
 
         phase declared_services_cannot_replace_a_reserved_view_descriptor;
@@ -1443,7 +1409,7 @@ mod tests {
             {
                 let mut services = BTreeMap::new();
                 services.insert(
-                    APP_HOST_SERVICE.to_string(),
+                    PACKAGE_SERVICE.to_string(),
                     crate::manifest::service_req("required@1"),
                 );
                 let error = resolve_service_binds_for_launch(
@@ -1455,7 +1421,7 @@ mod tests {
                     },
                 )
                 .expect_err("third-party manifest must not grant package-manager authority");
-                assert!(matches!(error, ServiceError::AppProcessUnauthorized));
+                assert!(matches!(error, ServiceError::PackageServiceUnauthorized));
             }
             {
                 let dir = tempfile::tempdir().unwrap();

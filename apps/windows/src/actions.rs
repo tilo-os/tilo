@@ -58,6 +58,11 @@ pub enum WindowsEffect {
         #[param("The application's id")]
         app: String,
     },
+    #[effect(row, job, kind = "outside")]
+    Stop {
+        #[param("The application's id")]
+        app: String,
+    },
     #[effect(row, job, privileged, kind = "outside")]
     LaunchVmFallback {
         #[param("The application's id")]
@@ -207,6 +212,13 @@ fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
         .bound(),
     )
     .operation(launch)
+    .operation(offered(
+        &WindowsEffect::Stop {
+            app: app.id.clone(),
+        },
+        app.stop_available(),
+        Some("Only a running app in a private capsule can be ended here"),
+    ))
     .operation(offered(
         &WindowsEffect::LaunchVmFallback {
             app: app.id.clone(),

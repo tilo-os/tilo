@@ -367,5 +367,22 @@ final class SetupTests: XCTestCase {
         run.model.choose(Drawing.models[1].id)
         await drive.until("the chosen model to answer") { run.model.setup == .ready && run.model.supervision.model == Drawing.models[1].name }
     }
+
+    func testWhileTheirServerMakesTheirWorkspaceTheMainChatSaysSoUnderTheLineOfTheSettingUp() async throws {
+        var content = MemorySource.Content()
+        content.session = .signedIn(Drawing.person)
+        content.setup = .makingWorkspace
+        let started = try await Started.app(content)
+        defer { started.end() }
+        let drive = started.drive
+        await drive.until("the main chat to say that the assistant is being set up") { drive.shows(AssistantWords.findingAssistant.said) }
+        XCTAssertTrue(drive.shows(AssistantWords.makingWorkspace.said), drive.said())
+        XCTAssertFalse(drive.shows(AssistantWords.nothingYet.said), "a chat that says what it waits for is not empty")
+        // Their server answered: the line of the setting up stands alone again.
+        started.source.inner.set(.findingAssistant)
+        await drive.until("the model to hold the step that follows") { started.model.setup == .findingAssistant }
+        await drive.until("the sentence to be gone") { !drive.shows(AssistantWords.makingWorkspace.said) }
+        XCTAssertTrue(drive.shows(AssistantWords.findingAssistant.said), drive.said())
+    }
 }
 #endif

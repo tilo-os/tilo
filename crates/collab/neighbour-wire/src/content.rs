@@ -229,6 +229,13 @@ impl<T> ContentWants<T> {
         Some(request)
     }
 
+    /// Forget the requests no piece answered yet, so the next [`Self::ask`]
+    /// for each goes out at once: a device that can answer them was just
+    /// reached.
+    pub fn forget_unanswered(&mut self) {
+        self.wants.retain(|_, want| !want.pieces.is_empty());
+    }
+
     /// The requests device `device` sends the workspace again for the content
     /// it asked for and is still missing pieces of, `now_ms` being the
     /// current time: one per want whose transfer stalled, saying what arrived

@@ -13,6 +13,18 @@ public enum EngineScript {
     /// The name the page posts to: `webkit.messageHandlers.tiloLive`.
     public static let name = "tiloLive"
 
+    /// Whether what a mount beside the page says it opened is among the routes the page names,
+    /// one line `route APP/DOCUMENT: STATE;` each. It is text of the script: a function of the
+    /// app, what the mount opened and the page's lines. An app's own document of the workspace
+    /// is what a mount with no document named opens. Such a mount says its record is
+    /// `@tilo:package-primary`, a name that never travels: the page's line for it holds no
+    /// document at all (`route so.tilo.chat/: ready;`). A mount that names nothing it opened
+    /// has nothing to wait for.
+    static let joined = #"""
+    (app, opened, routes) => typeof opened !== 'string'
+            || String(routes).includes(`${app}/${opened === '@tilo:package-primary' ? '' : opened}:`)
+    """#
+
     /// - Parameters:
     ///   - origin: the one site whose page may speak to the engine.
     ///   - unseen: the page is shown to nobody as it starts. A web view that is in no window
@@ -30,6 +42,7 @@ public enum EngineScript {
                               device: String = "") -> String {
         let listed = (try? JSONSerialization.data(withJSONObject: providers)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         return source
+            .replacingOccurrences(of: "%JOINED%", with: joined)
             .replacingOccurrences(of: "%ORIGIN%", with: literal(origin))
             .replacingOccurrences(of: "%NAME%", with: name)
             .replacingOccurrences(of: "%UNSEEN%", with: unseen ? "true" : "false")
@@ -209,6 +222,9 @@ public enum EngineScript {
         document.body.append(element);
         return element;
       };
+      // Whether what a mount beside the page opened is among what the page itself holds
+      // (`EngineScript.joined`).
+      const joined = %JOINED%;
       // A page that offers `tiloOpen(element, {app, record, newDocument, instance})` mounts
       // beside itself. One that does not yet is reached through its own modules: the mount
       // the page itself calls, told the page's own profile, device, workspace and peer.
@@ -231,7 +247,7 @@ public enum EngineScript {
               peer: {runtimeId, origin: scope.host, workspace: scope.workspace}});
             const record = made.state()?.record;
             const routes = globalThis.tiloChannels?.() ?? '';
-            if (made.state()?.phase !== 'failed' && (typeof record !== 'string' || routes.includes(`${what.app}/${record}:`))) return made;
+            if (made.state()?.phase !== 'failed' && joined(what.app, record, routes)) return made;
             last = new Error(`failed: ${made.state()?.error ?? 'The record did not join the workspace'}`);
             await made.cleanup().catch(() => {});
           } catch (error) { last = error; }
@@ -288,6 +304,13 @@ public enum EngineScript {
       const pass = %PASS%;
       const providers = new Set(%PROVIDERS%);
       const agentActions = new Set(['read', 'create-agent', 'set-agent-on-host', 'retire-agent']);
+      // An app's own document of the workspace, as the workspace's server names what it offers
+      // of one: the app and nothing after it. Under any longer name the server offers nothing of it.
+      const ownDocument = app => `record:${app}:`;
+      // The chain the workspace's tracker keeps its issues in (Tasks' `tasks.issues`), as every
+      // device of the workspace names it, and what is asked of it for the app.
+      const issues = 'chain:derived:issues@derived:default@tab:0000000000000000';
+      const issueActions = new Set(['read']);
       const holds = given => {
         if (typeof given !== 'string' || !pass || given.length !== pass.length) return false;
         let differs = 0;
@@ -365,11 +388,22 @@ public enum EngineScript {
           const named = item === null || item === undefined || (typeof item === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(item));
           if (!holds(given) || !agentActions.has(action) || !named || (item && action !== 'read')) return unknown('chat.agent', action);
           if (!device) return noDevice();
-          // Chat's own document of the workspace, as the workspace's server names it: the app
-          // and nothing after it. Under any longer name the server offers nothing of it.
-          const provider = 'record:so.tilo.chat:';
+          const provider = ownDocument('so.tilo.chat');
           try {
             const answer = await device.invoke({provider, address: {resource: item ? `chat.agent/agents/${item}` : 'chat.agent', action}},
+              argument && Object.keys(argument).length ? argument : null);
+            return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
+              error: answer?.error ?? null}, '')});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
+        // The tasks of the person's assistant are issues of the workspace's tracker, which this
+        // page does not hold: it shows Chat. They are asked of the workspace's server as the
+        // person on this device: the read of the tracker's issues, and nothing else of Tasks.
+        async tasks(given, action, argument) {
+          if (!holds(given) || !issueActions.has(action)) return unknown('tasks.issues', action);
+          if (!device) return noDevice();
+          try {
+            const answer = await device.invoke({provider: ownDocument('so.tilo.tasks'), address: {resource: issues, action}},
               argument && Object.keys(argument).length ? argument : null);
             return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
               error: answer?.error ?? null}, '')});

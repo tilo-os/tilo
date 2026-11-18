@@ -47,6 +47,9 @@ impl CalendarApp {
         change: DragChange,
         doc: &mut ui::widget::Edits<'_>,
     ) {
+        if self.kept_for_reading(id) {
+            return;
+        }
         let repeats = self
             .model
             .event(id)

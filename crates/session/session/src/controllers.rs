@@ -258,7 +258,7 @@ impl Session {
             } else {
                 // A direction, activate or back: the key it stands for, which the compositor routes
                 // exactly as a press of that key.
-                let keys = controller_keys(intent, self.compositor.host_takes_keys());
+                let keys = controller_keys(intent, self.compositor.surface_takes_keys());
                 self.shared.controller_keys.set(true);
                 for (keycode, pressed) in keys {
                     drop(self.compositor.input(InputEvent::Key { keycode, pressed }));
@@ -308,7 +308,7 @@ const KEY_DOWN: u32 = 108;
 /// moves focus rather than the caret, and a bare arrow once a surface of the
 /// session's own takes the keyboard (a palette, the overview, the guide),
 /// where arrows already navigate.
-fn controller_keys(intent: NavIntent, host_takes_keys: bool) -> Vec<(u32, bool)> {
+fn controller_keys(intent: NavIntent, surface_takes_keys: bool) -> Vec<(u32, bool)> {
     let (keycode, alt) = match intent {
         NavIntent::Move(direction) => (
             match direction {
@@ -317,7 +317,7 @@ fn controller_keys(intent: NavIntent, host_takes_keys: bool) -> Vec<(u32, bool)>
                 NavDirection::Left => KEY_LEFT,
                 NavDirection::Right => KEY_RIGHT,
             },
-            !host_takes_keys,
+            !surface_takes_keys,
         ),
         NavIntent::Activate => (KEY_ENTER, false),
         NavIntent::Back => (KEY_ESCAPE, false),

@@ -33,6 +33,9 @@ use crate::widget::{ArrivingRows, Element, TaffyTreeExt, Widget};
 
 #[path = "virtual_list_groups.rs"]
 mod groups;
+#[path = "virtual_list_typed.rs"]
+mod typed;
+pub use typed::{AnyModel, ListKey, VirtualList};
 
 #[path = "virtual_list_vec_model.rs"]
 mod vec_model;
@@ -219,12 +222,12 @@ impl fmt::Display for DuplicateListKey {
 
 impl std::error::Error for DuplicateListKey {}
 
-type RowBuilder<M> = Box<dyn FnMut(&M, usize, &<M as ListModel>::Key, RowBuild) -> Element>;
+type RowBuilder = Box<dyn FnMut(&dyn AnyModel, usize, &ListKey, RowBuild) -> Element>;
 type KeyCallback<K> = Box<dyn FnMut(K)>;
 type FoldCallback<K> = Box<dyn FnMut(&K, bool)>;
 type SemanticKey<K> = Box<dyn Fn(&K) -> String>;
-type RowPresence<M> =
-    Box<dyn Fn(&M, usize, &<M as ListModel>::Key) -> Option<crate::presence::PresenceKey>>;
+type RowPresence =
+    Box<dyn Fn(&dyn AnyModel, usize, &ListKey) -> Option<crate::presence::PresenceKey>>;
 type SelectCallback<K> = Box<dyn FnMut(K, bool)>;
 type SelectedCallback<K> = Box<dyn FnMut(&[K])>;
 
@@ -233,9 +236,8 @@ pub(super) enum Choosing {
     ByHand,
     Following,
 }
-type ReorderValidator<M> =
-    Box<dyn FnMut(&M, &<M as ListModel>::Key, &DropTarget<<M as ListModel>::Key>) -> bool>;
-type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>) -> bool>;
+type ReorderValidator = Box<dyn FnMut(&dyn AnyModel, &ListKey, &DropTarget<ListKey>) -> bool>;
+type ReorderCommit = Box<dyn FnMut(&mut dyn AnyModel, ReorderDrop<ListKey>) -> bool>;
 use super::row_selection::selection_sink;
 pub use super::row_selection::{
     PaintedRowChevrons, PaintedRowLifts, RowBuild, RowChevron, RowContentBox, RowLift,
@@ -312,56 +314,56 @@ pub(super) enum RowStance {
 )]
 #[crate::component::not_a_component(
     part,
-    "`ui.VirtualList` (`DescribedList`) is its described form"
+    "the rows of a `VirtualList`, which reads them as its model's"
 )]
-pub struct VirtualList<M: ListModel> {
+pub struct VirtualRows {
     test_id: Option<String>,
-    model: M,
-    row_builder: RowBuilder<M>,
+    model: Box<dyn AnyModel>,
+    row_builder: RowBuilder,
     selection_aware: bool,
-    row_presence: Option<RowPresence<M>>,
+    row_presence: Option<RowPresence>,
     tooltips_suppressed: bool,
     delegate_selection: bool,
-    viewport: SparseVirtualViewport<M::Key>,
-    mounted: Vec<MountedRow<M::Key>>,
+    viewport: SparseVirtualViewport<ListKey>,
+    mounted: Vec<MountedRow<ListKey>>,
     /// Rows let go of whose nodes the retained layout still holds: they keep its walk's
     /// place, and their widgets alive, until a remount unmounts them.
     letting_go: Vec<(usize, LaidOutRow)>,
-    selection: KeySelection<M::Key>,
+    selection: KeySelection<ListKey>,
     multi_select: bool,
     reading: bool,
     follow_focus: bool,
-    focused_key: Option<M::Key>,
+    focused_key: Option<ListKey>,
     /// The group's heading holding the keyboard, with the index of the first row under it.
     focused_group: Option<(String, usize)>,
     typing: crate::type_ahead::TypeAhead,
-    on_select: Option<SelectCallback<M::Key>>,
-    on_selected: Option<SelectedCallback<M::Key>>,
+    on_select: Option<SelectCallback<ListKey>>,
+    on_selected: Option<SelectedCallback<ListKey>>,
     reported_many: bool,
-    view: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<M::Key>)>,
-    opens: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<M::Key>)>,
-    on_activate: Option<KeyCallback<M::Key>>,
+    view: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<ListKey>)>,
+    opens: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<ListKey>)>,
+    on_activate: Option<KeyCallback<ListKey>>,
     open_on_press: bool,
-    on_fold: Option<FoldCallback<M::Key>>,
-    on_opened: Option<KeyCallback<M::Key>>,
+    on_fold: Option<FoldCallback<ListKey>>,
+    on_opened: Option<KeyCallback<ListKey>>,
     on_closed: Option<Box<dyn FnMut()>>,
-    open: Option<M::Key>,
-    rereading_open: Option<M::Key>,
+    open: Option<ListKey>,
+    rereading_open: Option<ListKey>,
     held_open: Option<String>,
-    growth: Vec<(M::Key, crate::motion::MotionValue<f64>)>,
-    growing: HashSet<M::Key>,
-    menus: RowMenus<M>,
-    clicks: super::rows::Clicks<M::Key>,
-    semantic_key: Option<SemanticKey<M::Key>>,
+    growth: Vec<(ListKey, crate::motion::MotionValue<f64>)>,
+    growing: HashSet<ListKey>,
+    menus: RowMenus,
+    clicks: super::rows::Clicks<ListKey>,
+    semantic_key: Option<SemanticKey<ListKey>>,
     accessible_name: Option<String>,
     rect: Rect,
     last_cursor: Option<Point>,
     is_focused: bool,
     drag_scroll: DragScroller,
-    pressed_row: Option<(usize, M::Key)>,
-    reorder: ReorderController<M::Key>,
-    reorder_validator: Option<ReorderValidator<M>>,
-    reorder_commit: Option<ReorderCommit<M>>,
+    pressed_row: Option<(usize, ListKey)>,
+    reorder: ReorderController<ListKey>,
+    reorder_validator: Option<ReorderValidator>,
+    reorder_commit: Option<ReorderCommit>,
     scroll: super::rows::RowScroll,
     indent_guides: bool,
     motion: crate::tokens::EffectiveMotion,
@@ -397,9 +399,9 @@ pub struct VirtualList<M: ListModel> {
     follow_end: bool,
     at_end: bool,
     last_tick: Option<Instant>,
-    last_anchor: Option<SparseAnchor<M::Key>>,
+    last_anchor: Option<SparseAnchor<ListKey>>,
     requested_range: Option<Range<usize>>,
-    requested_open: Option<M::Key>,
+    requested_open: Option<ListKey>,
     request_dirty: bool,
     structure_dirty: bool,
     box_dirty: bool,
@@ -411,13 +413,13 @@ pub struct VirtualList<M: ListModel> {
     layout_offset: f64,
     mounted_range: Range<usize>,
     remount: bool,
-    invalidated: HashSet<M::Key>,
+    invalidated: HashSet<ListKey>,
     row_builds: u64,
-    access_rows: std::cell::RefCell<a11y::KeptAccessRows<M::Key>>,
+    access_rows: std::cell::RefCell<a11y::KeptAccessRows<ListKey>>,
     layout_node: Option<NodeId>,
     shown: crate::scroll_copy::ShownFrames<ListShown>,
-    row_motion: crate::collection_transition::RowMotions<M::Key>,
-    arrivals: ArrivingRows<M::Key>,
+    row_motion: crate::collection_transition::RowMotions<ListKey>,
+    arrivals: ArrivingRows<ListKey>,
     retry_asked: Rc<Cell<Option<usize>>>,
     placed: Option<Range<usize>>,
     near_placed: Range<usize>,
@@ -431,26 +433,26 @@ pub struct VirtualList<M: ListModel> {
     /// The pill's width for each way back ([`crate::widget::conversation::Jump::slot`]): the words
     /// measured at the face they are drawn in, so a narrow list shows them whole.
     pill_widths: [f64; crate::widget::conversation::JUMPS],
-    names_item: std::cell::RefCell<Option<Box<dyn Fn(&str) -> Option<M::Key>>>>,
+    names_item: std::cell::RefCell<Option<Box<dyn Fn(&str) -> Option<ListKey>>>>,
     groups: Groups,
     tail_title: Option<String>,
     view_title: Option<String>,
     view_count: Option<usize>,
     heads_nothing: std::cell::Cell<Option<bool>>,
-    row_groups: HashMap<M::Key, Option<groups::Group>>,
-    tree: Option<Rc<TreeMarks<M::Key>>>,
-    tree_rows: HashMap<M::Key, TreeRow<M::Key>>,
-    tree_hidden: HashSet<M::Key>,
+    row_groups: HashMap<ListKey, Option<groups::Group>>,
+    tree: Option<Rc<dyn typed::KeyedMarks>>,
+    tree_rows: HashMap<ListKey, TreeRow<ListKey>>,
+    tree_hidden: HashSet<ListKey>,
     first_level_branch: Option<bool>,
-    column_rows: HashSet<M::Key>,
-    rename: Option<Box<RenameField<M::Key>>>,
-    on_rename: Option<RenameCallback<M::Key>>,
+    column_rows: HashSet<ListKey>,
+    rename: Option<Box<RenameField<ListKey>>>,
+    on_rename: Option<RenameCallback<ListKey>>,
     rename_on_double_click: bool,
     tab_indents: bool,
-    on_delete: Option<KeyCallback<M::Key>>,
+    on_delete: Option<KeyCallback<ListKey>>,
 }
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     /// Take what the model says changed since it was last asked, and follow it. Whether
     /// anything did.
     fn take_model_changes(&mut self) -> bool {
@@ -469,33 +471,10 @@ impl<M: ListModel> VirtualList<M> {
         legacy_wakeup || received_changes
     }
 
-    pub fn new(
-        model: M,
+    pub(super) fn build(
+        model: Box<dyn AnyModel>,
         estimated_row_height: f32,
-        mut row_builder: impl FnMut(&M, usize, &M::Key) -> Element + 'static,
-    ) -> Self {
-        Self::build(
-            model,
-            estimated_row_height,
-            Box::new(move |model, index, key, _| row_builder(model, index, key)),
-            false,
-        )
-    }
-
-    pub fn with_selection_delegate(
-        model: M,
-        estimated_row_height: f32,
-        row_builder: impl FnMut(&M, usize, &M::Key, RowBuild) -> Element + 'static,
-    ) -> Self {
-        let mut list = Self::build(model, estimated_row_height, Box::new(row_builder), true);
-        list.delegate_selection = true;
-        list
-    }
-
-    fn build(
-        model: M,
-        estimated_row_height: f32,
-        row_builder: RowBuilder<M>,
+        row_builder: RowBuilder,
         selection_aware: bool,
     ) -> Self {
         let mut viewport = SparseVirtualViewport::new(f64::from(estimated_row_height));
@@ -628,7 +607,7 @@ impl<M: ListModel> VirtualList<M> {
         list
     }
 
-    pub fn reveal(&mut self, key: &M::Key) -> bool {
+    pub fn reveal(&mut self, key: &ListKey) -> bool {
         let Some(index) = self.model.index_of(key) else {
             return false;
         };
@@ -773,13 +752,7 @@ impl<M: ListModel> VirtualList<M> {
         self.multi_select = enabled;
     }
 
-    #[must_use]
-    pub fn on_selected(mut self, callback: impl FnMut(&[M::Key]) + 'static) -> Self {
-        self.set_on_selected(callback);
-        self
-    }
-
-    pub fn set_on_selected(&mut self, callback: impl FnMut(&[M::Key]) + 'static) {
+    pub fn set_on_selected(&mut self, callback: impl FnMut(&[ListKey]) + 'static) {
         self.on_selected = Some(Box::new(callback));
     }
 
@@ -797,13 +770,7 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
-    #[must_use]
-    pub fn with_selection(mut self, selection: KeySelection<M::Key>) -> Self {
-        self.set_selection(selection);
-        self
-    }
-
-    pub fn set_selection(&mut self, mut selection: KeySelection<M::Key>) {
+    pub fn set_selection(&mut self, mut selection: KeySelection<ListKey>) {
         selection.reconcile(|key| self.model.index_of(key).is_some());
         self.reported_many = selection.is_select_all() || selection.stored_keys().count() > 1;
         self.selection = selection;
@@ -822,39 +789,22 @@ impl<M: ListModel> VirtualList<M> {
     #[must_use]
     pub fn with_row_presence(
         mut self,
-        presence: impl Fn(&M, usize, &M::Key) -> Option<crate::presence::PresenceKey> + 'static,
+        presence: impl Fn(&dyn AnyModel, usize, &ListKey) -> Option<crate::presence::PresenceKey>
+        + 'static,
     ) -> Self {
         self.row_presence = Some(Box::new(presence));
         self
     }
 
-    #[must_use]
-    pub fn on_select(mut self, callback: impl FnMut(M::Key, bool) + 'static) -> Self {
-        self.set_on_select(callback);
-        self
-    }
-
-    pub fn set_on_select(&mut self, callback: impl FnMut(M::Key, bool) + 'static) {
+    pub fn set_on_select(&mut self, callback: impl FnMut(ListKey, bool) + 'static) {
         self.on_select = Some(Box::new(callback));
     }
 
-    #[must_use]
-    pub fn on_activate(mut self, callback: impl FnMut(M::Key) + 'static) -> Self {
-        self.set_on_activate(callback);
-        self
-    }
-
-    pub fn set_on_activate(&mut self, callback: impl FnMut(M::Key) + 'static) {
+    pub fn set_on_activate(&mut self, callback: impl FnMut(ListKey) + 'static) {
         self.on_activate = Some(Box::new(callback));
     }
 
-    #[must_use]
-    pub fn on_opened(mut self, callback: impl FnMut(M::Key) + 'static) -> Self {
-        self.set_on_opened(callback);
-        self
-    }
-
-    pub fn set_on_opened(&mut self, callback: impl FnMut(M::Key) + 'static) {
+    pub fn set_on_opened(&mut self, callback: impl FnMut(ListKey) + 'static) {
         self.on_opened = Some(Box::new(callback));
     }
 
@@ -869,7 +819,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     #[must_use]
-    pub fn on_fold(mut self, callback: impl FnMut(&M::Key, bool) + 'static) -> Self {
+    pub fn on_fold(mut self, callback: impl FnMut(&ListKey, bool) + 'static) -> Self {
         self.on_fold = Some(Box::new(callback));
         self
     }
@@ -877,12 +827,12 @@ impl<M: ListModel> VirtualList<M> {
     /// Encodes a key as an opaque, stable string for accessibility and headless row
     /// actions; it must not change while the key names the same item.
     #[must_use]
-    pub fn with_semantic_key(mut self, encode: impl Fn(&M::Key) -> String + 'static) -> Self {
+    pub fn with_semantic_key(mut self, encode: impl Fn(&ListKey) -> String + 'static) -> Self {
         self.semantic_key = Some(Box::new(encode));
         self
     }
 
-    fn key_for_name(&self, encoded: &str) -> Option<M::Key> {
+    fn key_for_name(&self, encoded: &str) -> Option<ListKey> {
         let encode = self.semantic_key.as_ref()?;
         (0..self.model.len())
             .filter_map(|index| self.model.key_at(index))
@@ -892,8 +842,8 @@ impl<M: ListModel> VirtualList<M> {
     #[must_use]
     pub fn with_reorder(
         mut self,
-        validate: impl FnMut(&M, &M::Key, &DropTarget<M::Key>) -> bool + 'static,
-        commit: impl FnMut(&mut M, ReorderDrop<M::Key>) -> bool + 'static,
+        validate: impl FnMut(&dyn AnyModel, &ListKey, &DropTarget<ListKey>) -> bool + 'static,
+        commit: impl FnMut(&mut dyn AnyModel, ReorderDrop<ListKey>) -> bool + 'static,
     ) -> Self {
         self.reorder_validator = Some(Box::new(validate));
         self.reorder_commit = Some(Box::new(commit));
@@ -920,7 +870,7 @@ impl<M: ListModel> VirtualList<M> {
             }
         }
     }
-    pub fn reorder_target(&self) -> Option<&DropTarget<M::Key>> {
+    pub fn reorder_target(&self) -> Option<&DropTarget<ListKey>> {
         self.reorder.target()
     }
 
@@ -930,11 +880,11 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     #[must_use]
-    pub fn model(&self) -> &M {
-        &self.model
+    pub fn model(&self) -> &dyn AnyModel {
+        &*self.model
     }
 
-    pub fn focus_row(&mut self, key: M::Key) {
+    pub fn focus_row(&mut self, key: ListKey) {
         self.focused_group = None;
         self.focused_key = Some(key);
         self.jump_focused = false;
@@ -973,16 +923,16 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     #[must_use]
-    pub fn selection(&self) -> &KeySelection<M::Key> {
+    pub fn selection(&self) -> &KeySelection<ListKey> {
         &self.selection
     }
 
-    pub fn selection_mut(&mut self) -> &mut KeySelection<M::Key> {
+    pub fn selection_mut(&mut self) -> &mut KeySelection<ListKey> {
         &mut self.selection
     }
 
     #[must_use]
-    pub fn focused_key(&self) -> Option<&M::Key> {
+    pub fn focused_key(&self) -> Option<&ListKey> {
         self.focused_key.as_ref()
     }
 
@@ -1043,7 +993,7 @@ impl<M: ListModel> VirtualList<M> {
         hasher.finish()
     }
 
-    fn key_hash(key: &M::Key) -> u64 {
+    fn key_hash(key: &ListKey) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         key.hash(&mut hasher);
@@ -1151,15 +1101,15 @@ impl<M: ListModel> VirtualList<M> {
         changed
     }
 
-    fn row_at_cursor(&self) -> Option<(usize, M::Key)> {
+    fn row_at_cursor(&self) -> Option<(usize, ListKey)> {
         self.row_at(self.last_cursor?)
     }
 
-    pub fn key_at_point(&self, point: Point) -> Option<M::Key> {
+    pub fn key_at_point(&self, point: Point) -> Option<ListKey> {
         self.row_at(point).map(|(_, key)| key)
     }
 
-    fn row_at(&self, cursor: Point) -> Option<(usize, M::Key)> {
+    fn row_at(&self, cursor: Point) -> Option<(usize, ListKey)> {
         if !self.rect.contains(cursor) {
             return None;
         }
@@ -1175,7 +1125,7 @@ impl<M: ListModel> VirtualList<M> {
             .flatten()
     }
 
-    fn reorder_candidate(&mut self, cursor: Point) -> Option<DropCandidate<M::Key>> {
+    fn reorder_candidate(&mut self, cursor: Point) -> Option<DropCandidate<ListKey>> {
         if self.model.is_empty() || self.rect.height() <= 0.0 {
             return None;
         }
@@ -1218,7 +1168,7 @@ impl<M: ListModel> VirtualList<M> {
         true
     }
 
-    fn select_focused(&mut self, key: M::Key, extend: bool) {
+    fn select_focused(&mut self, key: ListKey, extend: bool) {
         if extend {
             self.apply_selection(key, false, true, Choosing::ByHand);
         } else if self.follow_focus && !self.selection.is_selected(&key) {
@@ -1332,7 +1282,7 @@ impl<M: ListModel> VirtualList<M> {
             return false;
         }
         self.typing.type_text(text, crate::time::now());
-        let model = &self.model;
+        let model = &*self.model;
         let mut named = false;
         let target = self.typing.target_at(model.len(), current, |index| {
             let label = model.label(index);
@@ -1460,70 +1410,19 @@ impl<M: ListModel> VirtualList<M> {
     }
 }
 
-impl<T, K> VirtualList<VecListModel<T, K>>
-where
-    T: 'static,
-    K: Clone + Eq + Hash + 'static,
-{
-    pub fn from_items(
-        items: Vec<T>,
-        estimated_row_height: f32,
-        key: impl FnMut(&T) -> K,
-        mut row: impl FnMut(&T, usize, &K) -> Element + 'static,
-    ) -> Result<Self, DuplicateListKey> {
-        let model = VecListModel::new(items, key)?;
-        Ok(Self::new(
-            model,
-            estimated_row_height,
-            move |model, index, key| {
-                model.item(index).map_or_else(
-                    || Box::new(crate::widget::Text::new("")) as Element,
-                    |item| row(item, index, key),
-                )
-            },
-        ))
-    }
-
-    #[must_use]
-    pub fn reorderable(self) -> Self {
-        self.with_reorder(
-            |_, source, target| target.placement != DropPlacement::Inside && source != &target.key,
-            |model, dropped| {
-                let Some(from) = model.index_of(&dropped.source) else {
-                    return false;
-                };
-                let Some(target) = model.index_of(&dropped.target.key) else {
-                    return false;
-                };
-                let boundary = match dropped.target.placement {
-                    DropPlacement::Before => target,
-                    DropPlacement::After => target.saturating_add(1),
-                    DropPlacement::Inside => return false,
-                };
-                let to = if boundary > from {
-                    boundary.saturating_sub(1)
-                } else {
-                    boundary
-                };
-                model.move_item(from, to)
-            },
-        )
-    }
-}
-
-impl<M: ListModel> crate::widget::virtual_list::PaintedRowChevrons for VirtualList<M> {
+impl crate::widget::virtual_list::PaintedRowChevrons for VirtualRows {
     fn painted_row_chevrons(&self) -> Vec<crate::widget::virtual_list::RowChevron> {
         self.painted_chevrons.clone()
     }
 }
 
-impl<M: ListModel> crate::widget::PaintedRowLifts for VirtualList<M> {
+impl crate::widget::PaintedRowLifts for VirtualRows {
     fn painted_row_lifts(&self) -> Vec<crate::widget::RowLift> {
         self.painted_lifts.clone()
     }
 }
 
-impl<M: ListModel + 'static> Widget for VirtualList<M> {
+impl Widget for VirtualRows {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("ul");
         cx.children();
@@ -1649,7 +1548,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         };
         let disclosure = crate::chrome::disclosure_gutter(theme);
         if (disclosure - self.disclosure).abs() > 0.5 {
-            let mounted: Vec<M::Key> = self.mounted.iter().map(|row| row.key.clone()).collect();
+            let mounted: Vec<ListKey> = self.mounted.iter().map(|row| row.key.clone()).collect();
             self.invalidate_rows(mounted);
         }
         self.disclosure = disclosure;
@@ -1794,7 +1693,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         let mut first_measured = false;
         for (index, key, height) in measurements {
             let height = self.grouped_height(index, height);
-            let geometry = |viewport: &SparseVirtualViewport<M::Key>| {
+            let geometry = |viewport: &SparseVirtualViewport<ListKey>| {
                 (
                     viewport.item_height(index).map(f64::to_bits),
                     viewport.offset().to_bits(),
@@ -2442,7 +2341,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
     fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
         Some(crate::widget::LayoutInfo::List(crate::widget::ListLayout {
-            heads_rows: groups::group_of(&self.model, 0, self.tail_title.as_deref()).is_some(),
+            heads_rows: groups::group_of(&*self.model, 0, self.tail_title.as_deref()).is_some(),
             lead: crate::num::f32_of_f64(self.viewport.edges().0),
             pill: self.pill_layout(),
         }))

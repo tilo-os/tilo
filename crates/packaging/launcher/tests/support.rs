@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
+use launcher::manifest::{Entrypoint, ManifestView, Net, Sandbox};
 use launcher::run::{IdentitySource, RunOptions};
 
 /// A payload root holding `bin/hello`, the in-tree `hello` fixture.
@@ -75,7 +75,6 @@ pub fn manifest(package_id: &str, bin: &str, net: &str) -> ManifestView {
                 mode: net.to_string(),
                 ..Net::default()
             },
-            fs: Fs::default(),
             services: BTreeMap::new(),
             portals: BTreeMap::new(),
             ..Sandbox::default()

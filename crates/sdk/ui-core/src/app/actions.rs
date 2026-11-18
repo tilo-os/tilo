@@ -3315,7 +3315,7 @@ impl crate::session_api::SessionApi for BrokerApi<'_> {
     }
 }
 
-impl crate::host_core::ControlHost for App {
+impl crate::app_core::ControlCore for App {
     fn local_author(&self) -> &crate::permissions::MemberId {
         &self.collaboration.local_author
     }

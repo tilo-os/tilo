@@ -53,7 +53,7 @@ final class TiloSourceTests: XCTestCase {
     /// send and the answer to a question, and names the person's row. With `enter(true)` it
     /// hands a native host its device's entry, behind which a host keeps a vault, the person's
     /// models and their events.
-    private static let page = #"""
+    static let page = #"""
     <!doctype html><html data-arrival="load"><title>Tilo</title><span id="status"></span><div id="semantics"></div>
     <script>
       const root = document.documentElement;
@@ -571,7 +571,7 @@ final class TiloSourceTests: XCTestCase {
         try await start()
         try await enter(device: true)
         try await until("the host was asked on the way in") {
-            (try? await self.page("return String(window.hostAsked.length)")) == "10"
+            (try? await self.page("return String(window.hostAsked.length)")) == "11"
         }
         // Ten changes of Chat's records: the conversation follows, and the host is asked nothing.
         for n in 0..<10 {
@@ -584,7 +584,7 @@ final class TiloSourceTests: XCTestCase {
         // so that nothing old is told again. The last four are what came while she was away, then the
         // ask her server is to hold until the log moves. This one answers it at once with nothing,
         // three times in a row, and is asked no more.
-        XCTAssertEqual(asked, #"["tilo.telling list","tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list","tilo.telling since-you-left","tilo.telling list","tilo.telling list","tilo.telling list"]"#)
+        XCTAssertEqual(asked, #"["tilo.telling list","tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list","tilo.connections list","tilo.telling since-you-left","tilo.telling list","tilo.telling list","tilo.telling list"]"#)
     }
 
     func testWhatItLearnedAndWhatIsImportantAreThePersonsOwnOnTheirHost() async throws {
@@ -614,6 +614,10 @@ final class TiloSourceTests: XCTestCase {
         // There it stays: the page's own word of where it is, and no second move.
         try await run("location.hash = '#/@host.example:8443/w/own-7/so.tilo.chat'")
         try await until("the app is signed in") { if case .signedIn = self.sessions.last { true } else { false } }
+        // She is signed in from the moment the page says whose device this is, before it went there.
+        try await until("the app no longer keeps the workspace it was let in at") {
+            self.defaults.string(forKey: "TiloLiveRoute") != "/w/ws-1"
+        }
         XCTAssertEqual(asked.count, 1)
         XCTAssertEqual(defaults.string(forKey: "TiloLiveRoute"), "/@host.example:8443/w/own-7")
     }
@@ -625,8 +629,6 @@ final class TiloSourceTests: XCTestCase {
             ("Tasks cannot be reached from this app yet", { try await self.source.addTask("Renew the passport") }),
             ("Tilo cannot pause an assistant yet", { try await self.source.setAssistantOn(false) }),
             ("No password manager is connected to Tilo yet", { try await self.source.fetchSecret(for: "k1") }),
-            ("Tilo keeps no connections to sign in to yet", { _ = try await self.source.authenticate("c1") }),
-            ("Tilo keeps no connections to sign in to yet", { try await self.source.decline(ConnectionOffer.ID("c1")) }),
             ("A file cannot be fetched into this app yet", { _ = try await self.source.file(of: "f1") }),
         ]
         for (sentence, call) in refused {
@@ -1331,6 +1333,53 @@ final class TiloSourceTests: XCTestCase {
             XCTFail("a link into another site paired")
         } catch {}
         XCTAssertNil(keys.read(), "a key left behind met the next sign-in")
+    }
+
+    func testALinkThatLeadsIntoAnotherSiteIsRefusedWithTheNameOfTheSiteThisAppOpens() async throws {
+        try await start()
+        let secret = String(repeating: "ab", count: 48)
+        // Another site, this computer on another port than the site's, and another site's link
+        // that carries an address of this site inside it: none of them leads into this site.
+        for (text, from) in [("https://elsewhere.example/#/w/ws-1?pair=\(secret)", "elsewhere.example"),
+                             ("http://tilo.localhost:24520/#/w/ws-1?pair=\(secret)", "tilo.localhost:24520"),
+                             ("HTTPS://elsewhere.example/?next=\(Self.site)/#/w/ws-1?pair=\(secret)", "elsewhere.example")] {
+            let link = try XCTUnwrap(PairingLink(in: text), text)
+            do {
+                try await source.pair(with: link)
+                XCTFail("paired with \(text)")
+            } catch {
+                // Each is a pairing link of another Tilo site: the refusal names that site by its
+                // name and port, the site this app opens, and where a code for it is made.
+                XCTAssertEqual(error as? SourceProblem, .refused("This code is from another Tilo site, \(from). This app is set up for "
+                    + "\(Self.site). Open “Pair a new device” there."), text)
+            }
+        }
+    }
+
+    /// A person's server keeps one word for where a sub-agent works. Its header says it as a
+    /// person reads it: their server itself, or the workspace's machine with the program at
+    /// work there.
+    func testWhereASubAgentWorksIsSaidInWordsAPersonReadsAndNotAsTheWordItsServerKeeps() async throws {
+        try await start(.assistant)
+        var listed: [SubAgent] = []
+        let listening = Task { for await agents in self.source.subAgents() { listed = agents } }
+        defer { listening.cancel() }
+        try await enter(device: false, """
+            window.byKind = true;
+            window.pageAgents = [kept('reed', {name: 'Reed'}),
+              kept('coder', {name: 'Usage drop', created_at: 1794900002000,
+                sub: {role: 'Coder', stands: {$variant: 'working'}, coding: {harness: 'claude-code', harness_name: 'Claude Code'}}}),
+              kept('early', {name: 'Sign-in change', created_at: 1794900001000,
+                sub: {role: 'Coder', stands: {$variant: 'working'}, coding: {harness: '', harness_name: ''}}}),
+              kept('reader', {name: 'Open requests', created_at: 1794900000000,
+                sub: {role: 'Researcher', stands: {$variant: 'working'}, coding: null}})]
+            """)
+        try await until("her three sub-agents are listed") { listed.count == 3 }
+        XCTAssertEqual(listed.map(\.title), ["Usage drop", "Sign-in change", "Open requests"])
+        let headers = listed.map { Wording().header($0) }
+        XCTAssertTrue(headers[0].hasPrefix("Coder · Claude Code on the workspace's machine · started "), headers[0])
+        XCTAssertTrue(headers[1].hasPrefix("Coder · the workspace's machine · started "), headers[1])
+        XCTAssertTrue(headers[2].hasPrefix("Researcher · your Tilo server · started "), headers[2])
     }
 }
 #endif

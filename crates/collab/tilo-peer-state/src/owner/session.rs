@@ -12,7 +12,7 @@ use crate::join::TransportHint;
 use crate::owner::{AppWrite, NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, took_in};
 use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
-use tilo_identity::identity_store::HostIdentity;
+use tilo_identity::identity_store::DeviceIdentity;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 /// An enrolled workspace to hold a link for.
@@ -66,7 +66,7 @@ impl Connect {
     /// pins and the owner's continuity.
     pub fn material(
         &self,
-        identity: &HostIdentity,
+        identity: &DeviceIdentity,
     ) -> Result<(TransportHint, DeviceCert, u64), String> {
         let (cert, continuity) = self.ownership(identity)?;
         let hint = self
@@ -76,7 +76,7 @@ impl Connect {
     }
     /// Whether this device may act as `workspace`'s own member now, and the
     /// continuity its record is at ([`Self::material`]).
-    pub fn ownership(&self, identity: &HostIdentity) -> Result<(DeviceCert, u64), String> {
+    pub fn ownership(&self, identity: &DeviceIdentity) -> Result<(DeviceCert, u64), String> {
         self.owner.with_current(self.workspace, |view| {
             let (cert, entries) = identity.current_material(view.workspace_id())?;
             if &cert != view.device() {
@@ -125,7 +125,7 @@ impl Connect {
     /// enrollment pins is this very device. Such a workspace is never dialled:
     /// its link pairs with the host in this process.
     #[must_use]
-    pub fn hosted_here(&self, identity: &HostIdentity) -> bool {
+    pub fn hosted_here(&self, identity: &DeviceIdentity) -> bool {
         self.owner
             .with_current(self.workspace, |view| {
                 let (cert, _) = identity.current_material(view.workspace_id())?;
@@ -137,7 +137,7 @@ impl Connect {
     /// device's ownership holds one: the device proves its membership with it
     /// ([`crate::owner::enroll::renew_membership`]) before its links dial again,
     /// as [`Self::material`] refuses ownership that differs from the record.
-    pub fn renewal(&self, identity: &HostIdentity) -> Result<Option<DeviceCert>, String> {
+    pub fn renewal(&self, identity: &DeviceIdentity) -> Result<Option<DeviceCert>, String> {
         self.owner.with_current(self.workspace, |view| {
             let (cert, _) = identity.current_material(view.workspace_id())?;
             Ok(crate::owner::renewal::renews(&cert, view.device()).then_some(cert))
@@ -230,7 +230,7 @@ impl Scope {
     ///
     /// # Errors
     /// This device's access in the workspace, or the link's pin, changed.
-    pub fn current(&self, identity: &HostIdentity) -> Result<(), String> {
+    pub fn current(&self, identity: &DeviceIdentity) -> Result<(), String> {
         let (hint, device, continuity) = self.connect.material(identity)?;
         if self.pinned_to(&hint, &device, continuity) {
             Ok(())
@@ -247,7 +247,7 @@ impl Scope {
     pub fn authorize(
         &self,
         view: &NativeCommittedView,
-        identity: &HostIdentity,
+        identity: &DeviceIdentity,
     ) -> Result<(), String> {
         if view.device() != &self.device
             || view.transport_hint()? != &self.hint

@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use tilo_lock::MutexRecover as _;
 
-/// The capability an app declares to reach the GPU itself (`[capabilities]` in its manifest).
-pub const CAPABILITY: &str = "gpu";
+/// The device an app declares and is granted to reach the GPU itself.
+pub const CAPABILITY: collab_types::caps::DeviceCap = collab_types::caps::DeviceCap::Gpu;
 
 /// Whether `manifest`'s app opens the GPU itself.
 pub fn granted(
@@ -17,8 +17,8 @@ pub fn granted(
     plan: &crate::capabilities::CapabilityPlan,
     image_shipped: bool,
 ) -> bool {
-    manifest.declares_capability(CAPABILITY)
-        && (image_shipped || plan.devices.iter().any(|device| device == CAPABILITY))
+    crate::capabilities::declares(manifest, CAPABILITY)
+        && (image_shipped || plan.devices.contains(&CAPABILITY))
 }
 
 /// GLVND's EGL vendor selection: a colon-separated list of vendor ICD JSONs; when set, GLVND loads only

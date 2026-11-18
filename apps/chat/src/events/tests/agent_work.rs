@@ -26,7 +26,7 @@ fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
                 .unwrap()
                 .children
                 .into_iter()
-                .find(|node| node.name.as_deref() == Some("Tide (agent): "))
+                .find(|node| node.name.as_deref() == Some("Tide: "))
                 .expect("the open thread exposes its agent reply")
                 .description
                 .unwrap()

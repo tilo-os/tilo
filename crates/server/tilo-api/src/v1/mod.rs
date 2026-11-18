@@ -614,6 +614,11 @@ impl<'a> Caller<'a> {
                     .and_then(|limit| limit.parse::<u64>().ok());
                 let args = with(json!({"query": query}), "app", self.query("app"));
                 let found = self.call("tilo_find", with(args, "limit", limit)).await?;
+                // A search that matched nothing says so in words: it ran, and its answer is
+                // no hits. A device that keeps no search refuses in words of its own, which stay.
+                if searched_nothing(&found) {
+                    return Ok(Answer::ok(json!({"hits": [], "query": query})));
+                }
                 shaped::<answers::SearchHits>(found).map(Answer::ok)
             }
             _ => {
@@ -1539,6 +1544,12 @@ fn said_instead(value: &Value) -> Option<(bool, String)> {
     Some((status == "failed", text.to_owned()))
 }
 
+/// Whether a search found nothing: it answered in words, and not as a failure. A device that
+/// keeps no search refuses as one, which is no answer of an empty page.
+fn searched_nothing(found: &Value) -> bool {
+    matches!(said_instead(found), Some((false, _)))
+}
+
 /// An action's answer as the API names it: `200` done, `202` pending with
 /// where to follow it, a refusal when it failed.
 /// Send `content`'s bytes into `pieces` as the workspace answers them, one
@@ -1982,5 +1993,20 @@ mod shaped_tests {
         let wrong = shaped::<answers::Listing>(json!({"rows": 3})).expect_err("not a listing");
         let said = serde_json::to_value(&*wrong.body).expect("an error body");
         assert_eq!(said["code"], "unavailable", "{said}");
+    }
+
+    /// A search that matched nothing answers the hits it found, which are none; a device
+    /// that keeps no search is a refusal, not an empty page.
+    #[test]
+    fn a_search_that_matched_nothing_answers_no_hits() {
+        let nothing =
+            json!({"status": "ok", "text": "nothing matches passport in what you may read here"});
+        assert!(searched_nothing(&nothing));
+        let no_search = json!({"status": "failed", "text": "keeps no search of its workspace"});
+        assert!(!searched_nothing(&no_search));
+        assert!(!searched_nothing(&json!({"hits": [], "query": "passport"})));
+        let empty = json!({"hits": [], "query": "passport"});
+        let hits: answers::SearchHits = serde_json::from_value(empty).expect("an empty page");
+        assert!(hits.hits.is_empty() && hits.query == "passport");
     }
 }

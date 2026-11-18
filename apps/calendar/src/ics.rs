@@ -361,33 +361,243 @@ pub fn kept_text(text: &str) -> String {
 /// server holds.
 #[must_use]
 pub fn kept_beside(text: &str, held: Option<&str>) -> String {
+    kept_over_held(text, held, false)
+}
+
+/// [`kept_beside`] for a `text` this calendar wrote out from an event as it
+/// holds one ([`export`]), at an address where its server holds `held`:
+/// beside what the text says, whom `held` names that an event here cannot
+/// hold goes up as the server holds them.
+///
+/// An event here names people by a mail address, the same people on each of
+/// its occurrences. An entry may name somebody by another address, a line
+/// this calendar's reading leaves out, and on one occurrence other people
+/// than on the event. A text written out from an event has none of those
+/// lines, and a server that schedules reads a line that is gone as that
+/// person taken out: it tells them the event is off (RFC 6638, 3.2.1.2,
+/// column `<Removed>`). So they stay:
+///
+/// - on the event, each line of `held` that this calendar does not read, as
+///   it is held;
+/// - on an occurrence the server holds, the lines it holds there. Somebody
+///   the event itself named on the server and names no longer here leaves
+///   its occurrences with it, and somebody the event newly names here joins
+///   them as they join the event;
+/// - on an occurrence that stands apart only here, whom the event goes up
+///   with. A server schedules an entry where each of its parts says who
+///   organises it (3.1); an occurrence that names nobody ends that for the
+///   whole entry, which the server takes for its removal (3.2.3.1).
+#[must_use]
+pub fn exported_beside(text: &str, held: &str) -> String {
+    kept_over_held(text, Some(held), true)
+}
+
+/// What [`kept_beside`] and [`exported_beside`] answer: `text` as it goes up
+/// where its server holds `held`, with what `held` alone names where the
+/// text was written out from an event (`exported`).
+fn kept_over_held(text: &str, held: Option<&str>, exported: bool) -> String {
     let written_for = held.map(server_written).unwrap_or_default();
     let uid_held = held.and_then(uid_line_held);
     let lines = pim_lines::unfold(text);
     let parsed: Vec<Option<ContentLine>> =
         lines.iter().map(|line| ContentLine::parse(line)).collect();
     let events_own = events_own_lines(&parsed);
+    let staying = match held {
+        Some(held) if exported => lines_that_stay(&lines, &parsed, held, &written_for),
+        _ => Vec::new(),
+    };
     let mut out = String::new();
-    for ((line, parsed), events_own) in lines.iter().zip(&parsed).zip(events_own) {
+    for (at, ((line, parsed), events_own)) in lines.iter().zip(&parsed).zip(events_own).enumerate()
+    {
+        // What stays of an event or an occurrence stands before its end.
+        for (_, more) in staying.iter().filter(|(end, _)| *end == at) {
+            out.push_str(more);
+        }
         match parsed {
             Some(parsed) if parsed.name == "METHOD" => {}
             Some(parsed) if parsed.name == "UID" && events_own => {
                 fold_into(&mut out, uid_held.as_deref().unwrap_or(line));
             }
             Some(parsed) if names_somebody(parsed) => {
-                let address = address_of(parsed);
-                let as_held = written_for
-                    .iter()
-                    .find(|held| held.property == parsed.name && held.address == address);
-                match as_held {
-                    Some(held) => fold_into(&mut out, &held.line),
-                    None => client_scheduled(&mut out, parsed),
-                }
+                naming_line_kept(&mut out, parsed, &written_for);
             }
             _ => fold_into(&mut out, line),
         }
     }
     out
+}
+
+/// Append `line`, which names somebody, as it goes up beside what a server
+/// holds: as held where the server writes to them, and the client's
+/// otherwise ([`kept_beside`]).
+fn naming_line_kept(out: &mut String, line: &ContentLine, written_for: &[ServerWritten]) {
+    let address = address_of(line);
+    let as_held = written_for
+        .iter()
+        .find(|held| held.property == line.name && held.address == address);
+    match as_held {
+        Some(held) => fold_into(out, &held.line),
+        None => client_scheduled(out, line),
+    }
+}
+
+/// One `VEVENT` of an iCalendar text: the event itself, or one occurrence of
+/// it that stands apart.
+struct EventOrOccurrence {
+    /// Whether it stands for one occurrence: it has a `RECURRENCE-ID`.
+    apart: bool,
+    /// The day of that occurrence, by which this calendar knows it.
+    day: Option<Date>,
+    /// Its own lines that name somebody: each as it reads, and unfolded as
+    /// it is written.
+    naming: Vec<(ContentLine, String)>,
+    /// Where its `END` stands among the text's unfolded lines.
+    end: usize,
+}
+
+/// The events and occurrences of an iCalendar text, of which `lines` are the
+/// unfolded lines and `parsed` what each reads as.
+fn event_parts(lines: &[String], parsed: &[Option<ContentLine>]) -> Vec<EventOrOccurrence> {
+    let mut parts = Vec::new();
+    // The components open around a line, innermost last: whether each is an
+    // event.
+    let mut open: Vec<bool> = Vec::new();
+    let mut part: Option<EventOrOccurrence> = None;
+    for (at, (written, line)) in lines.iter().zip(parsed).enumerate() {
+        let Some(line) = line else { continue };
+        if line.name == "BEGIN" {
+            let event = line.begins("VEVENT");
+            if event {
+                part = Some(EventOrOccurrence {
+                    apart: false,
+                    day: None,
+                    naming: Vec::new(),
+                    end: at,
+                });
+            }
+            open.push(event);
+        } else if line.name == "END" {
+            if open.pop() == Some(true)
+                && let Some(mut ended) = part.take()
+            {
+                ended.end = at;
+                parts.push(ended);
+            }
+        } else if open.last() == Some(&true)
+            && let Some(part) = &mut part
+        {
+            if line.name == "RECURRENCE-ID" {
+                part.apart = true;
+                part.day = parse_recurrence_id(line).map(|(day, _)| day);
+            } else if names_somebody(line) {
+                part.naming.push((line.clone(), written.clone()));
+            }
+        }
+    }
+    parts
+}
+
+/// Whether a line of `part` names whom `line` names, as what `line` names
+/// them: who organises, or somebody invited.
+fn part_names(part: &EventOrOccurrence, line: &ContentLine) -> bool {
+    let address = address_of(line);
+    part.naming
+        .iter()
+        .any(|(other, _)| other.name == line.name && address_of(other) == address)
+}
+
+/// Whether `part` says who organises it.
+fn part_is_organised(part: &EventOrOccurrence) -> bool {
+    part.naming.iter().any(|(line, _)| line.name == "ORGANIZER")
+}
+
+/// What stays beside the own lines of a text written out from an event
+/// ([`exported_beside`]): for each of its events and occurrences, where its
+/// `END` stands among the text's unfolded lines, and the folded lines that
+/// go up before it.
+fn lines_that_stay(
+    lines: &[String],
+    parsed: &[Option<ContentLine>],
+    held: &str,
+    written_for: &[ServerWritten],
+) -> Vec<(usize, String)> {
+    let held_lines = pim_lines::unfold(held);
+    let held_parsed: Vec<Option<ContentLine>> = held_lines
+        .iter()
+        .map(|line| ContentLine::parse(line))
+        .collect();
+    let held_parts = event_parts(&held_lines, &held_parsed);
+    let parts = event_parts(lines, parsed);
+    let event = parts.iter().find(|part| !part.apart);
+    let held_event = held_parts.iter().find(|part| !part.apart);
+    // Whom the event's server holds and this calendar does not read.
+    let mut unread = String::new();
+    for (line, written) in held_event.iter().flat_map(|held| &held.naming) {
+        let named_here = event.is_some_and(|event| {
+            part_names(event, line) || (line.name == "ORGANIZER" && part_is_organised(event))
+        });
+        if parse_participant(line).is_none() && !named_here {
+            fold_into(&mut unread, &as_it_is_held(line, written));
+        }
+    }
+    let mut staying = Vec::new();
+    for part in &parts {
+        let mut more = String::new();
+        let held_part = held_parts
+            .iter()
+            .find(|held| held.apart && held.day.is_some() && held.day == part.day);
+        if !part.apart {
+            more.push_str(&unread);
+        } else if let Some(held_part) = held_part {
+            // On an occurrence its server holds: whom the server names
+            // there, but for somebody taken out of the event here.
+            for (line, written) in &held_part.naming {
+                let taken_out = parse_participant(line).is_some()
+                    && held_event.is_some_and(|held| part_names(held, line))
+                    && !event.is_some_and(|event| part_names(event, line));
+                if !taken_out && !part_names(part, line) {
+                    fold_into(&mut more, &as_it_is_held(line, written));
+                }
+            }
+            // And whom the event newly names here, as on the event.
+            for (line, _) in event.iter().flat_map(|event| &event.naming) {
+                let new_here = !held_event.is_some_and(|held| part_names(held, line));
+                let second_organiser = line.name == "ORGANIZER"
+                    && (part_is_organised(held_part) || part_is_organised(part));
+                if new_here
+                    && !part_names(held_part, line)
+                    && !part_names(part, line)
+                    && !second_organiser
+                {
+                    naming_line_kept(&mut more, line, written_for);
+                }
+            }
+        } else {
+            // On an occurrence that stands apart only here: whom the event
+            // goes up with.
+            for (line, _) in event.iter().flat_map(|event| &event.naming) {
+                if !part_names(part, line) {
+                    naming_line_kept(&mut more, line, written_for);
+                }
+            }
+            more.push_str(&unread);
+        }
+        if !more.is_empty() {
+            staying.push((part.end, more));
+        }
+    }
+    staying
+}
+
+/// A line that names somebody as a server holds it and as it goes up again:
+/// whole, but for what forced the server to write once
+/// (`SCHEDULE-FORCE-SEND`; RFC 6638, 7.2).
+fn as_it_is_held(line: &ContentLine, written: &str) -> String {
+    if line.param("SCHEDULE-FORCE-SEND").is_some() {
+        rewritten(line, None, &["SCHEDULE-FORCE-SEND"])
+    } else {
+        written.to_owned()
+    }
 }
 
 /// For each of the unfolded `lines` of an iCalendar text, whether it is an
@@ -454,15 +664,10 @@ fn server_written(held: &str) -> Vec<ServerWritten> {
             if !names_somebody(&parsed) || !left_to_its_server(&parsed) {
                 return None;
             }
-            let line = if parsed.param("SCHEDULE-FORCE-SEND").is_some() {
-                rewritten(&parsed, None, &["SCHEDULE-FORCE-SEND"])
-            } else {
-                line
-            };
             Some(ServerWritten {
                 address: address_of(&parsed),
+                line: as_it_is_held(&parsed, &line),
                 property: parsed.name,
-                line,
             })
         })
         .collect()
@@ -593,6 +798,45 @@ pub fn named(text: &str) -> Named {
         }
     }
     named
+}
+
+/// What the entry in the iCalendar `text` says in its notes: its
+/// `DESCRIPTION`, as text. Of an entry that repeats, the notes of the
+/// series where it has any, and else those of the first occurrence that
+/// was changed. A reminder's own words are not the entry's. Empty for an
+/// entry without notes. Whoever made the entry wrote them: they are other
+/// people's words, as its title and its place are.
+#[must_use]
+pub fn notes(text: &str) -> String {
+    let (mut in_event, mut in_alarm, mut changed) = (false, false, false);
+    let mut found: Option<String> = None;
+    let mut of_a_changed_one: Option<String> = None;
+    for line in pim_lines::unfold(text) {
+        let Some(line) = ContentLine::parse(&line) else {
+            continue;
+        };
+        if line.begins("VEVENT") {
+            (in_event, in_alarm, changed, found) = (true, false, false, None);
+        } else if line.ends("VEVENT") {
+            in_event = false;
+            match found.take() {
+                Some(notes) if !changed => return notes,
+                Some(notes) if of_a_changed_one.is_none() => of_a_changed_one = Some(notes),
+                _ => {}
+            }
+        } else if line.begins("VALARM") {
+            in_alarm = true;
+        } else if line.ends("VALARM") {
+            in_alarm = false;
+        } else if in_event && !in_alarm {
+            match line.name.as_str() {
+                "RECURRENCE-ID" => changed = true,
+                "DESCRIPTION" => found = Some(unescape(&line.value)),
+                _ => {}
+            }
+        }
+    }
+    of_a_changed_one.unwrap_or_default()
 }
 
 /// `text` with its event filed under `categories`, in the property a
@@ -1930,6 +2174,48 @@ mod tests {
             );
         }
 
+        phase an_entrys_notes_are_read_from_its_text;
+        {
+            let entry = |more: &str| {
+                format!(
+                    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:review-1@example.test\r\n\
+                     SUMMARY:Review\r\nDTSTART:20261118T140000Z\r\nDTEND:20261118T143000Z\r\n\
+                     {more}END:VEVENT\r\nEND:VCALENDAR\r\n"
+                )
+            };
+            // Its own words, with what the standard writes for a comma and for a line's end.
+            assert_eq!(
+                notes(&entry(
+                    "DESCRIPTION:Bring the numbers\\, all of them.\\nFourth floor\r\n"
+                )),
+                "Bring the numbers, all of them.\nFourth floor"
+            );
+            // A long line, folded as a server folds one.
+            assert_eq!(
+                notes(&entry("DESCRIPTION:Bring the num\r\n bers\r\n")),
+                "Bring the numbers"
+            );
+            // A reminder's words are not the entry's, with notes beside them and without.
+            let reminder = "BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:The review is soon\r\n\
+                            TRIGGER:-PT15M\r\nEND:VALARM\r\n";
+            assert_eq!(
+                notes(&entry(&format!(
+                    "DESCRIPTION:Bring the numbers\r\n{reminder}"
+                ))),
+                "Bring the numbers"
+            );
+            assert_eq!(notes(&entry(reminder)), "");
+            assert_eq!(notes(&entry("")), "", "an entry without notes");
+            // Of an entry that repeats: the notes of the series, wherever a changed
+            // occurrence stands in the text.
+            let series = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:weekly-1@example.test\r\n\
+                          RECURRENCE-ID:20261125T140000Z\r\nSUMMARY:Review\r\nDTSTART:20261125T150000Z\r\n\
+                          DESCRIPTION:Moved this once\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\n\
+                          UID:weekly-1@example.test\r\nSUMMARY:Review\r\nDTSTART:20261118T140000Z\r\n\
+                          RRULE:FREQ=WEEKLY\r\nDESCRIPTION:Every week\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+            assert_eq!(notes(series), "Every week");
+        }
+
         phase export_envelope_and_event_task_all_day_round_trips;
         {
             {
@@ -2455,6 +2741,182 @@ mod tests {
         assert_eq!(
             uid_lines(&kept_beside(ours, Some(nameless))),
             uid_lines(ours)
+        );
+    }
+
+    /// A repeating entry as a server holds it. Ada organises it with Bo and
+    /// Eve; two more are named by addresses this calendar does not read; and
+    /// on the one occurrence that stands apart, Dan is invited too.
+    const HELD_STANDUP: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+         UID:standup-7@example.org\r\nDTSTART:20261116T090000Z\r\nRRULE:FREQ=WEEKLY\r\n\
+         ORGANIZER:mailto:ada@example.test\r\n\
+         ATTENDEE;PARTSTAT=ACCEPTED:mailto:bo@example.test\r\n\
+         ATTENDEE:mailto:eve@elsewhere.test\r\n\
+         ATTENDEE;CUTYPE=GROUP;SCHEDULE-FORCE-SEND=REQUEST:urn:uuid:fay-4\r\n\
+         ATTENDEE;SCHEDULE-AGENT=NONE:Mailto:Di@Example.test\r\n\
+         END:VEVENT\r\nBEGIN:VEVENT\r\nUID:standup-7@example.org\r\n\
+         RECURRENCE-ID:20261123T090000Z\r\nDTSTART:20261123T100000Z\r\n\
+         ORGANIZER:mailto:ada@example.test\r\n\
+         ATTENDEE;PARTSTAT=ACCEPTED:mailto:bo@example.test\r\n\
+         ATTENDEE:mailto:eve@elsewhere.test\r\n\
+         ATTENDEE;RSVP=TRUE:mailto:dan@example.test\r\n\
+         END:VEVENT\r\nEND:VCALENDAR\r\n";
+
+    /// One event as this calendar writes it out.
+    fn written_out_alone(event: Event) -> String {
+        export(&Calendar {
+            events: vec![event].into(),
+            ..Calendar::default()
+        })
+    }
+
+    /// Whom each event and occurrence of a text names, in order; a line the
+    /// client writes for by its address alone.
+    fn naming_by_part(text: &str) -> Vec<Vec<String>> {
+        let mut parts: Vec<Vec<String>> = Vec::new();
+        for line in pim_lines::unfold(text) {
+            if line == "BEGIN:VEVENT" {
+                parts.push(Vec::new());
+            } else if line.starts_with("ORGANIZER") || line.starts_with("ATTENDEE") {
+                let said = if line.contains(";SCHEDULE-AGENT=CLIENT") {
+                    format!(
+                        "the client's: {}",
+                        line.rsplit(':').next().unwrap_or_default()
+                    )
+                } else {
+                    line
+                };
+                if let Some(part) = parts.last_mut() {
+                    part.push(said);
+                }
+            }
+        }
+        parts
+    }
+
+    /// What goes up of an event this calendar wrote out keeps whom its
+    /// server holds and an event here cannot hold: somebody named by an
+    /// address this calendar does not read, as held, and on an occurrence
+    /// the lines its server holds there. An occurrence follows its event
+    /// only in whom this calendar took out of the event or newly put into
+    /// it, and an occurrence that stands apart only here names whom its
+    /// event goes up with. A text that was not written out from an event is
+    /// whole as it is.
+    #[test]
+    fn what_is_written_out_of_an_event_keeps_whom_it_cannot_hold_as_its_server_holds_them() {
+        let mut event = parse(HELD_STANDUP).0.remove(0);
+        assert_eq!(
+            event.attendees.iter().count(),
+            3,
+            "Ada, Bo and Eve are read"
+        );
+        assert_eq!(event.occurrence_overrides.iter().count(), 1);
+        // Here Eve is taken out of the event and Cy is put into it.
+        let staying: Vec<Attendee> = event
+            .attendees
+            .iter()
+            .filter(|invited| invited.email != "eve@elsewhere.test")
+            .cloned()
+            .collect();
+        event.attendees = staying.into();
+        event.attendees.push(Attendee {
+            id: Id::new_v4(),
+            name: "Cy".into(),
+            email: "cy@example.test".into(),
+            status: InviteStatus::NeedsAction,
+        });
+        // And one more occurrence is moved, which its server holds no part
+        // for.
+        event
+            .occurrence_overrides
+            .push(crate::model::OccurrenceOverride {
+                original_date: jiff::civil::date(2026, 11, 30),
+                original_time: Some(jiff::civil::time(9, 0, 0, 0)),
+                cancelled: false,
+                start: Some(jiff::civil::date(2026, 11, 30).at(11, 0, 0, 0)),
+                end: Some(jiff::civil::date(2026, 11, 30).at(11, 15, 0, 0)),
+                end_later_fold: false,
+                title: None,
+                location: None,
+            });
+        let ours = written_out_alone(event);
+        let kept = exported_beside(&ours, HELD_STANDUP);
+        assert_eq!(
+            naming_by_part(&kept),
+            [
+                vec![
+                    "ORGANIZER:mailto:ada@example.test",
+                    "the client's: ada@example.test",
+                    "ATTENDEE;PARTSTAT=ACCEPTED:mailto:bo@example.test",
+                    "the client's: cy@example.test",
+                    // Two this calendar does not read: as held, and what
+                    // forced the server to write once does not go up again.
+                    "ATTENDEE;CUTYPE=GROUP:urn:uuid:fay-4",
+                    "ATTENDEE;SCHEDULE-AGENT=NONE:Mailto:Di@Example.test",
+                ],
+                vec![
+                    // As its server holds the occurrence, without Eve, who
+                    // was taken out of the event, and with Dan, who is
+                    // invited to this occurrence alone.
+                    "ORGANIZER:mailto:ada@example.test",
+                    "ATTENDEE;PARTSTAT=ACCEPTED:mailto:bo@example.test",
+                    "ATTENDEE;RSVP=TRUE:mailto:dan@example.test",
+                    // And whom the event newly names here.
+                    "the client's: ada@example.test",
+                    "the client's: cy@example.test",
+                ],
+                vec![
+                    // The occurrence moved here: whom the event goes up
+                    // with.
+                    "ORGANIZER:mailto:ada@example.test",
+                    "the client's: ada@example.test",
+                    "ATTENDEE;PARTSTAT=ACCEPTED:mailto:bo@example.test",
+                    "the client's: cy@example.test",
+                    "ATTENDEE;CUTYPE=GROUP:urn:uuid:fay-4",
+                    "ATTENDEE;SCHEDULE-AGENT=NONE:Mailto:Di@Example.test",
+                ],
+            ],
+            "{kept}"
+        );
+        assert!(!kept.contains("SCHEDULE-FORCE-SEND"), "{kept}");
+        assert!(kept.contains("UID:standup-7@example.org"), "{kept}");
+        // A text that was not written out from an event says all it means:
+        // nobody is put back into it.
+        let whole = kept_beside(&ours, Some(HELD_STANDUP));
+        assert!(
+            !whole.contains("fay-4") && !whole.contains("dan@example.test"),
+            "{whole}"
+        );
+    }
+
+    /// Who organises an entry stays where its server names them by an
+    /// address this calendar does not read, and is the only one to organise
+    /// it: where the event here says who organises it, that stands instead.
+    #[test]
+    fn who_organises_an_entry_by_an_address_this_calendar_does_not_read_stays() {
+        let by_other_address = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:review-5@example.org\r\n\
+             DTSTART:20261116T090000Z\r\nORGANIZER:urn:uuid:ada\r\n\
+             ATTENDEE:mailto:bo@example.test\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let mut event = parse(by_other_address).0.remove(0);
+        assert_eq!(event.organizer, None);
+        let kept = exported_beside(&written_out_alone(event.clone()), by_other_address);
+        assert_eq!(
+            naming_by_part(&kept),
+            [vec![
+                "ATTENDEE:mailto:bo@example.test",
+                "ORGANIZER:urn:uuid:ada"
+            ]],
+            "{kept}"
+        );
+        event.organizer = event.attendees.iter().next().map(|invited| invited.id);
+        let kept = exported_beside(&written_out_alone(event), by_other_address);
+        assert_eq!(
+            naming_by_part(&kept),
+            [vec![
+                "the client's: bo@example.test",
+                "ATTENDEE:mailto:bo@example.test"
+            ]],
+            "{kept}"
         );
     }
 

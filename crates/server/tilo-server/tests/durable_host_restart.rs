@@ -59,16 +59,8 @@ async fn publish_and_leave(
     a_client
         .send(Envelope::Subscribe { workspace_id: ws })
         .unwrap();
-    let ready = tilo_test_env::within("A Ready timeout", a_client.recv())
-        .await
-        .expect("A Ready closed");
-    assert!(matches!(
-        ready,
-        Envelope::Ready {
-            pending_deltas: 0,
-            ..
-        }
-    ));
+    // A held workspace sends its own state before it is ready.
+    crate::common::next(&a_client, |env| matches!(env, Envelope::Ready { .. })).await;
 
     let mut doc_a = AutoCommit::new();
     doc_a.put(ROOT, "note", "durable").unwrap();
@@ -83,16 +75,18 @@ async fn publish_and_leave(
         })
         .unwrap();
 
-    let mut queued = 0;
-    // Polls for up to 30 s; only a hang uses the whole budget.
+    // Polls for up to 30 s; only a hang uses the whole budget. The held
+    // workspace queues state of its own beside A's edit, so the edit is found
+    // by its bytes.
+    let mut queued = false;
     for _ in 0..1200 {
-        queued = pending_count(pending_dir);
-        if queued >= 1 {
+        queued = crate::common::queued_carries(pending_dir, b"durable");
+        if queued {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(queued, 1, "A's edit must be persisted for the offline B");
+    assert!(queued, "A's edit must be persisted for the offline B");
 
     // A disconnects. Now neither device is online.
     drop(a_client);
@@ -107,6 +101,7 @@ async fn publish_and_leave(
 async fn catch_up_after_restart(
     addr2: iroh_base::EndpointAddr,
     user: &TestUser,
+    a: &crate::common::TestDevice,
     b: &crate::common::TestDevice,
     ws: WorkspaceId,
 ) -> AutoCommit {
@@ -127,10 +122,7 @@ async fn catch_up_after_restart(
     let mut doc_b = AutoCommit::new();
     let mut got_delta = false;
     let mut got_ready = false;
-    for _ in 0..6 {
-        if got_delta && got_ready {
-            break;
-        }
+    while !(got_delta && got_ready) {
         let env = tilo_test_env::within("B catch-up timeout", b_client.recv())
             .await
             .expect("B channel closed");
@@ -138,21 +130,27 @@ async fn catch_up_after_restart(
             Envelope::Delta {
                 workspace_id,
                 delta,
+                author_device_public_key,
                 ..
             } => {
                 assert_eq!(workspace_id, ws);
-                doc_b.load_incoming(&delta).expect("B applies queued delta");
-                got_delta = true;
+                // The state the workspace sends first carries no queued
+                // change of A's.
+                if author_device_public_key == a.device_pubkey() {
+                    doc_b.load_incoming(&delta).expect("B applies queued delta");
+                    got_delta = true;
+                }
             }
             Envelope::Ready {
                 workspace_id,
                 pending_deltas,
-                documents_when_opened: false,
+                ..
             } => {
                 assert_eq!(workspace_id, ws);
-                assert_eq!(pending_deltas, 1, "host reports the one queued delta");
+                assert!(pending_deltas >= 1, "the server reports the queued delta");
                 got_ready = true;
             }
+            Envelope::WorkspaceBootstrap { .. } => {}
             other => panic!("unexpected envelope {other:?}"),
         }
     }
@@ -168,7 +166,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     let user = TestUser::fresh("Alice");
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("phone", DeviceCapabilities::member());
-    let members = [a.device_pubkey(), b.device_pubkey()];
+    let members = [&a.cert, &b.cert];
 
     // The host's persistent state directory — kept alive across the
     // restart so the pending queue + iroh identity survive.
@@ -206,9 +204,8 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     drop(host1);
 
     // The queued delta is still on disk after the host process died.
-    assert_eq!(
-        pending_count(&pending_dir),
-        1,
+    assert!(
+        crate::common::queued_carries(&pending_dir, b"durable"),
         "queued delta must survive the host process dying"
     );
 
@@ -223,7 +220,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     .await;
     let addr2 = host2.node_addr();
 
-    let mut doc_b = catch_up_after_restart(addr2, &user, &b, WS).await;
+    let mut doc_b = catch_up_after_restart(addr2, &user, &a, &b, WS).await;
 
     assert_eq!(doc_b.str_at(&ROOT, "note").as_deref(), Some("durable"));
     assert_eq!(

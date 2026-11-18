@@ -63,19 +63,22 @@ pub use state::mail_send_lease;
 /// The person's own documents between their devices, with no host in between.
 pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, device_resource, resource_owner};
 pub use state::{
-    BOT_SCHEDULES_KEY, CLOCK_SKEW_NS, DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent,
-    GovernedDelegateRow, InstalledApp, InstalledBot, KeptDocument, LEASES_KEY, Lease, LeaseClaim,
-    MAIL_SENDS_KEY, MAX_HELD_BYTES, MAX_HELD_INPUTS, MailSent, Member, MemberId, MemberList,
-    MembershipError, NativePublicationCut, NotAdmitted, OpenedDocument, OpenedHistory, OpenedWrite,
-    PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
+    BOT_SCHEDULES_KEY, CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, DONE_KEY,
+    DelegateInactive, DocumentRow, Done, GovernedAccess, GovernedAgent, GovernedDelegateRow,
+    HELD_COPIES_KEY, HeldCopy, HolderCopy, InstalledApp, InstalledBot, KeptDocument, LEASES_KEY,
+    Lease, LeaseClaim, MAX_HELD_BYTES, MAX_HELD_INPUTS, Member, MemberId, MemberList,
+    MembershipError, Missing, NativePublicationCut, NotAdmitted, OpenedDocument, OpenedHistory,
+    OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
     PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
     PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,
     ReceiveOutcome, RequestedBot, Reseal, RowError, SETTINGS_KIND, SealCheckpoint, SeedDocument,
-    SeedState, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
+    SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
     WORKSPACE_KEEPING_DEVICES_KEY, WORKSPACES_KIND, committed_document_revision,
-    decide_with_surfaces, default_surfaces, keeping_devices_of, peer_handle, seed_workspace,
-    trigger_mark, unranked, workspace_grants_of, workspace_host_actor, workspace_seed,
+    decide_with_surfaces, default_surfaces, holder_role, keeping_devices_of, peer_handle,
+    seed_workspace, trigger_mark, unranked, workspace_grants_of, workspace_host_actor,
+    workspace_seed,
 };
+pub use state::{vm_lease, vm_rank};
 pub mod coverage;
 mod governed_routes;
 pub mod removals;

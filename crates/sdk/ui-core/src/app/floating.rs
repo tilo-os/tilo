@@ -509,7 +509,7 @@ impl App {
         };
         // Outside a Tilo session there is no trusted shell chooser to open.
         // Drain the edge so reconnecting later cannot replay a stale gesture.
-        while self.root_widget.take_capture_studio_request().is_some() {}
+        self.root_widget.take_pip_area_request();
         for request in crate::shell_tabs::take_requests() {
             self.apply_unhosted_tab_request(request);
             changed = true;
@@ -848,20 +848,9 @@ impl App {
                 crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
             );
         }
-        while let Some(mode) = self.root_widget.take_capture_studio_request() {
-            let mode = match mode {
-                crate::widget::CaptureMode::Screenshot => {
-                    crate::floating_surface::CaptureStudioProtocolMode::Screenshot
-                }
-                crate::widget::CaptureMode::Recording => {
-                    crate::floating_surface::CaptureStudioProtocolMode::Recording
-                }
-                crate::widget::CaptureMode::Pip => {
-                    crate::floating_surface::CaptureStudioProtocolMode::PictureInPicture
-                }
-            };
+        if self.root_widget.take_pip_area_request() {
             client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::OpenCaptureStudio { mode },
+                &crate::floating_surface::FloatingSurfaceClientMessage::PickPictureInPictureArea,
             )?;
             *changed = true;
         }

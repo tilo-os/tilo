@@ -435,6 +435,8 @@ pub struct WorkspaceActivityPane {
     passive_digest: ActivityDigest,
     passive_unread: usize,
     passive_rows: Vec<HistoryEntry>,
+    /// When the person here joined the workspace in front, where it recorded that.
+    joined: Option<SystemTime>,
     persistent_frontiers: bool,
     view: ActivityView,
     morning_sources: HashMap<WorkspaceId, MorningPreferences>,
@@ -602,6 +604,7 @@ impl WorkspaceActivityPane {
             passive_digest: ActivityDigest::default(),
             passive_unread: 0,
             passive_rows: Vec::new(),
+            joined: None,
             persistent_frontiers: false,
             view: ActivityView::default(),
             morning_sources: HashMap::new(),
@@ -783,16 +786,24 @@ impl WorkspaceActivityPane {
         }
     }
 
-    /// What "new" is counted from in `workspace` . One this device has never read starts from the
-    /// history it holds now: a fresh install's own setup or a joined workspace's past stays
-    /// browsable, but is not news.
+    /// What "new" is counted from in `workspace` . One this device has never read starts from when
+    /// the person joined it: what others did since is news, and the workspace's past stays
+    /// browsable. One whose joining it did not keep starts from the history it holds now.
     fn passive_frontier(&mut self, workspace: WorkspaceId) -> WorkspaceSeenFrontier {
         if self.persistent_frontiers
             && !self.seen_frontiers.contains_key(&workspace)
             && !self.history_index.entries().is_empty()
         {
             let mut frontier = WorkspaceSeenFrontier::default();
-            frontier.mark_seen(&self.history_index);
+            match self.joined {
+                Some(joined) => self
+                    .history_index
+                    .entries()
+                    .iter()
+                    .filter(|row| row.entry.timestamp < joined)
+                    .for_each(|row| frontier.acknowledge(&row.id)),
+                None => frontier.mark_seen(&self.history_index),
+            }
             self.seen_frontiers.insert(workspace, frontier);
             self.persist_frontiers();
         }
@@ -816,8 +827,12 @@ impl WorkspaceActivityPane {
             && !self.seen_frontiers.contains_key(&workspace)
             && !rows.is_empty()
         {
+            let joined = self.joined;
             let frontier = self.seen_frontiers.entry(workspace).or_default();
-            for row in rows {
+            for row in rows
+                .iter()
+                .filter(|row| joined.is_none_or(|joined| row.timestamp < joined))
+            {
                 frontier.acknowledge(&id(row));
             }
             self.persist_frontiers();
@@ -1398,9 +1413,6 @@ impl WorkspaceActivityPane {
     /// selections deliberately have no synthetic diff: callers can split them by provenance and
     /// compare each resource honestly.
     pub fn compare_selection(&self, tree: &mut impl ActivityTree) -> Option<HistoryComparison> {
-        if tree.document().pending_ops() > 0 {
-            return None;
-        }
         let (start, end) = self.timeline.selection()?;
         let selected = self.timeline.entries().get(start..=end)?;
         let addresses: Vec<WorkspaceHistoryId> = selected
@@ -1493,33 +1505,8 @@ impl WorkspaceActivityPane {
         });
     }
 
-    fn defer_pending_tree(&mut self, tree: &impl ActivityTree) {
-        self.workspace_name = tree.active_workspace().map_or_else(
-            || crate::names::workspace(""),
-            |workspace| crate::names::workspace(&workspace.name),
-        );
-        self.last_heads.clear();
-        self.last_active = None;
-        self.derived.clear();
-        self.scoped_tree_rows.clear();
-        self.projected_origins.clear();
-        self.named.clear();
-        self.timeline.set_named_ranges(Vec::new());
-        self.replay_frames.clear();
-        self.replay_checkpoints.clear();
-        self.replay_playing = false;
-        self.clear_comparison();
-        self.history_index = WorkspaceHistoryIndex::new();
-        self.feed_coverage = FeedCoverage {
-            pending_tree: true,
-            ..FeedCoverage::default()
-        };
-        self.install_rows(Vec::new());
-    }
-
     /// Re-derive the timeline from the workspace document if the graph has moved; called every
-    /// frame, the heads check keeps that cheap. A producer's pending transaction is deferred until
-    /// its own stamped commit. History never closes that transaction as a side effect.
+    /// frame, the heads check keeps that cheap.
     #[allow(
         clippy::too_many_lines,
         reason = "timeline refresh keeps document observation, filter projection, and retained activity rows in one ordered read-only projection pass"
@@ -1528,16 +1515,6 @@ impl WorkspaceActivityPane {
         // History reads its rows in the desktop's words: loading them later would change the
         // reading's basis and read the log again.
         crate::i18n::ensure();
-        // Commit only what was written: an empty commit on every refresh would still open and roll
-        // back a transaction each frame.
-        if tree.document().pending_ops() > 0 {
-            tree.commit_activity_change();
-        }
-        if tree.document().pending_ops() > 0 {
-            self.defer_pending_tree(tree);
-            return;
-        }
-        self.feed_coverage.pending_tree = false;
         self.replay_presentation_note = tree.replay_presentation_note();
 
         let name = tree
@@ -1547,6 +1524,13 @@ impl WorkspaceActivityPane {
         if name != self.workspace_name {
             self.workspace_name = name;
         }
+        let local = self.local_user();
+        self.joined = tree
+            .active_workspace()
+            .and_then(|workspace| workspace.policy.joined.get(&local))
+            .and_then(|ms| {
+                SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::from_millis(*ms))
+            });
         let workspace = tree
             .active_workspace()
             .map(|workspace| workspace.id().to_string())
@@ -1831,10 +1815,6 @@ impl WorkspaceActivityPane {
         tree: &mut impl ActivityTree,
         mut records: Vec<super::index::DetachedRecordHistory>,
     ) {
-        if tree.document().pending_ops() > 0 {
-            self.defer_pending_tree(tree);
-            return;
-        }
         self.history_index
             .set_authors(self.source.authors().clone());
         let query = tree
@@ -2047,10 +2027,6 @@ impl WorkspaceActivityPane {
     }
 
     pub fn set_scope(&mut self, scope: WorkspaceScope, tree: &impl ActivityTree) {
-        if tree.document().pending_ops() > 0 {
-            self.defer_pending_tree(tree);
-            return;
-        }
         if scope == WorkspaceScope::AllWorkspaces && !self.host.all_workspaces_available() {
             return;
         }
@@ -3137,7 +3113,7 @@ fn describe_scope(scope: &Scope) -> String {
         // Record authority intentionally has no path: it follows the file across rename/move and
         // the stable id is not useful activity copy.
         Scope::FsResource(_) => t("activity-capability-one-shared-file"),
-        Scope::Device(d) => d.clone(),
+        Scope::Device(d) => d.name().to_owned(),
         Scope::NetHost(h) => t_args("activity-capability-network", &[("host", h.into())]),
     }
 }

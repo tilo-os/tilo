@@ -464,20 +464,32 @@ impl PresenceCtx {
         user: &MemberId,
         spans: &[(Rect, f32)],
     ) {
-        let color = marker_pigment(color_for(self, user, theme));
         for (rect, alpha) in spans {
             // Reduce-motion holds full strength instead of fading; the span
             // still drops on schedule — only the animation is removed.
             let fade = if theme.reduce_motion { 1.0 } else { *alpha };
-            let a = (fade * MARKER_ALPHA).clamp(0.0, 1.0);
-            scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                color.with_alpha_factor(a),
-                None,
-                rect,
-            );
+            self.draw_wash(scene, theme, user, *rect, fade);
         }
+    }
+
+    /// Wash `rect` in `user`'s marker colour at `strength` of a fresh mark's.
+    pub(super) fn draw_wash(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        user: &MemberId,
+        rect: Rect,
+        strength: f32,
+    ) {
+        let color = marker_pigment(color_for(self, user, theme));
+        let a = (strength * MARKER_ALPHA).clamp(0.0, 1.0);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            color.with_alpha_factor(a),
+            None,
+            &rect,
+        );
     }
 
     pub fn draw_peer_focus(&self, scene: &mut Scene, theme: &Theme, user: &MemberId, rect: Rect) {

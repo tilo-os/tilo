@@ -45,7 +45,7 @@ fn a_host_that_sells_nothing_answers_no_plans_and_no_subscription() {
     );
     assert_eq!(
         account,
-        ServerAccount::sells_nothing("Ada's server", HostKind::SelfHosted)
+        ServerAccount::sells_nothing("Ada's server", ServerKind::SelfHosted)
     );
     assert!(!account.sells());
 }
@@ -54,7 +54,7 @@ fn a_host_that_sells_nothing_answers_no_plans_and_no_subscription() {
 fn an_account_without_a_card_sees_the_offers_and_no_entitlement() {
     let account = account_of(&selling(), "acct-1", "unused", Usage::default());
     assert_eq!(account.server, "Tilo Cloud");
-    assert_eq!(account.kind, HostKind::Provider);
+    assert_eq!(account.kind, ServerKind::Provider);
     assert_eq!(
         account
             .plans

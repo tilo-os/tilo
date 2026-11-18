@@ -14,6 +14,8 @@ use super::{
 use tilo_peer_state::owner::WriteRefusal;
 use tilo_server_protocol::WorkspaceId;
 
+use crate::network::{Kept, Waits};
+
 /// A record's history is full and this device could not compact it: its writes wait.
 const RECORD_FULL: &str = "record-history-full";
 /// This device's signer did not sign its writes: they wait.
@@ -52,6 +54,9 @@ impl Task {
             );
             return;
         }
+        self.held_since
+            .entry(route.clone())
+            .or_insert_with(tilo_clock::now);
         self.open_channel(route);
         if self.keys_of(route).is_some() {
             self.outbound_due = true;
@@ -104,6 +109,12 @@ impl Task {
                     failure.kind != FailureKind::Session || !HELD_CODES.contains(&failure.code)
                 });
             });
+        }
+        {
+            // What holds nothing any more waits for nothing.
+            let held = self.engine.held_writes().lock();
+            self.held_since.retain(|route, _| held.contains_key(route));
+            self.kept_why.retain(|route, _| held.contains_key(route));
         }
         self.persist_keys(true);
         self.release_barriers(&refused);
@@ -195,6 +206,7 @@ impl Task {
             Ok(committed) => committed,
             Err(refusal @ WriteRefusal::HistoryFull { .. }) => {
                 tracing::warn!(%refusal, "writes wait for their record's history to be compacted");
+                self.keep_for(route, Waits::History);
                 self.fail(
                     RECORD_FULL,
                     "This record is too large to share your latest changes. They are kept on this device.",
@@ -203,6 +215,7 @@ impl Task {
             }
             Err(WriteRefusal::Unsigned(error)) => {
                 tracing::warn!(%error, "writes wait for this device to sign them");
+                self.keep_for(route, Waits::Signature);
                 self.fail(
                     SIGNING_FAILED,
                     "This device could not sign your latest changes. They are kept on this device.",
@@ -210,6 +223,7 @@ impl Task {
                 return None;
             }
             Err(WriteRefusal::Waiting(prerequisite)) => {
+                self.keep_for(route, Waits::Prerequisite(prerequisite.to_string()));
                 tracing::debug!(app = %route.app_id, record = %route.document, %prerequisite,
                     "writes wait for what the workspace has not admitted here yet");
                 return None;
@@ -224,6 +238,7 @@ impl Task {
         if committed.is_empty() {
             return Some(Ok(()));
         }
+        self.owes(route);
         self.landed(route, Some(self.config.cert.device_public_key));
         let ids: Vec<[u8; 32]> = committed
             .iter()
@@ -403,6 +418,111 @@ impl Task {
             .filter_map(|workspace_id| self.replicas.workspace(*workspace_id))
             .flat_map(|workspace| owner.owed_writes(workspace).unwrap_or_default())
             .collect()
+    }
+
+    /// Whether this device's replica holds nothing of `route`'s document.
+    fn holds_none_of(&self, route: &DocumentRoute) -> bool {
+        tilo_desktop_model::WorkspaceId::parse(&route.cluster_id).is_some_and(|workspace| {
+            self.replicas.owner().with_current(workspace, |view| {
+                Ok(view.peer().holds_document(&route.app_id, &route.document))
+            }) == Ok(false)
+        })
+    }
+
+    /// Note what `route`'s held writes wait for, as this device's replica named it.
+    fn keep_for(&mut self, route: &DocumentRoute, waits: Waits) {
+        self.kept_why.insert(route.clone(), waits);
+    }
+
+    /// Note that `route` has committed writes of this device their holder has not answered,
+    /// from now unless it had some already.
+    fn owes(&mut self, route: &DocumentRoute) {
+        self.kept_why.remove(route);
+        self.owed_since
+            .entry(route.clone())
+            .or_insert_with(tilo_clock::now);
+    }
+
+    /// The documents of `scope`'s workspaces that hold writes of this device not committed to
+    /// its replica yet, each with whether the first of them is a change.
+    fn held_in(&self, scope: Option<&BTreeSet<WorkspaceId>>) -> Vec<(DocumentRoute, bool)> {
+        self.engine
+            .held_writes()
+            .lock()
+            .iter()
+            .filter(|(route, _)| within(scope, route))
+            .map(|(route, frames)| {
+                let changes = frames.first().is_some_and(|frame| {
+                    collab_types::ContentRetention::of_frame(frame)
+                        == collab_types::ContentRetention::Delta
+                });
+                (route.clone(), changes)
+            })
+            .collect()
+    }
+
+    /// What this session still keeps of what this device wrote to `workspaces`, a document
+    /// each, and what its writes wait for ([`crate::Outbox::kept_of`]): the documents whose
+    /// writes are held, not committed to this device's replica yet, then those whose committed
+    /// writes their holder has not answered. Read as it stands now, so a write is named with
+    /// what keeps it now, whatever kept it before.
+    pub(super) fn keeps(&mut self, workspaces: &BTreeSet<WorkspaceId>) -> Vec<Kept> {
+        let now = tilo_clock::now();
+        let scope = Some(workspaces);
+        let mut kept: Vec<Kept> = self
+            .held_in(scope)
+            .into_iter()
+            .map(|(route, changes)| {
+                let waits = if self.keys_of(&route).is_none() {
+                    Waits::Keys
+                } else if changes && self.holds_none_of(&route) {
+                    Waits::Document
+                } else {
+                    self.kept_why.get(&route).cloned().unwrap_or(Waits::Commit)
+                };
+                let age = self
+                    .held_since
+                    .get(&route)
+                    .map_or(std::time::Duration::ZERO, |since| {
+                        now.saturating_duration_since(*since)
+                    });
+                Kept { route, waits, age }
+            })
+            .collect();
+        let owner = self.replicas.owner();
+        let owed: BTreeSet<DocumentRoute> = self
+            .workspaces
+            .iter()
+            .filter(|workspace_id| workspaces.contains(*workspace_id))
+            .filter_map(|workspace_id| self.replicas.workspace(*workspace_id))
+            .flat_map(|workspace| {
+                let unanswered: BTreeSet<[u8; 32]> = owner
+                    .owed_writes(workspace)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+                self.ownership(workspace)
+                    .into_iter()
+                    .filter(move |entry| unanswered.contains(&entry.0))
+            })
+            .filter_map(|entry| DocumentRoute::of_message(&postcard::from_bytes(&entry.1).ok()?))
+            .collect();
+        self.owed_since
+            .retain(|route, _| !within(scope, route) || owed.contains(route));
+        kept.extend(owed.into_iter().map(|route| {
+            let age = self
+                .owed_since
+                .get(&route)
+                .map_or(std::time::Duration::ZERO, |since| {
+                    now.saturating_duration_since(*since)
+                });
+            Kept {
+                route,
+                waits: Waits::Holder,
+                age,
+            }
+        }));
+        kept
     }
 
     /// Renew this device's sealed writes that expired held while its host was away, so

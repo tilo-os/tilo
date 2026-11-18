@@ -51,7 +51,6 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
     let server: Arc<dyn crate::app_serving::AppActionServer> = counting.clone();
     let session = SessionCtx {
         workspaces: &registry,
-        autobind: None,
         outbound: &atx,
         content: Box::leak(Box::default()),
         state_outbound: None,
@@ -240,7 +239,6 @@ async fn requests_the_server_does_not_answer_are_refused() {
         Arc::new(SilentServer { abandons: true });
     let session = SessionCtx {
         workspaces: &registry,
-        autobind: None,
         outbound: &atx,
         content: Box::leak(Box::default()),
         state_outbound: None,

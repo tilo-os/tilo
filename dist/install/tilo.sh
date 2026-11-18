@@ -15,7 +15,8 @@
 # makes and publishes them with each release tag, and tilo.sh serves them):
 #   $TILO_RELEASES/latest/SHA256SUMS        sha256sum lines of the archives
 #   $TILO_RELEASES/latest/SHA256SUMS.sig    DER ECDSA signature of SHA256SUMS
-#   $TILO_RELEASES/latest/tilo-<os>-<arch>.tar.gz   holding `tilo`
+#   $TILO_RELEASES/latest/tilo-<os>-<arch>.tar.gz   holding `tilo` and, for Linux,
+#       `tilolang-process`, the program `tilo mcp` starts an agent's task programs in
 # $TILO_VERSION picks a release other than latest (`v0.4.0`).
 #
 # Arguments are a command for the installed `tilo`, run by its full path once
@@ -115,11 +116,24 @@ KEY
   mkdir "$work/unpacked"
   tar -xzf "$work/$archive" -C "$work/unpacked" tilo || fail "$archive holds no tilo"
   [ -f "$work/unpacked/tilo" ] && [ ! -L "$work/unpacked/tilo" ] || fail "$archive holds no plain tilo"
+  # A Linux release also holds tilolang-process, which tilo looks for beside itself to start
+  # an agent's task programs in. A Mac's archive holds none (no task program starts there), and
+  # neither does a release from before it was packed: then tilo is installed alone.
+  beside=
+  tar -xzf "$work/$archive" -C "$work/unpacked" tilolang-process 2>/dev/null || :
+  if [ -e "$work/unpacked/tilolang-process" ] || [ -L "$work/unpacked/tilolang-process" ]; then
+    [ -f "$work/unpacked/tilolang-process" ] && [ ! -L "$work/unpacked/tilolang-process" ] \
+      || fail "$archive holds no plain tilolang-process"
+    beside=tilolang-process
+  fi
   mkdir -p "$dir"
-  # Replaced in one rename, so a tilo running now keeps working.
-  cp "$work/unpacked/tilo" "$dir/.tilo.new"
-  chmod 0755 "$dir/.tilo.new"
-  mv -f "$dir/.tilo.new" "$dir/tilo"
+  # Each replaced in one rename, so a tilo running now keeps working; the program beside it
+  # first, so a new tilo never starts an old one.
+  for name in $beside tilo; do
+    cp "$work/unpacked/$name" "$dir/.$name.new"
+    chmod 0755 "$dir/.$name.new"
+    mv -f "$dir/.$name.new" "$dir/$name"
+  done
 
   say "Installed tilo to $dir/tilo."
   case ":${PATH:-}:" in
