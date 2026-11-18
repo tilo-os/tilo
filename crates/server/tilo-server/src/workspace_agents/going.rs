@@ -103,6 +103,9 @@ impl Going {
     /// Hand it `turn`, which the records give in its place now: whether it takes it. It takes
     /// a message the person it works for wrote themselves that it has not been handed, and
     /// nothing else: what a cause asks, and an ask for somebody else, wait until this turn ended.
+    /// Whoever hands a turn something read the workspace first and says when
+    /// ([`Self::reach_read`]): this is the hand-over itself, for the tests of it.
+    #[cfg(test)]
     pub(super) fn reach(&self, turn: Turn) -> bool {
         self.hand(turn, None) == Handed::Taken
     }

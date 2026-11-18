@@ -807,8 +807,9 @@ impl HostAgents {
                 }
             }
         }
-        self.carry(workspace, asks.sub).await;
-        current
+        // A note is handed on as its person's own words are: with what this look read.
+        let carried = self.carry(workspace, asks.sub, reading).await;
+        current && carried
     }
 
     /// Look at `workspace` once a turn ended on `past`: its place is free, so what waited for
