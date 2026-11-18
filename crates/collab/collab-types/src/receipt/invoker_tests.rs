@@ -207,22 +207,53 @@ tilo_test_env::scenario! {
         assert!(received(&op, &person(&policy, "vic")).is_err());
     }
 
-    phase only_the_persons_own_device_hands_its_agent_the_delegation;
+    phase whoever_signs_a_handed_agents_change_bounds_it;
     {
-        let policy = policy(None);
+        // A server carrying out Ada's agent's call signs what it changes. It
+        // could claim Ada herself, so claiming her agent gets it no more: the
+        // agent's preset, Ada's grants and the signer's own, every one of them.
         let for_ada = mount_agent().acting_for(Acting::person("ada"));
         let op = write_by(Some(&for_ada));
-        assert_eq!(received(&op, &person(&policy, "ada")), Ok(Receipt::Admit));
-        // Bob's device claiming Ada's agent was handed her session.
-        assert!(received(&op, &person(&policy, "bob")).is_err());
+        assert_eq!(received(&op, &person(&policy(None), "ada")), Ok(Receipt::Admit));
+        assert_eq!(received(&op, &person(&policy(None), "bob")), Ok(Receipt::Admit));
+        assert!(
+            received(&op, &person(&policy(None), "vic")).is_err(),
+            "a signer that may not write bounds the agent"
+        );
+        assert!(
+            received(&op, &person(&policy(Some(Answer::Deny)), "bob")).is_err(),
+            "what Ada answered for her agent bounds it whoever signs"
+        );
+        let for_vic = mount_agent().acting_for(Acting::person("vic"));
+        assert!(
+            received(&write_by(Some(&for_vic)), &person(&policy(None), "bob")).is_err(),
+            "the agent's person bounds it whoever signs"
+        );
         // The agent's own key claiming it was handed one.
         let agent_key = MemberAccess::new(
-            policy.clone(),
+            policy(None),
             Acting::agent(AGENT).acting_for(Acting::person("ada")),
         );
         assert!(received(&op, &agent_key).is_err());
-        // A device that is not Ada's own.
-        assert!(received(&op, &person(&policy, "ada").on_foreign_device()).is_err());
+        // A device that is not Ada's own holds what such a device may.
+        assert!(received(&op, &person(&policy(None), "ada").on_foreign_device()).is_err());
+    }
+
+    phase a_keys_agent_is_decided_by_the_grant_its_person_signed;
+    {
+        let key = tilo_action_policy::key_agent_id(&[9; 32]);
+        let claimed = Acting::handed_agent(key.clone(), "ada");
+        let op = write_by(Some(&claimed));
+        // Its claim alone counts only from Ada's own device.
+        assert_eq!(received(&op, &person(&policy(None), "ada")), Ok(Receipt::Admit));
+        assert!(received(&op, &person(&policy(None), "bob")).is_err());
+        // The grant its certificate is, which the workspace reads, decides it
+        // whoever signs.
+        let approved = Acting::handed_agent(key, "ada").handed_preset(WORKSPACE);
+        assert_eq!(
+            received(&op, &person(&policy(None), "bob").granted(approved)),
+            Ok(Receipt::Admit)
+        );
     }
 
     phase the_writer_and_every_receiver_decide_a_change_alike;

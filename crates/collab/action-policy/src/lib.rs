@@ -76,6 +76,7 @@ pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, Role};
 pub use kind::{ActionKind, KindSet};
 pub use member::{
     Acting, Actor, AgentSessionId, AutomationId, DIRECT_CONVERSATION_PREFIX, MemberId, ResourceId,
+    key_agent_id, key_of_agent,
 };
 pub use member_access::MemberAccess;
 pub use path::{Level, PathError, Segment, Specificity, TreePath};

@@ -179,3 +179,141 @@ fn holds(tree: &fs_protocol::tree::Tree, dir: &str, name: &str) -> bool {
         .into_iter()
         .any(|(_, node)| node.kind == FileNodeKind::File && node.name.as_bytes() == name.as_bytes())
 }
+
+/// What `server`'s tool `name` answers with `arguments`, which must succeed.
+async fn did(
+    server: &tilo_mcp::McpServer<tilo_session_client::remote::SessionActions>,
+    name: &str,
+    arguments: Value,
+) -> String {
+    let answer = server
+        .handle(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": name, "arguments": arguments}}))
+        .await
+        .expect("a call is answered");
+    let text = answer["result"]["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|block| block["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        answer["result"]["isError"] != true && answer.get("error").is_none(),
+        "{name} {arguments}: {answer}"
+    );
+    text
+}
+
+/// The note id an answer names after `"page":`.
+fn page_in(text: &str) -> String {
+    let at = text
+        .find("\"page\":\"")
+        .unwrap_or_else(|| panic!("the answer names its note: {text}"))
+        .saturating_add("\"page\":\"".len());
+    text.get(at..)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// A person's logged-in computer, whose held session acts as its agent
+/// (`tilo login`, then `tilo migrate`, `tilo do`), moves their things into a
+/// workspace on a server someone else keeps: notes, a group moving them, and
+/// issues made in one call. The server carries every call out and signs what
+/// it changes, and all of it lands in what the workspace keeps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_computers_agent_moves_things_in_through_a_server() {
+    Box::pin(a_computers_agent_moves_things_in()).await;
+}
+
+async fn a_computers_agent_moves_things_in() {
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let (root, token) = person(&on_server, "Ada").await;
+    let key = Key { api: &api, token };
+    let (status, made) = key
+        .post("/v1/workspaces", &json!({"name": "Company"}), &[])
+        .await;
+    assert_eq!(status, 201, "{made}");
+    let workspace = made["id"].as_str().unwrap().to_owned();
+
+    // The computer, logged in: a device of Ada's whose session is her agent.
+    let computer = enrol(&root, "Ada's laptop", DeviceCapabilities::member());
+    let agent = super::resource_support::open_admitted_peer(
+        &on_server.hosted,
+        &computer,
+        &on_server.host,
+        &workspace,
+    )
+    .await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Your agent").await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let server = tilo_mcp::McpServer::new(
+        tilo_session_client::remote::SessionActions::new(
+            &agent.peer,
+            agent.workspace,
+            on_server.host.cert.device_public_key,
+        ),
+        workspace.clone(),
+        person,
+    )
+    .with_agent_session("migrate", "Your agent");
+
+    did(&server, "tilo_do", json!({"path": "notes#open"})).await;
+    let folder = page_in(
+        &did(
+            &server,
+            "tilo_do",
+            json!({"path": "notes#new-note", "args": {"title": "Imported"}}),
+        )
+        .await,
+    );
+    let mut notes = Vec::with_capacity(NOTES);
+    for index in 0..NOTES {
+        notes.push(page_in(
+            &did(
+                &server,
+                "tilo_do",
+                json!({"path": "notes#new-note", "args": {"title": format!("note {index}")}}),
+            )
+            .await,
+        ));
+    }
+    let moves: Vec<Value> = notes
+        .iter()
+        .map(|note| json!({"action": "move-note", "args": {"page": note, "parent": folder}}))
+        .collect();
+    did(
+        &server,
+        "tilo_do",
+        json!({"path": "notes#group", "args": {"actions": moves}}),
+    )
+    .await;
+    let issues: Vec<Value> = (0..NOTES)
+        .map(|index| json!({"title": format!("Issue {index}")}))
+        .collect();
+    did(
+        &server,
+        "tilo_do",
+        json!({"path": "tasks#create-many", "args": {"issues": issues}}),
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let kept = parents_kept(&on_server, &workspace).await;
+        let unmoved = notes
+            .iter()
+            .filter(|note| kept.get(*note).cloned().flatten().as_deref() != Some(&folder))
+            .count();
+        if unmoved == 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the workspace never kept every note the agent moved: {unmoved} not moved"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}

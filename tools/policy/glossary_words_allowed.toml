@@ -498,3 +498,9 @@ reason = "TypeScript's built-in `Record<K, V>` type."
 words = ["record"]
 identifiers = ["Record"]
 paths = ["sdk/typescript/**"]
+
+[[allow]]
+reason = "The server fixture's own device, as the shared API fixture names its field (`OnServer::host`)."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/key_writes.rs"]
