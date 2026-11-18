@@ -2201,6 +2201,23 @@ cache = false
 git = true
 timeout_secs = 7200
 
+# An encrypted install whose keyslot is sealed to its TPM opens by itself at the
+# next boot, with nobody typing, and reaches a login
+# (os/dev/test-encrypted-install.sh on this tree's dev disk).
+[[check]]
+name = "encrypted-install-tpm-x86_64"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt tools/ci/packages/signin-e2e.txt tools/ci/packages/qemu-x86_64.txt && TILO_VM_DISPLAY=2d bash os/dev/test-encrypted-install.sh tpm /target/publish/os-dev-disk/x86_64/disk/disk.qcow2 --out /target/encrypted-install-tpm"
+needs = ["os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/encrypted-install-tpm/**"]
+cache = false
+git = true
+timeout_secs = 7200
+
 # A box set up once, branched into two that start configured and work on their own
 # (scripts/vm-e2e/branch.py): this tree's dev disk and tilo-vm, on libvirt in the micro-VM.
 [[check]]
