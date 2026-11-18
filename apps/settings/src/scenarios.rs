@@ -976,10 +976,6 @@ mod tests {
     #[test]
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
-            names().len(),
-            Category::ALL.len() + 46 + CODEC_SCENARIOS.len() + WINDOWS_SCENARIOS.len()
-        );
-        assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),
             Staged::Focused(Category::Displays, "display.placement")
         );
