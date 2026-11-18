@@ -896,7 +896,7 @@ env = { CARGO_NET_OFFLINE = "false" }
 [[check]]
 name = "example-scenarios"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/test-env.sh bash tools/ci/example-scenarios.sh -p tilo-app-cli"
+run = "bash tools/ci/example-scenarios.sh -p tilo-app-cli"
 env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 on = ["dispatch", "idle"]
 heavy = true
@@ -1369,7 +1369,7 @@ on = ["dispatch"]
 [[check]]
 name = "nightly-examples"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\nbash tools/with-test-environment.sh cargo test --workspace --examples --locked\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source TILO_TEST_NTFS_FIXTURES=0\nbash tools/test-env.sh cargo test --workspace --examples --locked\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 requires = ["arch=x86_64"]
 on = ["dispatch"]
@@ -1401,7 +1401,7 @@ on = ["dispatch"]
 [[check]]
 name = "nightly-arm64-examples"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\nbash tools/with-test-environment.sh cargo test --workspace --examples --locked\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source TILO_TEST_NTFS_FIXTURES=0\nbash tools/test-env.sh cargo test --workspace --examples --locked\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json" }
 requires = ["arch=arm64"]
 on = ["dispatch"]
@@ -3137,7 +3137,7 @@ name = "layout-check/{size}"
 # commit that broke it and told to its pusher.
 on = ["idle"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/test-env.sh bash tools/ci/layout-check.sh {size}"
+run = "bash tools/ci/layout-check.sh {size}"
 env = { TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 outputs = ["/target/layout-check/{size}/**"]

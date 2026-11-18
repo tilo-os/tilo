@@ -6,8 +6,8 @@
 #
 #   tools/ci/layout-check.sh 390x844
 #
-# The `layout-check/<size>` checks run it in the test environment (fonts, lavapipe) and take
-# inputs, which narrow a run to what is being looked at:
+# The `layout-check/<size>` checks run it and take inputs, which narrow a run to what is being
+# looked at:
 #   app     one package of `apps/tl` to lay out (default: every one)
 #   press   a control's words, pressed before each window is read (default: none)
 #   dump    `true` prints every frame laid out at the size, not only the frames a finding came
@@ -20,14 +20,27 @@
 # run's report, dump and shots. Never run it on a workstation: it lays out every app, which takes
 # the machine.
 set -euo pipefail
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+cd -- "$repo"
 
 size=${1:?usage: $0 WIDTHxHEIGHT, such as 390x844}
+
+# The build gets the caller's environment and the inputs every job's build shares
+# (tools/test-env.sh --build); the layout that follows gets the test environment (the product's
+# fonts, lavapipe, a fresh HOME). A variable in a build's environment keys every build script's
+# and proc macro's cache entry by it, and the test environment's differ per job, so a build that
+# carried one would share no cache with any other job's. TILO_BUILT_FOR_TEST_ENV marks the pass
+# the build made.
+if [[ -z ${TILO_BUILT_FOR_TEST_ENV:-} ]]; then
+    bash "$repo/tools/test-env.sh" --build cargo build --locked -p tilolang-cli --bin tilolang
+    TILO_BUILT_FOR_TEST_ENV=1 \
+        exec bash "$repo/tools/test-env.sh" bash "$repo/tools/ci/layout-check.sh" "$@"
+fi
+
 target=${CARGO_TARGET_DIR:-target}
 out=$target/layout-check/$size
 rm -rf -- "$out"
 mkdir -p -- "$out"
-
-cargo build --locked -p tilolang-cli --bin tilolang
 
 app=${T_INPUT_APP:-}
 press=${T_INPUT_PRESS:-}
