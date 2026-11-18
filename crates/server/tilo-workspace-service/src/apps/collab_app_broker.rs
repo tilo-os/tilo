@@ -2800,6 +2800,9 @@ pub struct AppBrokerState {
     thread_restarts: AtomicU64,
     /// Work another thread hands the broker's turn (see [`TurnWork`]).
     turn_work: std::sync::Arc<TurnWork>,
+    /// Told once this state is dropped and its journal's lock let go.
+    #[cfg(any(test, feature = "test-support"))]
+    gone: BrokerGone,
 }
 
 /// Work another thread handed the broker's turn, run with the state.
@@ -2822,6 +2825,55 @@ impl TurnWork {
     pub(super) fn hand(&self, work: TurnTask) {
         self.handed.lock_recover().push(work);
         self.turn.notify_one();
+    }
+}
+
+/// Told when a broker is dropped, after its journal let the store's lock go.
+///
+/// A state's strong count reaches zero before its fields are dropped, so a
+/// count does not say the store is free: the journal's writer may still be
+/// finishing the last write it was handed. Whoever opens the store again
+/// waits here.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Default)]
+pub struct BrokerGone(std::sync::Arc<BrokerGoneTold>);
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+struct BrokerGoneTold {
+    told: std::sync::atomic::AtomicBool,
+    waiters: tokio::sync::Notify,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl BrokerGone {
+    fn tell(&self) {
+        self.0.told.store(true, Ordering::Release);
+        self.0.waiters.notify_waiters();
+    }
+
+    /// Wait for the broker to be dropped and its store's lock let go.
+    pub async fn wait(&self) {
+        loop {
+            let told = self.0.waiters.notified();
+            tokio::pin!(told);
+            told.as_mut().enable();
+            if self.0.told.load(Ordering::Acquire) {
+                return;
+            }
+            told.await;
+        }
+    }
+}
+
+/// A broker a caller never stopped is closed by its drop: the journal goes,
+/// and its writer with it, so the store's lock is let go before [`BrokerGone`]
+/// is told. The other fields drop after that tell.
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for AppBrokerState {
+    fn drop(&mut self) {
+        self.let_go_of_journal();
+        self.gone.tell();
     }
 }
 
@@ -2925,6 +2977,12 @@ impl AppBrokerState {
         std::mem::take(&mut *self.turn_work.handed.lock_recover());
         self.refresh_action_directory_root_snapshot();
 
+        self.let_go_of_journal();
+    }
+
+    /// Drop the journal now: its writer finishes what it was handed and the
+    /// store's lock is released before this returns.
+    fn let_go_of_journal(&self) {
         let journal = {
             let mut slot = match self.journal.lock() {
                 Ok(slot) => slot,
@@ -2933,6 +2991,13 @@ impl AppBrokerState {
             std::mem::replace(&mut *slot, Ok(None))
         };
         drop(journal);
+    }
+
+    /// A handle told once this broker is dropped and its journal's lock let
+    /// go, whichever thread drops it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn gone(&self) -> BrokerGone {
+        self.gone.clone()
     }
 
     /// Allocate a private connected descriptor for an actual host-mounted worker.
@@ -3535,6 +3600,8 @@ impl AppBrokerState {
                     handed: Mutex::new(Vec::new()),
                     turn: std::sync::Arc::clone(&local_turn),
                 }),
+                #[cfg(any(test, feature = "test-support"))]
+                gone: BrokerGone::default(),
             }),
             bridge_rx,
         )
@@ -14803,15 +14870,11 @@ fn wire_client(
 }
 
 /// Wait for a dropped broker to go: its channels let go of it once their
-/// wire connections, closing with their clients, have wound down.
+/// wire connections, closing with their clients, have wound down, and its
+/// journal's writer has let the store's lock go.
 #[cfg(test)]
-async fn broker_gone(state: std::sync::Weak<AppBrokerState>) {
-    tilo_test_env::within("the dropped broker's connections close", async {
-        while state.strong_count() > 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await;
+async fn broker_gone(gone: BrokerGone) {
+    tilo_test_env::within("the dropped broker lets its journal go", gone.wait()).await;
 }
 
 /// An app answering the host's asks of its published action directory from

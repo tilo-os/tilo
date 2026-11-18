@@ -934,7 +934,7 @@ mod owner_commit_tests {
                         }
                     }
                     assert_eq!(std::fs::read(root.path().join("effect")).unwrap(), b"once");
-                    let gone = Arc::downgrade(&f.state);
+                    let gone = f.state.gone();
                     drop(f);
                     broker_gone(gone).await;
                     let recovered = InvocationJournal::open(&root.path().join("journal"))
@@ -946,6 +946,110 @@ mod owner_commit_tests {
                         assert!(recovered.uncertain);
                     }
                 }
+            })
+            .await;
+    }
+    /// A dropped broker is not gone while its writer still finishes the last
+    /// write it was handed: the store's lock is let go when the journal is
+    /// dropped, so opening it again waits for that, not for the state's
+    /// strong count, which reaches zero first.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_dropped_brokers_store_opens_again_once_its_last_write_finishes() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let root = canonical_tempdir();
+                let f = owner_fixture(root.path());
+                let (key, _result) = admitted_effect(&f);
+                // The writer holds its next write, as a loaded disk would.
+                let (entered, held) = std::sync::mpsc::sync_channel(1);
+                let (release, resume) = std::sync::mpsc::sync_channel(1);
+                let resume = std::sync::Mutex::new(resume);
+                // Only the first write waits: a later one would hold the
+                // writer with nothing left to release it.
+                let first = std::sync::atomic::AtomicBool::new(true);
+                f.state
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .hold_writes = Some(std::sync::Arc::new(move || {
+                    if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        entered.send(()).unwrap();
+                        resume.lock().unwrap().recv().unwrap();
+                    }
+                }));
+                // Staged and not waited for: the writer holds it as a loaded
+                // disk would, whatever the caller does next.
+                let second = InvocationKey {
+                    invocation: tilo_actions::InvocationId::new(),
+                    ..key.clone()
+                };
+                let _ = f
+                    .state
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .admit_with_evidence(
+                        second,
+                        serde_json::json!({
+                            "operation_kind": tilo_actions::OperationKind::Effect,
+                        }),
+                        2,
+                        None,
+                    )
+                    .unwrap();
+                held.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+
+                let gone = f.state.gone();
+                let last = std::sync::Arc::clone(&f.state);
+                let orphaned = std::sync::Arc::downgrade(&f.state);
+                drop(f);
+                tilo_test_env::within("the broker's other holders let go", async {
+                    while std::sync::Arc::strong_count(&last) > 1 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await;
+                // Another thread drops the broker, and its count reaches zero
+                // while the writer still holds the store.
+                let (dropped, drop_done) = std::sync::mpsc::sync_channel(1);
+                let dropping = std::thread::spawn(move || {
+                    drop(last);
+                    let _ = dropped.send(());
+                });
+                tilo_test_env::within("the broker's state is gone", async {
+                    while orphaned.strong_count() > 0 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await;
+                let waited = tokio::task::spawn_local(async move { gone.wait().await });
+                tokio::task::yield_now().await;
+                assert!(
+                    !waited.is_finished(),
+                    "the broker was told gone while its writer still held the store"
+                );
+                assert!(
+                    InvocationJournal::open(&root.path().join("journal")).is_err(),
+                    "the store opened while the broker's writer still wrote to it"
+                );
+                release.send(()).unwrap();
+                tilo_test_env::within("the dropped broker lets its store go", waited)
+                    .await
+                    .unwrap();
+                tilo_test_env::recv("the dropped broker's thread ends", &drop_done);
+                dropping.join().unwrap();
+                drop(
+                    InvocationJournal::open(&root.path().join("journal"))
+                        .expect("the store opens once the dropped broker's last write is done"),
+                );
             })
             .await;
     }

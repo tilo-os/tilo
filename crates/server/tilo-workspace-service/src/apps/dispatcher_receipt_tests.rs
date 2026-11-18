@@ -449,7 +449,7 @@ async fn dispatcher_retained_evidence_survives_uncertain_recovery_and_rejects_in
             );
             assert_eq!(recovered.admission.as_ref(), Some(&evidence));
             no_delivery(&restarted).await;
-            let gone = Arc::downgrade(&restarted.state);
+            let gone = restarted.state.gone();
             restarted.stop().await;
             super::broker_gone(gone).await;
 
