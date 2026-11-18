@@ -32,7 +32,7 @@ cryptsetup_probe="${TILO_ROOT_CRYPTSETUP_PROBE:-cryptsetup}"
 plymouth_bin="${TILO_ROOT_PLYMOUTH:-plymouth}"
 unlock_bin="${TILO_ROOT_UNLOCK:-/usr/libexec/tilo-rollback-initrd-unlock}"
 signin_bin="${TILO_ROOT_SIGNIN:-/usr/libexec/tilo/tilo-boot-signin}"
-sibling_bin="${TILO_ROOT_SIBLING_UNLOCK:-tilo-sibling-unlock}"
+auth_bin="${TILO_ROOT_AUTH:-tilo-auth}"
 systemctl_bin="${TILO_ROOT_SYSTEMCTL:-systemctl}"
 udevadm_bin="${TILO_ROOT_UDEVADM:-udevadm}"
 
@@ -189,8 +189,8 @@ if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
     if [ "$signed_in" -eq 0 ]; then
       note "TPM PIN prompt, if the volume has a tilo-rollback token"
       "$unlock_bin" "$root" root || true
-      if "$sibling_bin" probe "$root" >/dev/null 2>&1; then
-        sibling_unit="tilo-sibling-unlock@$(systemd-escape --path "$root").service"
+      if "$auth_bin" sibling probe "$root" >/dev/null 2>&1; then
+        sibling_unit="tilo-unlock-sibling@$(systemd-escape --path "$root").service"
         note "asking another of the owner's devices ($sibling_unit)"
         "$systemctl_bin" start --no-block "$sibling_unit" || sibling_unit=""
       fi

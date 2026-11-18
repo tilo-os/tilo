@@ -1,5 +1,6 @@
 //! The LUKS2 token that carries this machine's side of a sibling unlock.
 
+use crate::tpm::Sealing;
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -7,13 +8,6 @@ use tilo_unlock_protocol::{BootKeyCert, SiblingContact};
 
 pub const TOKEN_TYPE: &str = "tilo-sibling-unlock";
 pub const TOKEN_VERSION: u32 = 1;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Sealing {
-    Tpm2,
-    Cleartext,
-}
 
 /// One of the person's devices this machine asks for the sibling half, as
 /// the enrolment recorded it ([`tilo_unlock_protocol::SiblingContact`]).
@@ -51,7 +45,7 @@ pub struct Token {
     pub siblings: Vec<Sibling>,
     pub sealing: Sealing,
     /// The secret material, base64: a `systemd-creds` blob for
-    /// [`Sealing::Tpm2`], the JSON of [`crate::material::Material`] for
+    /// [`Sealing::Tpm2`], the JSON of [`super::material::Material`] for
     /// [`Sealing::Cleartext`].
     pub material: String,
 }
@@ -95,15 +89,13 @@ impl Token {
     }
 }
 
-/// Finds the sibling-unlock token in `cryptsetup luksDump --dump-json-metadata`
-/// output.
+/// Finds the sibling-unlock token, and its id, in the LUKS2 header's
+/// metadata (`cryptsetup luksDump --dump-json-metadata`).
 ///
 /// # Errors
-/// When the metadata is not LUKS2 JSON, or carries a malformed or more than one
-/// sibling-unlock token. `Ok(None)` means the volume has no sibling factor.
-pub fn from_metadata(metadata: &str) -> Result<Option<Token>> {
-    let metadata: serde_json::Value =
-        serde_json::from_str(metadata).context("the LUKS2 metadata is not JSON")?;
+/// When the header carries a malformed or more than one sibling-unlock
+/// token. `Ok(None)` means the volume has no sibling factor.
+pub fn find(metadata: &serde_json::Value) -> Result<Option<(u32, Token)>> {
     let Some(tokens) = metadata
         .get("tokens")
         .and_then(serde_json::Value::as_object)
@@ -111,17 +103,20 @@ pub fn from_metadata(metadata: &str) -> Result<Option<Token>> {
         return Ok(None);
     };
     let mut found = None;
-    for token in tokens.values() {
+    for (id, token) in tokens {
         if token.get("type").and_then(serde_json::Value::as_str) != Some(TOKEN_TYPE) {
             continue;
         }
         if found.is_some() {
             bail!("the volume carries more than one {TOKEN_TYPE} token");
         }
+        let id: u32 = id
+            .parse()
+            .with_context(|| format!("token id {id:?} is not a number"))?;
         let token: Token = serde_json::from_value(token.clone())
             .context("the sibling-unlock token is malformed")?;
         token.validate()?;
-        found = Some(token);
+        found = Some((id, token));
     }
     Ok(found)
 }
@@ -172,7 +167,8 @@ mod tests {
                 "1": serde_json::to_value(token()).unwrap(),
             }
         });
-        let found = from_metadata(&metadata.to_string()).unwrap().unwrap();
+        let (id, found) = find(&metadata).unwrap().unwrap();
+        assert_eq!(id, 1);
         assert_eq!(found, token());
         assert_eq!(found.cert().unwrap(), cert(3));
         assert_eq!(found.keyslot().unwrap(), 3);
@@ -182,8 +178,12 @@ mod tests {
     fn a_volume_without_the_token_has_no_sibling_factor() {
         let metadata =
             serde_json::json!({ "tokens": { "0": { "type": "systemd-tpm2", "keyslots": ["2"] } } });
-        assert!(from_metadata(&metadata.to_string()).unwrap().is_none());
-        assert!(from_metadata(r#"{"keyslots":{}}"#).unwrap().is_none());
+        assert!(find(&metadata).unwrap().is_none());
+        assert!(
+            find(&serde_json::json!({"keyslots": {}}))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -192,12 +192,12 @@ mod tests {
             "0": serde_json::to_value(token()).unwrap(),
             "1": serde_json::to_value(token()).unwrap(),
         } });
-        assert!(from_metadata(&metadata.to_string()).is_err());
+        assert!(find(&metadata).is_err());
 
         let mut bad = token();
         bad.keyslots = vec!["3".into(), "4".into()];
         let metadata = serde_json::json!({ "tokens": { "0": serde_json::to_value(bad).unwrap() } });
-        assert!(from_metadata(&metadata.to_string()).is_err());
+        assert!(find(&metadata).is_err());
 
         let mut other_slot = token();
         other_slot.cert = Token::encode_cert(&cert(4)).unwrap();

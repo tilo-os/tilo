@@ -52,8 +52,8 @@ pub const DEVICE: &[Verb] = &[
     },
     Verb {
         name: "unlock-from",
-        program: "tilo-sibling-unlock",
-        prefix: &[],
+        program: "tilo-auth",
+        prefix: &["sibling"],
         about: "Unlock this device's disk with another of your devices",
         needs: "an encrypted disk set up for it",
     },

@@ -861,8 +861,10 @@ files = [
 ]
 
 # Signing in: tilo-authd checks every secret, pam_tilo asks it from every PAM
-# service, and tilo-auth signs in at boot. tilo-auth is in the rollback layer
-# so the initramfs, built after it, can carry it as it carries tilo-rollback.
+# service, and tilo-auth opens the system volume at boot (a person's secret,
+# the recovery key, or another of their devices) and enrols the sibling
+# factor. tilo-auth is in the rollback layer so the initramfs, built after it,
+# can carry it as it carries tilo-rollback.
 [[component]]
 name = "sign-in"
 kind = "userspace"
@@ -876,19 +878,6 @@ files = [
   { from = "tilo-authd", to = "/usr/libexec/tilo/tilo-authd", mode = "0755" },
   { from = "tilo-auth", to = "/usr/libexec/tilo/tilo-auth", mode = "0755" },
   { from = "libpam_tilo.so", to = "/usr/lib64/security/pam_tilo.so", mode = "0755" },
-]
-
-[[component]]
-name = "sibling-unlock"
-kind = "boot"
-scope = "vm"
-scenario = "os/dev/test-nearby-pairing.sh"
-packages = ["tilo-sibling-unlock"]
-bins = ["tilo-sibling-unlock"]
-layer = "rollback-files"
-files = [
-  { from = "tilo-sibling-unlock", to = "/usr/libexec/tilo/tilo-sibling-unlock", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-sibling-unlock" },
 ]
 
 # The sign-in screen before the system volume is open. It runs only in the
@@ -1019,10 +1008,9 @@ files = [
 # (`dev_swap = "reboot"`): tilo-vm builds it with `dev_build`, installs it
 # VM-wide as the next boot entry and reboots. The others stay scenario-only, and
 # a swap of them is redirected to the scenario that cold-boots them.
-# `installer`, `rollback` and `sibling-unlock` above are boot components too:
-# the installer runs from installer media, tilo-rollback and tilo-boot-signin
-# are copied into the initramfs by os/usr/lib/dracut/modules.d/91tilo-rollback,
-# and tilo-sibling-unlock by os/usr/lib/dracut/modules.d/92tilo-sibling-unlock.
+# `installer` and `rollback` above are boot components too: the installer
+# runs from installer media, and tilo-rollback, tilo-boot-signin and tilo-auth
+# are copied into the initramfs by os/usr/lib/dracut/modules.d/91tilo-rollback.
 
 [[component]]
 name = "kernel"

@@ -1,7 +1,24 @@
-//! Signing in before the root is open: unwrap a person's user key from the
-//! `tilo-signin` tokens, open the system volume through their keyslot, and
-//! hand the sign-in on to the session (docs/security/sign-in.md §3.2).
-//! Runs in the initrd, without the daemon.
+//! Opening the system volume in early boot, without the daemon. The ways a
+//! volume opens, as `tilo-root-discover` offers them while the volume's
+//! prompt is up (docs/security/sign-in.md §3.2, docs/device-reach.md):
+//!
+//! 1. a person's sign-in secret: their user key unwraps from the
+//!    `tilo-signin` token, by the TPM-throttled or passphrase wrapper, opens
+//!    their keyslot, and the sign-in carries on into their session (this
+//!    module, [`BootUnlock`]);
+//! 2. the recovery key, through the same token's recovery wrapper, or typed
+//!    at the volume's prompt;
+//! 3. another of the owner's devices releasing its half of the sibling
+//!    keyslot ([`sibling`]): with no prompt for a server whose TPM quotes the
+//!    boot chain the owner accepted, otherwise once the owner approves. It
+//!    goes on beside the prompt, and whichever answers first opens the volume;
+//! 4. the TPM alone, for a signed boot chain where the volume is enrolled
+//!    for it (tilo-rollback's token, and systemd-cryptsetup's own tokens).
+//!
+//! Every way reads the header through [`crate::luks`] and the TPM through
+//! [`crate::tpm`].
+
+pub mod sibling;
 
 use crate::handoff::{self, Handoff};
 use crate::luks::{self, SigninToken};

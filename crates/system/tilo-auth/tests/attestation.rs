@@ -18,19 +18,21 @@ use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
-use tilo_sibling_unlock::material::{Attestation, Material};
-use tilo_sibling_unlock::seal;
-use tilo_sibling_unlock::token::{Sealing, Sibling, TOKEN_TYPE, TOKEN_VERSION, Token};
-use tilo_sibling_unlock::tpm::{self, Tpm};
+use tilo_auth::luks;
+use tilo_auth::sibling::material::{Attestation, Material};
+use tilo_auth::sibling::token::{Sibling, TOKEN_TYPE, TOKEN_VERSION, Token};
+use tilo_auth::tpm::{self, Sealing};
+use tilo_rollback::exec::Real;
+use tilo_rollback::policy::Workspace;
 use tilo_unlock_protocol::{
     BootId, BootKeyCert, Challenge, PROTOCOL_VERSION, SlotId, UnlockRequest, attest,
 };
 
 /// An emulated TPM and the handle keeping it alive for the test's duration.
-fn emulated() -> Option<(tilo_test_env::swtpm::Swtpm, Tpm)> {
+fn emulated() -> Option<(tilo_test_env::swtpm::Swtpm, Real)> {
     match tilo_test_env::swtpm::Swtpm::start() {
         Ok(swtpm) => {
-            let tpm = Tpm::at_tcti(swtpm.tcti());
+            let tpm = Real::new().with_tcti(Some(&swtpm.tcti()));
             Some((swtpm, tpm))
         }
         Err(why) => {
@@ -182,19 +184,21 @@ fn the_attestation_key_travels_in_the_luks_header() {
             endpoint: String::new(),
         }],
         sealing: Sealing::Cleartext,
-        material: seal::seal(Sealing::Cleartext, &material.to_json().unwrap()).unwrap(),
+        material: tpm::seal_material(&tpm, Sealing::Cleartext, &material.to_json().unwrap())
+            .unwrap(),
     };
-    tilo_sibling_unlock::luks::import_token(&image, &token)
-        .expect("the token goes into the header");
+    let ws = Workspace::new(dir.path());
+    luks::write_sibling(&tpm, &ws, &image, &token).expect("the token goes into the header");
 
     // Reading it back from the header gives the same material, attestation
     // key included: what the next boot quotes with.
-    let read = tilo_sibling_unlock::luks::token(&image)
+    let read = luks::sibling(&tpm, &image)
         .unwrap()
         .expect("the token is in the header");
     assert_eq!(read, token);
+    assert_eq!(luks::uuid(&tpm, &image).unwrap().len(), 16);
     let opened = Material::from_json(
-        &seal::unseal(read.sealing, &read.material).expect("the material unseals"),
+        &tpm::unseal_material(&tpm, read.sealing, &read.material).expect("the material unseals"),
     )
     .expect("the material is well formed");
     assert_eq!(

@@ -15,7 +15,7 @@ use tilo_vm_protocol::{DeviceUnlockEnrol, DeviceUnlockEnrolResult};
 use crate::error::DaemonError;
 use crate::exec::{Ended, run_bounded};
 
-const HELPER: &str = "/usr/libexec/tilo/tilo-sibling-unlock";
+const HELPER: &str = "/usr/libexec/tilo/tilo-auth";
 
 #[derive(serde::Deserialize)]
 struct Status {
@@ -253,6 +253,7 @@ pub(crate) fn enroll(
         .env("PATH", "/usr/sbin:/usr/bin")
         .env("LANG", "C.UTF-8");
     command
+        .arg("sibling")
         .arg("enrol")
         .arg(&device)
         .arg("--key-file")
@@ -286,7 +287,7 @@ pub(crate) fn enroll(
         .env_clear()
         .env("PATH", "/usr/sbin:/usr/bin")
         .env("LANG", "C.UTF-8");
-    command.arg("status").arg(device);
+    command.arg("sibling").arg("status").arg(device);
     if run_bounded(
         command,
         Duration::from_secs(15),
