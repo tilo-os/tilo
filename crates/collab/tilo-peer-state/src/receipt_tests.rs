@@ -2075,6 +2075,7 @@ struct TakenBack {
     /// and nothing that came after.
     joining: StatePeer,
     guest: DeviceCert,
+    owner_key: SigningKey,
     server_key: SigningKey,
     server: DeviceCert,
     /// The server's write while the delegation stood, its first.
@@ -2104,7 +2105,9 @@ impl TakenBack {
             receive(&mut peer, &server, stood.clone()).unwrap();
             assert_eq!(value(&peer), "\"before the withdrawal\"");
         }
-        let withdrawn_at = now() + std::time::Duration::from_secs(1);
+        let withdrawn_at = now()
+            .checked_add(std::time::Duration::from_secs(1))
+            .unwrap();
         let withdrawal = workspace_changes(&mut peer, |copy| {
             let written = copy.workspace_mut().revoke_work_delegation(
                 &device,
@@ -2118,6 +2121,7 @@ impl TakenBack {
             peer,
             joining,
             guest,
+            owner_key,
             server_key,
             server,
             stood,
@@ -2132,7 +2136,9 @@ impl TakenBack {
 
     /// A second after the withdrawal.
     fn after(&self) -> std::time::SystemTime {
-        self.withdrawn_at + std::time::Duration::from_secs(1)
+        self.withdrawn_at
+            .checked_add(std::time::Duration::from_secs(1))
+            .unwrap()
     }
 
     /// The server's work as a copy is handed what the workspace kept of it.
@@ -2306,4 +2312,67 @@ fn a_withdrawal_is_read_live_at_no_time() {
         }
     }
     assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+}
+
+/// Only a device of the member signs the cut of their withdrawal. The
+/// member's device signs what it held of the server's work. A form that keeps
+/// more, signed in the member's name by the server or by another member's
+/// device, is no form of theirs, and the member's own form with a larger
+/// number put into it no longer verifies: whoever writes one into the row,
+/// the row keeps the cut its member signed, and the server's work above it
+/// stays refused.
+#[test]
+fn only_a_device_of_the_member_signs_the_cut_of_their_withdrawal() {
+    use collab_types::work_delegation::HeldWork;
+    let story = TakenBack::made(true);
+    let (device, person) = (story.device(), story.guest.user_public_key);
+    let stamped = story.stamped();
+    let route = crate::coverage::route_key(APP, "tab:1");
+    let signed = story.peer.workspace().work_delegations();
+    assert_eq!(signed.len(), 1);
+    assert_eq!(
+        signed[0].held,
+        vec![HeldWork {
+            route: route.clone(),
+            last: 1,
+            compactions: Vec::new(),
+        }],
+        "the member's device signs what it held of the server's work"
+    );
+    let at = signed[0]
+        .revoked_at_ns
+        .expect("the row holds the withdrawal");
+    let more = || {
+        vec![HeldWork {
+            route: route.clone(),
+            last: 2,
+            compactions: Vec::new(),
+        }]
+    };
+    let owner = story.owner_key.verifying_key().to_bytes();
+    let by_the_server = delegating(&story.server_key, person, device, APP)
+        .withdrawn(&story.server_key, at, more())
+        .unwrap();
+    let by_another = delegating(&story.owner_key, person, device, APP)
+        .withdrawn(&story.owner_key, at, more())
+        .unwrap();
+    let mut raised = signed[0].clone();
+    raised.held = more();
+    for (who, writer, form) in [
+        ("the server", device, &by_the_server),
+        ("another member's device", owner, &by_another),
+        ("the member's own form with a larger number", owner, &raised),
+    ] {
+        let mut copy = story.peer.clone();
+        let changes = delegation_written_straight(&copy, writer, form);
+        let taken = take_workspace_changes(&mut copy, writer, changes);
+        assert!(taken.is_err(), "{who} writes a cut into the row: {taken:?}");
+        assert_eq!(
+            copy.workspace().work_delegations(),
+            signed,
+            "{who}: the row keeps the cut its member signed"
+        );
+        let (taken, answer) = handed(&copy, story.kept(), &stamped, story.after(), "stamped");
+        assert!(!taken, "{who} raised the cut: {answer}");
+    }
 }

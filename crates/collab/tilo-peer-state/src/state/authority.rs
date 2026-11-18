@@ -39,6 +39,16 @@ pub(super) mod walks {
     }
 }
 
+/// How a write is decided ([`StatePeer::written_as`]): what its author may
+/// do, whether it is history of a device removed or of work taken back since,
+/// and, for a server's work a withdrawal keeps, the withdrawn delegation that
+/// keeps it.
+type Written = (
+    MemberAccess,
+    bool,
+    Option<collab_types::work_delegation::WorkDelegation>,
+);
+
 /// `person`'s access under `policy`, held to the foreign-device bound on a
 /// `foreign` device and to `delegate`'s bound on a delegate's.
 fn access_of(
@@ -490,6 +500,37 @@ impl StatePeer {
         self.holder_certificate(source)?;
         self.workspace().delegation_for_server(source, now)
     }
+    /// The withdrawn delegation whose cut keeps `write`, a write to `document`
+    /// of `app` by a server this workspace names: the member's device held the
+    /// write when it took the work back
+    /// ([`collab_types::work_delegation::WorkDelegation::keeps`]), and the
+    /// write is that member's work ([`Self::delegated_work_is_theirs`]). What
+    /// the member signed decides, and the place of the write in its document:
+    /// no time a write names and no clock is asked.
+    fn withdrawal_keeping(
+        &self,
+        app: &str,
+        document: &str,
+        write: &SignedOp,
+    ) -> Option<collab_types::work_delegation::WorkDelegation> {
+        let server = write.author.as_bytes();
+        self.holder_certificate(server)?;
+        // A compaction restates history under a number its author used
+        // before: the cut names the very compactions the device held.
+        let compaction = if write.kind == collab_types::OpKind::Compaction {
+            Some(self.write_id(app, document, write)?)
+        } else {
+            None
+        };
+        let route = crate::coverage::route_key(app, document);
+        self.workspace()
+            .work_delegations()
+            .into_iter()
+            .filter(|form| {
+                &form.server == server && form.keeps(&route, write.seq, compaction.as_ref())
+            })
+            .find(|form| Self::delegated_work_is_theirs(server, form, write).is_ok())
+    }
     /// Check that `write`, which `server` makes under `delegation`, is the
     /// work of the member who signed it: every change names that member, or
     /// the agent of theirs the delegation names, as the actor and the server's
@@ -580,6 +621,13 @@ impl StatePeer {
     /// over and whatever time it claims: its place in the document decides,
     /// never a clock.
     ///
+    /// A member who takes their work back from a server takes the server's
+    /// future for them in the same way. What the cut of their withdrawal
+    /// keeps of the server's work is history, decided as that member's work
+    /// as it was and answered with the form that keeps it
+    /// ([`Self::withdrawal_keeping`]); every other write the server makes for
+    /// them is refused.
+    ///
     /// # Errors
     /// Why the author may not make the write, as [`Self::permissions`].
     pub(super) fn written_as(
@@ -588,10 +636,10 @@ impl StatePeer {
         document: &str,
         write: &SignedOp,
         now: SystemTime,
-    ) -> Result<Option<(MemberAccess, bool)>, MembershipError> {
+    ) -> Result<Option<Written>, MembershipError> {
         let author = write.author.as_bytes();
         match self.permissions(*author, now) {
-            Ok(member) => Ok(Some((member, false))),
+            Ok(member) => Ok(Some((member, false, None))),
             Err(MembershipError::Revoked) => {
                 let Some(workspace) = self.core.workspace_doc.as_deref() else {
                     return Err(MembershipError::Revoked);
@@ -617,10 +665,32 @@ impl StatePeer {
                 ) {
                     Ok(crate::removals::Place::Before) => self
                         .permissions_in_history(author, now)
-                        .map(|member| Some((member, true))),
+                        .map(|member| Some((member, true, None))),
                     Ok(crate::removals::Place::Unrecorded) => Ok(None),
                     Ok(crate::removals::Place::After) | Err(_) => Err(MembershipError::Revoked),
                 }
+            }
+            Err(error @ (MembershipError::Absent | MembershipError::UnknownDevice)) => {
+                // No live delegation stands for a server that is no member's
+                // device. What a withdrawal's cut keeps of its work is
+                // history; the rest stays refused, whatever time it names.
+                let Some(withdrawn) = self.withdrawal_keeping(app, document, write) else {
+                    return Err(error);
+                };
+                let policy = self
+                    .core
+                    .workspace_doc
+                    .as_ref()
+                    .ok_or(MembershipError::GovernanceMissing)?
+                    .workspace_policy(&self.core.workspace)
+                    .clone();
+                let acting = crate::state::ActingAs {
+                    actor: tilo_action_policy::Actor::Member(withdrawn.actor()),
+                    grants: withdrawn.grants.clone(),
+                };
+                let member = access_of(policy, hex::encode(withdrawn.person), true, Some(acting))
+                    .granted(self.approved_keys(now));
+                Ok(Some((member, true, Some(withdrawn))))
             }
             Err(error) => Err(error),
         }
@@ -642,7 +712,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<MemberAccess, MembershipError> {
         self.written_as(app, document, write, now)?
-            .map(|(member, _)| member)
+            .map(|(member, _, _)| member)
             .ok_or(MembershipError::Revoked)
     }
     /// Whether the device that wrote a change is one of the owner's: a known
@@ -1054,7 +1124,7 @@ impl StatePeer {
         else {
             return Ok(Authorized::Hold(crate::MissingPrerequisite::Governance));
         };
-        let Some((member, history)) = written else {
+        let Some((member, history, kept)) = written else {
             return Ok(Authorized::Hold(crate::MissingPrerequisite::RemovalCut));
         };
         // A change made with another version of the app than the workspace runs
@@ -1096,10 +1166,14 @@ impl StatePeer {
         // A server that is no member's own device takes a member's work under
         // that member's delegation, and only as far as the delegation names:
         // the member's authority bounds it above, the delegation below.
-        let delegation = backend::member::legacy(&self.core, source, authorization_time)
-            .is_err()
-            .then(|| self.delegated_work(source, authorization_time))
-            .flatten();
+        // History a withdrawal's cut keeps is bounded by the form that keeps
+        // it, as the work was when it was done ([`Self::written_as`]).
+        let delegation = kept.or_else(|| {
+            backend::member::legacy(&self.core, source, authorization_time)
+                .is_err()
+                .then(|| self.delegated_work(source, authorization_time))
+                .flatten()
+        });
         if let Some(delegation) = &delegation {
             Self::delegated_work_is_theirs(source, delegation, envelope)?;
         }

@@ -20,6 +20,13 @@
 //! delegation lives [`MAX_LIFETIME_NS`] at most; the member's own devices sign
 //! it again to live on ([`WorkDelegation::renewed`]), so a device that never
 //! saw a withdrawal is held by an end that is near.
+//!
+//! A withdrawal carries its cut under the same signature: what the member's
+//! device held of the server's work when it took the work back, document by
+//! document ([`HeldWork`]). A holder of the withdrawal takes of that work what
+//! the cut keeps and nothing else ([`WorkDelegation::keeps`]). The time a
+//! write names is its author's and the time a withdrawal names is its
+//! signer's, so neither decides: a withdrawal is read live at no time.
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +39,7 @@ use tilo_action_policy::{ActionKind, Answer, Grant, TreePath};
 pub const WORK_DELEGATIONS_KEY: &str = "work_delegations_v1";
 
 /// The signing domain: a signature made over another shape never verifies.
-const WORK_DELEGATION_DOMAIN: &[u8] = b"tilo-work-delegation-v2\0";
+const WORK_DELEGATION_DOMAIN: &[u8] = b"tilo-work-delegation-v3\0";
 
 /// Longest a delegation lives from its issue: seven days. A withdrawal is kept
 /// by every device that saw it; a device that never saw it is held by nothing
@@ -47,6 +54,23 @@ pub const MAX_DELEGATED_ACTOR_BYTES: usize = 64;
 /// Most of the member's vault items one delegation may let the server use.
 pub const MAX_DELEGATED_SECRETS: usize = 32;
 
+/// What the member's device held of the server's work in one document when it
+/// took the work back: the place in that document's history its withdrawal
+/// keeps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldWork {
+    /// The document, as the workspace keys its documents: by its app and its
+    /// own id.
+    pub route: String,
+    /// The number of the server's last write to it that the device held:
+    /// every write carries its author's own running number per document.
+    pub last: u64,
+    /// The server's compactions in the document's history that the device
+    /// held, each by that write's id. A compaction restates history under a
+    /// number its author used before, so its number says nothing of it.
+    pub compactions: Vec<[u8; 32]>,
+}
+
 /// Why a work delegation is not usable.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum WorkDelegationError {
@@ -56,7 +80,7 @@ pub enum WorkDelegationError {
     /// It names another workspace.
     #[error("the work delegation names another workspace")]
     OtherWorkspace,
-    /// Outside its validity window, or revoked at this time.
+    /// Outside its validity window, or withdrawn.
     #[error("the work delegation is not current")]
     NotCurrent,
     /// A field is out of bounds, or it names no work at all.
@@ -106,6 +130,13 @@ pub struct WorkDelegation {
     /// When the member revoked it, ns since the epoch; `None` while live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at_ns: Option<u64>,
+    /// The cut of a withdrawal: what the member's device held of the server's
+    /// work when it took the work back, one entry per document, ordered by
+    /// route. A holder of the withdrawal takes of the server's work for this
+    /// member what the cut keeps ([`Self::keeps`]) and nothing else, whatever
+    /// time a write names. Only a withdrawal carries one.
+    #[serde(default)]
+    pub held: Vec<HeldWork>,
     /// The signing device's signature over everything above.
     #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
@@ -124,6 +155,7 @@ struct Unsigned<'a> {
     issued_at_ns: u64,
     expires_at_ns: u64,
     revoked_at_ns: &'a Option<u64>,
+    held: &'a [HeldWork],
 }
 
 impl WorkDelegation {
@@ -161,6 +193,7 @@ impl WorkDelegation {
                 issued_at_ns,
                 expires_at_ns,
                 revoked_at_ns: None,
+                held: Vec::new(),
                 signature: [0; 64],
             },
         )
@@ -177,23 +210,43 @@ impl WorkDelegation {
     }
 
     /// The same delegation, revoked at `revoked_at_ns` and signed again by the
-    /// member's device `key`.
+    /// member's device `key`, with a cut that names no document: it keeps
+    /// nothing of the server's work ([`Self::withdrawn`]).
     ///
     /// # Errors
-    /// As [`Self::sign`], and [`WorkDelegationError::Invalid`] when `key` is
-    /// not the device that signed it.
+    /// As [`Self::withdrawn`].
     pub fn revoked(
         &self,
         key: &dyn DeviceSigner,
         revoked_at_ns: u64,
+    ) -> Result<Self, WorkDelegationError> {
+        self.withdrawn(key, revoked_at_ns, Vec::new())
+    }
+
+    /// The same delegation, withdrawn at `revoked_at_ns` and signed again by
+    /// the member's device `key`, carrying its cut: `held`, what that device
+    /// holds of the server's work, one entry per document. The cut is part of
+    /// what the device signs, so only a device of the member's says what a
+    /// withdrawal keeps.
+    ///
+    /// # Errors
+    /// As [`Self::sign`], and [`WorkDelegationError::Invalid`] when `key` is
+    /// not the device that signed it or `held` names a document twice.
+    pub fn withdrawn(
+        &self,
+        key: &dyn DeviceSigner,
+        revoked_at_ns: u64,
+        mut held: Vec<HeldWork>,
     ) -> Result<Self, WorkDelegationError> {
         if key.device_public_key() != self.device {
             return Err(WorkDelegationError::Invalid(
                 "only the device that signed it revokes it",
             ));
         }
+        held.sort_by(|one, other| one.route.cmp(&other.route));
         let mut revoked = self.clone();
         revoked.revoked_at_ns = Some(revoked_at_ns);
+        revoked.held = held;
         Self::sealed(key, revoked)
     }
 
@@ -295,6 +348,7 @@ impl WorkDelegation {
             issued_at_ns: self.issued_at_ns,
             expires_at_ns: self.expires_at_ns,
             revoked_at_ns: &self.revoked_at_ns,
+            held: &self.held,
         };
         let mut bytes = WORK_DELEGATION_DOMAIN.to_vec();
         bytes.extend(postcard::to_allocvec(&unsigned).unwrap_or_default());
@@ -358,6 +412,13 @@ impl WorkDelegation {
         {
             return Err(WorkDelegationError::Invalid("revocation"));
         }
+        // Only a withdrawal carries a cut, and a cut names each document once,
+        // in one order: every device then signs and reads the same statement.
+        if (self.revoked_at_ns.is_none() && !self.held.is_empty())
+            || !self.held.is_sorted_by(|one, other| one.route < other.route)
+        {
+            return Err(WorkDelegationError::Invalid("cut"));
+        }
         Ok(())
     }
 
@@ -381,7 +442,11 @@ impl WorkDelegation {
     }
 
     /// [`Self::verify_signature`], and that it is live at `now_ns`: issued,
-    /// not expired, and not revoked by then.
+    /// not expired, and not withdrawn. A withdrawal is live at no time, the
+    /// time before the stamp it carries included: that stamp is its signer's
+    /// clock, and a time asked for may be whatever a write's author stamped.
+    /// What a withdrawal keeps of the server's work is its cut
+    /// ([`Self::keeps`]).
     ///
     /// # Errors
     /// [`WorkDelegationError`] when it does not hold or is not current.
@@ -389,13 +454,34 @@ impl WorkDelegation {
         self.verify_signature(workspace)?;
         // One that was issued after the asking device's clock is not yet
         // anyone's to take: every holder then reads the same live set.
-        if now_ns < self.issued_at_ns
+        if self.revoked_at_ns.is_some()
+            || now_ns < self.issued_at_ns
             || now_ns >= self.expires_at_ns
-            || self.revoked_at_ns.is_some_and(|revoked| revoked <= now_ns)
         {
             return Err(WorkDelegationError::NotCurrent);
         }
         Ok(())
+    }
+
+    /// Whether this withdrawal keeps the server's write number `sequence` to
+    /// the document `route`: the member's device held it when it took the
+    /// work back. `compaction` is the write's id when it is a compaction:
+    /// then that id decides, never the number, which a compaction shares with
+    /// a write it folds. A document the cut does not name keeps nothing, and
+    /// a form that is no withdrawal keeps nothing: the work under it is
+    /// decided while it is live ([`Self::verify`]).
+    #[must_use]
+    pub fn keeps(&self, route: &str, sequence: u64, compaction: Option<&[u8; 32]>) -> bool {
+        if self.revoked_at_ns.is_none() {
+            return false;
+        }
+        self.held
+            .iter()
+            .find(|held| held.route == route)
+            .is_some_and(|held| match compaction {
+                Some(id) => held.compactions.contains(id),
+                None => (1..=held.last).contains(&sequence),
+            })
     }
 
     /// Whether the server may take work at `node` of `kind` under it.
@@ -815,6 +901,108 @@ mod tests {
         assert_eq!(
             withdrawn_again.verify("w", 10 * DAY + 600),
             Err(WorkDelegationError::NotCurrent)
+        );
+        Ok(())
+    }
+
+    /// A withdrawal carries its cut under its member's signature. It keeps the
+    /// server's writes up to the number it names for a document and the very
+    /// compactions it names, and nothing else: no other document, no other
+    /// compaction, no number above. A cut that is raised, added to or put on a
+    /// live form is no statement of the member's.
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the regression returns setup errors and asserts actual production outcomes"
+    )]
+    fn a_withdrawal_keeps_what_its_cut_names_and_nothing_else() -> TestResult {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let live = delegation(&key, [8; 32], 1_000);
+        let (taken, other) = ([1; 32], [2; 32]);
+        let cut = vec![
+            HeldWork {
+                route: "folded".into(),
+                last: 0,
+                compactions: vec![taken],
+            },
+            HeldWork {
+                route: "edited".into(),
+                last: 3,
+                compactions: Vec::new(),
+            },
+        ];
+        let withdrawn = live.withdrawn(&key, 600, cut)?;
+        withdrawn.verify_signature("w")?;
+        let routes: Vec<&str> = withdrawn
+            .held
+            .iter()
+            .map(|held| held.route.as_str())
+            .collect();
+        assert_eq!(routes, ["edited", "folded"], "one order on every device");
+
+        for (sequence, kept) in [(0, false), (1, true), (3, true), (4, false)] {
+            assert_eq!(
+                withdrawn.keeps("edited", sequence, None),
+                kept,
+                "{sequence}"
+            );
+        }
+        // A compaction is kept as the very one the cut names, whatever number
+        // it carries, and names its own document alone.
+        assert!(withdrawn.keeps("folded", 9, Some(&taken)));
+        assert!(!withdrawn.keeps("folded", 9, Some(&other)));
+        assert!(!withdrawn.keeps("edited", 3, Some(&taken)));
+        assert!(!withdrawn.keeps("folded", 1, None));
+        // A document the cut does not name keeps nothing, and neither does a
+        // withdrawal that names none or a form that is no withdrawal.
+        assert!(!withdrawn.keeps("another", 1, None));
+        assert!(!live.revoked(&key, 600)?.keeps("edited", 1, None));
+        assert!(!live.keeps("edited", 1, None));
+
+        // The signed bytes bind the cut: raised or added to, it is not the
+        // member's statement.
+        let mut raised = withdrawn.clone();
+        raised.held[0].last = 4;
+        assert_eq!(
+            raised.verify_signature("w"),
+            Err(WorkDelegationError::Signature),
+            "a raised cut does not verify"
+        );
+        let mut added = withdrawn.clone();
+        added.held.push(HeldWork {
+            route: "zz-another".into(),
+            last: 1,
+            compactions: Vec::new(),
+        });
+        assert_eq!(
+            added.verify_signature("w"),
+            Err(WorkDelegationError::Signature),
+            "a cut with a document added does not verify"
+        );
+        let mut emptied = withdrawn.clone();
+        emptied.held.clear();
+        assert_eq!(
+            emptied.verify_signature("w"),
+            Err(WorkDelegationError::Signature)
+        );
+        // Only a withdrawal carries a cut, each document once, and only the
+        // device that signed the form withdraws it.
+        let mut carrying = live.clone();
+        carrying.held.clone_from(&withdrawn.held);
+        assert_eq!(
+            carrying.verify_signature("w"),
+            Err(WorkDelegationError::Invalid("cut"))
+        );
+        let twice = vec![withdrawn.held[0].clone(), withdrawn.held[0].clone()];
+        assert_eq!(
+            live.withdrawn(&key, 600, twice),
+            Err(WorkDelegationError::Invalid("cut"))
+        );
+        assert_eq!(
+            live.withdrawn(&SigningKey::from_bytes(&[6; 32]), 600, Vec::new()),
+            Err(WorkDelegationError::Invalid(
+                "only the device that signed it revokes it"
+            ))
         );
         Ok(())
     }
