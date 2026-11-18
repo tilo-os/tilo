@@ -6,53 +6,46 @@ type Places {
 /// The canvas's page: a map filling it, with a place at each point and a window on it as a
 /// traditional desktop's does.
 view places(p: Places) {
-    stack(fill, gap: .section) {
-        ui.Text(
-            "A canvas that pans and zooms, with a place at each point and a window on it.",
-            role: .caption,
-            secondary: true,
-        )
-        ui.Map(name: p.title) {
-            ui.MapPin(name: "Notes", x: 40, y: 40, width: 240) {
-                ui.Card(title: "Notes") {
-                    ui.Text("A place on the canvas.", role: .caption, secondary: true)
-                }
+    ui.Map(name: p.title) {
+        ui.MapPin(name: "Notes", x: 40, y: 40, width: 240) {
+            ui.Card(title: "Notes") {
+                ui.Text("A place on the canvas.", role: .caption, secondary: true)
             }
-            ui.MapPin(name: "Tasks", x: 320, y: 160, width: 240) {
-                ui.Card(title: "Tasks") {
-                    ui.Text("Another, beside it.", role: .caption, secondary: true)
-                }
+        }
+        ui.MapPin(name: "Tasks", x: 320, y: 160, width: 240) {
+            ui.Card(title: "Tasks") {
+                ui.Text("Another, beside it.", role: .caption, secondary: true)
             }
-            ui.MapPin(name: "Content", x: 620, y: 40, width: 320, height: 200) {
-                ui.Place(name: "Groceries", fill) {
-                    controls: {
-                        ui.Button("Close", icon: .x, icon_only: true, role: .plain)
-                    }
-                    body: {
-                        stack(gap: .related, padding: .section) {
-                            ui.Text("Groceries", role: .heading)
-                            ui.Text(
-                                "A resource's view on the canvas: no frame, its handle on hover.",
-                                role: .caption,
-                                secondary: true,
-                            )
-                        }
+        }
+        ui.MapPin(name: "Content", x: 620, y: 40, width: 320, height: 200) {
+            ui.Place(name: "Groceries", fill) {
+                controls: {
+                    ui.Button("Close", icon: .x, icon_only: true, role: .plain)
+                }
+                body: {
+                    stack(gap: .related, padding: .section) {
+                        ui.Text("Groceries", role: .heading)
+                        ui.Text(
+                            "A resource's view on the canvas: no frame, its handle on hover.",
+                            role: .caption,
+                            secondary: true,
+                        )
                     }
                 }
             }
-            ui.MapPin(name: "Window", x: 80, y: 300, width: 360, height: 200) {
-                ui.WindowFrame(name: "A window", focused: true, fill) {
-                    controls: {
-                        ui.Button("Close", icon: .x, icon_only: true, role: .bar)
-                    }
-                    body: {
-                        stack(gap: .related, padding: .section) {
-                            ui.Text(
-                                "A window on the shell: its bar, its controls, what it shows.",
-                                role: .caption,
-                                secondary: true,
-                            )
-                        }
+        }
+        ui.MapPin(name: "Window", x: 80, y: 300, width: 360, height: 200) {
+            ui.WindowFrame(name: "A window", focused: true, fill) {
+                controls: {
+                    ui.Button("Close", icon: .x, icon_only: true, role: .bar)
+                }
+                body: {
+                    stack(gap: .related, padding: .section) {
+                        ui.Text(
+                            "A window on the shell: its bar, its controls, what it shows.",
+                            role: .caption,
+                            secondary: true,
+                        )
                     }
                 }
             }

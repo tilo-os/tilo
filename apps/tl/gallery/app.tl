@@ -188,15 +188,15 @@ view gallery(g: Gallery) {
             // scrolls down it.
             if page_filled(g, showing) and showing == "backlogs" {
                 if let b = g.backlogs.first() {
-                    backlog_list(b)
+                    backlog_list(b, fill)
                 }
             } else if page_filled(g, showing) and showing == "releases" {
                 if let r = g.releases.first() {
-                    release_board(r)
+                    release_board(r, fill)
                 }
             } else if page_filled(g, showing) and showing == "places" {
                 if let p = g.places.first() {
-                    places(p)
+                    places(p, fill)
                 }
             } else {
                 ui.Scroll {

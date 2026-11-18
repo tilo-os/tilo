@@ -673,7 +673,6 @@ d-5cczuoub = Feedback
     .w-the-shape-of-what-is-still = Die Form dessen, was noch lädt, damit nichts springt, wenn es ankommt.
 
 d-irl4ws35 = Orte
-    .w-a-canvas-that-pans-and-zooms = Eine Fläche, die sich schwenken und zoomen lässt, mit einem Ort an jedem Punkt und einem Fenster darauf.
     .w-notes = Notizen
     .w-a-place-on-the-canvas = Ein Ort auf der Fläche.
     .w-tasks = Aufgaben

@@ -817,7 +817,6 @@ d-5cczuoub = Feedback
     .w-the-shape-of-what-is-still = The shape of what is still loading, so nothing jumps when it arrives.
 
 d-irl4ws35 = Places
-    .w-a-canvas-that-pans-and-zooms = A canvas that pans and zooms, with a place at each point and a window on it.
     .w-notes = Notes
     .w-a-place-on-the-canvas = A place on the canvas.
     .w-tasks = Tasks
