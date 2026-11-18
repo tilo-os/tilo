@@ -23,6 +23,7 @@ class FilesWorkspaceTest(unittest.TestCase):
                 "shell",
                 "tilo-session",
                 "tilo",
+                "tilolang-process",
                 "tilo-launcher",
                 "tilo-unlock-helper",
                 "tilo-flight-recorder",
