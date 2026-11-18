@@ -2,17 +2,20 @@
 //! workspace a key acts in.
 //!
 //! - `workspace/servers#list` (or `tilo_read workspace/servers`) answers the
-//!   servers keeping it: the one it was made on, which governs it, first;
+//!   servers keeping it: the one asked first;
 //! - `workspace/servers#add {origin}` has the server whose site is at `origin`
 //!   (`https://tilo.sh`) keep it as well: both keep it, a change on either
 //!   reaches the other, and its members reach it at either. That server takes
 //!   it as its own rules say: only for an owner of it it let in, if it has capacity;
 //! - `workspace/servers#remove {server}` has a server, named by its site or by
-//!   its device key as the list names it, keep it no more.
+//!   its device key as the list names it, keep it no more;
+//! - `workspace/servers#move {server, origin}` moves it from `server` to the
+//!   server whose site is at `origin`: that one keeps it as well first, then
+//!   `server` keeps it no more. If `origin` refuses, it stays where it was.
 //!
 //! All are the workspace's own governance actions (`tilo.workspace`'s
-//! `server.list`, `server.add` and `server.remove`), asked of the server that
-//! governs it over the key's session, and only its owners have them: from a
+//! `server.list`, `server.add`, `server.remove` and `server.move`), asked of
+//! the server the key's session reaches, and only its owners have them: from a
 //! device of theirs, or a key they created reaching all their workspaces. Each
 //! answers the servers as they are then.
 
@@ -26,6 +29,7 @@ pub const ROOT: &str = "workspace/servers";
 const LIST: &str = "server.list";
 const ADD: &str = "server.add";
 const REMOVE: &str = "server.remove";
+const MOVE: &str = "server.move";
 /// What a refusal names as the next step.
 const OWNERS_ONLY: &str = "an owner of the workspace chooses its servers, from a device of theirs \
                            or a key they created reaching all their workspaces; the other server \
@@ -89,11 +93,26 @@ impl Session {
                     "pass args {server: \"https://tilo.sh\"}",
                 ),
             },
+            ("tilo_do", "workspace/servers#move") => match (text("server"), text("origin")) {
+                (Some(server), Some(origin)) => {
+                    let mut asked = Map::new();
+                    asked.insert("server".into(), json!(server));
+                    asked.insert("origin".into(), json!(origin));
+                    self.ask_hosts(workspace, MOVE, asked).await
+                }
+                _ => failed(
+                    "invalid_arguments",
+                    "`server` is the server it moves from, `origin` the site of the one it moves to",
+                    "pass args {server: \"<device key or site>\", origin: \"https://tilo.sh\"}",
+                ),
+            },
             (_, other) => failed(
                 "not_found",
                 format!("the workspace has no action {other}"),
                 "its actions are workspace/servers#list, workspace/servers#add with the other \
-                 server's `origin`, and workspace/servers#remove with the `server` to let go",
+                 server's `origin`, workspace/servers#remove with the `server` to let go, and \
+                 workspace/servers#move with the `server` it moves from and the `origin` it \
+                 moves to",
             ),
         };
         answer(structured, path, outcome)

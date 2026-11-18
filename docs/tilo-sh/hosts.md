@@ -75,18 +75,21 @@ other members reach it at either, also while the first one is off.
 
 ```sh
 tilo workspace servers add https://tilo.sh -w Tilo      # tilo.sh keeps it as well
-tilo workspace servers ls -w Tilo                       # the servers keeping it, the one it was made on first
+tilo workspace servers ls -w Tilo                       # the servers keeping it, the one asked first
 tilo workspace servers remove https://tilo.sh -w Tilo   # tilo.sh lets it go
+tilo workspace servers move https://old.example.com https://tilo.sh -w Tilo
+                                                        # tilo.sh keeps it, then the old one lets it go
 ```
 
-The same is `workspace/servers#add {origin}`, `#list` and `#remove {server}` for an agent over MCP, and
-`POST`, `GET` and `DELETE /v1/workspaces/{workspace}/servers` over HTTP. Only the workspace's owners
-choose its servers, from a device of theirs or a key they created reaching all their workspaces.
+The same is `workspace/servers#add {origin}`, `#list`, `#remove {server}` and `#move {server, origin}`
+for an agent over MCP, and `POST`, `GET` and `DELETE /v1/workspaces/{workspace}/servers` and
+`POST /v1/workspaces/{workspace}/servers/{server}/move` over HTTP. Only the workspace's owners choose its
+servers, from a device of theirs or a key they created reaching all their workspaces. A move that the new
+server refuses leaves the workspace where it was.
 
 The other server decides whether it takes the workspace, by its own rules: it keeps one only for an owner
 of it whom it let in (on tilo.sh: you signed in there), and only while that person's workspaces there
-have capacity. Otherwise it refuses, and says why. The server the workspace was made on stays the one that
-decides who is in it; the others follow it.
+have capacity. Otherwise it refuses, and says why.
 
 ## Running your own host
 

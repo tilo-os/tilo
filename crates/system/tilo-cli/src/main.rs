@@ -2588,6 +2588,19 @@ mod tests {
                     }
                 } if origin == "https://tilo.sh"
             ));
+            let moved = Cli::try_parse_from([
+                "tilo", "workspace", "servers", "move", "https://old.test", "https://tilo.sh",
+                "-w", "Tilo",
+            ])
+            .expect("workspace servers move parses");
+            assert!(matches!(
+                moved.cmd,
+                Cmd::Workspace {
+                    cmd: desktop::WorkspaceCmd::Servers {
+                        cmd: hosted::ServersCmd::Move { ref from, ref to }
+                    }
+                } if from == "https://old.test" && to == "https://tilo.sh"
+            ));
             let list = Cli::try_parse_from(["tilo", "actions", "volume"]).expect("actions parses");
             assert!(matches!(list.cmd, Cmd::Actions { ref filter } if filter == &["volume"]));
             let show = Cli::try_parse_from(["tilo", "action", "show", "mute"]).expect("show parses");

@@ -766,6 +766,17 @@ impl<'a> Caller<'a> {
                 shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
+            "moveServer" => {
+                let server = self.params.get("server").to_owned();
+                let to: answers::NewServer = self.json_body()?;
+                let moved = json!({
+                    "path": "workspace/servers#move",
+                    "args": {"server": server, "origin": to.origin},
+                });
+                let listed = self.call("tilo_do", moved).await?;
+                shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
+                    .map(Answer::ok)
+            }
             "invitePerson" => {
                 let new: answers::NewInvitation = self.json_body()?;
                 let invite = json!({"path": "workspace/members#invite", "args": new});

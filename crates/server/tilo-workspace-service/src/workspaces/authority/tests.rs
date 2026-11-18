@@ -1440,7 +1440,7 @@ async fn a_page_lists_and_chooses_the_servers_keeping_the_workspace() {
         panic!("the page lists the servers: {listed:?}");
     };
     assert_eq!(servers.len(), 1);
-    assert!(servers[0].governs, "the one it was made on governs it");
+    assert!(servers[0].here, "the server asked lists itself first");
     assert_eq!(servers[0].device, hex::encode(owner.device_public_key));
 
     // Someone the workspace does not let choose its servers sees none of them.

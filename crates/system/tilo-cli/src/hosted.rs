@@ -89,8 +89,7 @@ pub enum KeysCmd {
 
 #[derive(Debug, Subcommand)]
 pub enum ServersCmd {
-    /// The servers keeping the workspace (-w): the one it was made on, which
-    /// governs it, first.
+    /// The servers keeping the workspace (-w): the one asked first.
     Ls,
     /// Have the server whose site is ORIGIN keep the workspace (-w) as well.
     #[command(
@@ -109,11 +108,25 @@ pub enum ServersCmd {
         after_help = "Example:\n  tilo workspace servers remove https://tilo.sh -w Tilo\n\n\
                       SERVER is its site, or its device key as `tilo workspace servers ls` names \
                       it. It is no longer named to anyone at once, and lets the workspace go when \
-                      it hears so; the server the workspace was made on stays."
+                      it hears so."
     )]
     Remove {
         /// The server's site, or its device key.
         server: String,
+    },
+    /// Move the workspace (-w) from the server FROM to the server whose site
+    /// is TO.
+    #[command(
+        after_help = "Example:\n  tilo workspace servers move https://old.example.com https://tilo.sh -w Tilo\n\n\
+                      TO keeps the workspace first, then FROM keeps it no more. If TO refuses, \
+                      the workspace stays where it was. FROM is a site, or a device key as \
+                      `tilo workspace servers ls` names it; TO is a site."
+    )]
+    Move {
+        /// The server it moves from: its site, or its device key.
+        from: String,
+        /// The site of the server it moves to, like `https://tilo.sh`.
+        to: String,
     },
 }
 
@@ -1660,13 +1673,25 @@ fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
                 );
                 client.delete(&format!("{path}/{server}")).await?
             }
+            ServersCmd::Move { from, to } => {
+                let from = percent_encoding::utf8_percent_encode(
+                    &from,
+                    percent_encoding::NON_ALPHANUMERIC,
+                );
+                client
+                    .post(
+                        &format!("{path}/{from}/move"),
+                        &serde_json::json!({ "origin": to }),
+                    )
+                    .await?
+            }
         };
         Ok(show(reach.json, &listed, &servers_text(&listed)))
     })
 }
 
-/// A workspace's servers, as lines: each by its device key, the one governing
-/// it marked.
+/// A workspace's servers, as lines: each by its device key, the one asked
+/// marked.
 fn servers_text(listed: &Value) -> String {
     let servers = listed
         .get("servers")
@@ -1675,12 +1700,12 @@ fn servers_text(listed: &Value) -> String {
         .unwrap_or_default();
     let mut said = String::from("kept by:");
     for server in &servers {
-        let governs = if server.get("governs").and_then(Value::as_bool) == Some(true) {
-            "  (made here; governs it)"
+        let here = if server.get("here").and_then(Value::as_bool) == Some(true) {
+            "  (asked here)"
         } else {
             ""
         };
-        let _ = write!(said, "\n  {}{governs}", text(server, "device"));
+        let _ = write!(said, "\n  {}{here}", text(server, "device"));
     }
     if listed.get("confirmed").and_then(Value::as_bool) == Some(false) {
         said.push_str(

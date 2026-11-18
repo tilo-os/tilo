@@ -285,10 +285,10 @@ tilo_test_env::scenario! {
     phase an_owner_sees_the_servers_keeping_the_workspace;
     {
         let mut owner = staged("general");
-        for text in ["Servers", "Made here", "3f2b1c00", "8d4e0a11"] {
+        for text in ["Servers", "This server", "3f2b1c00", "8d4e0a11"] {
             assert!(says(&mut owner, text), "{text:?} is shown");
         }
-        // Only the server that is not the one the workspace was made on can be let go here.
+        // Only a server other than the one the page is connected to is let go here.
         assert_eq!(
             owner
                 .harness()

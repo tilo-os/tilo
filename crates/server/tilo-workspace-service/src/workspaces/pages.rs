@@ -604,7 +604,7 @@ impl Workspaces {
                 .map(|server| ServerEntry {
                     device: server.device,
                     person: server.person,
-                    governs: server.governs,
+                    here: server.here,
                 })
                 .collect(),
         ))

@@ -46,8 +46,9 @@ pub struct Servers {
     pub origin_label: String,
     pub add_label: String,
     pub remove_label: String,
-    /// What marks the server the workspace was made on.
-    pub governs_label: String,
+    /// What marks the server the page is connected to, which is let go
+    /// from another one.
+    pub here_label: String,
     pub rows: Vec<Server>,
 }
 
@@ -57,8 +58,8 @@ pub struct Server {
     /// The device key the row is asked for by, and what removing it names.
     pub key: String,
     pub label: String,
-    /// Whether this is the server the workspace was made on, which governs it.
-    pub governs: bool,
+    /// Whether this is the server the page is connected to.
+    pub here: bool,
 }
 
 /// Everything the General tab shows, in the person's words.
@@ -170,9 +171,9 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
 fn servers_section(servers: &Servers, parts: &Parts) -> Element {
     let mut items: Vec<Element> = vec![caption(&servers.group.description)];
     for server in &servers.rows {
-        let trailing: Element = if server.governs {
+        let trailing: Element = if server.here {
             Box::new(
-                Text::new(&servers.governs_label)
+                Text::new(&servers.here_label)
                     .with_role(TextRole::Caption)
                     .dimmed(),
             )
@@ -394,17 +395,17 @@ pub(super) fn sample() -> General {
             origin_label: "Another server's site".to_owned(),
             add_label: "Add".to_owned(),
             remove_label: "Remove".to_owned(),
-            governs_label: "Made here".to_owned(),
+            here_label: "This server".to_owned(),
             rows: vec![
                 Server {
                     key: "3f2b1c00".to_owned(),
                     label: "3f2b1c00".to_owned(),
-                    governs: true,
+                    here: true,
                 },
                 Server {
                     key: "8d4e0a11".to_owned(),
                     label: "8d4e0a11".to_owned(),
-                    governs: false,
+                    here: false,
                 },
             ],
         }),

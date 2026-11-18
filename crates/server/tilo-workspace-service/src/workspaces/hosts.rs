@@ -211,7 +211,7 @@ impl Workspaces {
     ) -> Result<TransportHint, String> {
         let host = &self.inner.host;
         if device == host.cert.device_public_key {
-            return Err("a workspace's governor hosts it already".into());
+            return Err("this server keeps the workspace already".into());
         }
         let reached = self.reach_host(device, addr).await?;
         let member = reached.certificate.clone();
@@ -381,8 +381,8 @@ impl Workspaces {
                     .is_ok_and(|policy| policy.is_keeper(&hex::encode(person))))
     }
 
-    /// The hosts holding `workspace`, as its owners list them: this host, its
-    /// governor, first.
+    /// The servers keeping `workspace`, as its owners list them: this one,
+    /// the server asked, first.
     ///
     /// # Errors
     ///
@@ -398,7 +398,7 @@ impl Workspaces {
             .map(|(at, hint)| KeepingDevice {
                 device: hex::encode(hint.host.device_public_key),
                 person: hex::encode(hint.host.user_public_key),
-                governs: at == 0,
+                here: at == 0,
             })
             .collect())
     }
@@ -450,6 +450,61 @@ impl Workspaces {
             return Err(format!("{named} does not hold the workspace"));
         }
         self.detach_host(workspace, device, addr).await
+    }
+
+    /// Move `workspace` from the server `from` (its site, or its device key
+    /// as [`Self::keeping_devices`] names it) to the one at the site `to`
+    /// ([`Self::move_holder`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::move_holder`], or a site did not say who it is.
+    pub async fn move_server(&self, workspace: &str, from: &str, to: &str) -> Result<bool, String> {
+        let from = from.trim();
+        let old = match device_key(from) {
+            Some(device) => device,
+            None => host_at(from, self.site_reach()).await?.0,
+        };
+        let (new, addr) = host_at(to, self.site_reach()).await?;
+        self.move_holder(workspace, old, new, addr)
+            .await
+            .map_err(|error| {
+                error
+                    .replace("the old server", from)
+                    .replace("the new server", to)
+            })
+    }
+
+    /// Move `workspace` from the server `old` to the server `new` at `addr`:
+    /// `new` keeps it as well first ([`Self::attach_host`]), then `old`
+    /// keeps it no more ([`Self::detach_host`]). Answers whether `old`
+    /// confirmed it let the workspace go.
+    ///
+    /// # Errors
+    ///
+    /// `old` does not keep the workspace, or `new` did not take it: the
+    /// workspace then stays where it was. Or `new` took it and `old` could
+    /// not be let go: both keep it then, and the error says so.
+    pub async fn move_holder(
+        &self,
+        workspace: &str,
+        old: [u8; 32],
+        new: [u8; 32],
+        addr: EndpointAddr,
+    ) -> Result<bool, String> {
+        if !self.names_server(workspace, old).await {
+            return Err("the old server does not keep the workspace".into());
+        }
+        self.attach_host(workspace, new, addr)
+            .await
+            .map_err(|error| {
+                format!(
+                    "the new server did not take the workspace, which stays where it was: {error}"
+                )
+            })?;
+        self.detach_host(workspace, old, None).await.map_err(|error| {
+            format!("the new server keeps the workspace now, and so does the old server still: {error}")
+        })
     }
 
     /// `device`, a host at `addr`, reached for its host operations: its
@@ -555,9 +610,8 @@ pub struct KeepingDevice {
     pub device: String,
     /// The person the host runs for, by their user public key, hex.
     pub person: String,
-    /// Whether this is the host that governs the workspace: the one it was
-    /// made on, which every other host follows.
-    pub governs: bool,
+    /// Whether this is the server asked: the one the list was read from.
+    pub here: bool,
 }
 
 /// `text` as a device key, when it is 64 hex characters; anything else names

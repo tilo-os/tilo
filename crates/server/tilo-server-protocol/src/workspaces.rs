@@ -403,8 +403,7 @@ pub enum WorkspacesRequest {
         name: String,
     },
     /// The servers keeping `workspace`, which its owners alone choose:
-    /// answered with [`WorkspacesReply::Servers`], the one it was made on
-    /// first.
+    /// answered with [`WorkspacesReply::Servers`], the one asked first.
     Servers {
         workspace: String,
     },
@@ -463,7 +462,7 @@ pub enum WorkspacesReply {
     RetiredPaired,
     /// The servers keeping a workspace ([`WorkspacesRequest::Servers`],
     /// [`WorkspacesRequest::AddServer`] and [`WorkspacesRequest::RemoveServer`]):
-    /// the one it was made on, which governs it, first.
+    /// the one asked first.
     Servers(Vec<ServerEntry>),
 }
 
@@ -474,9 +473,8 @@ pub struct ServerEntry {
     pub device: String,
     /// The person the server keeps the workspace for, by their user public key, hex.
     pub person: String,
-    /// Whether this is the server that governs the workspace: the one it was
-    /// made on, which every other server follows.
-    pub governs: bool,
+    /// Whether this is the server asked: the one the page is connected to.
+    pub here: bool,
 }
 
 /// What a host says of an invitation, or of a device it admitted with one.

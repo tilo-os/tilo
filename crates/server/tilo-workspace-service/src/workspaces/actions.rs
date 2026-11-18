@@ -120,8 +120,8 @@ pub(crate) const UNLIST: &str = "wait-list.remove";
 /// Mailing the invitation issued for an address on the wait list to it,
 /// where the entry sends mail: part of inviting.
 pub(crate) const MAIL_INVITATION: &str = "wait-list.mail";
-/// The servers keeping the workspace: the one it was made on, which governs
-/// it, and each other server its owners had keep it as well.
+/// The servers keeping the workspace: the one asked first, then each other
+/// server its owners had keep it as well.
 pub(crate) const SERVERS: &str = "server.list";
 /// Having another server, named by its site (`https://tilo.sh`), keep the
 /// workspace as well: both keep it, a change on either reaches the other, and
@@ -129,6 +129,9 @@ pub(crate) const SERVERS: &str = "server.list";
 pub(crate) const ADD_SERVER: &str = "server.add";
 /// Having a server keep the workspace no more.
 pub(crate) const REMOVE_SERVER: &str = "server.remove";
+/// Moving the workspace from one server to another: the new one keeps it
+/// as well, then the old one keeps it no more.
+pub(crate) const MOVE_SERVER: &str = "server.move";
 /// What checks choosing the workspace's servers: its owners', which no grant
 /// of its governance gives ([`Workspaces::chooses_servers`]).
 const CHOOSES_SERVERS: &str = "choose-servers";
@@ -200,7 +203,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 25] = [
+const VERBS: [Verb; 26] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -277,6 +280,13 @@ const VERBS: [Verb; 25] = [
         check: CHOOSES_SERVERS,
         kind: roles::GOVERNANCE_KIND,
         params: remove_server_params,
+    },
+    Verb {
+        id: MOVE_SERVER,
+        label: "Move it to another server",
+        check: CHOOSES_SERVERS,
+        kind: roles::GOVERNANCE_KIND,
+        params: move_server_params,
     },
     Verb {
         id: NAME,
@@ -491,6 +501,23 @@ fn remove_server_params() -> Vec<ActionParam> {
         "The server's site, like https://tilo.sh, or its device key (64 hex characters) as the \
          server list names it.",
     )]
+}
+
+fn move_server_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "server",
+            ParamType::Text,
+            "The server it moves from: its site, like https://tilo.sh, or its device key (64 hex \
+             characters) as the server list names it.",
+        ),
+        ActionParam::required(
+            "origin",
+            ParamType::Text,
+            "The site of the server it moves to, like https://tilo.sh. You must be let in there, \
+             and it may refuse by its own rules; the workspace then stays where it was.",
+        ),
+    ]
 }
 
 fn wait_list_entry_param() -> ActionParam {
@@ -1525,7 +1552,9 @@ impl Workspaces {
                 self.governance_invitations(action, call).await
             }
             ADD_MEMBER => self.governance_add_member(call).await,
-            SERVERS | ADD_SERVER | REMOVE_SERVER => self.governance_hosts(action, call).await,
+            SERVERS | ADD_SERVER | REMOVE_SERVER | MOVE_SERVER => {
+                self.governance_hosts(action, call).await
+            }
             WAIT_LIST | UNLIST | MAIL_INVITATION => self.governance_wait_list(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
@@ -1934,6 +1963,15 @@ impl Workspaces {
                 self.remove_server(workspace, args.required_text("server")?)
                     .await
                     .map_err(|error| refused(&error))?,
+            ),
+            MOVE_SERVER => Some(
+                self.move_server(
+                    workspace,
+                    args.required_text("server")?,
+                    args.required_text("origin")?,
+                )
+                .await
+                .map_err(|error| refused(&error))?,
             ),
             _ => None,
         };

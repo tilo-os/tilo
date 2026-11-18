@@ -1616,7 +1616,7 @@
     "/v1/workspaces/{workspace}/servers": {
       "get": {
         "operationId": "listServers",
-        "summary": "The servers keeping the workspace, the one that governs it first",
+        "summary": "The servers keeping the workspace, the one asked first",
         "tags": [
           "Resources"
         ],
@@ -1639,7 +1639,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The servers keeping the workspace, the one that governs it first",
+            "description": "The servers keeping the workspace, the one asked first",
             "content": {
               "application/json": {
                 "schema": {
@@ -1771,6 +1771,76 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/servers/{server}/move": {
+      "post": {
+        "operationId": "moveServer",
+        "summary": "Move the workspace from a server, by its site (percent-encoded) or its device key, to the server at another site: that one keeps it first, then this one no more",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "name": "server",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The server's site (`https://tilo.sh`), or its device key as listing the servers names it"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Move the workspace from a server, by its site (percent-encoded) or its device key, to the server at another site: that one keeps it first, then this one no more",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Servers"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewServer"
               }
             }
           }
@@ -2016,6 +2086,128 @@
               "schema": {
                 "type": "string",
                 "contentMediaType": "application/octet-stream"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/contents": {
+      "put": {
+        "operationId": "putManyContents",
+        "summary": "Store several small files whole in one request, answering each one's reference",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Store several small files whole in one request, answering each one's reference",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutManyAnswer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutMany"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace}/contents/have": {
+      "post": {
+        "operationId": "haveContents",
+        "summary": "Which of these content hashes the workspace already holds",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Invocation"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Which of these content hashes the workspace already holds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldHashes"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HaveHashes"
               }
             }
           }
@@ -3791,8 +3983,53 @@
       },
       "Servers": {
         "type": "object",
-        "additionalProperties": true,
-        "description": "The servers keeping the workspace (`servers`, each its `device` key, the\n`person` it runs for, and whether it `governs` the workspace: the one it\nwas made on, first), and after a removal whether that server confirmed it\nlet the workspace go (`confirmed`)."
+        "properties": {
+          "workspace": {
+            "type": "string",
+            "description": "The workspace's id."
+          },
+          "servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeptServer"
+            }
+          },
+          "confirmed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "After a removal or a move: whether the server let go confirmed it no\nlonger keeps the workspace. One that was not reached is no longer\nnamed to anyone, and lets the workspace go once it hears so."
+          }
+        },
+        "required": [
+          "workspace",
+          "servers"
+        ],
+        "description": "The servers keeping the workspace, the one asked first, and after a\nremoval or a move whether the server let go confirmed it."
+      },
+      "KeptServer": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string",
+            "description": "The server's device key, 64 hex characters: what removing or moving\nit may name it by."
+          },
+          "person": {
+            "type": "string",
+            "description": "The person the server runs for, by their user public key."
+          },
+          "here": {
+            "type": "boolean",
+            "description": "Whether this is the server asked."
+          }
+        },
+        "required": [
+          "device",
+          "person",
+          "here"
+        ],
+        "description": "One server keeping the workspace."
       },
       "NewServer": {
         "type": "object",
@@ -3915,6 +4152,67 @@
           "content",
           "size"
         ]
+      },
+      "PutMany": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Each file's bytes, base64."
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "description": "Several small files put into the workspace in one request."
+      },
+      "PutManyAnswer": {
+        "type": "object",
+        "properties": {
+          "contents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "contents"
+        ],
+        "description": "Each file's `tilo.content:<hash>` reference, in the order asked."
+      },
+      "HaveHashes": {
+        "type": "object",
+        "properties": {
+          "hashes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "hashes"
+        ],
+        "description": "Content hashes (lowercase BLAKE3 hex) to ask whether the workspace holds."
+      },
+      "HeldHashes": {
+        "type": "object",
+        "properties": {
+          "have": {
+            "type": "array",
+            "items": {
+              "type": "boolean"
+            }
+          }
+        },
+        "required": [
+          "have"
+        ],
+        "description": "Whether each asked hash is held, in the order asked."
       },
       "NewUpload": {
         "type": "object",

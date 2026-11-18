@@ -127,12 +127,12 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     // opened again, nothing is subscribed, sent or received. The watch
     // starts once the counters stand still, so what a holder set in motion
     // before it (the change just carried, the address it names itself at)
-    // is not read as the host doing something.
+    // is not read as the server doing something.
     let quiet = still(|| (governor.host.metrics(), member.host.metrics())).await;
     tokio::time::sleep(IDLE_WINDOW).await;
     assert_eq!((governor.host.metrics(), member.host.metrics()), quiet);
 
-    // Detached, the host is no longer named and admits nobody to the workspace.
+    // Detached, the server is no longer named and admits nobody to the workspace.
     assert!(
         workspaces
             .detach_host(&workspace.workspace, nas.device_pubkey(), None)
@@ -182,7 +182,7 @@ async fn a_device_serves_no_workspace_another_device_governs() {
     governor.stop().await;
 }
 
-/// A host the workspace's owner detaches lets the workspace go: it no longer holds it
+/// A server the workspace's owner detaches lets the workspace go: it no longer holds it
 /// open, though its files stay. Attached again, it serves the workspace from
 /// those files and catches up on what the workspace published meanwhile.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -233,7 +233,7 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     );
     assert!(retained().await.is_none(), "the host let the workspace go");
 
-    // The workspace moves on while the host is away.
+    // The workspace moves on while the server is away.
     workspaces
         .enter(&workspace.workspace, &tablet.cert)
         .await
@@ -432,7 +432,7 @@ const HELD_DEVICES: usize = 300;
 
 /// `workspace` as a workspace in use for a while is: its governance names
 /// hundreds of devices, and its history holds each admission, all of which a
-/// host it is handed to takes in.
+/// server it is handed to takes in.
 async fn used_for_a_while(
     workspaces: &tilo_server::workspaces::Workspaces,
     person: &TestUser,
@@ -444,7 +444,7 @@ async fn used_for_a_while(
     }
 }
 
-/// A session of `device` to `host`, a host of `person`.
+/// A session of `device` to `host_device`, a server of `person`.
 async fn session_at(
     device: &crate::common::TestDevice,
     person: &TestUser,
@@ -501,7 +501,7 @@ fn send_change(
         .unwrap();
 }
 
-/// Another person's host that keeps no workspaces for the people it lets in
+/// Another person's server that keeps no workspaces for the people it lets in
 /// takes a workspace only when its own operator's work setting takes it: one
 /// taking only its own person's work refuses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -525,7 +525,7 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
             refusing.host.node_addr(),
         )
         .await;
-    // The owner hears why: the host keeps nobody's workspace but its own
+    // The owner hears why: the server keeps nobody's workspace but its own
     // person's.
     assert!(
         refused
@@ -541,9 +541,9 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
     governor.stop().await;
 }
 
-/// A host of another person whose operator takes the workspace holds it once
+/// A server of another person whose operator takes the workspace holds it once
 /// its governor grants it ownership: from then on a change made through either
-/// host reaches the other with its author, also after that host restarts, and
+/// server reaches the other with its author, also after that server restarts, and
 /// detached it lets the workspace go.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
@@ -687,6 +687,10 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
 /// through it reaches the governor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
+    clippy::too_many_lines,
+    reason = "one scenario whose servers and sessions live until it ends"
+)]
+#[expect(
     clippy::significant_drop_tightening,
     reason = "Hosted::stop consumes each host after the assertions; the suggested earlier drop would use a moved value"
 )]
@@ -808,6 +812,141 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     drop((on_holder, local));
     holder.stop().await;
     governor.stop().await;
+}
+
+/// A workspace moves from one server to another: the new one keeps it
+/// first, then the old one lets it go, and the workspace's member reaches it
+/// at the new one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario whose servers and sessions live until it ends"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes each server after the assertions; the suggested earlier drop would use a moved value"
+)]
+async fn a_workspace_moves_from_one_server_to_another() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("phone", DeviceCapabilities::primary());
+    let site = TestUser::fresh("Site");
+    let made_on = host_on(&alice, &laptop, WorkSetting::none()).await;
+    let workspaces = made_on.host.workspaces();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    workspaces
+        .enter(&workspace.workspace, &phone.cert)
+        .await
+        .unwrap();
+    // Two servers of the site, each letting Alice in.
+    let mut kept = Vec::new();
+    for name in ["old", "new"] {
+        let device = site.enrol(name, DeviceCapabilities::member());
+        let server = host_on(&site, &device, WorkSetting::own_person()).await;
+        let at_site = server.host.workspaces();
+        assert!(
+            at_site
+                .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
+                    "site.test"
+                ))
+                .unwrap()
+        );
+        let home = at_site.create("Home").await.unwrap();
+        assert!(at_site.admit_own_through(&home.workspace));
+        at_site
+            .declare_owner(&home.workspace, alice.user_pk, None)
+            .await
+            .unwrap();
+        kept.push((device, server));
+    }
+    let mut kept = kept.into_iter();
+    let (old, old_server) = kept.next().unwrap();
+    let (new, new_server) = kept.next().unwrap();
+    workspaces
+        .attach_host(
+            &workspace.workspace,
+            old.device_pubkey(),
+            old_server.host.node_addr(),
+        )
+        .await
+        .unwrap();
+
+    let confirmed = workspaces
+        .move_holder(
+            &workspace.workspace,
+            old.device_pubkey(),
+            new.device_pubkey(),
+            new_server.host.node_addr(),
+        )
+        .await
+        .unwrap();
+    assert!(confirmed, "the old server says it let the workspace go");
+    let keeping: Vec<String> = workspaces
+        .keeping_devices(&workspace.workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|server| server.device)
+        .collect();
+    assert!(
+        keeping.contains(&hex::encode(new.device_pubkey())),
+        "{keeping:?}"
+    );
+    assert!(
+        !keeping.contains(&hex::encode(old.device_pubkey())),
+        "{keeping:?}"
+    );
+
+    // Alice's phone reaches the workspace at the new server, and a change
+    // made there reaches the server it was made on.
+    let local = made_on
+        .host
+        .connect_local(
+            laptop.cert.clone(),
+            laptop.sk.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .unwrap();
+    assert!(admitted(&local, workspace.workspace_id).await);
+    let at_new = session_at(&phone, &site, &new, &new_server).await;
+    tilo_test_env::within("the new server admits the workspace's member", async {
+        while !admitted(&at_new, workspace.workspace_id).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    send_change(
+        &at_new,
+        workspace.workspace_id,
+        &phone,
+        b"from the new server",
+    );
+    assert_eq!(
+        change_author(&local, b"from the new server").await,
+        phone.device_pubkey()
+    );
+
+    // Moving from a server that does not keep it changes nothing.
+    let refused = workspaces
+        .move_holder(
+            &workspace.workspace,
+            old.device_pubkey(),
+            new.device_pubkey(),
+            new_server.host.node_addr(),
+        )
+        .await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.contains("does not keep")),
+        "{refused:?}"
+    );
+
+    drop((at_new, local));
+    old_server.stop().await;
+    new_server.stop().await;
+    made_on.stop().await;
 }
 
 /// A device that is handed a workspace keeps its files under the

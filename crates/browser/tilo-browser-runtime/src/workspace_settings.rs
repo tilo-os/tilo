@@ -379,13 +379,13 @@ impl PageWorkspaceSettings {
                     origin_label: t("workspace-settings-servers-origin-label"),
                     add_label: t("workspace-settings-servers-add"),
                     remove_label: t("workspace-settings-servers-remove"),
-                    governs_label: t("workspace-settings-servers-governs"),
+                    here_label: t("workspace-settings-servers-here"),
                     rows: servers
                         .iter()
                         .map(|server| sheet::Server {
                             key: server.device.clone(),
                             label: server.device.clone(),
-                            governs: server.governs,
+                            here: server.here,
                         })
                         .collect(),
                 }),

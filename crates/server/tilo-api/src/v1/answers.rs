@@ -598,12 +598,31 @@ pub struct NewMember {
     pub name: Option<String>,
 }
 
-/// The servers keeping the workspace (`servers`, each its `device` key, the
-/// `person` it runs for, and whether it `governs` the workspace: the one it
-/// was made on, first), and after a removal whether that server confirmed it
-/// let the workspace go (`confirmed`).
+/// The servers keeping the workspace, the one asked first, and after a
+/// removal or a move whether the server let go confirmed it.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Servers(pub Map<String, Value>);
+pub struct Servers {
+    /// The workspace's id.
+    pub workspace: String,
+    pub servers: Vec<KeptServer>,
+    /// After a removal or a move: whether the server let go confirmed it no
+    /// longer keeps the workspace. One that was not reached is no longer
+    /// named to anyone, and lets the workspace go once it hears so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed: Option<bool>,
+}
+
+/// One server keeping the workspace.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct KeptServer {
+    /// The server's device key, 64 hex characters: what removing or moving
+    /// it may name it by.
+    pub device: String,
+    /// The person the server runs for, by their user public key.
+    pub person: String,
+    /// Whether this is the server asked.
+    pub here: bool,
+}
 
 /// Another server to keep the workspace as well.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -828,6 +847,7 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         NewMember,
         WaitList,
         Servers,
+        KeptServer,
         NewServer,
         Invitation,
         NewName,

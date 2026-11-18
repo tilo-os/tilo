@@ -332,7 +332,7 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
             "listServers",
             Method::GET,
             "/v1/workspaces/{workspace}/servers",
-            "The servers keeping the workspace, the one that governs it first",
+            "The servers keeping the workspace, the one asked first",
         )
         .json(200, "Servers"),
         op(
@@ -349,6 +349,15 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
             "/v1/workspaces/{workspace}/servers/{server}",
             "Have a server, by its site (percent-encoded) or its device key, keep the workspace no more",
         )
+        .json(200, "Servers"),
+        op(
+            "moveServer",
+            Method::POST,
+            "/v1/workspaces/{workspace}/servers/{server}/move",
+            "Move the workspace from a server, by its site (percent-encoded) or its device key, to \
+             the server at another site: that one keeps it first, then this one no more",
+        )
+        .body(Body::Json("NewServer"))
         .json(200, "Servers"),
         op(
             "invitePerson",
