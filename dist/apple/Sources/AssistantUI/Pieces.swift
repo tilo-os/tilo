@@ -177,8 +177,7 @@ struct MarkdownText: View {
     }
 
     private func inline(_ words: String) -> Text {
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        guard let read = try? AttributedString(markdown: words, options: options) else { return Text(words) }
+        guard let read = InlineReadings.reading(of: words) else { return Text(words) }
         return Text(read)
     }
 }
