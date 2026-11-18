@@ -389,7 +389,6 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::Settings;
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::OperationKind;
     use ui::tilo_resource::Resource as _;

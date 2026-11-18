@@ -3802,6 +3802,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one walk through the camera's semantic controls and the actions they dispatch"
+    )]
     fn semantic_controls_are_plainly_named_and_dispatch_camera_actions() {
         {
             let tag = scanner_view::detected_label("QR Code");
