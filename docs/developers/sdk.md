@@ -19,7 +19,7 @@ packages will publish as).
 | MCP tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`, `tilo`) | agents | paths and arguments | compact text, priced per token |
 | SDK (Python, TypeScript) | your code | the same calls | typed values (JSON on the wire) |
 | tilolang (`tilo` tool, `tilo run`) | agents and scripts | programs | values, pasteable as input |
-| CLI (`tilo do`, `tilo files`, `tilo account …`) | shells | the API's `/v1` routes | text, or `--json` |
+| CLI (`tilo do`, `tilo files`, `tilo workspace …`) | shells | the API's `/v1` routes | text, or `--json` |
 
 The CLI calls [`/v1`](api.md): `POST
 /v1/workspaces/<workspace>/resources/<path>/actions/<action>` for an action,

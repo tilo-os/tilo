@@ -171,9 +171,9 @@ stack:
   the Lounge as its owner and an administrator. The stack's own person, the
   owner it started the Lounge with, needs no browser:
   `eval "$(stack.sh owner --here)"` gives you a key for them, and
-  `stack.sh tilo members … -w Lounge` runs `tilo` as them.
+  `stack.sh tilo workspace people … -w Lounge` runs `tilo` as them.
 - **Someone you invite:** `stack.sh invite [WORKSPACE] -- --role editor` prints
-  an invite link the stack's owner makes with `tilo members invite` (the card
+  an invite link the stack's owner makes with `tilo workspace people invite` (the card
   names the workspace). Opened in a browser with no Tilo identity yet, the page
   makes one and joins; being in any workspace here also lets them past the
   invite-only sign-up and into the Lounge.

@@ -1,4 +1,4 @@
-//! Hosted workspaces from a shell: `tilo keys`, `tilo account workspaces`,
+//! Hosted workspaces from a shell: `tilo keys`, `tilo workspace`,
 //! `tilo do -w`, `tilo files` and `tilo run`.
 //!
 //! Each command is one call of Tilo's API (`/v1`, `docs/developers/api.md`),
@@ -118,14 +118,107 @@ pub enum ServersCmd {
 }
 
 #[derive(Subcommand)]
-pub enum MembersCmd {
-    /// A link that brings one more person into the workspace (-w) as --role.
+pub enum WorkspaceCmd {
+    /// Your workspaces.
+    Ls {
+        /// Only those labelled so, `NAME=VALUE`; several must all match.
+        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
+        labels: Vec<(String, String)>,
+    },
+    /// Make a workspace; its server may refuse (quota, payment).
+    Create {
+        /// What to call it, as your workspaces list will name it.
+        name: String,
+        /// A label for your programs to find it by, `NAME=VALUE`
+        /// (`customer_id=cus_8121`); repeat it for more. Only your keys read them.
+        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
+        labels: Vec<(String, String)>,
+    },
+    /// Give a workspace another name, for every list and device of it.
     #[command(
-        after_help = "Example:\n  tilo members invite --role editor --email ops@example.com -w jane-doe\n\n\
-                      Following the link signs them in and lands them in the workspace. A key you \
-                      created invites into workspaces you administer, as an editor at most, or as \
-                      an administrator where you may make administrators. No mail is sent: hand \
-                      the link over yourself."
+        after_help = "Example:\n  tilo workspace rename Research \"Research 2027\"\n\n\
+                      Its owners and moderators name it."
+    )]
+    Rename {
+        /// The workspace, by its name or its id.
+        workspace: String,
+        /// What to call it from now on.
+        name: String,
+    },
+    /// Delete a workspace of yours with everything in it, and revoke the keys
+    /// made for it: final, there is no undo.
+    Rm {
+        /// The workspace, by its name or its id.
+        workspace: String,
+    },
+    /// Make a workspace that starts with everything another holds and then
+    /// goes its own way, with you as its only member.
+    #[command(
+        after_help = "Example:\n  tilo workspace branch template \"Acme\" --label customer_id=cus_8121\n\n\
+                      Its records, with their history, its files and Terminal environments come \
+                      along; its chat, its people and each person's own places stay behind, as do \
+                      its labels. Nothing merges back."
+    )]
+    Branch {
+        /// The workspace to branch, by its name or its id.
+        source: String,
+        /// What to call the branch.
+        name: String,
+        /// A label for your programs to find it by, `NAME=VALUE`
+        /// (`customer_id=cus_8121`); repeat it for more. Only your keys read them.
+        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
+        labels: Vec<(String, String)>,
+    },
+    /// Let the keys made for one workspace of yours alone run commands in its
+    /// Linux machine without asking you each time, or ask again.
+    #[command(after_help = "Example:\n  tilo workspace unattended template\n\n\
+                      It asks you on your approving device first, and waits for your answer. \
+                      Branches made from the workspace start with it on. A key for all your \
+                      workspaces is still asked, and so is everything else that asks. \
+                      `--off` asks again from the next command, without asking you.")]
+    Unattended {
+        /// The workspace, by its name or its id.
+        workspace: String,
+        /// Ask before each command again.
+        #[arg(long)]
+        off: bool,
+    },
+    /// The people in a workspace (-w): adding, removing, their roles, and
+    /// inviting more.
+    #[command(after_help = "Examples:\n  tilo workspace people ls -w Acme\n  \
+                      tilo workspace people invite --role editor -w Acme\n  \
+                      tilo workspace people add 3f9c…e1 --role editor -w Acme\n  \
+                      tilo workspace people role 3f9c…e1 administrator -w Acme\n  \
+                      tilo workspace people rm 3f9c…e1 -w Acme\n\n\
+                      Without -w, the workspace `tilo login` entered.")]
+    People {
+        #[command(subcommand)]
+        cmd: PeopleCmd,
+    },
+    /// The servers keeping a workspace (-w), and having another keep it as
+    /// well: both keep it, a change on either reaches the other, and its people
+    /// reach it at either.
+    #[command(after_help = "Examples:\n  tilo workspace servers ls -w Tilo\n  \
+                      tilo workspace servers add https://tilo.sh -w Tilo\n  \
+                      tilo workspace servers remove https://tilo.sh -w Tilo")]
+    Servers {
+        #[command(subcommand)]
+        cmd: ServersCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PeopleCmd {
+    /// The people in the workspace, with their roles and keys, and the
+    /// invitations still open.
+    Ls,
+    /// A link that brings one more person into the workspace as --role.
+    #[command(
+        after_help = "Example:\n  tilo workspace people invite --role editor --email ops@example.com -w Acme\n\n\
+                      Following the link signs them in and lands them in the workspace. You invite \
+                      as an editor at most where you administer the workspace, and as an \
+                      administrator or owner where you may make one. No mail is sent: hand the \
+                      link over yourself."
     )]
     Invite {
         /// viewer, commenter, editor, administrator or owner.
@@ -135,20 +228,19 @@ pub enum MembersCmd {
         #[arg(long)]
         email: Option<String>,
         /// The address on the wait list it is for (its entry, as `tilo
-        /// members wait-list` names it): mailed to it where the workspace
-        /// mails invitations, and it leaves the list once they join.
+        /// workspace people wait-list` names it): mailed to it where the
+        /// workspace mails invitations, and it leaves the list once they join.
         #[arg(long, value_name = "ENTRY", conflicts_with = "email")]
         waiting: Option<String>,
     },
-    /// Let the person whose key you know into the workspace (-w) at once, as
+    /// Let the person whose key you know into the workspace at once, as
     /// --role: no invitation to hand over.
     #[command(
-        after_help = "Example:\n  tilo members add 3f9c…e1 --role owner --name \"Ada Lovelace\" -w Lounge\n\n\
+        after_help = "Example:\n  tilo workspace people add 3f9c…e1 --role owner --name \"Ada Lovelace\" -w Lounge\n\n\
                       KEY is their user public key (`tilo login --new-identity --json` names it). \
                       The workspace lets them in from then on, and a key they create reaches it \
-                      before any device of theirs has joined. Someone in already is moved to \
-                      --role. You give at most what the workspace lets you: an administrator \
-                      makes administrators, an owner makes owners."
+                      before any device of theirs has joined. You give at most what the workspace \
+                      lets you: an administrator makes administrators, an owner makes owners."
     )]
     Add {
         /// Their user public key, 64 hex characters.
@@ -160,26 +252,43 @@ pub enum MembersCmd {
         #[arg(long)]
         name: Option<String>,
     },
-    /// The addresses people left at the workspace's (-w) entry while it
-    /// takes people by invitation, to invite.
+    /// Move someone in the workspace to another role.
+    #[command(
+        after_help = "Example:\n  tilo workspace people role 3f9c…e1 administrator -w Acme\n\n\
+                      You give at most what the workspace lets you."
+    )]
+    Role {
+        /// Their user public key, as `tilo workspace people ls` names it.
+        key: String,
+        /// viewer, commenter, editor, moderator, administrator or owner.
+        role: String,
+    },
+    /// Remove someone from the workspace, with every device of theirs.
+    #[command(
+        after_help = "Example:\n  tilo workspace people rm 3f9c…e1 -w Acme\n\n\
+                      Its owners remove people, and a moderator removes those ranked below them."
+    )]
+    Rm {
+        /// Their user public key, as `tilo workspace people ls` names it.
+        key: String,
+    },
+    /// The addresses people left at the workspace's entry while it takes
+    /// people by invitation, to invite.
     #[command(
         name = "wait-list",
-        after_help = "Example:\n  tilo members wait-list -w Lounge\n  \
-                      tilo members invite --waiting 5d1e…0a --role editor -w Lounge"
+        after_help = "Example:\n  tilo workspace people wait-list -w Lounge\n  \
+                      tilo workspace people invite --waiting 5d1e…0a --role editor -w Lounge"
     )]
     WaitList,
-    /// Take an address off the workspace's (-w) wait list.
+    /// Take an address off the workspace's wait list.
     Unlist {
-        /// The address's entry, as `tilo members wait-list` names it.
+        /// The address's entry, as `tilo workspace people wait-list` names it.
         entry: String,
     },
-    /// The people in the workspace (-w), with their roles, and the
-    /// invitations still open.
-    Ls,
-    /// How the workspace (-w) shows you from now on: the name its member list
-    /// and the invitations you make say for you.
+    /// How the workspace shows you from now on: the name its people and the
+    /// invitations you make say for you.
     #[command(
-        after_help = "Example:\n  tilo members name \"Quinten Wolff\" -w jane-doe\n\n\
+        after_help = "Example:\n  tilo workspace people name \"Quinten Wolff\" -w Acme\n\n\
                       Any device or key of yours sets it: the workspace knows you by it before a \
                       browser of yours joins, and whoever you invite sees who asked them in."
     )]
@@ -187,69 +296,6 @@ pub enum MembersCmd {
         /// The name to go by, as your teammates will read it.
         name: String,
     },
-}
-
-#[derive(Subcommand)]
-pub enum AccountCmd {
-    /// Your workspaces.
-    #[command(subcommand)]
-    Workspaces(WorkspacesCmd),
-}
-
-#[derive(Subcommand)]
-pub enum WorkspacesCmd {
-    /// The workspaces this key reaches.
-    Ls {
-        /// Only those labelled so, `NAME=VALUE`; several must all match.
-        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
-        labels: Vec<(String, String)>,
-    },
-    /// Create a workspace; the host may refuse (quota, payment).
-    Create {
-        /// What to call it, as your workspaces list will name it.
-        name: String,
-        /// A label for your programs to find it by, `NAME=VALUE`
-        /// (`customer_id=cus_8121`); repeat it for more. Only your keys read them.
-        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
-        labels: Vec<(String, String)>,
-    },
-    /// Branch a workspace of yours: a new one of yours that starts with
-    /// everything it holds and goes on apart; you are its only member.
-    #[command(
-        after_help = "Example:\n  tilo account workspaces branch template \"Acme\" --label customer_id=cus_8121\n\n\
-                      Its records, with their history, and its files come along; its chat, its \
-                      members and each person's own places stay behind, as do its labels. \
-                      Nothing merges back."
-    )]
-    Branch {
-        /// The workspace to branch, by its id or its name.
-        source: String,
-        /// What to call the branch, as your workspaces list will name it.
-        name: String,
-        /// A label for your programs to find it by, `NAME=VALUE`
-        /// (`customer_id=cus_8121`); repeat it for more. Only your keys read them.
-        #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
-        labels: Vec<(String, String)>,
-    },
-    /// Let the keys made for one workspace of yours alone run commands in its
-    /// Linux machine without asking you each time, or ask again.
-    #[command(
-        after_help = "Example:\n  tilo account workspaces unattended template\n\n\
-                      It asks you on your approving device first, and waits for your answer. \
-                      Branches made from the workspace start with it on. A key for all your \
-                      workspaces is still asked, and so is everything else that asks. \
-                      `--off` asks again from the next command, without asking you."
-    )]
-    Unattended {
-        /// The workspace, by its id or its name.
-        workspace: String,
-        /// Ask before each command again.
-        #[arg(long)]
-        off: bool,
-    },
-    /// Delete a workspace of yours with everything in it, and revoke its
-    /// minted keys: final, there is no undo.
-    Rm { workspace: String },
 }
 
 #[derive(Subcommand)]
@@ -744,13 +790,33 @@ async fn read_surfaces(client: &Client, workspace: &str) -> Result<Vec<crate::sd
     Ok(apps)
 }
 
-/// `tilo account …`.
-pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
+/// `tilo workspace …`: the person's workspaces, and with `-w` (`workspace`)
+/// the people and servers of one.
+pub fn workspace(reach: Reach<'_>, workspace: Option<&str>, cmd: WorkspaceCmd) -> ExitCode {
+    let named = || {
+        workspace.ok_or_else(|| {
+            eprintln!("tilo: name the workspace: -w <name or id>");
+            ExitCode::from(2)
+        })
+    };
+    match cmd {
+        WorkspaceCmd::People { cmd } => {
+            named().map_or_else(|code| code, |workspace| members(reach, workspace, cmd))
+        }
+        WorkspaceCmd::Servers { cmd } => {
+            named().map_or_else(|code| code, |workspace| servers(reach, workspace, cmd))
+        }
+        cmd => workspaces(reach, cmd),
+    }
+}
+
+/// The person's workspaces: listing, making, naming, branching and deleting
+/// them.
+fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
-        let AccountCmd::Workspaces(cmd) = cmd;
         match cmd {
-            WorkspacesCmd::Ls { labels } => {
+            WorkspaceCmd::Ls { labels } => {
                 let query: Vec<String> = labels
                     .iter()
                     .map(|(name, value)| {
@@ -784,7 +850,7 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                 };
                 Ok(show(reach.json, &listed, &said))
             }
-            WorkspacesCmd::Create { name, labels } => {
+            WorkspaceCmd::Create { name, labels } => {
                 let labels: serde_json::Map<String, Value> = labels
                     .into_iter()
                     .map(|(name, value)| (name, Value::String(value)))
@@ -797,7 +863,20 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                     .await?;
                 Ok(show(reach.json, &made, &workspace_line(&made)))
             }
-            WorkspacesCmd::Branch {
+            WorkspaceCmd::Rename {
+                workspace: named,
+                name,
+            } => {
+                let id = client.workspace_id(&named).await?;
+                let renamed = client
+                    .put(
+                        &format!("/v1/workspaces/{id}/name"),
+                        &serde_json::json!({ "name": name }),
+                    )
+                    .await?;
+                Ok(show(reach.json, &renamed, &workspace_line(&renamed)))
+            }
+            WorkspaceCmd::Branch {
                 source,
                 name,
                 labels,
@@ -815,11 +894,11 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                     .await?;
                 Ok(show(reach.json, &made, &workspace_line(&made)))
             }
-            WorkspacesCmd::Unattended {
+            WorkspaceCmd::Unattended {
                 workspace: named,
                 off,
             } => unattended(&client, reach.json, &named, off).await,
-            WorkspacesCmd::Rm { workspace: named } => {
+            WorkspaceCmd::Rm { workspace: named } => {
                 let id = client.workspace_id(&named).await?;
                 let deleted = client.delete(&format!("/v1/workspaces/{id}")).await?;
                 let mut said = format!("deleted {}", text(&deleted, "deleted"));
@@ -835,11 +914,14 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                 }
                 Ok(show(reach.json, &deleted, &said))
             }
+            WorkspaceCmd::People { .. } | WorkspaceCmd::Servers { .. } => {
+                bail!("`tilo workspace people` and `servers` act in one workspace (-w)")
+            }
         }
     })
 }
 
-/// `tilo account workspaces unattended <workspace> [--off]`: held while the
+/// `tilo workspace unattended <workspace> [--off]`: held while the
 /// person decides on their approving device, and said as it stands then.
 async fn unattended(client: &Client, json: bool, named: &str, off: bool) -> Result<ExitCode> {
     let id = client.workspace_id(named).await?;
@@ -1460,20 +1542,20 @@ async fn get_content(
     })
 }
 
-/// `tilo members … -w <workspace>`: the workspace's people, and inviting one
+/// `tilo workspace people … -w <workspace>`: the workspace's people, and inviting one
 /// more.
-pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
+fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
         let workspace = client.workspace_id(workspace).await?;
         match cmd {
-            MembersCmd::Ls => {
+            PeopleCmd::Ls => {
                 let listed = client
                     .get(&format!("/v1/workspaces/{workspace}/members"))
                     .await?;
                 Ok(show(reach.json, &listed, &members_text(&listed)))
             }
-            MembersCmd::Invite {
+            PeopleCmd::Invite {
                 role,
                 email,
                 waiting,
@@ -1499,7 +1581,28 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
                 }
                 Ok(show(reach.json, &invited, &said))
             }
-            MembersCmd::Add { key, role, name } => {
+            PeopleCmd::Role { key, role } => {
+                let moved = client
+                    .put(
+                        &format!(
+                            "/v1/workspaces/{workspace}/members/{}/role",
+                            api::encode_path(&key)
+                        ),
+                        &serde_json::json!({ "role": role }),
+                    )
+                    .await?;
+                Ok(show(reach.json, &moved, &members_text(&moved)))
+            }
+            PeopleCmd::Rm { key } => {
+                let left = client
+                    .delete(&format!(
+                        "/v1/workspaces/{workspace}/members/{}",
+                        api::encode_path(&key)
+                    ))
+                    .await?;
+                Ok(show(reach.json, &left, &members_text(&left)))
+            }
+            PeopleCmd::Add { key, role, name } => {
                 let mut body = serde_json::json!({"person": key, "role": role});
                 if let (Some(fields), Some(name)) = (body.as_object_mut(), name) {
                     fields.insert("name".into(), Value::String(name));
@@ -1509,13 +1612,13 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
                     .await?;
                 Ok(show(reach.json, &added, &members_text(&added)))
             }
-            MembersCmd::WaitList => {
+            PeopleCmd::WaitList => {
                 let listed = client
                     .get(&format!("/v1/workspaces/{workspace}/members/wait-list"))
                     .await?;
                 Ok(show(reach.json, &listed, &wait_list_text(&listed)))
             }
-            MembersCmd::Unlist { entry } => {
+            PeopleCmd::Unlist { entry } => {
                 let listed = client
                     .delete(&format!(
                         "/v1/workspaces/{workspace}/members/wait-list/{entry}"
@@ -1523,7 +1626,7 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
                     .await?;
                 Ok(show(reach.json, &listed, &wait_list_text(&listed)))
             }
-            MembersCmd::Name { name } => {
+            PeopleCmd::Name { name } => {
                 let named = client
                     .post(
                         &format!("/v1/workspaces/{workspace}/members/name"),
@@ -1538,7 +1641,7 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
 
 /// `tilo workspace servers … -w <workspace>`: the servers keeping the
 /// workspace, and choosing them.
-pub fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
+fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
         let workspace = client.workspace_id(workspace).await?;
@@ -1637,6 +1740,10 @@ fn members_text(listed: &Value) -> String {
             }
         }
         let _ = write!(said, "\n  {} — {what}", text(member, "name"));
+        // A person is named by their key, which `role` and `rm` take.
+        if let Some(key) = member.pointer("/member/person").and_then(Value::as_str) {
+            let _ = write!(said, "  {key}");
+        }
     }
     if members.is_empty() {
         said.push_str("\n  nobody yet");
@@ -2162,12 +2269,13 @@ mod tests {
             };
 
             // A workspace is made as `POST /v1/workspaces`, once per idempotency key.
-            account(
+            workspace(
                 reach,
-                AccountCmd::Workspaces(WorkspacesCmd::Create {
+                None,
+                WorkspaceCmd::Create {
                     name: "Applicant: Jane Doe".into(),
                     labels: vec![("customer_id".into(), "cus_8121".into())],
-                }),
+                },
             );
             let made = api_server.drain_requests();
             assert_eq!(made.len(), 1);
@@ -2184,13 +2292,14 @@ mod tests {
             );
             // A branch is `POST /v1/workspaces/{source}/branches`, its source
             // named by a read of the list, its labels as create takes them.
-            account(
+            workspace(
                 reach,
-                AccountCmd::Workspaces(WorkspacesCmd::Branch {
+                None,
+                WorkspaceCmd::Branch {
                     source: "Applicant: Jane Doe".into(),
                     name: "Applicant: Jane Doe, second try".into(),
                     labels: vec![("customer_id".into(), "cus_8121".into())],
-                }),
+                },
             );
             let branched = api_server.drain_requests();
             assert_eq!(branched.len(), 2, "the source is named by the list first");
@@ -2208,12 +2317,13 @@ mod tests {
             );
             // Running commands unattended is `PUT /v1/workspaces/{id}/unattended`,
             // held while the person decides.
-            account(
+            workspace(
                 reach,
-                AccountCmd::Workspaces(WorkspacesCmd::Unattended {
+                None,
+                WorkspaceCmd::Unattended {
                     workspace: "Applicant: Jane Doe".into(),
                     off: false,
-                }),
+                },
             );
             let unattended = api_server.drain_requests();
             let asked = unattended.last().expect("the setting");
@@ -2225,11 +2335,12 @@ mod tests {
                 json!({"on": true})
             );
             // Listing by a label is `GET /v1/workspaces?label[name]=value`.
-            account(
+            workspace(
                 reach,
-                AccountCmd::Workspaces(WorkspacesCmd::Ls {
+                None,
+                WorkspaceCmd::Ls {
                     labels: vec![("customer_id".into(), "cus_8121".into())],
-                }),
+                },
             );
             let listed = api_server.drain_requests();
             assert_eq!(
@@ -2432,7 +2543,7 @@ mod tests {
             members(
                 reach,
                 "applicant-jane-doe",
-                MembersCmd::Invite {
+                PeopleCmd::Invite {
                     role: "administrator".into(),
                     email: Some("ops@example.com".into()),
                     waiting: None,
@@ -2448,6 +2559,54 @@ mod tests {
             assert_eq!(
                 serde_json::from_slice::<Value>(&invitation.body).unwrap(),
                 json!({"role": "administrator", "email": "ops@example.com"})
+            );
+
+            // Someone in is moved by their key, and removed by it.
+            let ada = "ab".repeat(32);
+            members(
+                reach,
+                "applicant-jane-doe",
+                PeopleCmd::Role {
+                    key: ada.clone(),
+                    role: "editor".into(),
+                },
+            );
+            let moved = api_server.drain_requests();
+            let moved = moved.last().expect("the move");
+            assert_eq!(moved.method, "PUT");
+            assert_eq!(
+                moved.target,
+                format!("/v1/workspaces/{WORKSPACE}/members/{ada}/role")
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&moved.body).unwrap(),
+                json!({"role": "editor"})
+            );
+            members(reach, "applicant-jane-doe", PeopleCmd::Rm { key: ada.clone() });
+            let removed = api_server.drain_requests();
+            let removed = removed.last().expect("the removal");
+            assert_eq!(removed.method, "DELETE");
+            assert_eq!(
+                removed.target,
+                format!("/v1/workspaces/{WORKSPACE}/members/{ada}")
+            );
+
+            // A workspace is named again with `PUT …/name`.
+            workspace(
+                reach,
+                None,
+                WorkspaceCmd::Rename {
+                    workspace: "applicant-jane-doe".into(),
+                    name: "Jane Doe".into(),
+                },
+            );
+            let renamed = api_server.drain_requests();
+            let renamed = renamed.last().expect("the rename");
+            assert_eq!(renamed.method, "PUT");
+            assert_eq!(renamed.target, format!("/v1/workspaces/{WORKSPACE}/name"));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&renamed.body).unwrap(),
+                json!({"name": "Jane Doe"})
             );
         }
 

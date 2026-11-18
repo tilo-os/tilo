@@ -45,8 +45,8 @@ Making one is an action on your account, like minting a key. So it appears in hi
 and can be done from the page, the command or the SDK:
 
 ```sh
-tilo account workspaces create "Applicant: Jane Doe" --label customer_id=cus_8121
-tilo account workspaces ls --label customer_id=cus_8121
+tilo workspace create "Applicant: Jane Doe" --label customer_id=cus_8121
+tilo workspace ls --label customer_id=cus_8121
 ```
 
 Labels are yours, for your programs to find a workspace by: your own id for the customer it is for, say.
@@ -59,7 +59,7 @@ The host removes its records, files and history, stops counting them against you
 who has it open that it was deleted, and revokes every key that reached only it.
 
 ```sh
-tilo account workspaces rm applicant-jane-doe   # {"deleted": …, "revoked_keys": [...]}
+tilo workspace rm applicant-jane-doe   # {"deleted": …, "revoked_keys": [...]}
 ```
 
 Only a key that reaches all your workspaces deletes, and only workspaces of your own: one you were
@@ -77,7 +77,7 @@ the branch alone ([approvals](approvals.md#commands-in-a-workspaces-machine)).
 So set a workspace up once, then branch it for each task or each customer:
 
 ```sh
-tilo account workspaces branch "Onboarding template" "Onboarding: Acme" --label customer_id=cus_8121
+tilo workspace branch "Onboarding template" "Onboarding: Acme" --label customer_id=cus_8121
 ```
 
 ```python example=branch-workspace
@@ -198,16 +198,16 @@ everyone else in, always through an action of the workspace: an administrator ma
 owner makes owners.
 
 ```sh
-tilo members add KEY --role editor --name "Ada Lovelace" -w Lounge   # in at once, no link to hand over
-tilo members invite --role editor -w Lounge                          # a link; whoever opens it joins
-tilo members wait-list -w Lounge                                     # who left an address at an entry
-tilo members invite --waiting ENTRY --role editor -w Lounge          # invite one of them
-tilo members unlist ENTRY -w Lounge                                  # take the address off again
+tilo workspace people add KEY --role editor --name "Ada Lovelace" -w Lounge   # in at once, no link to hand over
+tilo workspace people invite --role editor -w Lounge                          # a link; whoever opens it joins
+tilo workspace people wait-list -w Lounge                                     # who left an address at an entry
+tilo workspace people invite --waiting ENTRY --role editor -w Lounge          # invite one of them
+tilo workspace people unlist ENTRY -w Lounge                                  # take the address off again
 ```
 
-`tilo members add` takes a person's user public key (`tilo login --new-identity --json` names it), so it
+`tilo workspace people add` takes a person's user public key (`tilo login --new-identity --json` names it), so it
 lets someone in before any device of theirs joins. `--role owner` makes another owner, and `--role
-administrator` another administrator. `tilo members invite` answers a link instead: `--email` names the
+administrator` another administrator. `tilo workspace people invite` answers a link instead: `--email` names the
 address it is for, and `--waiting` invites an address already on the wait list.
 
 The same actions reach an agent over MCP (`tilo_do {"path": "workspace/members#add", "args": {"person":

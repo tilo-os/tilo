@@ -305,6 +305,19 @@ impl Client {
         Ok(answer.json())
     }
 
+    /// `PUT path` with `body` as its JSON, under a new idempotency key: the
+    /// answer.
+    pub async fn put(&self, path: &str, body: &Value) -> Result<Value> {
+        let said = body.to_string();
+        let answer = self
+            .call(Method::Put, path, said.as_bytes(), &[], Waiting::Transient)
+            .await?;
+        if !answer.ok() {
+            return Err(answer.refused());
+        }
+        Ok(answer.json())
+    }
+
     /// `PUT path` with `body` as its JSON, under a new idempotency key, held
     /// while the person decides: the answer, `pending` when they have not
     /// answered yet.
@@ -351,9 +364,7 @@ impl Client {
             })
             .and_then(|workspace| workspace.get("id").and_then(Value::as_str))
             .map(str::to_owned)
-            .ok_or_else(|| {
-                anyhow!("no workspace called {named:?}: `tilo account workspaces ls` names them")
-            })
+            .ok_or_else(|| anyhow!("no workspace called {named:?}: `tilo workspace ls` names them"))
     }
 
     /// Run `action` on `resource` in `workspace`, titled `title` in History:

@@ -332,7 +332,7 @@ mod tests {
             policy.keepers().collect::<Vec<_>>(),
             vec![hex::encode(owner)]
         );
-        // Who the workspace lists as its owner (`tilo members ls`): the
+        // Who the workspace lists as its owner (`tilo workspace people ls`): the
         // person the link made one.
         let members = workspaces.members(&workspace).await.unwrap();
         let row = members

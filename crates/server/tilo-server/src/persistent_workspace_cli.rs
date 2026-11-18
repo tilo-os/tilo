@@ -182,7 +182,7 @@ pub struct PersistentArgs {
     /// A person who owns the workspace from its start, by their user public
     /// key (64 hex characters); repeatable. Declared at every start where
     /// they are not an owner yet: how a host gets its first owner, who then
-    /// lets everyone else in with `tilo members add` and `tilo members
+    /// lets everyone else in with `tilo workspace people add` and `tilo workspace people
     /// invite`. An owner taken out later is declared again at the next start
     /// while the deployment still names them.
     #[arg(long = "owner", value_name = "USER_PUBLIC_KEY")]
@@ -1790,7 +1790,7 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
             Ok(other) => OperatorEvent::Unanswered {
                 reason: format!(
                     "the operator socket takes state, not {}; owners and administrators let \
-                     people in with `tilo members add` and `tilo members invite`, and owners \
+                     people in with `tilo workspace people add` and `tilo workspace people invite`, and owners \
                      choose a workspace's servers with `tilo workspace servers`",
                     other.to_line().trim()
                 ),

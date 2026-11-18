@@ -9,10 +9,10 @@ Open [tilo.sh](https://tilo.sh) and sign in. In the workspace overview, choose *
 name it `First steps`. You are in it now: a workspace with its apps, and nothing else of anyone's.
 
 > [!NOTE]
-> A workspace can also be made without touching the page: `tilo account workspaces create "First
+> A workspace can also be made without touching the page: `tilo workspace create "First
 > steps"`, or `tilo.workspaces.create("First steps")` from either SDK. The page, the command and the
 > SDKs make the same workspace. Once one is set up the way you like, branch it rather than start
-> again: `tilo account workspaces branch "First steps" "Second try"` ([branch a workspace](workspaces.md#branch-a-workspace)).
+> again: `tilo workspace branch "First steps" "Second try"` ([branch a workspace](workspaces.md#branch-a-workspace)).
 
 ## 2. Connect your agent
 
