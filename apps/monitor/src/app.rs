@@ -3,7 +3,6 @@
 //! of them. The shared table layout is the document's; the tab, filter and
 //! selection belong to this window, and the process list never leaves this machine.
 
-use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -20,7 +19,6 @@ use ui::framework::{Dispatcher, Effected, Live, LiveRow, Publishes, Setting, Vie
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_resource::{self, Model};
 use ui::time::{Duration, Instant};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::ToastKind;
@@ -30,6 +28,7 @@ use ui::widget::{
 
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
 use crate::prefs::{MonitorPreferences, Prefs};
+pub use crate::resource::SortKey;
 use crate::resource::{Monitor, MonitorEffect};
 use crate::sampler::{Sampler, StopKind};
 use crate::tree::{FlattenOpts, Forest, Row, SumMode};
@@ -66,26 +65,6 @@ impl Tab {
             Self::Processes => "monitor-a11y-processes",
             Self::Resources => "monitor-tab-resources",
         })
-    }
-}
-
-/// The column the process table sorts by.
-#[derive(Model, Default, Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SortKey {
-    Pid,
-    Name,
-    User,
-    #[default]
-    Cpu,
-    Mem,
-    Threads,
-}
-
-impl SortKey {
-    /// Numeric columns default to descending, text columns to ascending.
-    fn default_desc(self) -> bool {
-        !matches!(self, SortKey::Name | SortKey::User)
     }
 }
 

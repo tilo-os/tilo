@@ -178,6 +178,7 @@ members = [
     "apps/maps-model-wasm",
     "apps/model-providers",
     "apps/monitor",
+    "apps/monitor-model",
     "apps/music",
     "apps/notes",
     "apps/osk",
