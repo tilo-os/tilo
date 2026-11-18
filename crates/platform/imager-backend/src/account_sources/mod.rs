@@ -155,17 +155,10 @@ pub fn discover(roots: &SourceRoots) -> Inventory {
         ("Slack", Provider::Slack, "Slack"),
         ("discord", Provider::Discord, "Discord"),
         ("spotify", Provider::Spotify, "Spotify"),
-        ("chromium", Provider::Chromium, "Chromium"),
-        ("google-chrome", Provider::Chromium, "Google Chrome"),
-        (
-            "ungoogled-chromium",
-            Provider::Chromium,
-            "Ungoogled Chromium",
-        ),
-        ("BraveSoftware/Brave-Browser", Provider::Chromium, "Brave"),
     ] {
         profile(&roots.config, relative, provider, label, &mut inventory);
     }
+    append_browsers(&roots.home, Some(&roots.config), &mut inventory);
     append_home_profiles(&roots.home, &mut inventory);
     append_thunderbird(&roots.home, &mut inventory);
     inventory
@@ -174,6 +167,7 @@ pub fn discover(roots: &SourceRoots) -> Inventory {
 /// This never reads a config root or substitutes Home/.config for a refused one.
 pub fn discover_home_profiles(home: &Path) -> Inventory {
     let mut inventory = Inventory::default();
+    append_browsers(home, None, &mut inventory);
     append_home_profiles(home, &mut inventory);
     append_thunderbird(home, &mut inventory);
     inventory
@@ -194,13 +188,34 @@ fn append_thunderbird(home: &Path, inventory: &mut Inventory) {
     );
 }
 
-fn append_home_profiles(home: &Path, inventory: &mut Inventory) {
-    for (relative, provider, label) in [
-        (".mozilla/firefox", Provider::Firefox, "Firefox"),
-        (".librewolf", Provider::Firefox, "LibreWolf"),
-    ] {
-        profile(home, relative, provider, label, inventory);
+/// The browsers [`migration_sources::browsers::LOCATIONS`] lists: under the config directory
+/// when one is given (a refused one is never replaced by the home's), under the home and in its
+/// Flatpaks.
+fn append_browsers(home: &Path, config: Option<&Path>, inventory: &mut Inventory) {
+    use migration_sources::browsers::{Engine, LOCATIONS, Root};
+    for location in LOCATIONS {
+        let provider = match location.engine {
+            Engine::Chromium => Provider::Chromium,
+            Engine::Firefox => Provider::Firefox,
+        };
+        match (location.root, config) {
+            (Root::Config, Some(config)) => {
+                profile(config, location.path, provider, location.label, inventory);
+            }
+            (Root::Config, None) => {}
+            (Root::Home, _) => profile(home, location.path, provider, location.label, inventory),
+            (Root::Flatpak(app), _) => profile(
+                home,
+                &format!(".var/app/{app}/{}", location.path),
+                provider,
+                location.label,
+                inventory,
+            ),
+        }
     }
+}
+
+fn append_home_profiles(home: &Path, inventory: &mut Inventory) {
     for (app, relative, provider, label) in [
         ("com.slack.Slack", "config/Slack", Provider::Slack, "Slack"),
         (
@@ -214,36 +229,6 @@ fn append_home_profiles(home: &Path, inventory: &mut Inventory) {
             "config/spotify",
             Provider::Spotify,
             "Spotify",
-        ),
-        (
-            "org.mozilla.firefox",
-            ".mozilla/firefox",
-            Provider::Firefox,
-            "Firefox",
-        ),
-        (
-            "org.chromium.Chromium",
-            "config/chromium",
-            Provider::Chromium,
-            "Chromium",
-        ),
-        (
-            "com.google.Chrome",
-            "config/google-chrome",
-            Provider::Chromium,
-            "Google Chrome",
-        ),
-        (
-            "io.github.ungoogled_software.ungoogled_chromium",
-            "config/ungoogled-chromium",
-            Provider::Chromium,
-            "Ungoogled Chromium",
-        ),
-        (
-            "io.gitlab.librewolf-community",
-            ".librewolf",
-            Provider::Firefox,
-            "LibreWolf",
         ),
     ] {
         profile(

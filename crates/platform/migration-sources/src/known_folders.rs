@@ -1,7 +1,9 @@
-//! Native known-folder discovery for setup suggestions.
+//! The familiar folders of a home (Documents, Desktop, Pictures, Downloads,
+//! Music, Videos), as the system itself maps them.
 //!
-//! Results are suggestions only. The view never turns a discovered path into
-//! a folder selection until the person explicitly chooses it.
+//! The installer suggests them and `tilo migrate review home` lists them.
+//! Results are suggestions only: nothing turns a discovered path into a
+//! folder that comes over until the person chooses it.
 
 #[cfg(target_os = "linux")]
 use std::io::Read;
@@ -15,14 +17,18 @@ pub enum KnownFolderKind {
     Desktop,
     Pictures,
     Downloads,
+    Music,
+    Videos,
 }
 
 impl KnownFolderKind {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::Documents,
         Self::Desktop,
         Self::Pictures,
         Self::Downloads,
+        Self::Music,
+        Self::Videos,
     ];
 
     #[must_use]
@@ -32,6 +38,8 @@ impl KnownFolderKind {
             Self::Desktop => "Desktop",
             Self::Pictures => "Pictures",
             Self::Downloads => "Downloads",
+            Self::Music => "Music",
+            Self::Videos => "Videos",
         }
     }
 
@@ -42,6 +50,8 @@ impl KnownFolderKind {
             Self::Desktop => "DESKTOP",
             Self::Pictures => "PICTURES",
             Self::Downloads => "DOWNLOAD",
+            Self::Music => "MUSIC",
+            Self::Videos => "VIDEOS",
         }
     }
 
@@ -52,6 +62,8 @@ impl KnownFolderKind {
             Self::Desktop => "XDG_DESKTOP_DIR",
             Self::Pictures => "XDG_PICTURES_DIR",
             Self::Downloads => "XDG_DOWNLOAD_DIR",
+            Self::Music => "XDG_MUSIC_DIR",
+            Self::Videos => "XDG_VIDEOS_DIR",
         }
     }
 
@@ -62,6 +74,8 @@ impl KnownFolderKind {
             Self::Desktop => "shell:Desktop",
             Self::Pictures => "shell:My Pictures",
             Self::Downloads => "shell:Downloads",
+            Self::Music => "shell:My Music",
+            Self::Videos => "shell:My Video",
         }
     }
 }
@@ -83,9 +97,9 @@ impl KnownFolder {
     }
 }
 
-/// Look up the four familiar user folders through the host's native mapping.
+/// Look up the familiar user folders through the system's own mapping.
 ///
-/// This is intentionally blocking; callers run it on a worker thread.
+/// This is intentionally blocking; callers call it from a worker thread.
 #[must_use]
 pub fn discover() -> Vec<KnownFolder> {
     KnownFolderKind::ALL.into_iter().map(discover_one).collect()

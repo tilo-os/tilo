@@ -664,6 +664,59 @@ impl CredentialStore {
         )
     }
 
+    /// The account a finished cloud sign-in makes, named `label`, and the secret it keeps: its
+    /// storage resolved once (the drive, its root), as every reader of the account opens it. The
+    /// installer and `tilo migrate connect` both make their accounts here, and publish them with
+    /// the secret sealed first.
+    ///
+    /// # Errors
+    /// The grant lacks the permission files need, or the provider could not be asked.
+    pub fn cloud_account(
+        &self,
+        cloud: OAuthCloud,
+        label: &str,
+        tokens: &TokenSet,
+    ) -> Result<(Account, Secret), CredentialError> {
+        let mount = self.resolve_storage(cloud, tokens)?;
+        let mut account = Account::new(
+            AccountId::new(uuid::Uuid::new_v4().to_string()),
+            cloud.type_id(),
+        );
+        account.display_name = label.chars().take(256).collect();
+        account.config = serde_json::json!({
+            "provider": cloud.type_id(),
+            accounts::cloud_types::MOUNT_CONFIG_KEY: mount,
+        });
+        Ok((account, oauth_secret(tokens)))
+    }
+
+    /// The `iCloud` Drive account a finished sign-in of `apple_id` makes, and the secret it keeps.
+    ///
+    /// # Errors
+    /// `apple_id` is empty or longer than an Apple ID is.
+    pub fn icloud_account(
+        &self,
+        apple_id: &str,
+        session: &ICloudSessionState,
+    ) -> Result<(Account, Secret), CredentialError> {
+        if apple_id.trim().is_empty() || apple_id.len() > 256 {
+            return Err(CredentialError::Account("an Apple ID is needed".into()));
+        }
+        let mut account = Account::new(
+            AccountId::new(uuid::Uuid::new_v4().to_string()),
+            ICLOUD_DRIVE_TYPE,
+        );
+        account.display_name = apple_id.to_owned();
+        let mut config = serde_json::Map::new();
+        config.insert("identity".into(), apple_id.into());
+        let mount = self.icloud.storage_config();
+        if !mount.is_null() {
+            config.insert(accounts::cloud_types::MOUNT_CONFIG_KEY.into(), mount);
+        }
+        account.config = serde_json::Value::Object(config);
+        Ok((account, icloud_secret(apple_id, session)))
+    }
+
     /// Use Apple's `iCloud` web sign-in ([`crate::icloud::WebICloud`]) for `iCloud`
     /// Drive; Settings and the credential helper run with it.
     #[must_use]

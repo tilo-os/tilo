@@ -95,17 +95,11 @@ impl Connector {
         label: &str,
         tokens: account_credentials::TokenSet,
     ) -> Result<AccountId, ConnectionError> {
-        let mount = self
+        let (account, secret) = self
             .credential_store
-            .resolve_storage(cloud, &tokens)
+            .cloud_account(cloud, label, &tokens)
             .map_err(credential_error)?;
-        let mut account = Account::new(
-            AccountId::new(uuid::Uuid::new_v4().to_string()),
-            cloud.type_id(),
-        );
-        account.display_name = label.chars().take(256).collect();
-        account.config = serde_json::json!({"provider": cloud.type_id(), accounts::cloud_types::MOUNT_CONFIG_KEY: mount});
-        self.persist(account, account_credentials::oauth_secret(&tokens))
+        self.persist(account, secret)
     }
 
     /// Uses the exact grant slot Tilo Music consumes; streaming stays a separate consent.
@@ -209,25 +203,11 @@ impl Connector {
         apple_id: &str,
         session: account_credentials::icloud::ICloudSessionState,
     ) -> Result<AccountId, ConnectionError> {
-        if apple_id.trim().is_empty() || apple_id.len() > 256 {
-            return Err(ConnectionError::InvalidConfiguration);
-        }
-        let mut account = Account::new(
-            AccountId::new(uuid::Uuid::new_v4().to_string()),
-            accounts::cloud_types::ICLOUD_DRIVE,
-        );
-        account.display_name = apple_id.to_string();
-        let mut config = serde_json::Map::new();
-        config.insert("identity".into(), apple_id.into());
-        let mount = self.credential_store.icloud().storage_config();
-        if !mount.is_null() {
-            config.insert(accounts::cloud_types::MOUNT_CONFIG_KEY.into(), mount);
-        }
-        account.config = serde_json::Value::Object(config);
-        self.persist(
-            account,
-            account_credentials::icloud_secret(apple_id, &session),
-        )
+        let (account, secret) = self
+            .credential_store
+            .icloud_account(apple_id, &session)
+            .map_err(|_| ConnectionError::InvalidConfiguration)?;
+        self.persist(account, secret)
     }
 
     /// The person's ordinary password never enters the installer; this is the device's revocable app

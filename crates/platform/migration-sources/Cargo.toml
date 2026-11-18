@@ -51,6 +51,15 @@ url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+# The system's own lookup of the familiar folders (`xdg-user-dir`, the Windows shell).
+bounded-command = { path = "../../system/bounded-command" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tilo-paths.workspace = true
+# The key a Chromium-family browser keeps its `v11` passwords under, in the system keyring.
+tilo-secrets = { path = "../tilo-secrets" }
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 tilo-process = { path = "../tilo-process" }
