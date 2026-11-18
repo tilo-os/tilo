@@ -383,7 +383,11 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
     .unwrap();
     // The second asks the first, the third the second: any server holding the
     // workspace takes a later one in.
-    for (asked, asking, device) in [(first, second, &devices[1]), (second, third, &devices[2])] {
+    for (enrolled, (asked, asking, device)) in
+        [(first, second, &devices[1]), (second, third, &devices[2])]
+            .into_iter()
+            .enumerate()
+    {
         servers::admit(
             asked.host.workspaces(),
             &device.cert,
@@ -391,11 +395,26 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
         )
         .await
         .unwrap();
-        tilo_test_env::within("the later server to hold the admin workspace", async {
-            while !servers::holds_admin(asking.host.workspaces()).await {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
+        // Holding the workspace is its governance alone: the document that
+        // names its servers reaches the new holder over the replication after
+        // it. The next admission is written by this holder, so it waits for
+        // that document too; founding one of its own would diverge from the
+        // copy the servers hold.
+        let enrolled = enrolled + 2;
+        tilo_test_env::within(
+            "the later server to hold the admin workspace and read its document",
+            async {
+                loop {
+                    let named = servers::read(asking.host.workspaces())
+                        .await
+                        .map_or(0, |servers| servers.servers.len());
+                    if servers::holds_admin(asking.host.workspaces()).await && named == enrolled {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            },
+        )
         .await;
     }
     tilo_test_env::within(
