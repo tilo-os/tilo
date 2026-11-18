@@ -102,9 +102,10 @@ def audit(root: Path = ROOT, staged: bool = False) -> tuple[list[Violation], int
                 )
             )
         # An app model crate (`apps/*-model`) is data shared with an app, not
-        # an app, and a compute package runs windowless for another app's
-        # action: either may have no UI at all.
-        is_model = manifest_path.parent.name.endswith("-model")
+        # an app, and so is the guest crate its package carries it from
+        # (`apps/*-model-wasm`); a compute package is windowless for another
+        # app's action: any of them may have no UI at all.
+        is_model = manifest_path.parent.name.endswith(("-model", "-model-wasm"))
         windowless = is_model or is_compute_package(manifest_path.parent)
         if "ui" not in dependencies and not windowless:
             violations.append(

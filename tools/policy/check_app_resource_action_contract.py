@@ -802,6 +802,17 @@ def package_name(alias: str, specification: object) -> str:
     return alias
 
 
+def is_model_crate(app_dir: Path) -> bool:
+    """A crate that is an app's model, as data shared with it.
+
+    `apps/*-model` is the model an app embeds; `apps/*-model-wasm` is the
+    guest crate an app's package carries the same model from, built for
+    wasm32. Neither is an application: the app that embeds them publishes
+    their resources and actions, and a package ships the module they build.
+    """
+    return app_dir.name.endswith(("-model", "-model-wasm"))
+
+
 def is_compute_package(app_dir: Path) -> bool:
     """A windowless package whose `[cli]` commands a compute worker runs.
 
@@ -1743,7 +1754,7 @@ def model_crate_host(root: Path, app_dir: Path, manifest: dict, code: str) -> bo
                 dependency.relative_to(root.resolve())
             except ValueError:
                 continue
-            if not dependency.name.endswith("-model") or not (dependency / "src").is_dir():
+            if not is_model_crate(dependency) or not (dependency / "src").is_dir():
                 continue
             crate = "\n".join(
                 production_code(item.read_text(encoding="utf-8"))
@@ -1994,7 +2005,7 @@ def audit(
         # may have no UI, nor may a compute package; any `ui` either does
         # depend on is still the facade.
         compute_package = is_compute_package(manifest_path.parent)
-        facade_required = not manifest_path.parent.name.endswith("-model") and not compute_package
+        facade_required = not is_model_crate(manifest_path.parent) and not compute_package
         if (facade_required and not facades) or any(
             not (isinstance(facade, dict) and facade.get("package") == "tilo-app")
             for facade in facades
@@ -2053,13 +2064,15 @@ def audit(
         # The headless agent publishes nothing of its own: it acts only
         # through the broker's task-bound action surfaces. An `apps/*-model`
         # crate is a record shape apps embed (the portability rules let apps
-        # depend on it), not an app: the apps embedding it publish its actions.
+        # depend on it), not an app, and neither is the `apps/*-model-wasm`
+        # guest crate a package carries it from: the apps embedding it publish
+        # its actions.
         # A compute package runs for the action of the app that requested it.
         # A headless service has no widget tree to publish from; it publishes
         # its action descriptors to the broker directly.
         if (
             app_name != "agent"
-            and not app_name.endswith("-model")
+            and not is_model_crate(manifest_path.parent)
             and not compute_package
             and not dynamic_resource_host(manifest_path.parent)
             and not headless_action_service(manifest_path.parent, combined)

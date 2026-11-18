@@ -96,6 +96,9 @@ enum Command {
     Ui(UiArgs),
     /// Build, assemble, sign, and verify an installable Tilo package.
     Package(PackageArgs),
+    /// Build the model module an app's package carries: the `model.wasm` every
+    /// device holding a workspace's keys applies the app's actions with.
+    Model(ModelArgs),
     /// Capture and seal a reusable compiler interface for an exact native SDK.
     Sdk(SdkArgs),
     /// Create or show the publisher key that signs packages and entries.
@@ -950,6 +953,17 @@ struct InspectArgs {
 }
 
 #[derive(clap::Args)]
+struct ModelArgs {
+    /// App directory or a file/directory inside it. Defaults to the current directory.
+    path: Option<PathBuf>,
+
+    /// Where to write the module, besides the target directory. Relative to
+    /// the current directory unless absolute.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent command-line switches, not a state machine"
@@ -1211,6 +1225,7 @@ fn main() -> ExitCode {
         Command::Inspect(args) => run_inspect(args),
         Command::Ui(args) => run_ui(args),
         Command::Package(args) => run_package(args),
+        Command::Model(args) => build_model(&args),
         Command::Sdk(args) => run_sdk(args, interactive),
         Command::Keys(args) => publishing::run_keys(args),
         Command::Apply(args) => publishing::run_apply(args),
@@ -1320,6 +1335,7 @@ impl Command {
             Self::Inspect(_) => "inspect",
             Self::Ui(_) => "ui",
             Self::Package(_) => "package",
+            Self::Model(_) => "model",
             Self::Sdk(_) => "sdk",
             Self::Keys(_) => "keys",
             Self::Apply(_) => "apply",
@@ -1825,6 +1841,37 @@ fn run_sdk(args: SdkArgs, interactive: bool) -> Result<Value> {
         println!("{}", serde_json::to_string_pretty(&report)?);
     }
     Ok(report)
+}
+
+/// Build the app's model module, print where it is, and copy it to `--output`
+/// when one is named. An app that keeps no model answers none.
+fn build_model(args: &ModelArgs) -> Result<Value> {
+    let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
+    let Some(module) = tilo_app_cli::model_wasm::build_app(&path)? else {
+        // An app without a model is an ordinary answer, not a failure: the app
+        // has no guest crate beside it.
+        return Ok(json!({"model": null}));
+    };
+    let module = if let Some(output) = &args.output {
+        let output = if output.is_absolute() {
+            output.clone()
+        } else {
+            std::env::current_dir()?.join(output)
+        };
+        // Copying a file onto itself truncates it, and the module's own place
+        // under the target directory is the output a caller often names.
+        if output != module {
+            if let Some(parent) = output.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&module, &output)?;
+        }
+        output
+    } else {
+        module
+    };
+    println!("{}", module.display());
+    Ok(json!({"model": module}))
 }
 
 fn run_package(args: PackageArgs) -> Result<Value> {

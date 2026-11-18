@@ -580,6 +580,20 @@ run = "crates/platform/tilolang-tilo/bench/imagefilter/build.sh"
 outputs = ["/target/wasm32-unknown-unknown/release/tilolang_bench_imagefilter.wasm"]
 default = false
 
+# Every app's model module, built once and kept for the checks that read one:
+# the `model.wasm` a package carries so every device holding a workspace's keys
+# applies the app's actions with no build of its own. One mechanism for every
+# app (tools/ci/app-models.sh): an app keeps its model as a guest crate beside
+# it (`apps/tasks` → `apps/tasks-model-wasm`), and the module is what that
+# crate builds for wasm32. A run that asks for a package's output runs this
+# first.
+[[check]]
+name = "app-models"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/app-models.sh"
+outputs = ["/target/app-models/**"]
+default = false
+
 [[check]]
 name = "codemap"
 run = "python3 -I tools/docs/codemap.py --check"
