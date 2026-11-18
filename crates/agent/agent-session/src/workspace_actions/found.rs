@@ -425,7 +425,10 @@ impl Worker {
             |(app, record)| engine.record(&cluster_id, app, record).ok().flatten(),
             &ui::history_source::sentence::ThreadWords,
         );
-        Ok(log.page(after))
+        let page = log.page(after);
+        // What is said in a direct conversation is told to the people it is between
+        // ([`super::direct`]).
+        Ok(self.told(caller, &cluster_id, &state, page))
     }
 }
 
