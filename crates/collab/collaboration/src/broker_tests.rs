@@ -85,6 +85,8 @@ include!("committed_absent_tests.rs");
 #[cfg(test)]
 include!("route_join_wait_tests.rs");
 #[cfg(test)]
+include!("cluster_route_tests.rs");
+#[cfg(test)]
 include!("committed_changes_tests.rs");
 use crate::CollaborationState;
 
@@ -209,6 +211,8 @@ pub struct Captures {
     pub terminal_updates: usize,
     pub invocation_updates: Vec<(u64, tilo_actions::InvocationUpdate)>,
     pub joined: Vec<(String, Vec<u8>)>,
+    /// Each stream subscribed to, by its route, in the order asked.
+    pub subscribed: Vec<(String, Topic)>,
     pub joined_resource_types: Vec<String>,
     pub signed_ops: Vec<Vec<u8>>,
     pub pointer_publishes: Vec<(Vec<u8>, f32, f32)>,
@@ -631,6 +635,11 @@ impl FakeHost {
         feed: Feed,
     ) -> Result<Pin<Box<dyn Future<Output = String>>>, String> {
         let captures = self.broker.captures.clone();
+        captures
+            .lock()
+            .unwrap()
+            .subscribed
+            .push((channel.channel_id.clone(), topic.clone()));
         Ok(match topic {
             Topic::Ops => {
                 let backlog = channel.op_backlog.clone();
@@ -3180,132 +3189,6 @@ fn a_slow_identity_service_never_holds_up_incoming_ops() {
 fn committed_routes_stay_out_of_channel_keys_while_op_routes_ask() {
     assert_eq!(channel_key_requests_on_route(true), 0);
     assert!(channel_key_requests_on_route(false) > 0);
-}
-
-/// A certified identity service that, like the real one, refuses channel
-/// keys for a route that names no app (a cluster route) and answers a
-/// real app route with keys. Counts every question.
-#[cfg(unix)]
-struct ClusterRefusingIdentity {
-    asked: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-#[cfg(unix)]
-impl SdkCertifiedIdentity for ClusterRefusingIdentity {
-    fn group_keys(
-        &self,
-        _: &str,
-        app_id: &str,
-        _: &str,
-        _: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        if app_id.is_empty() {
-            // The identity service refuses a route of no app.
-            return Err(runtime_portal::NotAvailable::ConnectionFailed(
-                std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "channel keys requested for a different launch route",
-                ),
-            ));
-        }
-        Ok(ready_channel_keys())
-    }
-    fn device_certificate(&self) -> Option<&[u8]> {
-        Some(b"fixture")
-    }
-    fn signing_public_key(&self) -> [u8; 32] {
-        [5; 32]
-    }
-    fn sign_collaboration_join(&self, _: &str) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        Ok([7; 64])
-    }
-    fn sign_collaboration_op(
-        &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: &[u8],
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        Ok([9; 64])
-    }
-}
-
-/// A cluster-scope route (an empty app id, the workspace-wide discovery
-/// route an agent joins) names no app, so the identity service refuses
-/// it channel keys — and a route left waiting for an answer it cannot get
-/// is asked again every second by the key timer for the whole life of the
-/// connection. It carries no record and writes nothing, so it asks for no
-/// keys at all and the timer never names it.
-///
-/// The broker here pushes channel changes, so the timer asks nothing once
-/// every route either holds its keys or is plaintext. Before the join the
-/// app's own route settles to holding its keys, which disarms the timer;
-/// after a cluster route joins, the timer must stay disarmed and no more
-/// question may be asked. Pre-fix the cluster route waits for keys it can
-/// never get, which arms the timer and asks it every round.
-#[test]
-#[cfg(unix)]
-fn a_cluster_route_asks_for_no_channel_keys_and_polls_nothing() {
-    let changes = Arc::new(tokio::sync::watch::Sender::new(0_u64));
-    let broker = FakeBroker {
-        captures: Arc::new(std::sync::Mutex::new(Captures {
-            key_changes: Some(Arc::clone(&changes)),
-            ..Captures::default()
-        })),
-        ..FakeBroker::default()
-    };
-    let (fd, _captures, thread) = stand_up_fake_broker(broker);
-    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let sdk = CollaborationManager::spawn_sdk(
-        SdkConnectSource::Fd(fd),
-        Some(SdkJoinIdentity {
-            presentation: harness_presentation(),
-            member_kind: "person",
-            signer: SdkDocumentSigner::Certified(Arc::new(ClusterRefusingIdentity {
-                asked: Arc::clone(&asked),
-            })),
-        }),
-    )
-    .unwrap();
-    let mut manager = CollaborationManager::disabled();
-    manager.backend = Backend::Transport(Box::new(sdk));
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: "so.tilo.test".into(),
-        cluster_id: Uuid::new_v4(),
-        record: None,
-        resource_type: None,
-        handle: None,
-    }));
-    manager.await_primary_route().unwrap();
-    // The app's own route learns its keys at its join round and holds
-    // them; the timer is then disarmed (a pushing broker asks nothing
-    // that holds keys and nothing that is plaintext).
-    tilo_test_env::wait_until("the app route's join round to be applied", || {
-        !key_schedule(&manager).armed
-    });
-    let settled = asked.load(std::sync::atomic::Ordering::Acquire);
-    assert!(settled > 0, "the app's own route asked for its keys");
-    manager.join_route(
-        RouteSpec::cluster(Uuid::new_v4()),
-        collab_types::document::ResourceType::new(""),
-    );
-    // The join's key round, were there one, has run before this probe is
-    // answered (the shovel serves its commands in order, and the probe
-    // applies any round still out). A cluster route asks nothing, so the
-    // timer stays disarmed and no route was asked for keys.
-    let seen = key_schedule(&manager);
-    assert!(
-        !seen.armed && seen.timer_rounds == 0,
-        "a cluster route leaves the key timer armed to ask forever: {seen:?}"
-    );
-    assert_eq!(
-        asked.load(std::sync::atomic::Ordering::Acquire),
-        settled,
-        "a cluster route asked the identity service for channel keys it cannot be granted"
-    );
-    drop(manager);
-    thread.join().unwrap();
 }
 
 /// A certified endpoint on one ordinary route of a broker that says when

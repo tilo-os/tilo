@@ -1131,7 +1131,9 @@ impl Held {
             heads.map(|heads| heads.iter().map(|head| head.0).collect());
         self.engine
             .record_update(workspace, app, route, heads.as_deref())
-            .inspect_err(|error| tracing::warn!(%error, %app, %route, "a document is not read"))
+            .inspect_err(
+                |error| tracing::warn!(%error, %app, %workspace, %route, "a document is not read"),
+            )
             .ok()
     }
 }
