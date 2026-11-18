@@ -829,7 +829,7 @@ The write goes through an atomic write-with-mode, closing the TOCTOU window. The
 `/var/lib/tilo/device-private/keypair.bin` (`DEVICE_KEY_PATH`). Held by
 `crates/session/network-actor/src/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
 (phase `malformed_key_is_never_replaced`), `::created_device_key_is_not_world_accessible`, and
-`crates/collab/tilo-user-identity/src/persist.rs::tests::device_keys_are_group_private_created_once_and_never_rotated_silently`.
+`crates/collab/tilo-device-identity/src/persist.rs::tests::device_keys_are_group_private_created_once_and_never_rotated_silently`.
 
 ## P2-3 — Revocation is modelled but undeliverable
 

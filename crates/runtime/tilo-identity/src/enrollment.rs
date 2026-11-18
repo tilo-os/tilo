@@ -21,8 +21,9 @@ use std::path::{Path, PathBuf};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
+use tilo_device_identity::IdentityPaths;
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, EnrollmentToken, IdentityPaths, encode_enrollment_token,
+    DeviceCapabilities, DeviceCert, EnrollmentToken, encode_enrollment_token,
     mint_enrollment_token, verify_device_cert, verify_device_cert_at, verify_enrollment_token,
 };
 
@@ -45,12 +46,12 @@ pub fn device_for(
     user_public_key: [u8; 32],
     at_ns: u64,
 ) -> io::Result<(ed25519_dalek::SigningKey, DeviceCert)> {
-    let device = tilo_user_identity::persist::load_device_key(paths)
+    let device = tilo_device_identity::persist::load_device_key(paths)
         .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error.to_string()))?;
-    let cert = tilo_user_identity::persist::read_device_cert(
+    let cert = tilo_device_identity::persist::read_device_cert(
         &paths.device_cert_for_user(&user_public_key),
     )
-    .or_else(|_| tilo_user_identity::persist::read_device_cert(&paths.device_cert))
+    .or_else(|_| tilo_device_identity::persist::read_device_cert(&paths.device_cert))
     .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error.to_string()))?;
     verify_device_cert_at(&cert, at_ns).map_err(|error| io::Error::other(error.to_string()))?;
     if cert.user_public_key != user_public_key
@@ -348,8 +349,8 @@ pub(crate) fn certify(
 mod tests {
     use super::*;
     use crate::device_fleet::DeviceFleetStore;
+    use tilo_device_identity::IdentityPaths;
     use tilo_user_identity::DeviceCapabilities;
-    use tilo_user_identity::IdentityPaths;
 
     struct Fixture {
         _root: tempfile::TempDir,

@@ -1,6 +1,6 @@
 use super::*;
+use tilo_device_identity::persist::IdentityPaths;
 use tilo_user_identity::DeviceCert as PinnedCert;
-use tilo_user_identity::persist::IdentityPaths;
 
 struct Fixture {
     joined: Joined,
@@ -70,12 +70,12 @@ impl Fixture {
         let id = hex::encode(cert.user_public_key);
         // Both copies a provisioned device holds: the identity's own and the
         // device's, which reading the ownership looks through.
-        tilo_user_identity::persist::write_device_cert(
+        tilo_device_identity::persist::write_device_cert(
             &paths.device_cert_for_user(&cert.user_public_key),
             cert,
         )
         .unwrap();
-        tilo_user_identity::persist::write_device_cert(&paths.device_cert, cert).unwrap();
+        tilo_device_identity::persist::write_device_cert(&paths.device_cert, cert).unwrap();
         let store = tilo_identity::registry::IdentityRegistryStore::from_env().unwrap();
         let mut registry = store.load_reconciled().unwrap();
         registry.default_identity = Some(id.clone());
@@ -115,7 +115,7 @@ impl Fixture {
     fn read_from_disk(&self) -> Arc<SessionAdmission> {
         let paths = identity_paths(self.directory.path());
         self.install_identity(&paths);
-        tilo_user_identity::persist::write_device_key(
+        tilo_device_identity::persist::write_device_key(
             &paths.device_privkey,
             &super::tests::native_key(&self.joined.identity),
         )
@@ -142,7 +142,7 @@ fn identity_paths(root: &std::path::Path) -> IdentityPaths {
         user_privkey: root.join("user-identity").join("privkey.bin"),
         device_privkey: key,
         device_cert: root.join("device").join("cert.bin"),
-        device_key_ownership: tilo_user_identity::persist::DeviceKeyOwnership::File,
+        device_key_ownership: tilo_device_identity::persist::DeviceKeyOwnership::File,
     }
 }
 
@@ -217,7 +217,7 @@ async fn ownership_that_cannot_be_read_keeps_the_run() {
     );
 
     // The identity material is back: the same run acts again.
-    tilo_user_identity::persist::write_device_key(
+    tilo_device_identity::persist::write_device_key(
         &paths.device_privkey,
         &super::tests::native_key(&fixture.joined.identity),
     )

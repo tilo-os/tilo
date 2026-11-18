@@ -140,6 +140,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true
 
 # Mounts the workspace files where this user can mount FUSE.
+tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

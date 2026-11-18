@@ -37,7 +37,7 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
         .set("TILO_IDENTITY_ROOT", &system)
         .set(runtime_identity::FILE_SECRETS_ENV, "1");
     let identity = config.join("tilo/identity");
-    let paths = tilo_user_identity::IdentityPaths::under(system);
+    let paths = tilo_device_identity::IdentityPaths::under(system);
     tilo_identity::provisioning::ensure_collaboration_identity(
         &identity,
         &paths,

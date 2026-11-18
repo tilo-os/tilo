@@ -32,11 +32,11 @@ impl Ownership {
     pub(crate) fn load(actor: &str, device: &str) -> Result<Self, String> {
         let paths = tilo_identity::provisioning::collaboration_identity_paths();
         let key =
-            tilo_user_identity::persist::load_device_key(&paths).map_err(|e| e.to_string())?;
+            tilo_device_identity::persist::load_device_key(&paths).map_err(|e| e.to_string())?;
         let mut person = [0; 32];
         hex::decode_to_slice(actor, &mut person).map_err(|e| e.to_string())?;
         let cert =
-            tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&person))
+            tilo_device_identity::persist::read_device_cert(&paths.device_cert_for_user(&person))
                 .map_err(|e| e.to_string())?;
         Self::with_host(
             HostIdentity::held(

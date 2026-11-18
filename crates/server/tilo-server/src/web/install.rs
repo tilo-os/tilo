@@ -8,7 +8,7 @@
 //! token the host was provisioned with.
 //! The certificate must be for this key, verify, be a device of the person
 //! and not admit devices; it is then written as a joined device's
-//! ([`tilo_user_identity::install_device_cert`]) and [`await_certificate`]
+//! ([`tilo_device_identity::install_device_cert`]) and [`await_certificate`]
 //! returns, so the caller starts the server on the same address.
 //!
 //! A node runs a session beside it ([`SessionDevice`]): the shell that runs
@@ -25,11 +25,13 @@ use std::time::Duration;
 
 use ed25519_dalek::Signer as _;
 use hyper::{Method, Request, Response, StatusCode, header};
+use tilo_device_identity::IdentityPaths;
 use tilo_server_protocol::web::{
     API_PREFIX, INSTALL_ROUTE, INSTALL_TOKEN_HEADER, InstallCertificates, InstallInfo, Installed,
     MAX_REQUEST_BYTES, NodeSession, node_session_message,
 };
-use tilo_user_identity::{DeviceCert, IdentityPaths};
+use tilo_user_identity::DeviceCert;
+
 use tokio::sync::{mpsc, watch};
 
 use super::{Body, WebConfig, body, reply, status, tls};
@@ -106,7 +108,7 @@ impl InstallListener {
         session: Option<SessionDevice>,
     ) -> Result<Self, ServerError> {
         let failed = |message: String| ServerError::Iroh(format!("install listener: {message}"));
-        let key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+        let key = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
             .map_err(|error| failed(format!("device key: {error}")))?;
         let device = key.verifying_key().to_bytes();
         let session = session.map(|session| {
@@ -431,11 +433,11 @@ fn session_certificate(
 fn write_session_user_key(
     path: &std::path::Path,
     user_public_key: &[u8; 32],
-) -> Result<(), tilo_user_identity::persist::PersistError> {
+) -> Result<(), tilo_device_identity::persist::PersistError> {
     if path.is_file() {
-        let held = tilo_user_identity::persist::read_public_key(path)?;
+        let held = tilo_device_identity::persist::read_public_key(path)?;
         if &held != user_public_key {
-            return Err(tilo_user_identity::persist::PersistError::Io(
+            return Err(tilo_device_identity::persist::PersistError::Io(
                 std::io::Error::new(
                     std::io::ErrorKind::AlreadyExists,
                     "the session already belongs to another identity",
@@ -447,7 +449,7 @@ fn write_session_user_key(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    tilo_user_identity::persist::write_public_key(path, user_public_key)?;
+    tilo_device_identity::persist::write_public_key(path, user_public_key)?;
     Ok(())
 }
 
@@ -478,14 +480,14 @@ async fn install(
     let paths = waiting.paths.clone();
     let written = cert.clone();
     tokio::task::spawn_blocking(move || {
-        tilo_user_identity::install_device_cert(&paths, &written, tilo_clock::unix_now_ns())?;
+        tilo_device_identity::install_device_cert(&paths, &written, tilo_clock::unix_now_ns())?;
         if let Some((cert, session)) = session {
             if let Some(user_key) = &session.user_key_out {
                 write_session_user_key(user_key, &cert.user_public_key)?;
             }
-            tilo_user_identity::persist::write_device_cert(&session.cert_out, &cert)?;
+            tilo_device_identity::persist::write_device_cert(&session.cert_out, &cert)?;
         }
-        Ok::<_, tilo_user_identity::persist::PersistError>(())
+        Ok::<_, tilo_device_identity::persist::PersistError>(())
     })
     .await
     .map_err(|_| status(StatusCode::INTERNAL_SERVER_ERROR, "install failed"))?
@@ -504,6 +506,7 @@ mod tests {
     use crate::web::TlsSource;
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{DeviceCapabilities, RevocationList, sign_device_cert};
+
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     const TOKEN: &str = "an-install-token-0123";
@@ -574,7 +577,7 @@ mod tests {
     async fn a_waiting_host_installs_its_certificate_and_starts() {
         let dir = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(dir.path().join("identity"));
-        let (device, _) = tilo_user_identity::load_or_create_device_key(&paths).unwrap();
+        let (device, _) = tilo_device_identity::load_or_create_device_key(&paths).unwrap();
         let own = device.verifying_key().to_bytes();
         let root = SigningKey::from_bytes(&[7; 32]);
         let config = config(dir.path());
@@ -642,10 +645,10 @@ mod tests {
                 ..Default::default()
             },
             crate::daemon::ServerIdentity {
-                user_public_key: tilo_user_identity::persist::read_public_key(&paths.user_pubkey)
+                user_public_key: tilo_device_identity::persist::read_public_key(&paths.user_pubkey)
                     .unwrap(),
                 device_signing_key: device,
-                device_cert: tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+                device_cert: tilo_device_identity::persist::read_device_cert(&paths.device_cert)
                     .unwrap(),
                 revocations: RevocationList::new(),
             },
@@ -662,7 +665,7 @@ mod tests {
     async fn the_installing_page_reads_its_answer() {
         let dir = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(dir.path().join("identity"));
-        let (device, _) = tilo_user_identity::load_or_create_device_key(&paths).unwrap();
+        let (device, _) = tilo_device_identity::load_or_create_device_key(&paths).unwrap();
         let own = device.verifying_key().to_bytes();
         let root = SigningKey::from_bytes(&[7; 32]);
         let listener = InstallListener::bind(&config(dir.path()), paths, TOKEN).unwrap();
@@ -693,7 +696,7 @@ mod tests {
     async fn a_node_takes_its_sessions_certificate_with_its_own() {
         let dir = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(dir.path().join("identity"));
-        let (device, _) = tilo_user_identity::load_or_create_device_key(&paths).unwrap();
+        let (device, _) = tilo_device_identity::load_or_create_device_key(&paths).unwrap();
         let own = device.verifying_key().to_bytes();
         let session = SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes();
         let cert_out = dir.path().join("session/delivered.cert");
@@ -777,7 +780,7 @@ mod tests {
         assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
         assert_eq!(listener.installed().await.unwrap().device_public_key, own);
         assert_eq!(
-            tilo_user_identity::persist::read_device_cert(&cert_out).unwrap(),
+            tilo_device_identity::persist::read_device_cert(&cert_out).unwrap(),
             issued
         );
     }

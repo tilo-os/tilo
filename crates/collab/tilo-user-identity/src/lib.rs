@@ -59,9 +59,9 @@
 //!
 //! # Non-goals
 //!
-//! - No I/O. The crate is pure types + pure functions. Persistence
-//!   (loading `/var/lib/tilo/user-identity/*`) belongs in `crates/session/session/` or
-//!   `os/`, not here.
+//! - No I/O. The crate is pure types + pure functions. Where a machine keeps
+//!   these values — the device key in its keystore, certificates, revocations
+//!   — is `tilo-device-identity`.
 //! - No key recovery / paper share. `threshold-identity` already
 //!   solves that; this crate is single-key so the wire shape stays simple.
 //! - No transport. Peers exchange enrollment tokens out-of-band
@@ -77,9 +77,6 @@
     )
 )]
 pub mod approval;
-// A branched machine re-keys its identity files on the machine itself.
-#[cfg(all(unix, not(target_arch = "wasm32")))]
-pub mod branch;
 pub mod canonical;
 pub mod cert;
 pub mod certification;
@@ -89,14 +86,6 @@ pub mod endpoint_delegation;
 pub mod enrollment;
 pub mod fleet;
 pub mod image;
-#[cfg(target_os = "macos")]
-mod keychain;
-#[cfg(target_os = "linux")]
-pub mod nofollow;
-// Identity files need an owner-checked filesystem; the browser keeps its
-// device key in host ownership instead.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod persist;
 pub mod projection;
 pub mod revocation;
 pub mod root_envelope;
@@ -104,8 +93,6 @@ pub mod root_statement;
 pub mod sign;
 pub mod sign_in;
 pub mod signed_approval;
-#[cfg(unix)]
-pub mod update_lock;
 
 pub use approval::{
     APPROVAL_REQUEST_TAG, APPROVAL_RESPONSE_TAG, APPROVAL_SCHEMA_VERSION, ApprovalError,
@@ -128,9 +115,7 @@ pub use certification::{
     MAX_CERTIFICATION_REQUEST_LIFETIME_NS, issue_device_cert, issue_device_cert_as_stand_in,
     issue_device_cert_async, prepare_device_cert, verify_issued_cert,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub use clock::wait_for_wall_clock;
-pub use clock::{CertificateClockError, WallClockWait};
+pub use clock::CertificateClockError;
 pub use directory::{
     CommunityState, DirectoryError, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
 };
@@ -152,12 +137,6 @@ pub use image::{
     image_endorsement_signing_digest, image_signing_authorization_digest, sign_image_endorsement,
     sign_image_signing_authorization, verify_image_endorsement_at,
     verify_image_endorsement_with_revocations_at, verify_image_signing_authorization_at,
-};
-#[cfg(not(target_arch = "wasm32"))]
-pub use persist::{
-    DeviceKeyOutcome, IdentityPaths, PersistError, RevocationsError, adopt_device_key,
-    append_revocation, install_device_cert, joined_device_is_enrolled, joined_device_is_ready,
-    load_or_create_device_key, provision_joined_device, read_revocations, revocations_path,
 };
 pub use projection::{
     DisplayNameError, GovernedAgentIdentityV2, GovernedDeviceIdentityV2, GovernedHumanIdentityV1,

@@ -14,13 +14,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::IdentityStorage;
 pub use tilo_identity::provisioning::{
     PRIMARY_IDENTITY_FILE, ProvisionOutcome, collaboration_identity_paths,
     device_certificate_clock_refusal, ensure_device_certificate_for_record,
     login_account_display_name, prepare_identity_directory, verify_collaboration_identity,
 };
-use tilo_user_identity::IdentityPaths;
 
 /// Where this session keeps a newly provisioned identity: the platform store,
 /// except in this crate's unit tests, which keep it in private files.

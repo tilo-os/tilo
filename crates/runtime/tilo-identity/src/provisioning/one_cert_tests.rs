@@ -82,7 +82,7 @@ tilo_test_env::scenario! {
     // under the name the branch took, and the source's certificate is not
     // what it presents.
     {
-        use tilo_user_identity::branch::{self, Branch, Certification, Machine, Settled};
+        use tilo_device_identity::branch::{self, Branch, Certification, Machine, Settled};
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();

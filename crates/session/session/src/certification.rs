@@ -907,7 +907,7 @@ mod tests {
     fn identity() -> (tempfile::TempDir, runtime_identity::SigningIdentity) {
         let root = tempfile::tempdir().expect("temp root");
         let dir = root.path().join("config/tilo/identity");
-        let device = tilo_user_identity::IdentityPaths::under(root.path().join("system"));
+        let device = tilo_device_identity::IdentityPaths::under(root.path().join("system"));
         tilo_identity::provisioning::ensure_collaboration_identity(
             &dir,
             &device,
@@ -1304,7 +1304,7 @@ mod tests {
     /// shape, whose certificate ran out.
     struct Joined {
         device_key: ed25519_dalek::SigningKey,
-        paths: tilo_user_identity::IdentityPaths,
+        paths: tilo_device_identity::IdentityPaths,
         held: DeviceCert,
     }
 
@@ -1339,7 +1339,7 @@ mod tests {
     /// this laptop has, certified by the person's root and holding no root of its own.
     fn joined_device(root: &runtime_identity::SigningIdentity, label: &str) -> Joined {
         let dir = tempfile::tempdir().expect("a directory for a joined device");
-        let paths = tilo_user_identity::IdentityPaths::under(dir.path().join("system"));
+        let paths = tilo_device_identity::IdentityPaths::under(dir.path().join("system"));
         paths.ensure_directories().expect("the identity tree");
         let device_key = ed25519_dalek::SigningKey::from_bytes(&[0x6d; 32]);
         let now = tilo_clock::unix_now_ns();
@@ -1356,16 +1356,16 @@ mod tests {
         };
         let digest = tilo_user_identity::device_cert_signing_digest(&cert).expect("a digest");
         cert.signature = root.sign(&digest).expect("the person's key signs it");
-        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
+        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
             .expect("the lapsed certificate");
-        tilo_user_identity::persist::write_device_cert(
+        tilo_device_identity::persist::write_device_cert(
             &paths.device_cert_for_user(&root.person()),
             &cert,
         )
         .expect("the lapsed certificate where the identity keeps it");
-        tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &root.person())
+        tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &root.person())
             .expect("the person's key");
-        tilo_user_identity::persist::write_signing_key(&paths.device_privkey, &device_key)
+        tilo_device_identity::persist::write_signing_key(&paths.device_privkey, &device_key)
             .expect("the joined device's key");
         std::mem::forget(dir);
         Joined {

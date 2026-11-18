@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use fs::workspace_authority::{AuthorityRequest, WorkspaceAuthority, WorkspaceAuthorityEnvelope};
-use tilo_user_identity::{IdentityPaths, persist};
+use tilo_device_identity::{IdentityPaths, persist};
 
 #[derive(clap::Args, Debug)]
 pub(super) struct InitializeOptions {
@@ -317,7 +317,8 @@ mod tests {
         {
             use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
             use tilo_action_policy::Grantee;
-            use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+                        use tilo_user_identity::{ DeviceCapabilities, DeviceCert, sign_device_cert };
+
             let temp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(temp.path().join("identity"));
             paths.ensure_directories().unwrap();

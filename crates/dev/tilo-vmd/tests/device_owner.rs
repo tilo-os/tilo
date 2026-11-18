@@ -6,8 +6,8 @@ use std::path::Path;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{IdentityStorage, ensure_collaboration_identity};
-use tilo_user_identity::IdentityPaths;
 
 fn owns(identity: &Path, device_root: &Path) -> Option<i32> {
     Command::new(tilo_test_env::package_binary!("tilo-vmd"))

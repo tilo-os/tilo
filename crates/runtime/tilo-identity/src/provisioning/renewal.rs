@@ -6,7 +6,8 @@
 use std::io;
 use std::path::Path;
 
-use tilo_user_identity::{DeviceCert, IdentityPaths, persist};
+use tilo_device_identity::{IdentityPaths, persist};
+use tilo_user_identity::DeviceCert;
 
 /// What a renewal can fail on changing: this device's identity store
 /// becoming available, the network coming back, a server or host becoming

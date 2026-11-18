@@ -705,11 +705,11 @@ fn require_trusted_current_device(
     profile: &crate::registry::IdentityProfile,
 ) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
     let paths = crate::provisioning::collaboration_identity_paths();
-    let device = tilo_user_identity::persist::load_device_key(&paths)
+    let device = tilo_device_identity::persist::load_device_key(&paths)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let device_key = device.verifying_key().to_bytes();
     let cert_path = paths.device_cert_for_user(&profile.user_public_key);
-    let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
+    let cert = tilo_device_identity::persist::read_device_cert(&cert_path)
         .map_err(|error| io::Error::other(error.to_string()))?;
     tilo_user_identity::verify_device_cert(&cert)
         .map_err(|error| io::Error::other(error.to_string()))?;
@@ -876,7 +876,7 @@ mod tests {
     }
     fn ensure_collaboration_identity(
         identity_dir: &std::path::Path,
-        paths: &tilo_user_identity::IdentityPaths,
+        paths: &tilo_device_identity::IdentityPaths,
     ) -> io::Result<crate::provisioning::ProvisionOutcome> {
         crate::provisioning::ensure_collaboration_identity(
             identity_dir,
@@ -924,7 +924,7 @@ mod tests {
             .set("TILO_IDENTITY_ROOT", &system_root)
             .set(crate::provisioning::FILE_SECRETS_ENV, "1");
         let identity_dir = xdg.join("tilo/identity");
-        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+        let paths = tilo_device_identity::IdentityPaths::under(&system_root);
         let workspace = WorkspaceId::new().to_string();
         let operation = registry_types::ExternalModerationOperation {
             destination: registry_types::ModerationDestination {
@@ -990,7 +990,7 @@ mod tests {
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = xdg.join("tilo/identity");
-            let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+            let paths = tilo_device_identity::IdentityPaths::under(&system_root);
             ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
             let workspace = WorkspaceId::new();
@@ -1000,7 +1000,7 @@ mod tests {
             let profile = crate::registry::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
-            let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+            let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
                 .expect("device key");
             let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
 
@@ -1249,7 +1249,7 @@ params = []
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = xdg.join("tilo/identity");
-            let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+            let paths = tilo_device_identity::IdentityPaths::under(&system_root);
             ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
             let workspace = WorkspaceId::new();
@@ -1260,7 +1260,7 @@ params = []
             let profile = crate::registry::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
-            let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+            let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
                 .expect("device key");
             let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
             let mut committed = Workspace::new(workspace, "Workspace");
@@ -1318,7 +1318,7 @@ params = []
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = xdg.join("tilo/identity");
-            let paths = tilo_user_identity::IdentityPaths::under(&system_root);
+            let paths = tilo_device_identity::IdentityPaths::under(&system_root);
             ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
             let workspace = WorkspaceId::new();
@@ -1328,7 +1328,7 @@ params = []
             let profile = crate::registry::identity_for_workspace(&workspace_id)
                 .expect("registry")
                 .expect("profile");
-            let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+            let device = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
                 .expect("device key");
             let op = SignedOp::new_unsigned(
                 DocumentMutation::Snapshot(b"automerge document".to_vec())
@@ -1407,7 +1407,7 @@ params = []
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = xdg.join("tilo/identity");
-            let paths = tilo_user_identity::IdentityPaths::under(system_root);
+            let paths = tilo_device_identity::IdentityPaths::under(system_root);
             ensure_collaboration_identity(&identity_dir, &paths).unwrap();
             let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
             runtime_identity::update_identity_photo(&identity_dir, "primary", Some(photo.clone()))
@@ -1511,7 +1511,7 @@ params = []
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
             let identity_dir = xdg.join("tilo/identity");
-            let paths = tilo_user_identity::IdentityPaths::under(system_root);
+            let paths = tilo_device_identity::IdentityPaths::under(system_root);
             ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
             let workspace = WorkspaceId::new();

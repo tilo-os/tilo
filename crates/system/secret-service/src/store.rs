@@ -18,10 +18,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use tilo_device_identity::branch::{Resealed, SealedStore, SigningKey};
+use tilo_device_identity::persist::{IdentityPaths, PersistError, load_device_key};
 use tilo_seal::secret_service::CallerKey;
 use tilo_seal::{Context, Label, SymmetricKey, envelope};
-use tilo_user_identity::branch::{Resealed, SealedStore, SigningKey};
-use tilo_user_identity::persist::{IdentityPaths, PersistError, load_device_key};
 use zeroize::Zeroizing;
 
 use crate::app::CallerId;
@@ -129,7 +129,7 @@ impl KeySource for DeviceIdentityKey {
 }
 
 /// A person's vault when the machine's device key changes, as on a branched
-/// machine ([`tilo_user_identity::branch`]): re-sealed from the store key the
+/// machine ([`tilo_device_identity::branch`]): re-sealed from the store key the
 /// old device key released to the one the new key releases. The salt and
 /// the account stay, so the store opens as before under the new identity.
 pub struct DeviceVault {

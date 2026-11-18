@@ -331,7 +331,7 @@ impl Error for OnboardingError {}
 /// already exists but its fingerprint can't be read back.
 pub fn mint_into(
     identity_dir: &Path,
-    identity_paths: &tilo_user_identity::IdentityPaths,
+    identity_paths: &tilo_device_identity::IdentityPaths,
 ) -> Result<MintedIdentity, OnboardingError> {
     mint_into_with_paths(identity_dir, identity_paths, false)
 }
@@ -347,14 +347,14 @@ pub fn mint_into(
 /// read back the collaboration identity.
 pub fn mint_into_for_legacy_linux_host(
     identity_dir: &Path,
-    identity_paths: &tilo_user_identity::IdentityPaths,
+    identity_paths: &tilo_device_identity::IdentityPaths,
 ) -> Result<MintedIdentity, OnboardingError> {
     mint_into_with_paths(identity_dir, identity_paths, true)
 }
 
 fn mint_into_with_paths(
     identity_dir: &Path,
-    identity_paths: &tilo_user_identity::IdentityPaths,
+    identity_paths: &tilo_device_identity::IdentityPaths,
     legacy_linux_host: bool,
 ) -> Result<MintedIdentity, OnboardingError> {
     use crate::firstboot::{
@@ -596,7 +596,7 @@ mod tests {
                 std::process::id(),
                 tilo_clock::unix_now_ns()
             ));
-            let system = tilo_user_identity::IdentityPaths::under(dir.join("system"));
+            let system = tilo_device_identity::IdentityPaths::under(dir.join("system"));
             let minted = mint_into_with_paths(&dir, &system, false).expect("mint");
             assert_eq!(minted.fingerprint.len(), 64, "hex of 32 bytes");
             assert!(minted.path.exists());
@@ -622,13 +622,15 @@ mod tests {
         // device in recovery for good.
         {
             use getrandom::{SysRng, rand_core::UnwrapErr};
-            use tilo_user_identity::{DeviceCapabilities, DeviceCert, persist};
+                        use tilo_user_identity::{ DeviceCapabilities, DeviceCert };
+            use tilo_device_identity::{ persist };
+
 
             let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
             let person = root.verifying_key().to_bytes();
             let dir = tempfile::tempdir().unwrap();
             let identity_dir = dir.path().join("identity");
-            let system = tilo_user_identity::IdentityPaths::under(dir.path().join("system"));
+            let system = tilo_device_identity::IdentityPaths::under(dir.path().join("system"));
             let (device, _) = persist::load_or_create_device_key(&system).unwrap();
             let mut cert = DeviceCert {
                 user_public_key: person,

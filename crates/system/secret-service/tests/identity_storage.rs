@@ -455,8 +455,8 @@ fn turn_non_dumpable() {
 /// which leaves this process non-dumpable.
 #[cfg(target_os = "linux")]
 fn load_device_key_like_the_compositor(root: &Path) {
-    tilo_user_identity::persist::load_or_create_device_key(
-        &tilo_user_identity::persist::IdentityPaths::under(root),
+    tilo_device_identity::persist::load_or_create_device_key(
+        &tilo_device_identity::persist::IdentityPaths::under(root),
     )
     .unwrap();
     assert!(
@@ -525,8 +525,8 @@ fn serve_with_this_binary_as_portal_host() {
     use tilo_secret_service::store::{DeviceIdentityKey, Store};
     let device = child_env(CHILD_DEVICE);
     let run = child_env(CHILD_RUN);
-    let paths = tilo_user_identity::persist::IdentityPaths::under(&device);
-    tilo_user_identity::persist::load_or_create_device_key(&paths).unwrap();
+    let paths = tilo_device_identity::persist::IdentityPaths::under(&device);
+    tilo_device_identity::persist::load_or_create_device_key(&paths).unwrap();
     let uid = rustix::process::geteuid().as_raw();
     let keys = DeviceIdentityKey::new(paths, run.join("salt"), &uid.to_string());
     let store = Arc::new(Store::new(run.join("vault.tseal"), Box::new(keys)));

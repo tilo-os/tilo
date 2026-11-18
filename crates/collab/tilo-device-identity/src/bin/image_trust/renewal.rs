@@ -13,7 +13,7 @@ use super::{
 };
 use std::os::fd::RawFd;
 use std::os::unix::fs::MetadataExt;
-use tilo_user_identity::update_lock::inherit as inherited_lock;
+use tilo_device_identity::update_lock::inherit as inherited_lock;
 
 struct Request {
     trust: PathBuf,
@@ -194,7 +194,7 @@ mod tests {
         };
         sign_image_endorsement(&mut old, &device).unwrap();
         let device_key = directory.path().join("device.key");
-        tilo_user_identity::persist::write_device_key(&device_key, &device).unwrap();
+        tilo_device_identity::persist::write_device_key(&device_key, &device).unwrap();
         for (name, bytes) in [
             ("root.pub", user.public_key.to_vec()),
             (

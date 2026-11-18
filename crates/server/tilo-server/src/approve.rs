@@ -22,11 +22,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, bail};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
+use tilo_device_identity::IdentityPaths;
+use tilo_device_identity::persist::{write_public_key, write_signing_key};
 use tilo_server_client::questions::{MemberQuestions, QuestionHost};
 use tilo_server_client::{Host, MemberApprover};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
-use tilo_user_identity::IdentityPaths;
-use tilo_user_identity::persist::{write_public_key, write_signing_key};
 use tilo_user_identity::root_envelope::{RecoveryKey, RootEnvelope};
 
 /// How often a watching device asks the host whether a question is waiting.
@@ -206,7 +206,7 @@ fn pair(
     device: &std::path::Path,
     label: &str,
 ) -> anyhow::Result<tilo_user_identity::DeviceCert> {
-    let root_key = tilo_user_identity::persist::read_owned_signing_key(
+    let root_key = tilo_device_identity::persist::read_owned_signing_key(
         &IdentityPaths::under(root).user_privkey,
     )
     .context("read the person's root: run `tilo-approve person` first")?;
@@ -248,7 +248,7 @@ async fn next(
     let host = tilo_server_protocol::hosted::endpoint(server)
         .map_err(|error| anyhow::anyhow!("--server: {error}"))?;
     if let Some(device) = device {
-        let key = tilo_user_identity::persist::read_owned_signing_key(&device.join(DEVICE_KEY))
+        let key = tilo_device_identity::persist::read_owned_signing_key(&device.join(DEVICE_KEY))
             .context("read the device's key: run `tilo-approve pair` first")?;
         let cert: tilo_user_identity::DeviceCert =
             serde_json::from_slice(&std::fs::read(device.join(DEVICE_CERT))?)
@@ -266,7 +266,7 @@ async fn next(
         return seen;
     }
     let paths = IdentityPaths::under(root);
-    let root_key = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
+    let root_key = tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .with_context(|| {
             format!(
                 "read the person's root at {}: run `tilo-approve person` first",
@@ -404,7 +404,7 @@ mod tests {
                 signing.verifying_key().to_bytes(),
                 "the person the page made"
             );
-            let kept = tilo_user_identity::persist::read_owned_signing_key(
+            let kept = tilo_device_identity::persist::read_owned_signing_key(
                 &IdentityPaths::under(&root).user_privkey,
             )
             .unwrap();

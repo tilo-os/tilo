@@ -4675,7 +4675,7 @@ mod tests {
         env.set("TEMP", &staging);
         env.set("TMP", &staging);
         let identity_dir = local_root.path().join("identity");
-        let system = tilo_user_identity::IdentityPaths::under(local_root.path().join("system"));
+        let system = tilo_device_identity::IdentityPaths::under(local_root.path().join("system"));
         let home_peers = local_root.path().join("home-peers.json");
         let local = crate::handoff::LocalIdentity {
             identity_dir: &identity_dir,

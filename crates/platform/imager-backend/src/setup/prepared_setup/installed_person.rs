@@ -13,6 +13,7 @@ use std::{
 };
 use tilo_files::native::atomic::{Privacy, PublishMode, StorageDirectory};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
+
 const LOCATION: &str = "var/lib/tilo/retained-persons";
 const LIMIT: u64 = 512 * 1024;
 #[derive(Serialize, Deserialize)]
@@ -311,7 +312,7 @@ impl InstalledPersonAnchor {
             return Err(invalid());
         }
         let installed_certificate_path =
-            tilo_user_identity::persist::IdentityPaths::under(system.join("var/lib/tilo"))
+            tilo_device_identity::persist::IdentityPaths::under(system.join("var/lib/tilo"))
                 .device_cert_for_user(&person);
         let installed_certificate_chain = installed_retained::public_certificate_chain(
             installed_certificate_path.parent().ok_or_else(invalid)?,

@@ -318,7 +318,7 @@ type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
 /// make it active, with the same root to device chain minting provisions.
 fn import_identity(
     import_dir: &Path,
-    identity_paths: &tilo_user_identity::IdentityPaths,
+    identity_paths: &tilo_device_identity::IdentityPaths,
     source: &Path,
     passphrase: &[u8],
 ) -> Result<MintedIdentity, String> {

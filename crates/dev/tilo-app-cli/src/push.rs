@@ -80,11 +80,11 @@ pub fn run_push(args: PushArgs) -> Result<Value> {
         .identity
         .or_else(|| std::env::var_os("TILO_IDENTITY").map(PathBuf::from))
         .context("name this machine's Tilo identity: --identity <dir> or $TILO_IDENTITY")?;
-    let paths = tilo_user_identity::IdentityPaths::under(&identity);
-    let key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+    let paths = tilo_device_identity::IdentityPaths::under(&identity);
+    let key = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
         .with_context(|| format!("read the device key {}", paths.device_privkey.display()))?;
     let cert =
-        tilo_user_identity::persist::read_device_cert(&paths.device_cert).with_context(|| {
+        tilo_device_identity::persist::read_device_cert(&paths.device_cert).with_context(|| {
             format!(
                 "read the device certificate {}",
                 paths.device_cert.display()

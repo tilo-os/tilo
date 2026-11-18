@@ -7,15 +7,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use tilo_device_identity::persist::{read_device_cert, read_device_key, read_owned_signing_key};
 use tilo_user_identity::{
     DeviceCert, ImageEndorsement, ImageSigningAuthorization,
     MAX_IMAGE_SIGNING_AUTHORIZATION_LIFETIME_NS, RevocationEntry, RevocationList,
     canonical::{canonical_bytes, from_canonical_bytes},
-    image_endorsement_signing_digest, image_signing_authorization_digest,
-    persist::{read_device_cert, read_device_key, read_owned_signing_key},
-    sign_image_endorsement, sign_image_signing_authorization, verify_device_cert_at,
-    verify_image_endorsement_at, verify_image_endorsement_with_revocations_at,
-    verify_image_signing_authorization_at, verify_revocation_entry,
+    image_endorsement_signing_digest, image_signing_authorization_digest, sign_image_endorsement,
+    sign_image_signing_authorization, verify_device_cert_at, verify_image_endorsement_at,
+    verify_image_endorsement_with_revocations_at, verify_image_signing_authorization_at,
+    verify_revocation_entry,
 };
 
 #[path = "image_trust/renewal.rs"]
@@ -37,7 +37,7 @@ fn open_without_symlinks(
             "artifact path contains an embedded NUL byte",
         )
     })?;
-    tilo_user_identity::nofollow::open(None, &path, flags, mode, false)
+    tilo_device_identity::nofollow::open(None, &path, flags, mode, false)
 }
 
 /// Only Linux's `openat2` refuses symlinks at every step of the path, so
@@ -1029,9 +1029,9 @@ mod tests {
 
     use ed25519_dalek::Signer;
     use std::fs;
+    use tilo_device_identity::persist::{write_device_cert, write_device_key, write_signing_key};
     use tilo_user_identity::{
         DeviceCapabilities, DeviceIdentity, RevocationEntry, RevocationReason, UserIdentity,
-        persist::{write_device_cert, write_device_key, write_signing_key},
         sign_device_cert, sign_revocation_entry,
     };
 

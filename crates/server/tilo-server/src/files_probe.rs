@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::WorkspaceId;
 use anyhow::{Context, Result};
 use serde::Serialize;
-use tilo_user_identity::{IdentityPaths, persist};
+use tilo_device_identity::{IdentityPaths, persist};
 
 #[derive(Debug, Serialize)]
 struct FilesStatus {

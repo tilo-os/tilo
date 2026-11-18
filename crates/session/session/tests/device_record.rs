@@ -91,7 +91,7 @@ fn a_browser_approved_on_the_web_is_in_the_desktop_s_settings_list() {
     // issues through its pairing.
     let directory = tempfile::tempdir().expect("a directory for the browser's identity");
     let browser = ada.certify(
-        &tilo_user_identity::IdentityPaths::under(directory.path()),
+        &tilo_device_identity::IdentityPaths::under(directory.path()),
         "This browser",
     );
     site.workspaces.keep_issued_device(&browser, "");

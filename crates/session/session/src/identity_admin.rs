@@ -187,7 +187,7 @@ pub(crate) struct Store {
     /// fleets.
     pub(crate) dir: PathBuf,
     /// This device's collaboration identity: its key and certificates.
-    pub(crate) device: tilo_user_identity::IdentityPaths,
+    pub(crate) device: tilo_device_identity::IdentityPaths,
     /// The device root the privileged helpers run against.
     pub(crate) root: PathBuf,
 }
@@ -709,7 +709,7 @@ mod tests {
     fn provisioned() -> Provisioned {
         let root = tempfile::tempdir().expect("temp root");
         let dir = root.path().join("config/tilo/identity");
-        let device = tilo_user_identity::IdentityPaths::under(root.path().join("system"));
+        let device = tilo_device_identity::IdentityPaths::under(root.path().join("system"));
         tilo_identity::provisioning::ensure_collaboration_identity(
             &dir,
             &device,
@@ -997,7 +997,7 @@ mod tests {
     fn home_server_removal_runs_on_the_host_with_its_own_identity_directory() {
         let store = Store {
             dir: PathBuf::from("/home/person/.config/tilo/identity"),
-            device: tilo_user_identity::IdentityPaths::under("/var/lib/tilo"),
+            device: tilo_device_identity::IdentityPaths::under("/var/lib/tilo"),
             root: PathBuf::from("/var/lib/tilo"),
         };
         let identity = IdentityProfile {

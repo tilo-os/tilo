@@ -1,7 +1,8 @@
 //! The person's root, held by this device, for enrollment and host retirement.
 
 use anyhow::{Context, bail};
-use tilo_user_identity::{IdentityPaths, StatementSigner};
+use tilo_device_identity::IdentityPaths;
+use tilo_user_identity::StatementSigner;
 
 /// The person's root held here, on top of the identity crate's signer: every
 /// statement this crate issues is signed through [`StatementSigner`], and the
@@ -39,7 +40,7 @@ pub fn load_root(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound
     );
     let Some(identity_dir) = identity_dir.filter(|_| seed_absent) else {
-        let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
+        let root = tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey)
             .context(MISSING_ROOT)?;
         return Ok(Box::new(root));
     };

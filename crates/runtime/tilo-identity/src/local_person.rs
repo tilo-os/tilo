@@ -19,8 +19,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use tilo_user_identity::IdentityPaths;
-use tilo_user_identity::persist;
+use tilo_device_identity::IdentityPaths;
+use tilo_device_identity::persist;
 
 /// The proof's file in an account's identity directory: the 64-byte
 /// Ed25519 signature of [`proof_message`] by the device's identity.

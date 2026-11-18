@@ -630,14 +630,14 @@ pub async fn await_certificate(
     let (Some(token_file), Some(listen)) = (&args.install_token_file, args.web) else {
         return Ok(());
     };
-    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    let paths = tilo_device_identity::IdentityPaths::under(identity_root);
     if paths.device_cert.is_file() {
         return Ok(());
     }
     let token = std::fs::read_to_string(token_file)
         .with_context(|| format!("read {}", token_file.display()))?;
     let (device, _) =
-        tilo_user_identity::load_or_create_device_key(&paths).context("create the device key")?;
+        tilo_device_identity::load_or_create_device_key(&paths).context("create the device key")?;
     println!(
         "{}",
         serde_json::json!({
@@ -647,7 +647,7 @@ pub async fn await_certificate(
     );
     let session = match (session_device(args)?, &args.session_identity_root) {
         (Some(public_key), Some(root)) => {
-            let paths = tilo_user_identity::IdentityPaths::under(root);
+            let paths = tilo_device_identity::IdentityPaths::under(root);
             Some(tilo_server::web::install::SessionDevice {
                 public_key,
                 cert_out: paths.device_cert,

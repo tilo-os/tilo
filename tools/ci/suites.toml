@@ -1315,12 +1315,12 @@ inputs = ["crates/dev/tilo-app-cli/templates/", "crates/dev/tilo-app-cli/src/lib
 readers = ["crates/dev/tilo-app-template-smoke/src/lib.rs"]
 
 [[cargo]]
-package = "tilo-user-identity"
+package = "tilo-device-identity"
 inputs = [
   "os/usr/lib/systemd/system/tilo-device-key-init.service",
   "os/usr/lib/systemd/system/tilo-device-branch.service",
 ]
-readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
+readers = ["crates/collab/tilo-device-identity/src/bin/tilo-device-key-init.rs"]
 
 [[cargo]]
 package = "settings"

@@ -308,8 +308,8 @@ fn authenticate(
     ownership.pin.validate().map_err(|_| ())?;
     ownership.root_pin.validate().map_err(|_| ())?;
     ownership.identity_pin.validate().map_err(|_| ())?;
-    let paths = tilo_user_identity::persist::IdentityPaths::under(&ownership.root);
-    let device = tilo_user_identity::persist::load_device_key(&paths).map_err(|_| ())?;
+    let paths = tilo_device_identity::persist::IdentityPaths::under(&ownership.root);
+    let device = tilo_device_identity::persist::load_device_key(&paths).map_err(|_| ())?;
     let now = u64::try_from(
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -360,8 +360,8 @@ pub fn certified_fixture() -> (tempfile::TempDir, Pairing) {
     std::fs::set_permissions(&system, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::set_permissions(&identities, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::create_dir(identities.join("fleets")).unwrap();
-    let paths = tilo_user_identity::persist::IdentityPaths::under(&system);
-    let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths).unwrap();
+    let paths = tilo_device_identity::persist::IdentityPaths::under(&system);
+    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths).unwrap();
     let mut certificate = tilo_user_identity::DeviceCert {
         user_public_key: root_identity.public_key(),
         device_public_key: device.verifying_key().to_bytes(),
@@ -375,9 +375,12 @@ pub fn certified_fixture() -> (tempfile::TempDir, Pairing) {
     certificate.signature = signer
         .sign(&tilo_user_identity::device_cert_signing_digest(&certificate).unwrap())
         .unwrap();
-    tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &certificate.user_public_key)
-        .unwrap();
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &certificate).unwrap();
+    tilo_device_identity::persist::write_public_key(
+        &paths.user_pubkey,
+        &certificate.user_public_key,
+    )
+    .unwrap();
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &certificate).unwrap();
     let record = identities.join("member.json");
     let bytes = runtime_identity::public_member_record(
         "Approving person",

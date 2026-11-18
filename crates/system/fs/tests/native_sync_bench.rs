@@ -47,12 +47,12 @@ use std::time::{Duration, Instant};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
-use tilo_lock::MutexRecover as _;
-use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
+use tilo_device_identity::{
+    IdentityPaths, adopt_device_key,
     persist::{write_device_cert, write_public_key, write_signing_key},
-    sign_device_cert,
 };
+use tilo_lock::MutexRecover as _;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 const TIMEOUT: Duration = Duration::from_secs(1800);
 

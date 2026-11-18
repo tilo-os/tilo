@@ -490,7 +490,7 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
         person
     );
     assert!(
-        !tilo_user_identity::persist::IdentityPaths::under(&target_system)
+        !tilo_device_identity::persist::IdentityPaths::under(&target_system)
             .user_privkey
             .exists(),
         "the destination joins as a member, never with the source root"

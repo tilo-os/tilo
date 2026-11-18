@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use ed25519_dalek::Signer as _;
-use tilo_user_identity::persist::DeviceKeyOwnership;
-use tilo_user_identity::{DeviceCert, IdentityPaths};
+use tilo_device_identity::IdentityPaths;
+use tilo_device_identity::persist::DeviceKeyOwnership;
+use tilo_user_identity::DeviceCert;
 
 use crate::device_fleet::{DeviceFleetStore, FileStamp, FleetStamps};
 use crate::registry::{DirStamp, IdentityRegistryStore};
@@ -342,7 +343,8 @@ pub(crate) mod tests {
     use std::time::{Duration, SystemTime};
 
     use ed25519_dalek::Signer as _;
-    use tilo_user_identity::{IdentityPaths, RevocationReason};
+    use tilo_device_identity::IdentityPaths;
+    use tilo_user_identity::RevocationReason;
 
     use super::*;
 

@@ -15,13 +15,14 @@ use std::time::Duration;
 
 use crate::common::publisher;
 use tilo_compositor::OutputConfig;
+use tilo_device_identity::{IdentityPaths, persist};
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_onboarding_session::identity::IdentityProblem;
 use tilo_onboarding_session::identity_provisioning::IDENTITY_RECOVERY_ENV;
 use tilo_session::firstboot::{OneShot, one_shot};
 use tilo_session::startup::{self, Identity};
 use tilo_session::{BeforeShell, Options};
-use tilo_user_identity::{DeviceCertError, IdentityPaths, persist};
+use tilo_user_identity::DeviceCertError;
 
 /// The unit the image ships for the machine's own first-boot setup.
 const UNIT: &str = include_str!("../../../../os/usr/lib/systemd/system/tilo-firstboot.service");

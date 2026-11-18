@@ -8,7 +8,8 @@ use std::path::Path;
 
 use anyhow::{Context as _, bail};
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::{DeviceCert, IdentityPaths, RevocationList, persist, verify_device_cert};
+use tilo_device_identity::{IdentityPaths, persist};
+use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert};
 
 /// The device's identity root.
 pub const SYSTEM_ROOT: &str = "/var/lib/tilo";
@@ -60,7 +61,7 @@ impl Identity {
     /// The revocations this side has verified for its identity. A missing list is empty; a damaged
     /// one is an error rather than an empty list.
     pub fn revocations(&self) -> anyhow::Result<RevocationList> {
-        tilo_user_identity::read_revocations(&self.paths)
+        tilo_device_identity::read_revocations(&self.paths)
             .map_err(|error| anyhow::anyhow!("{error}"))
     }
 }

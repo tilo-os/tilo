@@ -41,7 +41,10 @@ mod durable_local_matrix {
             Self::with_owner_initializer(crate::apps::test_owner::SessionOwner::initialize)
         }
         fn with_owner_initializer(
-            initialize: impl FnOnce(&std::path::Path) -> Result<crate::apps::test_owner::SessionOwner, String>,
+            initialize: impl FnOnce(
+                &std::path::Path,
+            )
+                -> Result<crate::apps::test_owner::SessionOwner, String>,
         ) -> ProvisionedEnvironment {
             let root = tempfile::tempdir().unwrap();
             let mut identity_env = tilo_test_env::ScopedEnv::new();
@@ -51,7 +54,7 @@ mod durable_local_matrix {
                 .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
             tilo_identity::provisioning::ensure_collaboration_identity(
                 &root.path().join("config/tilo/identity"),
-                &tilo_user_identity::IdentityPaths::under(root.path().join("identity")),
+                &tilo_device_identity::IdentityPaths::under(root.path().join("identity")),
                 tilo_identity::provisioning::IdentityStorage::Files,
             )
             .expect("provision real host receipt signer");

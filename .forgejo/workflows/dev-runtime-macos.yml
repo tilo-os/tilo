@@ -42,6 +42,7 @@ on:
       - "crates/collab/tilo-peer-state/**"
       - "crates/collab/tilo-unlock-protocol/**"
       - "crates/collab/tilo-user-identity/**"
+      - "crates/collab/tilo-device-identity/**"
       - "crates/collab/workspace-join/**"
       - "crates/collab/workspace-keys/**"
       - "crates/dev/headless-schema/**"

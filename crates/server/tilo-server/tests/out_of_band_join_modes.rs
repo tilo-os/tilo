@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use tilo_user_identity::IdentityPaths;
+use tilo_device_identity::IdentityPaths;
 
 fn enroll_binary() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-enroll")
@@ -71,7 +71,7 @@ fn an_out_of_band_join_under_a_private_umask_stays_group_readable() {
 
     let root = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
     let root_key = work.join("root.key");
-    tilo_user_identity::persist::write_signing_key(&root_key, &root).unwrap();
+    tilo_device_identity::persist::write_signing_key(&root_key, &root).unwrap();
     let member_cert = work.join("member.cert");
     enroll(
         "077",

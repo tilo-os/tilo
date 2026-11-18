@@ -43,7 +43,7 @@ case $image in
               -p tilo-api --bin tilo-api
               -p tilo-esp-write --bin tilo-esp-write
               -p tilo-image-policy-check --bin tilo-image-policy-check
-              -p tilo-user-identity --bin tilo-image-trust
+              -p tilo-device-identity --bin tilo-image-trust
               -p tilo-board-successor --bin tilo-board-successor)
     bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-legacy tilo-hosted-jail tilo-api
           tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor) ;;

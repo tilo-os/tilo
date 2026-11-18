@@ -10,7 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use package_store::{CertifiedFleet, FleetSource};
-use tilo_user_identity::{DeviceCert, IdentityPaths, RevocationEntry};
+use tilo_device_identity::IdentityPaths;
+use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 const MAX_FLEET_BYTES: u64 = 1024 * 1024;
 
@@ -54,13 +55,13 @@ impl UserFleet {
 
 impl FleetSource for UserFleet {
     fn fleet(&self) -> Result<CertifiedFleet, String> {
-        let user = tilo_user_identity::persist::read_public_key(&self.identity.user_pubkey)
+        let user = tilo_device_identity::persist::read_public_key(&self.identity.user_pubkey)
             .map_err(|error| format!("this device has no user identity: {error}"))?;
         let mut fleet = CertifiedFleet::new(user);
         // Each certificate is checked as it is added: one that does not
         // verify, or is another person's, makes nobody a device of this user.
         let own = self.identity.device_cert_for_user(&user);
-        if let Ok(cert) = tilo_user_identity::persist::read_device_cert(&own) {
+        if let Ok(cert) = tilo_device_identity::persist::read_device_cert(&own) {
             let _ = fleet.certify(cert);
         }
         if let Some(dir) = &self.identity_dir {
@@ -151,11 +152,11 @@ mod tests {
         assert!(source.fleet().is_err());
 
         identity.ensure_directories().unwrap();
-        tilo_user_identity::persist::write_public_key(&identity.user_pubkey, &user.public_key)
+        tilo_device_identity::persist::write_public_key(&identity.user_pubkey, &user.public_key)
             .unwrap();
         let own = identity.device_cert_for_user(&user.public_key);
         std::fs::create_dir_all(own.parent().unwrap()).unwrap();
-        tilo_user_identity::persist::write_device_cert(&own, &cert(&root, [1; 32])).unwrap();
+        tilo_device_identity::persist::write_device_cert(&own, &cert(&root, [1; 32])).unwrap();
 
         let fleets = identity_dir.join("fleets");
         std::fs::create_dir_all(&fleets).unwrap();

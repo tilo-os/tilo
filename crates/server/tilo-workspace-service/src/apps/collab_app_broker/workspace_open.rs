@@ -431,7 +431,7 @@ mod tests {
                 .set(provisioning::FILE_SECRETS_ENV, "1");
             provisioning::ensure_collaboration_identity(
                 &config.join("tilo/identity"),
-                &tilo_user_identity::IdentityPaths::under(&system),
+                &tilo_device_identity::IdentityPaths::under(&system),
                 IdentityStorage::Files,
             )
             .unwrap();

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use tilo_user_identity::IdentityPaths;
+use tilo_device_identity::IdentityPaths;
 
 use super::*;
 use crate::provisioning::{IdentityStorage, ensure_collaboration_identity};

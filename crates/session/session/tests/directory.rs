@@ -264,10 +264,10 @@ fn a_device(
     label: &str,
 ) -> tempfile::TempDir {
     let root = tempfile::tempdir().expect("a directory for this computer's identity");
-    let paths = tilo_user_identity::IdentityPaths::under(root.path());
+    let paths = tilo_device_identity::IdentityPaths::under(root.path());
     std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
         .expect("this computer's key directory");
-    tilo_user_identity::persist::write_device_key(&paths.device_privkey, device)
+    tilo_device_identity::persist::write_device_key(&paths.device_privkey, device)
         .expect("this computer's device key");
     let mut cert = tilo_user_identity::DeviceCert {
         user_public_key: person.verifying_key().to_bytes(),
@@ -280,7 +280,7 @@ fn a_device(
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, person).expect("a certified device");
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
         .expect("this computer's certificate");
     env.set("TILO_IDENTITY_ROOT", root.path());
     // The name they go by, which the workspace learns of them: never their device's.
@@ -699,7 +699,7 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
         .ok()
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
         .expect("the person's root key");
-    let expired = tilo_user_identity::persist::read_device_cert(&expired_paths.device_cert)
+    let expired = tilo_device_identity::persist::read_device_cert(&expired_paths.device_cert)
         .expect("the expired certificate");
     assert!(
         expired
@@ -722,7 +722,7 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
     wait_until_the_lounge_is_here(&mut session, &lounge);
     // What the join presented was the renewal, not the certificate that had run out: ownership holds
     // a certificate issued since, and the workspace holds this device under it.
-    let presented = tilo_user_identity::persist::read_device_cert(&expired_paths.device_cert)
+    let presented = tilo_device_identity::persist::read_device_cert(&expired_paths.device_cert)
         .expect("the presented certificate");
     assert!(
         presented.issued_at_ns > expired.issued_at_ns,
@@ -753,10 +753,10 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
 /// the paths its keys and certificate live under, which live as long as `home` does.
 fn expired_throwaway_identity(
     home: &mut tilo_test_env::TestHome,
-) -> (String, tilo_user_identity::IdentityPaths) {
+) -> (String, tilo_device_identity::IdentityPaths) {
     use tilo_identity::provisioning::IdentityStorage;
     let system = home.root().join("system");
-    let paths = tilo_user_identity::IdentityPaths::under(&system);
+    let paths = tilo_device_identity::IdentityPaths::under(&system);
     let identity_dir = home.config().join("tilo").join("identity");
     tilo_identity::provisioning::ensure_throwaway_test_identity(
         &identity_dir,
@@ -768,7 +768,7 @@ fn expired_throwaway_identity(
     // so it has run out.
     let identity = runtime_identity::load_from_path(identity_dir.join("primary.json"))
         .expect("this computer's identity");
-    let held = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+    let held = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("the throwaway certificate");
     let mut aged = tilo_user_identity::DeviceCert {
         user_public_key: held.user_public_key,
@@ -785,9 +785,9 @@ fn expired_throwaway_identity(
         .sign(&digest)
         .expect("the aged certificate is signed");
     tilo_user_identity::verify_device_cert(&aged).expect("the aged certificate verifies");
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &aged)
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &aged)
         .expect("the aged certificate");
-    tilo_user_identity::persist::write_device_cert(
+    tilo_device_identity::persist::write_device_cert(
         &paths.device_cert_for_user(&identity.group_public_key()),
         &aged,
     )

@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, SystemTime};
 
+use tilo_device_identity::IdentityPaths;
 use tilo_user_identity::{
-    AgentScope, DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
+    AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason,
     decode_enrollment_token, sign_device_cert, sign_revocation_entry, verify_device_cert,
     verify_device_cert_at, verify_revocation_entry,
 };
@@ -165,7 +166,7 @@ impl DeviceFleetStore {
         let cert_path = self
             .identity_paths
             .device_cert_for_user(&profile.user_public_key);
-        let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
+        let cert = tilo_device_identity::persist::read_device_cert(&cert_path)
             .map_err(|error| io::Error::other(error.to_string()))?;
         self.insert_certificate(identity_id, cert)
     }

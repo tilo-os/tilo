@@ -49,7 +49,7 @@ fn durable_fixture(
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
     tilo_identity::provisioning::ensure_collaboration_identity(
         &root.join("config/tilo/identity"),
-        &tilo_user_identity::IdentityPaths::under(root.join("identity")),
+        &tilo_device_identity::IdentityPaths::under(root.join("identity")),
         tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("provision the host admission and terminal receipt signer");

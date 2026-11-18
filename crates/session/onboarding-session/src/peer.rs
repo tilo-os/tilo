@@ -96,7 +96,7 @@ impl Peer {
         if runtime_identity::resolve_active_identity(identity_dir).is_none() {
             return Ok(None);
         }
-        let paths = tilo_user_identity::persist::IdentityPaths::under(identity_root);
+        let paths = tilo_device_identity::persist::IdentityPaths::under(identity_root);
         if !paths.device_privkey.exists()
             || (!paths.device_cert.exists()
                 && !paths

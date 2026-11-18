@@ -64,6 +64,7 @@ tracing.workspace = true
 # The identity record encoder shared with the interactive identity ceremony.
 tilo-identity-ceremony = { version = "0.1.0", path = "../../collab/tilo-identity-ceremony" }
 wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
+tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

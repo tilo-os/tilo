@@ -24,12 +24,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_actions::remote::browser::READY;
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::FILE_SECRETS_ENV;
 use tilo_server_protocol::hosted::Material;
 use tilo_session::apps::Apps;
 use tilo_session::hosted_browser::HostedBrowser;
 use tilo_session::{AppActions, Options, Session};
-use tilo_user_identity::IdentityPaths;
 
 use crate::common::people::{Person, Site};
 use collab_types::WorkspaceId;
@@ -56,7 +56,7 @@ fn material(
     let paths = IdentityPaths::under(root.path());
     let device = person.certify(&paths, "Browser");
     let key =
-        tilo_user_identity::persist::load_device_key(&paths).expect("the handed device's key");
+        tilo_device_identity::persist::load_device_key(&paths).expect("the handed device's key");
     let material = Material {
         workspace: workspace.to_owned(),
         workspace_id,

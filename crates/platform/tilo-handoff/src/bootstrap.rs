@@ -12,9 +12,10 @@ use super::invalid;
 use ed25519_dalek::Verifier as _;
 use serde::{Deserialize, Serialize};
 use std::{io, os::unix::fs::PermissionsExt as _, path::Path, sync::Arc};
+use tilo_device_identity::IdentityPaths;
 use tilo_seal::Label;
 use tilo_user_identity::{
-    CertificationRequest, DeviceCapabilities, DeviceCert, IdentityPaths, verify_device_cert_at,
+    CertificationRequest, DeviceCapabilities, DeviceCert, verify_device_cert_at,
 };
 
 const PROJECTION_SCHEMA: u32 = 1;
@@ -384,14 +385,14 @@ pub(crate) fn install(
     home_peer_array(&peers)?;
     let peers: serde_json::Value =
         serde_json::from_slice(&peers).map_err(|_| invalid("The home peers are invalid"))?;
-    let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)
+    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)
         .map_err(|_| invalid("The destination device key is unavailable"))?;
     if device.verifying_key().to_bytes() != certificate.device_public_key {
         return Err(invalid("The device certificate is for another device key"));
     }
     // The device key is generated here and certified by the source, as in the
     // canonical nearby join; the root never arrives with it.
-    tilo_user_identity::persist::install_device_cert(&paths, &certificate, now_ns)
+    tilo_device_identity::persist::install_device_cert(&paths, &certificate, now_ns)
         .map_err(|_| invalid("The device certificate could not be installed"))?;
     std::fs::create_dir_all(identity_dir)?;
     std::fs::set_permissions(identity_dir, std::fs::Permissions::from_mode(0o700))?;

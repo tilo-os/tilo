@@ -3044,9 +3044,9 @@ mod tests {
             std::fs::read(system.join("device/cert.bin")).unwrap(),
             certificate
         );
-        let paths = tilo_user_identity::persist::IdentityPaths::under(&system);
+        let paths = tilo_device_identity::persist::IdentityPaths::under(&system);
         assert_eq!(
-            tilo_user_identity::persist::load_device_key(&paths)
+            tilo_device_identity::persist::load_device_key(&paths)
                 .unwrap()
                 .verifying_key()
                 .to_bytes(),

@@ -15,7 +15,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use tilo_user_identity::{DeviceCert, IdentityPaths};
+use tilo_device_identity::IdentityPaths;
+use tilo_user_identity::DeviceCert;
 
 fn unavailable() -> io::Error {
     io::Error::new(

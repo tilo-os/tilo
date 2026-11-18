@@ -7,9 +7,9 @@
 //!
 //! `--branch` runs at every boot before anything uses the machine's key: it
 //! records which machine the key belongs to and re-keys a machine whose disk
-//! was copied from another (`tilo_user_identity::branch`).
+//! was copied from another (`tilo_device_identity::branch`).
 
-use tilo_user_identity::persist::{DeviceKeyOutcome, IdentityPaths, load_or_create_device_key};
+use tilo_device_identity::persist::{DeviceKeyOutcome, IdentityPaths, load_or_create_device_key};
 
 fn main() {
     if let Err(error) = provision(&std::env::args().skip(1).collect::<Vec<_>>()) {
@@ -66,11 +66,11 @@ mod branch {
 
     use getrandom::rand_core::Rng as _;
     use getrandom::{SysRng, rand_core::UnwrapErr};
-    use tilo_user_identity::branch::{
+    use tilo_device_identity::branch::{
         self, Branch, Certification, Machine, MachineIdentity, PRODUCT_UUID, Resealed, SealedStore,
         Settled, SigningKey,
     };
-    use tilo_user_identity::persist::IdentityPaths;
+    use tilo_device_identity::persist::IdentityPaths;
 
     /// Where the server keeps its state, its workspaces' group state among it.
     const SERVER_STATE: &str = "/var/lib/tilo-server";

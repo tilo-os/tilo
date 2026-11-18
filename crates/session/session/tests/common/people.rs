@@ -46,12 +46,13 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_server_protocol::directory::{EntryJoin, Listing, entry_path};
 use tilo_server_protocol::workspaces::Role;
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
-use tilo_user_identity::{DeviceCert, IdentityPaths};
+use tilo_user_identity::DeviceCert;
 
 /// The invitation text a site issues for a person: a [`tilo_workspace_join`] invitation, as a link
 /// carries it.
@@ -133,7 +134,7 @@ impl Site {
         std::fs::create_dir_all(state.path().join("identity"))
             .expect("a directory for the site's identity");
         let host = owner.certify_as_host(&paths, "The site");
-        let host_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+        let host_key = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
             .expect("the site's device key");
         let (server, workspaces, workspace) = runtime.block_on(async {
             let server = tilo_server::daemon::Server::start_with_relay_mode(
@@ -879,7 +880,7 @@ impl Person {
             let digest: [u8; 32] = digest.try_into().map_err(|_| "not a digest")?;
             person_root.sign(&digest).map_err(|error| error.to_string())
         };
-        let mut cert = tilo_user_identity::persist::provision_joined_device(
+        let mut cert = tilo_device_identity::persist::provision_joined_device(
             paths,
             self.public,
             sign,
@@ -898,7 +899,7 @@ impl Person {
                 paths.device_cert_for_user(&cert.user_public_key),
                 paths.device_cert.clone(),
             ] {
-                tilo_user_identity::persist::write_device_cert(&path, &cert)
+                tilo_device_identity::persist::write_device_cert(&path, &cert)
                     .expect("the device's certificate is written");
             }
         }
@@ -949,9 +950,9 @@ impl Person {
     /// elsewhere, and the secret store files the master key of the session's
     /// channel vault under the vault's path, so that key is filed under the
     /// copy's path as well: what the copied disk would have found.
-    pub fn branch(&self, source: &Device) -> (Device, tilo_user_identity::branch::Branched) {
+    pub fn branch(&self, source: &Device) -> (Device, tilo_device_identity::branch::Branched) {
         use sha2::Digest as _;
-        use tilo_user_identity::branch::{self, Branch, Machine, Settled};
+        use tilo_device_identity::branch::{self, Branch, Machine, Settled};
         assert!(
             source.child.is_none(),
             "a disk is copied while its machine is off"
@@ -1022,8 +1023,12 @@ impl Person {
             .root
             .sign(&digest)
             .expect("the person's root signs the copy");
-        tilo_user_identity::persist::install_device_cert(&paths, &cert, tilo_clock::unix_now_ns())
-            .expect("the copy installs the certificate its person signed");
+        tilo_device_identity::persist::install_device_cert(
+            &paths,
+            &cert,
+            tilo_clock::unix_now_ns(),
+        )
+        .expect("the copy installs the certificate its person signed");
         let control = home.path().join("control.sock");
         (
             Device {

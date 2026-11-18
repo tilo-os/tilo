@@ -17,7 +17,7 @@ pub const SETUP_HANDOFF_MAGIC: &str = "TILO_SETUP_HANDOFF_V1";
 
 pub struct LocalIdentity<'a> {
     pub identity_dir: &'a Path,
-    pub system: &'a tilo_user_identity::IdentityPaths,
+    pub system: &'a tilo_device_identity::IdentityPaths,
     pub home_peers: &'a Path,
 }
 
@@ -594,7 +594,7 @@ fn walkdir(root: &Path) -> io::Result<Vec<PathBuf>> {
 
 pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
     use std::sync::OnceLock;
-    static SYSTEM: OnceLock<tilo_user_identity::IdentityPaths> = OnceLock::new();
+    static SYSTEM: OnceLock<tilo_device_identity::IdentityPaths> = OnceLock::new();
     static IDENTITY_DIR: OnceLock<PathBuf> = OnceLock::new();
     static HOME_PEERS: OnceLock<PathBuf> = OnceLock::new();
     let system = SYSTEM.get_or_init(tilo_identity::provisioning::collaboration_identity_paths);
@@ -633,7 +633,7 @@ mod tests {
         let local_dir = tempfile::tempdir().unwrap();
         let identity_dir = local_dir.path().join("identity");
         let local_system =
-            tilo_user_identity::IdentityPaths::under(local_dir.path().join("system"));
+            tilo_device_identity::IdentityPaths::under(local_dir.path().join("system"));
         tilo_identity::provisioning::ensure_collaboration_identity(
             &identity_dir,
             &local_system,
@@ -641,7 +641,7 @@ mod tests {
         )
         .unwrap();
         let local_cert =
-            tilo_user_identity::persist::read_device_cert(&local_system.device_cert).unwrap();
+            tilo_device_identity::persist::read_device_cert(&local_system.device_cert).unwrap();
         let identity_id = hex::encode(local_cert.user_public_key);
         let home_peers = local_dir.path().join("home-peers.json");
         let peer = tilo_server_protocol::HomePeerRegistration {
@@ -689,12 +689,12 @@ mod tests {
         let media = String::from_utf8(profile.to_media_profile_json().unwrap()).unwrap();
         assert!(!media.contains("correct-horse"));
         assert!(media.contains("\"device_label\":\"orange-pi\""));
-        let paths = tilo_user_identity::IdentityPaths::under(dir.path().join("var/lib/tilo"));
+        let paths = tilo_device_identity::IdentityPaths::under(dir.path().join("var/lib/tilo"));
         assert!(
-            tilo_user_identity::joined_device_is_ready(&paths, ui::time::unix_now_ns()).unwrap()
+            tilo_device_identity::joined_device_is_ready(&paths, ui::time::unix_now_ns()).unwrap()
         );
         assert!(!paths.user_privkey.exists());
-        let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
         assert_ne!(
             cert.device_public_key, local_cert.device_public_key,
             "target must get a new device key, not the setup machine's"
@@ -758,7 +758,7 @@ mod tests {
             let local_dir = tempfile::tempdir().unwrap();
             let identity_dir = local_dir.path().join("identity");
             let local_system =
-                tilo_user_identity::IdentityPaths::under(local_dir.path().join("system"));
+                tilo_device_identity::IdentityPaths::under(local_dir.path().join("system"));
             let home_peers = local_dir.path().join("home-peers.json");
             let local = LocalIdentity {
                 identity_dir: &identity_dir,

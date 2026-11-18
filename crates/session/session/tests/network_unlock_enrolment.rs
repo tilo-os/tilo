@@ -17,13 +17,13 @@ use std::io::{Read as _, Write as _};
 use std::time::{Duration, Instant};
 
 use tilo_compositor::OutputConfig;
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_session::Options;
 use tilo_unlock_protocol::{
     ENROL_SOCKET, EnrolReply, EnrolRequest, Half, PROTOCOL_VERSION, SlotId, decode_frame,
     encode_frame, frame_len,
 };
-use tilo_user_identity::IdentityPaths;
 
 /// The person's identity in a directory of its own, as the desktop's own start reads it.
 fn person() -> (
@@ -55,7 +55,7 @@ fn person() -> (
 /// This device's fleet key, as the identity store holds it.
 fn device_key() -> [u8; 32] {
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
-    let key = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
+    let key = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
     key.verifying_key().to_bytes()
 }
 

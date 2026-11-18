@@ -71,8 +71,8 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::cert::{DeviceCert, device_name, sign_device_cert, verify_device_cert_at};
 use crate::persist::{self, IdentityPaths, PersistError};
+use tilo_user_identity::cert::{DeviceCert, device_name, sign_device_cert, verify_device_cert_at};
 
 /// Where Linux reports the firmware's system UUID. Readable by root only.
 pub const PRODUCT_UUID: &str = "/sys/class/dmi/id/product_uuid";

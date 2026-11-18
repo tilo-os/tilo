@@ -381,7 +381,7 @@ impl OriginalWorkspace {
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         tilo_identity::provisioning::ensure_collaboration_identity(
             &fixture_root.path().join("config/tilo/identity"),
-            &tilo_user_identity::IdentityPaths::under(fixture_root.path().join("identity")),
+            &tilo_device_identity::IdentityPaths::under(fixture_root.path().join("identity")),
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("provision real host receipt signer");
@@ -405,7 +405,9 @@ impl OriginalWorkspace {
         let (clock, time_control) = crate::apps::policy_clock::OwnerPolicyClock::for_test(start);
         let origin = clock.new_origin();
         let mut workspace = match workspace.flatten() {
-            Some(workspace) => crate::apps::test_support::Workspace::new(workspace, "Original workspace"),
+            Some(workspace) => {
+                crate::apps::test_support::Workspace::new(workspace, "Original workspace")
+            }
             None => crate::apps::test_support::Workspace::new(
                 crate::apps::test_support::WorkspaceId::from_u128(83),
                 "Original workspace",

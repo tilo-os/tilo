@@ -752,7 +752,7 @@ for unit in tilo-server tilo-fs-replica tilo-local-model; do
     || bad "$unit.service can see other users' processes (ProtectProc=invisible missing)"
 done
 grep -Fq 'libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0)' \
-  "$repo/crates/collab/tilo-user-identity/src/persist.rs" \
+  "$repo/crates/collab/tilo-device-identity/src/persist.rs" \
   || bad 'identity key holders no longer turn non-dumpable'
 [ "$fail" -ne 0 ] || ok 'process visibility: per-service ProtectProc, non-dumpable key holders, no global hidepid'
 

@@ -29,6 +29,7 @@ use iroh::RelayMode;
 use iroh::endpoint::{Endpoint, RecvStream, SendStream};
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_compositor::OutputConfig;
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_network_actor::HostIdentity;
@@ -45,7 +46,7 @@ use tilo_unlock_protocol::{
     UnlockHello, UnlockRequest, decode_frame, encode_frame, frame_len, open_release,
     seal_sibling_half,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 /// What answers the person's own store's link on a device's endpoint, beside its own traffic.
 fn personal_protocol(
@@ -709,7 +710,7 @@ fn served<T: serde::de::DeserializeOwned>(
 /// The shell's fleet key: the sibling the boot is answered by.
 fn shell_key() -> [u8; 32] {
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
-    let key = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
+    let key = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
     key.verifying_key().to_bytes()
 }
 

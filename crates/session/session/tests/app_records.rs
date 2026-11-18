@@ -359,7 +359,7 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
 
     // The person at this device, as the app's window names them: by their root key.
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");
     let person = hex::encode(cert.user_public_key);
     // The app's process is this test's: the session admits its connection as the launch it

@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use ed25519_dalek::SigningKey;
 
 use super::*;
-use crate::cert::{DeviceCapabilities, verify_device_cert};
 use crate::persist::{load_or_create_device_key, read_device_cert, read_device_key};
+use tilo_user_identity::cert::{DeviceCapabilities, verify_device_cert};
 
 const SOURCE: &str = "4c4c4544-0042-3510-8048-b4c04f4d3232";
 const BRANCH: &str = "8a1f02d6-91c4-4f0e-9b9a-2d1f5c3e7a10";

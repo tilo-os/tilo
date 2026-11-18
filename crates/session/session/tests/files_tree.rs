@@ -31,9 +31,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fs::namespace::ROOT_INO;
+use tilo_device_identity::IdentityPaths;
 use tilo_lock::MutexRecover as _;
 use tilo_session::Session;
-use tilo_user_identity::IdentityPaths;
 
 use crate::common::files::{Mounted, contents, mount_on, namespace};
 use crate::common::personal::{self, Other, Personal};

@@ -528,7 +528,7 @@ impl Admission {
         }
         let file = tempfile::NamedTempFile::new()
             .map_err(|error| format!("could not keep the approved certificate: {error}"))?;
-        tilo_user_identity::persist::write_device_cert(file.path(), &cert)
+        tilo_device_identity::persist::write_device_cert(file.path(), &cert)
             .map_err(|error| format!("could not keep the approved certificate: {error}"))?;
         runner(
             &HostCommand {

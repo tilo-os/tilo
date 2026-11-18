@@ -907,7 +907,7 @@ fn export_home_peer(
         serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
     let capabilities: collab_types::FsAuthority = serde_json::from_str(&capability_json)?;
     let paths = identity_paths();
-    let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
+    let governor = tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;
     server_workspace_ids.sort_unstable();
     server_workspace_ids.dedup();

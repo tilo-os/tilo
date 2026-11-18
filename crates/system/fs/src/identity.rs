@@ -8,17 +8,17 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use thiserror::Error;
-use tilo_user_identity::{
-    DeviceCert, DeviceCertError, DeviceKeyOutcome, IdentityPaths, PersistError, RevocationList,
-    load_or_create_device_key, verify_device_cert_at,
+use tilo_device_identity::{
+    DeviceKeyOutcome, IdentityPaths, PersistError, load_or_create_device_key,
 };
+use tilo_user_identity::{DeviceCert, DeviceCertError, RevocationList, verify_device_cert_at};
 
 /// Overrides the identity root (`/var/lib/tilo`); tests point it at a tempdir.
 pub const IDENTITY_ROOT_ENV: &str = "TILO_IDENTITY_ROOT";
 
 #[must_use]
 pub fn revocation_list_path(paths: &IdentityPaths) -> PathBuf {
-    tilo_user_identity::revocations_path(paths)
+    tilo_device_identity::revocations_path(paths)
 }
 
 /// Load the signed revocations this device verified, for peer admission.
@@ -28,8 +28,8 @@ pub fn revocation_list_path(paths: &IdentityPaths) -> PathBuf {
 /// trust state as empty.
 pub fn load_revocation_list(
     paths: &IdentityPaths,
-) -> Result<RevocationList, tilo_user_identity::RevocationsError> {
-    tilo_user_identity::read_revocations(paths)
+) -> Result<RevocationList, tilo_device_identity::RevocationsError> {
+    tilo_device_identity::read_revocations(paths)
 }
 
 pub const DEVICE_KEY_CREDENTIAL: &str = "device-key";
@@ -111,7 +111,7 @@ pub fn load_workspace_share_issuer(
     if !credentials.cert.capabilities.can_own_workspaces {
         return Ok(None);
     }
-    let issuer = match tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey) {
+    let issuer = match tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey) {
         Ok(issuer) => issuer,
         Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(None);
@@ -216,7 +216,7 @@ pub fn load_certified_mount_identity(
     now_ns: u64,
 ) -> std::result::Result<CertifiedMountIdentity, CertifiedIdentityError> {
     let mount = load_mount_identity(paths).map_err(CertifiedIdentityError::DeviceKey)?;
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)?;
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)?;
     verify_device_cert_at(&cert, now_ns)?;
     if cert.device_public_key != mount.public {
         return Err(CertifiedIdentityError::DeviceKeyMismatch);
@@ -248,7 +248,7 @@ pub async fn load_certified_mount_identity_once_valid(
             loaded => return loaded,
         };
         let valid_from_ns =
-            tilo_user_identity::persist::read_device_cert(&paths.device_cert)?.issued_at_ns;
+            tilo_device_identity::persist::read_device_cert(&paths.device_cert)?.issued_at_ns;
         if valid_from_ns <= now_ns {
             // Written anew between the two reads: check it again.
             continue;
@@ -258,7 +258,7 @@ pub async fn load_certified_mount_identity_once_valid(
              waiting for the clock"
         );
         let waited = tokio::task::spawn_blocking(move || {
-            tilo_user_identity::wait_for_wall_clock(valid_from_ns)
+            tilo_device_identity::wait_for_wall_clock(valid_from_ns)
         })
         .await;
         match waited {
@@ -279,9 +279,9 @@ pub fn load_existing_certified_mount_identity(
     paths: &IdentityPaths,
     now_ns: u64,
 ) -> std::result::Result<CertifiedMountIdentity, CertifiedIdentityError> {
-    let signing = tilo_user_identity::persist::load_device_key(paths)
+    let signing = tilo_device_identity::persist::load_device_key(paths)
         .map_err(|error| CertifiedIdentityError::DeviceKey(error.into()))?;
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)?;
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)?;
     tilo_user_identity::verify_device_cert_at(&cert, now_ns)?;
     let public = signing.verifying_key().to_bytes();
     if cert.device_public_key != public {
@@ -304,9 +304,8 @@ pub fn load_existing_certified_mount_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_user_identity::{
-        DeviceCapabilities, adopt_device_key, persist::write_device_cert, sign_device_cert,
-    };
+    use tilo_device_identity::{adopt_device_key, persist::write_device_cert};
+    use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
     const NOW_NS: u64 = 5_000;
     const DEVICE_SEED: [u8; 32] = [41; 32];
@@ -555,7 +554,7 @@ mod tests {
                     .is_none(),
                 "a secondary device must not fall back to its device key"
             );
-            tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+            tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
             let issuer = load_workspace_share_issuer(&paths, &certified.credentials)
                 .unwrap()
                 .unwrap();
@@ -565,7 +564,7 @@ mod tests {
             );
 
             let unrelated = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
-            tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &unrelated)
+            tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &unrelated)
                 .unwrap();
             assert!(matches!(
                 load_workspace_share_issuer(&paths, &certified.credentials),
@@ -581,7 +580,7 @@ mod tests {
             cert.capabilities.can_own_workspaces = false;
             sign_device_cert(&mut cert, &root).unwrap();
             write_device_cert(&paths.device_cert, &cert).unwrap();
-            tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+            tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
             let certified = load_certified_mount_identity(&paths, NOW_NS).unwrap();
             assert!(
                 load_workspace_share_issuer(&paths, &certified.credentials)
@@ -594,7 +593,7 @@ mod tests {
     fn credential_fixture(root: &std::path::Path) -> PathBuf {
         let directory = root.join("credentials");
         std::fs::create_dir(&directory).unwrap();
-        tilo_user_identity::persist::write_device_key(
+        tilo_device_identity::persist::write_device_key(
             &directory.join(DEVICE_KEY_CREDENTIAL),
             &ed25519_dalek::SigningKey::from_bytes(&[53; 32]),
         )
@@ -697,7 +696,7 @@ mod tests {
 
             let passed = credentials.join(DEVICE_KEY_CREDENTIAL);
             std::fs::remove_file(&passed).unwrap();
-            tilo_user_identity::persist::write_device_key(
+            tilo_device_identity::persist::write_device_key(
                 &passed,
                 &ed25519_dalek::SigningKey::from_bytes(&DEVICE_SEED),
             )

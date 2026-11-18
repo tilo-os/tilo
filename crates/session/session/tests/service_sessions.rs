@@ -24,12 +24,13 @@ use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply, CollabClient,
 };
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
+use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
 use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Launches, Lists, Options, Session};
-use tilo_user_identity::{DeviceCert, IdentityPaths};
+use tilo_user_identity::DeviceCert;
 
 use crate::common::held::{WORKSPACE, actor, presentation};
 
@@ -121,8 +122,8 @@ fn fixture(keyring: Keyring) -> Fixture {
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let device = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+    let device = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this device's certificate");
     // The person's other device, enrolled as a pairing enrolls one.
     let now = tilo_clock::unix_now_ns();

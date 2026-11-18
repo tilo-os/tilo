@@ -35,6 +35,7 @@ use tilo_files::native::atomic::{Privacy, PublishMode, StorageDirectory};
 use tilo_net_p2p::{Endpoint, Peer, Sent};
 use tilo_seal::{Label, PublicKey, SecretKey, hpke};
 use tilo_user_identity::{CertificationRequest, DeviceCert};
+
 use zeroize::Zeroizing;
 
 const OPERATION_WINDOW: Duration = Duration::from_secs(6 * 60 * 60);
@@ -1208,7 +1209,7 @@ fn preflight_join_identity(identity: &ReceiverIdentity) -> io::Result<()> {
     {
         return Err(invalid("This computer already has an identity"));
     }
-    let paths = tilo_user_identity::IdentityPaths::under(&identity.identity_root);
+    let paths = tilo_device_identity::IdentityPaths::under(&identity.identity_root);
     if paths.user_privkey.exists() || paths.user_pubkey.exists() || paths.device_cert.exists() {
         return Err(invalid("This computer already has an identity"));
     }
@@ -1260,9 +1261,9 @@ fn join_worker(
     cancel: &AtomicBool,
 ) -> io::Result<()> {
     let expected = handoff.digest()?;
-    let paths = tilo_user_identity::IdentityPaths::under(&identity.identity_root);
+    let paths = tilo_device_identity::IdentityPaths::under(&identity.identity_root);
     paths.ensure_directories()?;
-    let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths)
+    let (device, _) = tilo_device_identity::persist::load_or_create_device_key(&paths)
         .map_err(|_| invalid("The destination device key is unavailable"))?;
     let device_public_key = device.verifying_key().to_bytes();
     let now = now_ns();
@@ -1760,12 +1761,12 @@ fn load_identity(
     let signer = runtime_identity::load_from_path(active)
         .map_err(|_| invalid("The receiving computer has no real identity yet"))?;
     let person = signer.group_public_key();
-    let paths = tilo_user_identity::persist::IdentityPaths::under(&identity.identity_root);
-    let signing = tilo_user_identity::persist::load_device_key(&paths)
+    let paths = tilo_device_identity::persist::IdentityPaths::under(&identity.identity_root);
+    let signing = tilo_device_identity::persist::load_device_key(&paths)
         .map_err(|_| invalid("The receiving computer has no device key"))?;
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .or_else(|_| {
-            tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&person))
+            tilo_device_identity::persist::read_device_cert(&paths.device_cert_for_user(&person))
         })
         .map_err(|_| invalid("The receiving computer has no device certificate"))?;
     tilo_user_identity::verify_device_cert_at(&cert, now_ns())

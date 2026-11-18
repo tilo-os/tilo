@@ -14,6 +14,7 @@ use tilo_seal::{Context, Label, PasswordParams, envelope};
 use tilo_user_identity::{
     DeviceCert, verify_device_cert, verify_device_cert_at, verify_revocation_entry,
 };
+
 use zeroize::{Zeroize, Zeroizing};
 mod current_device;
 mod fs;
@@ -260,7 +261,7 @@ fn read_source_device_seed(
     let private = directory.child("device-private", false)?;
     private.validate()?;
     let key =
-        tilo_user_identity::persist::read_device_key(&path.join("device-private/keypair.bin"))
+        tilo_device_identity::persist::read_device_key(&path.join("device-private/keypair.bin"))
             .map_err(|_| invalid())?;
     let seed = Zeroizing::new(key.to_bytes());
     private.validate()?;
@@ -277,7 +278,7 @@ impl EnrolledDevice {
         expected_device: [u8; 32],
         now_ns: u64,
     ) -> io::Result<Self> {
-        tilo_user_identity::persist::protect_private_ownership()?;
+        tilo_device_identity::persist::protect_private_ownership()?;
         let system = fs::Directory::open(system_root)?;
         let identity = fs::Directory::open(identity_record.parent().ok_or_else(invalid)?)?;
         let record_name = identity_record
@@ -524,7 +525,7 @@ impl AuthenticatedEnrolledDevice {
         device: [u8; 32],
         now: u64,
     ) -> io::Result<Self> {
-        tilo_user_identity::persist::protect_private_ownership()?;
+        tilo_device_identity::persist::protect_private_ownership()?;
         password_valid(password)?;
         if bytes.len() as u64 > MAX_BYTES + 256 {
             return Err(invalid());
@@ -712,8 +713,8 @@ impl AuthenticatedEnrolledDevice {
         }
         system.validate()?;
         identity.validate()?;
-        let paths = tilo_user_identity::IdentityPaths::under(system_root);
-        if !tilo_user_identity::persist::joined_device_is_ready(
+        let paths = tilo_device_identity::IdentityPaths::under(system_root);
+        if !tilo_device_identity::persist::joined_device_is_ready(
             &paths,
             tilo_clock::try_unix_now_ns().ok_or_else(invalid)?,
         )
@@ -821,8 +822,8 @@ impl AuthenticatedEnrolledDevice {
             file.check(&system, &system)?;
         }
         system.validate()?;
-        let paths = tilo_user_identity::IdentityPaths::under(system_root);
-        if !tilo_user_identity::persist::joined_device_is_ready(
+        let paths = tilo_device_identity::IdentityPaths::under(system_root);
+        if !tilo_device_identity::persist::joined_device_is_ready(
             &paths,
             tilo_clock::try_unix_now_ns().ok_or_else(invalid)?,
         )

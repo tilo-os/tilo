@@ -218,6 +218,7 @@ members = [
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-live",
     "crates/collab/tilo-unlock-protocol",
+    "crates/collab/tilo-device-identity",
     "crates/collab/tilo-user-identity",
     "crates/collab/workspace-join",
 

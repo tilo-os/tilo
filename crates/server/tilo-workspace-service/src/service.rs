@@ -21,6 +21,7 @@ use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler};
 use tilo_clock::unix_now_ns;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
+
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::app_serving::AppActionServer;
@@ -1037,7 +1038,7 @@ fn policy_roots(policy: &TrustPolicy, own_user: [u8; 32]) -> HashSet<[u8; 32]> {
 
 /// Bundle of identity material a host needs to run. The server daemon's
 /// `main.rs` loads it from
-/// [`tilo_user_identity::persist`] and passed in explicitly so the
+/// [`tilo_device_identity::persist`] and passed in explicitly so the
 /// integration tests can wire a `tempdir`-based identity.
 #[derive(Clone)]
 pub struct HostIdentity {

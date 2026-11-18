@@ -36,15 +36,16 @@ fn profile(root: &Path, case: &str) -> io::Result<PathBuf> {
         std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
     }
     let identity = profile.join("config/tilo/identity");
-    let paths = tilo_user_identity::IdentityPaths::under(profile.join("identity"));
+    let paths = tilo_device_identity::IdentityPaths::under(profile.join("identity"));
     ensure_throwaway_test_identity(&identity, &paths, IdentityStorage::Files)?;
     match case {
         "missing" => std::fs::remove_file(identity.join("primary.json"))?,
         "tampered" => {
-            let mut certificate = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
-                .map_err(|error| io::Error::other(error.to_string()))?;
+            let mut certificate =
+                tilo_device_identity::persist::read_device_cert(&paths.device_cert)
+                    .map_err(|error| io::Error::other(error.to_string()))?;
             certificate.device_label.push_str("tampered");
-            tilo_user_identity::persist::write_device_cert(&paths.device_cert, &certificate)
+            tilo_device_identity::persist::write_device_cert(&paths.device_cert, &certificate)
                 .map_err(|error| io::Error::other(error.to_string()))?;
         }
         "foreign" => {

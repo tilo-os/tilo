@@ -268,11 +268,11 @@ fn remote_home_peer(
     service: &str,
     request: tilo_server::transport::HomePeerManagementRequest,
 ) -> anyhow::Result<tilo_server::transport::HomePeerManagementResponse> {
-    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
-    let user = tilo_user_identity::persist::read_public_key(&paths.user_pubkey)?;
-    let signing_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)?;
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&user))
-        .or_else(|_| tilo_user_identity::persist::read_device_cert(&paths.device_cert))?;
+    let paths = tilo_device_identity::IdentityPaths::under(identity_root);
+    let user = tilo_device_identity::persist::read_public_key(&paths.user_pubkey)?;
+    let signing_key = tilo_device_identity::persist::read_device_key(&paths.device_privkey)?;
+    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert_for_user(&user))
+        .or_else(|_| tilo_device_identity::persist::read_device_cert(&paths.device_cert))?;
     let expected_device = device_key(device)?;
     let service = device_key(service)?;
     let server_addr = registered_home_peer_addr(identity_root, device, service)?;
@@ -368,9 +368,9 @@ fn sign_host_revocation(
     identity_dir: Option<&std::path::Path>,
     target: [u8; 32],
 ) -> anyhow::Result<tilo_user_identity::RevocationEntry> {
-    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    let paths = tilo_device_identity::IdentityPaths::under(identity_root);
     let root = tilo_server::root_signer::load_root(identity_root, identity_dir)?;
-    let user = tilo_user_identity::persist::read_public_key(&paths.user_pubkey)?;
+    let user = tilo_device_identity::persist::read_public_key(&paths.user_pubkey)?;
     if root.public_key() != user {
         anyhow::bail!("active signing record belongs to another person");
     }
@@ -393,7 +393,7 @@ fn cmd_home_peer_remove(
     device: &str,
     service: &str,
 ) -> anyhow::Result<()> {
-    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    let paths = tilo_device_identity::IdentityPaths::under(identity_root);
     let target = device_key(device)?;
     let mut pending = load_pending_decommissions(identity_root)?;
     let intent = if let Some(existing) = pending
@@ -496,7 +496,7 @@ fn retry_pending_removals(
 ) -> anyhow::Result<()> {
     let mut pending = load_pending_decommissions(identity_root)?;
     for intent in pending.clone() {
-        let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+        let paths = tilo_device_identity::IdentityPaths::under(identity_root);
         let target = device_key(&intent.device)?;
         persist_canonical_revocation(&paths, &intent.revocation)?;
         let mut server_revocations = tilo_server::store::load_revocations(identity_root)?;
@@ -526,10 +526,10 @@ fn retry_pending_removals(
 }
 
 fn persist_canonical_revocation(
-    paths: &tilo_user_identity::IdentityPaths,
+    paths: &tilo_device_identity::IdentityPaths,
     revocation: &tilo_user_identity::RevocationEntry,
 ) -> anyhow::Result<()> {
-    tilo_user_identity::append_revocation(paths, revocation)
+    tilo_device_identity::append_revocation(paths, revocation)
         .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
@@ -546,7 +546,7 @@ fn persist_fleet_revocation(
     };
     let store = tilo_identity::device_fleet::DeviceFleetStore::at(
         &directory,
-        tilo_user_identity::IdentityPaths::under(identity_root),
+        tilo_device_identity::IdentityPaths::under(identity_root),
     );
     let identity_id = hex::encode(revocation.user_public_key);
     if !store.fleet_file(&identity_id).exists() {
@@ -645,7 +645,7 @@ fn cmd_revoke_device(
     reason: &str,
 ) -> anyhow::Result<()> {
     let cfg = load(config)?;
-    let paths = tilo_user_identity::IdentityPaths::under(&cfg.identity_root);
+    let paths = tilo_device_identity::IdentityPaths::under(&cfg.identity_root);
     if !paths.user_privkey.exists() {
         anyhow::bail!(
             "cannot revoke: no user root private key at {}. Run this from your primary device.",
@@ -660,7 +660,7 @@ fn cmd_revoke_device(
         "compromised" => tilo_user_identity::RevocationReason::Compromised,
         _ => anyhow::bail!("reason must be lost, stolen, retired, or compromised"),
     };
-    let root = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
+    let root = tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
     tilo_server::root_signer::revoke_device(&cfg.state_root, &root, pk, reason)?;
     println!("revoked device {} ({reason:?})", hex::encode(pk));
     println!("a running tilo-server disconnects the device within one second");
@@ -680,7 +680,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let identities = temp.path().join("identities");
             let identity_root = temp.path().join("tilo");
-            let paths = tilo_user_identity::IdentityPaths::under(&identity_root);
+            let paths = tilo_device_identity::IdentityPaths::under(&identity_root);
             tilo_identity::provisioning::ensure_collaboration_identity(
                 &identities,
                 &paths,
@@ -688,7 +688,7 @@ mod tests {
             )
             .unwrap();
             assert!(!paths.user_privkey.exists());
-            let user = tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap();
+            let user = tilo_device_identity::persist::read_public_key(&paths.user_pubkey).unwrap();
             let revocation = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap();
             tilo_user_identity::verify_revocation_entry(&revocation).unwrap();
             assert_eq!(revocation.user_public_key, user);
@@ -699,7 +699,7 @@ mod tests {
                     .load(&hex::encode(user))
                     .unwrap();
             assert_eq!(fleet.revocations, vec![revocation]);
-            tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &[73; 32]).unwrap();
+            tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &[73; 32]).unwrap();
             let error = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap_err();
             assert!(error.to_string().contains("another person"));
             assert!(!pending_decommissions_path(&temp.path().join("tilo")).exists());
@@ -709,7 +709,7 @@ mod tests {
         phase canonical_revocation_aggregate_is_verified_deduplicated_and_private;
         {
             let temp = tempfile::tempdir().unwrap();
-            let paths = tilo_user_identity::IdentityPaths::under(temp.path());
+            let paths = tilo_device_identity::IdentityPaths::under(temp.path());
             std::fs::create_dir_all(paths.user_pubkey.parent().unwrap()).unwrap();
             let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
             let mut entry = tilo_user_identity::RevocationEntry {
@@ -726,7 +726,7 @@ mod tests {
             tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
             persist_canonical_revocation(&paths, &entry).unwrap();
 
-            let path = tilo_user_identity::revocations_path(&paths);
+            let path = tilo_device_identity::revocations_path(&paths);
             let stored: Vec<tilo_user_identity::RevocationEntry> =
                 postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
             assert_eq!(

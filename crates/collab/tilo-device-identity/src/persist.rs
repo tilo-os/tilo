@@ -47,8 +47,8 @@ use thiserror::Error;
 use tilo_files::native::migration::Format;
 use zeroize::Zeroizing;
 
-use crate::CanonicalError;
-use crate::cert::{
+use tilo_user_identity::CanonicalError;
+use tilo_user_identity::cert::{
     DeviceCapabilities, DeviceCert, DeviceCertError, verify_device_cert, verify_device_cert_at,
 };
 
@@ -247,8 +247,7 @@ pub enum DeviceKeyOwnership {
     /// layout, where the root filesystem daemon and the session share it.
     #[default]
     File,
-    /// The user's login Keychain. A key file an earlier build left at
-    /// [`IdentityPaths::device_privkey`] moves into it once, on first use.
+    /// The user's login Keychain, under this device's own app namespace.
     #[cfg(target_os = "macos")]
     Keychain,
 }
@@ -372,7 +371,7 @@ pub enum PersistError {
 impl PersistError {
     /// The I/O failure this refusal is, when it is one: what a caller inspects to tell a certificate
     /// refused only for the clock apart from a broken one
-    /// ([`CertificateClockError::in_io`](crate::CertificateClockError::in_io)).
+    /// ([`CertificateClockError::in_io`](tilo_user_identity::CertificateClockError::in_io)).
     #[must_use]
     pub fn io(&self) -> Option<&io::Error> {
         match self {
@@ -466,7 +465,7 @@ pub enum RevocationsError {
     Decode(String, #[source] postcard::Error),
     /// An entry was not one the person's root signed.
     #[error("revocation list {0} holds an entry that does not verify: {1}")]
-    Entry(String, #[source] crate::RevocationError),
+    Entry(String, #[source] tilo_user_identity::RevocationError),
     /// The list holds its bound already.
     #[error("revocation list {0} is full")]
     Full(String),
@@ -493,13 +492,15 @@ pub fn revocations_path(paths: &IdentityPaths) -> std::path::PathBuf {
 ///
 /// As [`RevocationsError`]: the file cannot be read, is not a list of at most
 /// [`MAX_REVOCATIONS`] entries, or an entry's signature does not verify.
-pub fn read_revocations(paths: &IdentityPaths) -> Result<crate::RevocationList, RevocationsError> {
+pub fn read_revocations(
+    paths: &IdentityPaths,
+) -> Result<tilo_user_identity::RevocationList, RevocationsError> {
     let path = revocations_path(paths);
     let name = path.display().to_string();
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(crate::RevocationList::new());
+            return Ok(tilo_user_identity::RevocationList::new());
         }
         Err(error) => return Err(RevocationsError::Io(name, error)),
     };
@@ -509,9 +510,9 @@ pub fn read_revocations(paths: &IdentityPaths) -> Result<crate::RevocationList, 
             io::Error::new(io::ErrorKind::InvalidData, "the list is too large"),
         ));
     }
-    let entries: Vec<crate::RevocationEntry> = postcard::from_bytes(&bytes)
+    let entries: Vec<tilo_user_identity::RevocationEntry> = postcard::from_bytes(&bytes)
         .map_err(|error| RevocationsError::Decode(name.clone(), error))?;
-    let mut list = crate::RevocationList::new();
+    let mut list = tilo_user_identity::RevocationList::new();
     for entry in entries {
         list.insert(entry)
             .map_err(|error| RevocationsError::Entry(name.clone(), error))?;
@@ -528,7 +529,7 @@ pub fn read_revocations(paths: &IdentityPaths) -> Result<crate::RevocationList, 
 /// [`MAX_REVOCATIONS`] already.
 pub fn append_revocation(
     paths: &IdentityPaths,
-    entry: &crate::RevocationEntry,
+    entry: &tilo_user_identity::RevocationEntry,
 ) -> Result<(), RevocationsError> {
     let path = revocations_path(paths);
     let name = path.display().to_string();
@@ -538,7 +539,7 @@ pub fn append_revocation(
     }
     list.insert(entry.clone())
         .map_err(|error| RevocationsError::Entry(name.clone(), error))?;
-    let mut entries: Vec<crate::RevocationEntry> = list.iter().cloned().collect();
+    let mut entries: Vec<tilo_user_identity::RevocationEntry> = list.iter().cloned().collect();
     entries.sort_by_key(|entry| (entry.user_public_key, entry.revoked_device_public_key));
     let bytes = postcard::to_allocvec(&entries)
         .map_err(|error| RevocationsError::Decode(name.clone(), error))?;
@@ -871,7 +872,7 @@ pub fn load_device_key(paths: &IdentityPaths) -> Result<SigningKey, PersistError
     match paths.device_key_ownership {
         DeviceKeyOwnership::File => read_device_key(&paths.device_privkey),
         #[cfg(target_os = "macos")]
-        DeviceKeyOwnership::Keychain => crate::keychain::load(paths)?.ok_or_else(|| {
+        DeviceKeyOwnership::Keychain => crate::keychain::load()?.ok_or_else(|| {
             PersistError::Io(io::Error::new(
                 io::ErrorKind::NotFound,
                 "the login Keychain holds no Tilo device key",
@@ -931,7 +932,7 @@ pub fn load_or_create_device_key(
     protect_secret_process()?;
     #[cfg(target_os = "macos")]
     if paths.device_key_ownership == DeviceKeyOwnership::Keychain {
-        return crate::keychain::load_or_create(paths);
+        return crate::keychain::load_or_create();
     }
     let path = paths.device_privkey.as_path();
     match fs::metadata(path) {
@@ -1218,22 +1219,22 @@ pub fn adopt_device_key(
 /// `DeviceCert`.
 pub fn read_device_cert(path: &Path) -> Result<DeviceCert, PersistError> {
     let bytes = read_regular_bounded(path, MAX_DEVICE_CERT_BYTES)?;
-    let stored = crate::cert::binary_layout_of(&bytes)?;
+    let stored = tilo_user_identity::cert::binary_layout_of(&bytes)?;
     let bytes = DEVICE_CERT
         .bring_up(path, bytes, stored)
         .map_err(|error| PersistError::Io(io::Error::other(error.to_string())))?;
-    let cert: DeviceCert = crate::canonical::from_canonical_bytes(&bytes)?;
+    let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&bytes)?;
     Ok(cert)
 }
 
 /// A device certificate file (`device/cert.bin`, `device/certs/*`): the
 /// certificate's canonical binary encoding, whose layout names its version
-/// ([`crate::cert::binary_layout_of`]). A later layout brings the files of
+/// ([`tilo_user_identity::cert::binary_layout_of`]). A later layout brings the files of
 /// this one up through a step here, and the old file stays beside it. The
 /// bytes each version wrote are kept in `golden/device-certificate/`.
 pub const DEVICE_CERT: Format = Format {
     name: "device certificate",
-    version: crate::cert::BINARY_LAYOUT,
+    version: tilo_user_identity::cert::BINARY_LAYOUT,
     oldest: 1,
     steps: &[],
 };
@@ -1247,7 +1248,7 @@ pub const DEVICE_CERT: Format = Format {
 /// canonically encoded, or [`PersistError::Io`] if writing to `path`
 /// fails.
 pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistError> {
-    let bytes = crate::canonical::canonical_bytes(cert)?;
+    let bytes = tilo_user_identity::canonical::canonical_bytes(cert)?;
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
@@ -1300,8 +1301,8 @@ pub fn provision_joined_device(
         signature: [0; 64],
         issuer: None,
     };
-    let signer = crate::sign::CallbackSigner::new(user_public_key, &sign);
-    crate::cert::sign_device_cert(&mut cert, &signer).map_err(|error| {
+    let signer = tilo_user_identity::sign::CallbackSigner::new(user_public_key, &sign);
+    tilo_user_identity::cert::sign_device_cert(&mut cert, &signer).map_err(|error| {
         PersistError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("device certificate was not signed: {error}"),
@@ -1328,19 +1329,19 @@ pub fn provision_joined_device(
 }
 /// A certificate that did not verify, as the refusal it is. One refused only because the wall clock
 /// reads outside its validity interval keeps that reading
-/// ([`CertificateClockError`](crate::CertificateClockError)), so a caller can wait for the clock to
+/// ([`CertificateClockError`](tilo_user_identity::CertificateClockError)), so a caller can wait for the clock to
 /// reach it instead of ending without an identity — a session in a resumed VM, whose clock starts
 /// at the instant its template was snapshotted.
 fn refused_verification(cert: &DeviceCert, now_ns: u64, error: &DeviceCertError) -> PersistError {
     PersistError::Io(
-        crate::CertificateClockError::of(cert, now_ns, error).map_or_else(
+        tilo_user_identity::CertificateClockError::of(cert, now_ns, error).map_or_else(
             || {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("the certificate did not verify: {error}"),
                 )
             },
-            crate::CertificateClockError::into_io,
+            tilo_user_identity::CertificateClockError::into_io,
         ),
     )
 }
@@ -1470,7 +1471,7 @@ pub fn joined_device_is_enrolled(paths: &IdentityPaths) -> Result<bool, PersistE
 ///
 /// Returns [`PersistError`] when a present identity file cannot be read, the
 /// certificate is refused for the clock's reading alone (as a
-/// [`crate::CertificateClockError`] carried in the error), or it does not
+/// [`tilo_user_identity::CertificateClockError`] carried in the error), or it does not
 /// match its keys.
 pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool, PersistError> {
     if !joined_device_is_enrolled(paths)? {
@@ -1481,14 +1482,14 @@ pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool
         // Refused for the clock's reading alone, the certificate still
         // proves the enrolment: say so in a form callers can tell apart.
         PersistError::Io(
-            crate::CertificateClockError::of(&cert, now_ns, &error).map_or_else(
+            tilo_user_identity::CertificateClockError::of(&cert, now_ns, &error).map_or_else(
                 || {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("enrolled device certificate did not verify: {error}"),
                     )
                 },
-                crate::CertificateClockError::into_io,
+                tilo_user_identity::CertificateClockError::into_io,
             ),
         )
     })?;
@@ -1539,7 +1540,10 @@ mod tests {
     #[test]
     fn a_device_certificate_an_older_build_wrote_reads_verifies_and_writes_as_it_was() {
         let kept = kept_v1();
-        assert_eq!(crate::cert::binary_layout_of(&kept).unwrap(), 1);
+        assert_eq!(
+            tilo_user_identity::cert::binary_layout_of(&kept).unwrap(),
+            1
+        );
         let dir = identity_tempdir();
         let paths = IdentityPaths::under(dir.path());
         paths.ensure_directories().unwrap();
@@ -1729,11 +1733,11 @@ mod tests {
                     signature: [0; 64],
                     issuer: None,
                 };
-                crate::sign_device_cert(&mut cert, root).unwrap();
+                tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
                 cert
             };
             let own = device.verifying_key().to_bytes();
-            let node = crate::DeviceCapabilities::member;
+            let node = tilo_user_identity::DeviceCapabilities::member;
             let refused = |result: Result<(), PersistError>| result.unwrap_err().to_string();
 
             assert!(
@@ -1751,12 +1755,12 @@ mod tests {
             let late = install_device_cert(&paths, &cert(&root, own, node()), 20_000).unwrap_err();
             let error = late.io().unwrap();
             assert!(
-                crate::CertificateClockError::in_io(error)
+                tilo_user_identity::CertificateClockError::in_io(error)
                     .is_some_and(|clock| clock.valid_at_ns().is_none()),
                 "an expired certificate is a refusal for the clock alone"
             );
             let early = install_device_cert(&paths, &cert(&root, own, node()), 500).unwrap_err();
-            let clock = crate::CertificateClockError::in_io(early.io().unwrap())
+            let clock = tilo_user_identity::CertificateClockError::in_io(early.io().unwrap())
                 .expect("a refusal for the clock alone keeps its reading");
             assert_eq!(clock.valid_at_ns(), Some(1_000));
             let primary = DeviceCapabilities::primary();
@@ -1810,7 +1814,7 @@ mod tests {
                 signature: [0; 64],
                 issuer: None,
             };
-            crate::sign_device_cert(&mut cert, &root).unwrap();
+            tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
             install_device_cert(&paths, &cert, 2_000).unwrap();
 
             assert!(joined_device_is_ready(&paths, 2_000).unwrap());
@@ -1841,7 +1845,7 @@ mod tests {
             signature: [0; 64],
             issuer: None,
         };
-        crate::sign_device_cert(&mut cert, &root).unwrap();
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         install_device_cert(&paths, &cert, 2_000).unwrap();
         let key_dir = paths.device_privkey.parent().unwrap().to_path_buf();
         fs::set_permissions(&key_dir, fs::Permissions::from_mode(0o000)).unwrap();
@@ -1900,7 +1904,7 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 let tmp = identity_tempdir();
                 let path = tmp.path().join("keypair.bin");
-                let (sk, _pk) = crate::UserIdentity::generate("Alice", 1);
+                let (sk, _pk) = tilo_user_identity::UserIdentity::generate("Alice", 1);
                 write_signing_key(&path, &sk).unwrap();
 
                 // Written file should be 0600.
@@ -1921,7 +1925,7 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 let tmp = identity_tempdir();
                 let path = tmp.path().join("keypair.bin");
-                let (sk, _pk) = crate::UserIdentity::generate("Alice", 1);
+                let (sk, _pk) = tilo_user_identity::UserIdentity::generate("Alice", 1);
                 write_signing_key(&path, &sk).unwrap();
                 // Loosen to 0644.
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
@@ -1941,7 +1945,7 @@ mod tests {
                 let tmp = identity_tempdir();
                 let real = tmp.path().join("real.key");
                 let link = tmp.path().join("linked.key");
-                let (sk, _pk) = crate::UserIdentity::generate("Alice", 1);
+                let (sk, _pk) = tilo_user_identity::UserIdentity::generate("Alice", 1);
                 write_signing_key(&real, &sk).unwrap();
                 symlink(&real, &link).unwrap();
 
@@ -2137,8 +2141,8 @@ mod tests {
 
         phase cert_round_trip;
         {
-            use crate::cert::{DeviceCapabilities, sign_device_cert};
-            use crate::{DeviceIdentity, UserIdentity};
+            use tilo_user_identity::cert::{DeviceCapabilities, sign_device_cert};
+            use tilo_user_identity::{DeviceIdentity, UserIdentity};
 
             let tmp = identity_tempdir();
             let path = tmp.path().join("cert.bin");
@@ -2408,7 +2412,7 @@ mod tests {
             signature: [0; 64],
             issuer: None,
         };
-        crate::sign_device_cert(&mut cert, &root).unwrap();
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         let cert_path = paths.device_cert_for_user(&cert.user_public_key);
         write_device_cert(&cert_path, &cert).unwrap();
         let metadata = fs::metadata(cert_path.parent().unwrap()).unwrap();
@@ -2439,7 +2443,7 @@ mod tests {
             signature: [0; 64],
             issuer: None,
         };
-        crate::sign_device_cert(&mut cert, &root).unwrap();
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         let cert_path = dir.path().join("device/certs/one.bin");
         write_device_cert(&cert_path, &cert).unwrap();
         unsafe { libc::umask(previous) };
