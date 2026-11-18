@@ -69,7 +69,9 @@ thin_app_dir=$target_dir/thin-app
 # takes that output and builds no wasm crate. One given none builds them here
 # first, through the same script the check does, and then packs what it built;
 # an app whose guest crate is beside it and whose module is not there fails
-# below either way, rather than shipping without one.
+# below either way, rather than shipping without one. Each module holds only
+# its app's own code and links against the model runtime beside them
+# (`app-model-runtime/`), which the runtime bundle below carries once for every app.
 app_models=$(realpath -m "${TILO_APP_MODELS:-${CARGO_TARGET_DIR:-$repo_root/target}/app-models}")
 # TILO_APP_TOOLS_BUILT=1: the packing tools are already in $release_dir, built by an earlier run,
 # so none is built.
@@ -189,6 +191,18 @@ keyboard_library="$keyboard_libdir/libxkbcommon.so.0"
 runtime_fonts="$out/work/fonts"
 python3 "$repo_root/tools/font-catalog.py" prepare \
     "$repo_root/crates/sdk/ui-core/assets/fonts" "$runtime_fonts" --scope product
+# A pack given no modules builds them now, once, through the app-models check's
+# own script; one given them takes that output and builds nothing. The model
+# runtime the apps' modules link against is signed into the runtime bundle
+# (lib/app-model-runtime), so every device these apps are installed on has it once.
+if [[ -z ${TILO_APP_MODELS:-} ]]; then
+    bash "$repo_root/tools/ci/app-models.sh"
+fi
+app_model_runtime="$app_models/app-model-runtime"
+[[ -f $app_model_runtime/runtime.json ]] || {
+    printf 'no model runtime at %s; build it with `t outputs app-models`\n' "$app_model_runtime" >&2
+    exit 1
+}
 # Keep the public runtime and publisher key under the root transported by
 # release-apps.yml and consumed by assemble-collection.sh. Private identities
 # stay in work/ (or the caller's external identity files), outside that root.
@@ -198,6 +212,7 @@ OUT_DIR="$out/runtime" RUNTIME_RELEASE="$runtime_release" FROM=/ \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
     BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
     FONT_CATALOG_ROOT="$runtime_fonts" \
+    MODEL_RUNTIME="$app_model_runtime" \
     ACCOUNT_CAPABILITY_PROBE="$thin_app_dir/tilo-runtime-account-capability" \
     EXTRA_LIBS="$runtime_dylib ${runtime_engines[*]} $rust_libstd $keyboard_library" \
     "$repo_root/os/scripts/bake-runtime-bundle.sh"
@@ -223,12 +238,6 @@ pathlib.Path(sys.argv[1]).write_text(json.dumps({
     "app_publisher": sys.argv[2].lower(), "runtime_publisher": sys.argv[3].lower(),
 }) + "\n")
 PY
-
-# A pack given no modules builds them now, once, through the app-models check's
-# own script; one given them takes that output and builds nothing.
-if [[ -z ${TILO_APP_MODELS:-} ]]; then
-    bash "$repo_root/tools/ci/app-models.sh"
-fi
 
 while IFS=$'\t' read -r name package binary id version manifest; do
     built="$thin_app_dir/$binary"

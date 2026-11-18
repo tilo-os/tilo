@@ -46,6 +46,8 @@ on:
       - "tools/ci/rustc-thin-app-wrapper.sh"
       - "tools/ci/runtime-dylib-lazy-link.py"
       - "tools/ci/sccache.sh"
+      - "tools/ci/app-models.sh"
+      - "tools/web/wasm-split/**"
       - "dist/apps/assemble-collection.sh"
       - ".forgejo/actions/restore-cargo-downloads/**"
       - ".forgejo/workflows/release-apps.yml"
@@ -673,7 +675,8 @@ jobs:
       # GLib or GStreamer, which the runtime loads on first use.
       # package-apps.sh built it above for the whole default collection. The
       # engine libraries built with it are reported beside it, and
-      # none may be loaded by those apps.
+      # none may be loaded by those apps. The model runtime the signed bundle
+      # carries is held to its own budget.
       - name: Shared runtime within its size budget
         # Each measurement below waits for its own subject: a tapp over its
         # budget must not hide the runtime's numbers, or the reverse.
@@ -683,6 +686,7 @@ jobs:
           --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
           --apps-dir target/thin-app --library-dir "$(rustc --print target-libdir)"
           $(sed 's|^|--engine target/thin-app/|' target/thin-app/runtime-engines)
+          --app-model-runtime "$(ls -d dist/app-release/runtime/tilo-runtime/*/lib/app-model-runtime)"
       # What the loader spends on it, reported only, for an app that plays no
       # media when one was built: glibc's statistics up to main (build-thin-
       # apps.sh's own ABI check), the objects it loads, and its private dirty

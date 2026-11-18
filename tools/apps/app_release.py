@@ -43,6 +43,9 @@ BINARY_INPUTS = {
 }
 PACKAGING_INPUTS = {
     "dist/apps/package-apps.sh",
+    # Builds every app's model module together, and the model runtime the
+    # runtime bundle carries for them (with tools/web/wasm-split below).
+    "tools/ci/app-models.sh",
     "dist/apps/assemble-collection.sh",
     "tools/apps/assemble_app_collection.py",
     "os/scripts/bake-runtime-bundle.sh",
@@ -69,7 +72,7 @@ VERIFICATION_INPUTS = {
     ".forgejo/workflows/release-apps.yml",
 }
 GLOBAL_INPUTS = BINARY_INPUTS | PACKAGING_INPUTS | VERIFICATION_INPUTS
-GLOBAL_PREFIXES = (".cargo/", "vendor/")
+GLOBAL_PREFIXES = (".cargo/", "vendor/", "tools/web/wasm-split/")
 FULL_REBUILD_PREFIXES = (
     ".forgejo/actions/restore-cargo-downloads/",
     "dist/apps/",

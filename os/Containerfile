@@ -449,6 +449,8 @@ COPY dist /build/dist
 COPY docs/developers/tasks /build/docs/developers/tasks
 COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py \
      tools/ci/app-models.sh /build/tools/ci/
+# app-models.sh splits every app's model with this tool, its own workspace.
+COPY tools/web/wasm-split /build/tools/web/wasm-split
 # build-thin-apps.sh routes a cached build through this dispatcher
 # (RUSTC_WRAPPER), which finds the size wrapper beside it in tools/ci/.
 COPY tools/ci/thin-app/sccache /build/tools/ci/thin-app/sccache
@@ -676,6 +678,9 @@ ENV RUNTIME_RELEASE=${RUNTIME_RELEASE}
 # scripts' SOURCE_DATE_EPOCH, not the fixed one the compile above ran with.
 ARG SOURCE_DATE_EPOCH=0
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
+# The model runtime every app's model module links against (the app-models
+# output os/image/compile.sh built) is signed in as lib/app-model-runtime, where a
+# device finds it by the hash an app's module names.
 # libstd is not on the system loader path, so it is included by name. The
 # bundle's other libraries are the native closure of the runtime and the thin
 # apps (os/scripts/collect-runtime-dependencies.py, with /out on the loader's
@@ -713,6 +718,7 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
           --include /out/libruntime_dylib.so \
           --include-bin /out/tilo-runtime-account-capability \
           --include /out/fonts \
+          --include /out/app-models/app-model-runtime \
           --include "$1" \
           --identity /out/runtime-bundle-identity.json \
           --out-root /usr/lib/tilo-runtime \
