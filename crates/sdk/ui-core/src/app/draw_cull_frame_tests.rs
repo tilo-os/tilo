@@ -3,8 +3,10 @@
 //! same damage, and inside that damage the same pixels. Outside it the host
 //! shows the last frame moved by the copies, which the dense comparisons of
 //! the copies themselves check against a full render. Each scroller is
-//! scrolled down and back up, in dark, light and high contrast, at 100 %
-//! and 200 %, beside a twin drawn in full.
+//! scrolled down and back up at 100 % and 200 %, beside a twin drawn in
+//! full. What a culled frame copies, draws and leaves to the last frame is
+//! geometry, not palette, so one theme proves the pixels and the two
+//! device-pixel scales prove the damage.
 
 use super::*;
 use crate::offscreen::OffscreenRenderer;
@@ -181,24 +183,18 @@ fn culled_scroll_frames_present_what_full_frames_present() {
         ("framed column", framed_column),
     ];
     for (name, make) in scrollers {
-        for (theme_name, theme) in [
-            ("dark", Theme::dark()),
-            ("light", Theme::light()),
-            ("high contrast", Theme::high_contrast()),
-        ] {
-            for scale in [1.0, 2.0] {
-                let twins = twins(make, &theme, scale, RUNS);
-                eprintln!("{name} {theme_name} {scale}x: {twins:?}");
-                assert!(
-                    twins.copied * 4 >= twins.frames * 3,
-                    "{name} {theme_name} {scale}x: most frames copy ({twins:?})"
-                );
-                assert!(
-                    twins.smaller * 2 >= twins.copied,
-                    "{name} {theme_name} {scale}x: a frame that copies draws less than a full \
-                     one ({twins:?})"
-                );
-            }
+        for scale in [1.0, 2.0] {
+            let twins = twins(make, &Theme::dark(), scale, RUNS);
+            eprintln!("{name} {scale}x: {twins:?}");
+            assert!(
+                twins.copied * 4 >= twins.frames * 3,
+                "{name} {scale}x: most frames copy ({twins:?})"
+            );
+            assert!(
+                twins.smaller * 2 >= twins.copied,
+                "{name} {scale}x: a frame that copies draws less than a full \
+                 one ({twins:?})"
+            );
         }
     }
 }

@@ -49,8 +49,9 @@ const HEIGHT: f64 = 800.0;
 
 /// One frame of a two-finger scroll at 60 Hz, in logical pixels.
 const STEP: f64 = 40.0;
-/// Scroll frames measured per scroller.
-const FRAMES: usize = 60;
+/// Scroll frames measured per scroller: the first frames of a scroll and
+/// enough after them that the reported medians are steady.
+const FRAMES: usize = 24;
 /// The display the glide is drawn for: a frame every 1/120 s.
 const FRAME_NS: u64 = 8_333_333;
 

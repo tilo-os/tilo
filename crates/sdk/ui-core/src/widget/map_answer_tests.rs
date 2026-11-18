@@ -573,44 +573,58 @@ fn a_banner_added_to_a_hugging_answer_stands_without_the_pointer() {
     let body: Element =
         Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(card)));
     let map = Map::new().pin("turn", grown(100.0, 80.0, 420.0, 400.0), body);
-    let mut host =
+    let mut harness =
         crate::headless::FrameHarness::for_root(crate::State::new(), map, (800, 600), theme());
-    host.relayout();
-    host.recompose().expect("a frame settles");
+    harness.relayout();
+    harness.recompose().expect("a frame settles");
     for _ in 0..4 {
-        host.idle();
+        harness.idle();
     }
-    let laid = |host: &mut crate::headless::FrameHarness| {
-        host.root_widget_mut()
+    let laid = |harness: &mut crate::headless::FrameHarness| {
+        harness
+            .root_widget_mut()
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<Map>())
             .expect("the map")
             .laid
             .borrow()["turn"]
     };
-    let before = laid(&mut host);
+    let before = laid(&mut harness);
     // The view's next tree holds the failure's row: the reconciler inserts it in place.
-    host.with_widget_mut(|scroll: &mut crate::widget::Scrollable| {
-        let stack = scroll
-            .child_mut()
-            .and_then(|child| child.as_any_mut())
-            .and_then(|any| any.downcast_mut::<crate::widget::arrange::Stack>())
-            .expect("the card");
-        let banner =
-            crate::widget::Banner::new(crate::widget::BannerKind::Error, "Request refused");
-        stack.insert(1, crate::widget::arrange::Part::new(Box::new(banner)));
-    })
-    .expect("the scroll");
+    harness
+        .with_widget_mut(|scroll: &mut crate::widget::Scrollable| {
+            let stack = scroll
+                .child_mut()
+                .and_then(|child| child.as_any_mut())
+                .and_then(|any| any.downcast_mut::<crate::widget::arrange::Stack>())
+                .expect("the card");
+            let banner =
+                crate::widget::Banner::new(crate::widget::BannerKind::Error, "Request refused");
+            stack.insert(1, crate::widget::arrange::Part::new(Box::new(banner)));
+        })
+        .expect("the scroll");
     // The window draws what it asks for, as time passes, and nothing moves the pointer.
-    let started = crate::time::now();
-    while started.elapsed() < std::time::Duration::from_millis(1500) {
-        host.idle();
+    let banner_height = |harness: &mut crate::headless::FrameHarness| {
+        harness
+            .with_widget_mut(|banner: &mut crate::widget::Banner| banner.get_rect())
+            .map(|rect| rect.height())
+    };
+    let deadline = crate::time::now() + std::time::Duration::from_millis(1500);
+    loop {
+        harness.idle();
+        if banner_height(&mut harness).is_some_and(|height| height > 20.0) {
+            break;
+        }
+        assert!(
+            crate::time::now() < deadline,
+            "the banner did not lay itself out without a pointer"
+        );
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
-    let banner = host
+    let banner = harness
         .with_widget_mut(|banner: &mut crate::widget::Banner| banner.get_rect())
         .expect("the banner");
-    let after = laid(&mut host);
+    let after = laid(&mut harness);
     assert!(
         banner.height() > 20.0,
         "the banner stands in the card at its height: {banner:?}"
