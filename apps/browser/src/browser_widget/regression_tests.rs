@@ -838,7 +838,10 @@ fn a_history_row_forgets_only_its_own_page() {
     architecture_tests::assert_action_binding(&w, &format!("{id}.open"), &id, "open");
     architecture_tests::assert_action_binding(&w, &format!("{id}.forget"), &id, "forget-visit");
 
-    let page = w.resource_by_id(&id).expect("the history page is a row");
+    let page = w
+        .resource_by_id(&id)
+        .expect("the history page is a row")
+        .into_resource();
     let forget = page
         .actions
         .iter()
@@ -974,7 +977,8 @@ fn downloads_read_and_answer_their_offer_through_resource_actions() {
 
         let row = widget
             .resource_by_id("browser.downloads/read-text")
-            .expect("completed download row");
+            .expect("completed download row")
+            .into_resource();
         assert!(
             row.actions
                 .iter()
@@ -1039,7 +1043,8 @@ fn downloads_read_and_answer_their_offer_through_resource_actions() {
         assert_eq!(entry.status, DownloadStatus::AwaitingDestination);
         let row = widget
             .resource_by_id(&entry.resource_id())
-            .expect("offered download row");
+            .expect("offered download row")
+            .into_resource();
         let actions: Vec<&str> = row
             .actions
             .iter()

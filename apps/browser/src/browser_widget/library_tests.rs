@@ -297,7 +297,8 @@ fn downloads_cancel_reject_and_keep_stable_actions() {
         widget.debug_show_downloads("completed");
         let resource = widget
             .resource_by_id("browser.downloads/review-complete")
-            .expect("download resource");
+            .expect("download resource")
+            .into_resource();
         assert_eq!(resource.kind, "browser.download");
         assert_eq!(
             resource

@@ -29,7 +29,7 @@ use std::rc::Rc;
 
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
-use ui::tilo_actions::{ActionBinding, Actor, MemberId, ResourceSpec};
+use ui::tilo_actions::{ActionBinding, Actor, MemberId};
 use ui::tilo_resource::Resource as _;
 use ui::tokens::TextRole;
 use ui::webview::{FrameId, PageActor, PageFailure, PageReply, PageRequest, WebViewCommand};
@@ -592,7 +592,7 @@ fn set_by_text(set: &SetBy) -> Option<String> {
 }
 
 /// One form: its name, then a row per question.
-fn form_section(form: &Form, page: Option<&ResourceSpec>) -> Section {
+fn form_section(form: &Form, page: Option<&ui::framework::LiveRow>) -> Section {
     let label = if let Some(frame) = &form.frame {
         // No forms read names a frame's form: it is said by its frame.
         named("browser-review-form-in-frame", frame)
@@ -629,7 +629,7 @@ fn question_row(
     index: usize,
     question: &Question,
     frame: Option<&str>,
-    page: Option<&ResourceSpec>,
+    page: Option<&ui::framework::LiveRow>,
 ) -> Element {
     let name = if question.name.trim().is_empty() {
         t("browser-review-question-unnamed")

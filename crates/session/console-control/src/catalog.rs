@@ -11,8 +11,8 @@
 use serde_json::{Map, Value, json};
 use tilo_actions::api::{self, ActionAddress};
 use tilo_actions::{
-    ActionParam, Availability, ConfirmationPolicy, EncodedAction, OperationKind, ParamType,
-    ResourceSpec,
+    ActionParam, Availability, ConfirmationPolicy, EncodedAction, Exports, OperationKind,
+    ParamType, ResourceSpec,
 };
 
 /// Boolean argument that carries an explicit confirmation.
@@ -57,11 +57,11 @@ pub fn projected_params(params: &[ActionParam], policy: &ConfirmationPolicy) -> 
 /// whitespace-separated word must appear in the action's label, resource
 /// label, id or kind; an empty query lists everything). Nothing in the reply
 /// can perform an action: it carries addresses, never handles.
-pub fn enumerate(provider: &str, resources: &[ResourceSpec], query: &str) -> Value {
+pub fn enumerate(provider: &str, resources: &[impl Exports], query: &str) -> Value {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut actions = Vec::new();
     for resource in resources {
-        describe_into(provider, resource, &words, &mut actions);
+        describe_into(provider, resource.exported(), &words, &mut actions);
     }
     json!({ "query": query, "count": actions.len(), "actions": actions })
 }
@@ -172,7 +172,7 @@ pub struct Admitted {
 /// parameters (`invalid_arguments`).
 pub fn admit(
     provider: &str,
-    resources: &[ResourceSpec],
+    resources: &[impl Exports],
     requested_provider: &str,
     id: &str,
     args: &Map<String, Value>,
@@ -181,6 +181,12 @@ pub fn admit(
         return Err(Refusal::unknown(id));
     }
     let address = parse_id(id).ok_or_else(|| Refusal::unknown(id))?;
+    // The one resource whose tree offers the action: what it is resolved and encoded against.
+    let resources = resources
+        .iter()
+        .map(|resource| std::slice::from_ref(resource.exported()))
+        .find(|resource| api::resolve(resource, &address).is_some())
+        .ok_or_else(|| Refusal::unknown(id))?;
     let spec = api::resolve(resources, &address).ok_or_else(|| Refusal::unknown(id))?;
     if let Availability::Unavailable { code, reason } = &spec.contract.availability {
         return Err(Refusal::from_api(&api::ApiError::Unavailable {

@@ -186,7 +186,10 @@ fn shown(app: &mut TestApp<BrowserShell>) -> String {
         .expect("the window shows a page")
 }
 
-fn find<'a>(resources: &'a [ResourceSpec], id: &str) -> Option<&'a ResourceSpec> {
+fn find<'a>(
+    resources: &'a [ui::tilo_actions::ResourceSpec],
+    id: &str,
+) -> Option<&'a ui::tilo_actions::ResourceSpec> {
     resources.iter().find_map(|resource| {
         if resource.id.as_str() == id {
             Some(resource)

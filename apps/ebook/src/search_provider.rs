@@ -12,7 +12,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use tilo_actions::ResourceSpec;
 use ui::framework::LiveRow;
 use ui::icons::Icon;
 use ui::search::SearchResult;
@@ -546,7 +545,7 @@ impl BookSearch {
     /// Resolve a full-text location resource exactly. This performs a bounded
     /// metadata lookup plus one block bounds check; it does not construct a
     /// prose index or hydrate unrelated chapters.
-    fn location_resource_for(&self, id: &str) -> Option<ResourceSpec> {
+    fn location_resource_for(&self, id: &str) -> Option<LiveRow> {
         let suffix = id.strip_prefix("ebook.location:")?;
         let (book, location) = self.books.iter().find_map(|book| {
             let prefix = format!("{}:", book.id);
@@ -575,22 +574,20 @@ impl BookSearch {
                 chapter,
                 Some(block),
                 "Open match",
-            ))
-            .into_resource(),
+            )),
         )
     }
 
     /// The resource a hit names: a chapter opened, or the place the library
     /// publishes for a book or an annotation, with what acts on it.
-    fn resource_for(&self, entry: &SearchEntry, id: &str) -> Option<ResourceSpec> {
+    fn resource_for(&self, entry: &SearchEntry, id: &str) -> Option<LiveRow> {
         let book = match entry.target {
             SearchTarget::Chapter { book, chapter } => {
                 let book = self.books.get(book)?;
                 book.chapters.get(chapter)?;
                 return Some(
                     LiveRow::new(id, "ebook.chapter", &entry.result.title)
-                        .operation(crate::actions::open_at(&book.id, chapter, None, "Open"))
-                        .into_resource(),
+                        .operation(crate::actions::open_at(&book.id, chapter, None, "Open")),
                 );
             }
             SearchTarget::Book(index) => self.books.get(index)?.id.clone(),
@@ -630,14 +627,14 @@ impl BookSearch {
         let place = Ebook::book_place(&row, &marks);
         let mut resource = Derived::find(std::slice::from_ref(&place), id)?;
         resource.children.clear();
-        Some(resource)
+        Some(LiveRow::from_resource(resource))
     }
 }
 
 impl BookSearch {
     /// The exact resource a hit is anchored at: a book, a chapter, an
     /// annotation, a remote book or a reading location.
-    pub(crate) fn resolve(&self, id: &str) -> Option<ResourceSpec> {
+    pub(crate) fn resolve(&self, id: &str) -> Option<LiveRow> {
         if !self.available {
             return None;
         }
@@ -662,12 +659,12 @@ impl BookSearch {
         use ui::tilo_resource::Effect as _;
         let resource = self.resolve(id)?;
         let action = resource
-            .actions
+            .operations()
             .iter()
             .find(|action| action.id == "open")
             .or_else(|| {
                 resource
-                    .actions
+                    .operations()
                     .iter()
                     .find(|action| action.id == "download")
             })?;
@@ -751,7 +748,7 @@ impl BookSearchProvider {
 
     /// The exact resource the hit anchored at `id` resolves to, as the
     /// palette resolves a hit's address.
-    pub(crate) fn resolve(&self, id: &str) -> Option<ResourceSpec> {
+    pub(crate) fn resolve(&self, id: &str) -> Option<LiveRow> {
         self.books.resolve(id)
     }
 }
@@ -792,8 +789,10 @@ impl ui::search::SearchProvider for BookSearchProvider {
     fn resolve_action_resource(
         &self,
         address: &tilo_actions::ActionAddress,
-    ) -> Option<ResourceSpec> {
-        self.books.resolve(&address.resource)
+    ) -> Option<tilo_actions::ResourceSpec> {
+        self.books
+            .resolve(&address.resource)
+            .map(LiveRow::into_resource)
     }
 }
 
@@ -858,7 +857,8 @@ mod tests {
                 let resource = provider
                     .books
                     .resolve(&address)
-                    .expect("exact local resource");
+                    .expect("exact local resource")
+                    .into_resource();
                 assert_eq!(resource.id.as_str(), address);
                 assert!(resource.children.is_empty());
                 assert_eq!(resource.actions.len(), 1);
@@ -921,7 +921,8 @@ mod tests {
                 let resource = provider
                     .books
                     .resolve(&address)
-                    .expect("exact lazy location resource");
+                    .expect("exact lazy location resource")
+                    .into_resource();
                 let open = resource
                     .actions
                     .iter()
@@ -990,7 +991,8 @@ mod tests {
                 let resource = provider
                     .books
                     .resolve(&hit.action_id)
-                    .expect("actionable remote resource");
+                    .expect("actionable remote resource")
+                    .into_resource();
                 let open = resource
                     .actions
                     .iter()
@@ -1331,7 +1333,8 @@ mod tests {
                 let resource = provider
                     .books
                     .resolve(&hit.action_id)
-                    .expect("exact annotation resource");
+                    .expect("exact annotation resource")
+                    .into_resource();
                 let delete = resource
                     .actions
                     .iter()
@@ -1384,7 +1387,8 @@ mod tests {
                             .map(|result| result.action_id)
                             .expect("book address"),
                     )
-                    .expect("book resource");
+                    .expect("book resource")
+                    .into_resource();
                 let share = book_resource
                     .actions
                     .iter()
@@ -1416,7 +1420,8 @@ mod tests {
                             .map(|result| result.action_id)
                             .expect("highlight address"),
                     )
-                    .expect("highlight resource");
+                    .expect("highlight resource")
+                    .into_resource();
                 let mut highlight_actions = highlight_resource
                     .actions
                     .iter()
@@ -1453,7 +1458,8 @@ mod tests {
                                 .map(|result| result.action_id)
                                 .expect("annotation address"),
                         )
-                        .expect("annotation resource");
+                        .expect("annotation resource")
+                        .into_resource();
                     let mut actions = resource
                         .actions
                         .iter()

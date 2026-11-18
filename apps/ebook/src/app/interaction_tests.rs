@@ -4489,7 +4489,8 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
             );
             let comment = provider
                 .resolve(&crate::resource::mark_place_resource(&cm, true))
-                .expect("exact comment resource");
+                .expect("exact comment resource")
+                .into_resource();
             let spec = comment
                 .actions
                 .iter()

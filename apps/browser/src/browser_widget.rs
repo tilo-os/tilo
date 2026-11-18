@@ -22,7 +22,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::{ActionBinding, ControlInvocation, ResourceSpec};
+use ui::tilo_actions::{ActionBinding, ControlInvocation};
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{
     MediaElementInfo, NavigationCommand, NavigationDirection, PageReply, PageRequest, SharedEngine,
@@ -2097,15 +2097,8 @@ impl BrowserWidget {
         Ok(())
     }
 
-    fn resource_by_id(&self, wanted: &str) -> Option<ResourceSpec> {
-        fn walk(resources: &[ResourceSpec], wanted: &str) -> Option<ResourceSpec> {
-            resources.iter().find_map(|resource| {
-                (resource.id.0 == wanted)
-                    .then(|| resource.clone())
-                    .or_else(|| walk(&resource.children, wanted))
-            })
-        }
-        walk(&[self.published()], wanted)
+    fn resource_by_id(&self, wanted: &str) -> Option<ui::framework::LiveRow> {
+        self.window_row().find(wanted)
     }
 
     fn unit_binding(&self, resource: &str, action: &str) -> Option<ActionBinding<()>> {
@@ -5051,9 +5044,15 @@ impl BrowserWidget {
         self.window_rows()
     }
 
+    /// [`Self::window_row`] as the published tree, for tests that read it.
+    #[cfg(test)]
+    pub(crate) fn published(&self) -> ui::tilo_actions::ResourceSpec {
+        self.window_row().into_resource()
+    }
+
     /// [`Self::live_rows`] beneath the root they join, which the window's own
     /// controls bind to.
-    pub(crate) fn published(&self) -> ResourceSpec {
+    pub(crate) fn window_row(&self) -> ui::framework::LiveRow {
         use crate::effects::BrowserEffect as E;
         use ui::framework::LiveRow;
         use ui::tilo_resource::Effect as _;
@@ -5068,7 +5067,7 @@ impl BrowserWidget {
         for row in self.window_rows() {
             browser = browser.row(row);
         }
-        browser.into_resource()
+        browser
     }
 
     #[allow(

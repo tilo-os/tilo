@@ -138,6 +138,24 @@ impl LiveRow {
         self.resource.id.as_str()
     }
 
+    /// The row `id` names, this one or one nested beneath it, as a row of its own: what a
+    /// control showing that entity binds to.
+    #[must_use]
+    pub fn find(&self, id: &str) -> Option<Self> {
+        fn walk<'a>(resource: &'a ResourceSpec, id: &str) -> Option<&'a ResourceSpec> {
+            if resource.id.0 == id {
+                return Some(resource);
+            }
+            resource.children.iter().find_map(|child| walk(child, id))
+        }
+        if self.resource.id.0 == id {
+            return Some(self.clone());
+        }
+        walk(&self.resource, id).map(|found| Self {
+            resource: std::rc::Rc::new(found.clone()),
+        })
+    }
+
     /// The operations the row offers, as it publishes them.
     #[must_use]
     pub fn operations(&self) -> &[ActionSpec] {

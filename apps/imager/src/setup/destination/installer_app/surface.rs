@@ -262,7 +262,7 @@ impl InstallerApp {
             .collect()
     }
 
-    pub fn published(&self) -> Vec<ResourceSpec> {
+    pub fn published(&self) -> Vec<LiveRow> {
         let checks = self.checks();
         let mut root = LiveRow::new(
             PROVIDER,
@@ -296,7 +296,7 @@ impl InstallerApp {
         for row in self.published_rows() {
             root = root.row(row);
         }
-        vec![root.into_resource()]
+        vec![root]
     }
 
     fn next_check(&self) -> Check {

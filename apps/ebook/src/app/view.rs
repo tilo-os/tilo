@@ -63,7 +63,7 @@ impl Shown {
     /// The book, chapter, annotation or location a search hit names, when
     /// the published page leaves it out.
     fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.search.resolve(id).map(LiveRow::from_resource)
+        self.search.resolve(id)
     }
 
     /// The library's edits bound to where the reader is: the page's
