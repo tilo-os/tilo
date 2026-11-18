@@ -8,6 +8,10 @@
 //! re-STUN tick with no relays, and the 15 s ping of a home relay kept after
 //! the relays were removed. With relays, the
 //! net report re-ran every 20-26 s however often it found the same thing.
+//!
+//! The two tests of one endpoint move the endpoint's Tokio clock instead of
+//! waiting the 20-26 s, 80-104 s and five-minute windows out; the network
+//! namespace tests below still watch a real process.
 
 #![allow(
     clippy::expect_used,
@@ -16,12 +20,6 @@
 )]
 
 use std::time::Duration;
-
-#[cfg(target_os = "linux")]
-const IDLE_WINDOW: Duration = Duration::from_secs(30);
-
-#[cfg(target_os = "linux")]
-const SETTLED: Duration = Duration::from_secs(3);
 
 #[cfg(target_os = "linux")]
 const ENDPOINT_THREADS: &str = "iroh-idle";
@@ -34,6 +32,166 @@ fn endpoint_runtime() -> tokio::runtime::Runtime {
         .enable_all()
         .build()
         .expect("a runtime for the endpoint")
+}
+
+/// The endpoint's Tokio clock, moved by the test instead of waited out.
+///
+/// `tokio::time::pause` stops the clock and [`Clock::advance`] moves it, so a
+/// wait of 20 s or five minutes passes at once. A paused runtime also advances
+/// the clock by itself whenever it has nothing to do, which would fire the very
+/// timer a test is about to look for; a blocking task holds that off for the
+/// clock's life. A net report keeps real time ([`Clock::resume`]) because its
+/// own probes measure, and time out, on the clock.
+#[cfg(target_os = "linux")]
+mod clock {
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
+
+    /// The longest wait iroh's periodic net report picks (20-26 s).
+    pub(super) const MAX_PERIOD: Duration = Duration::from_secs(26);
+    /// How far the test moves the clock at a time.
+    pub(super) const STEP: Duration = Duration::from_secs(5);
+    /// The real time the endpoint gets to answer what the clock just started.
+    pub(super) const SETTLE: Duration = Duration::from_millis(5);
+    /// The real time a net report gets to finish.
+    pub(super) const REPORT: Duration = Duration::from_millis(250);
+
+    /// The holder that keeps a stopped clock still: `(started, stop)`.
+    type Holder = Arc<(Mutex<(bool, bool)>, Condvar)>;
+
+    /// Waits on the holder's state until `ready` reports it, holding the guard
+    /// across the wait as a condition variable asks.
+    fn wait_for(state: &Holder, mut ready: impl FnMut(&(bool, bool)) -> bool) {
+        let (lock, woke) = &**state;
+        let mut flags = lock.lock().expect("the holder's lock");
+        while !ready(&flags) {
+            flags = woke.wait(flags).expect("the holder's lock");
+        }
+        drop(flags);
+    }
+
+    pub(super) struct Clock {
+        runtime: tokio::runtime::Runtime,
+        holder: Holder,
+    }
+
+    impl Clock {
+        /// A runtime for the endpoint whose clock the test can stop, and the
+        /// holder that keeps a stopped clock from moving on its own.
+        pub(super) fn new() -> Self {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .thread_name("iroh-clock")
+                .enable_all()
+                .build()
+                .expect("a runtime for the endpoint");
+            let holder: Holder = Arc::new((Mutex::new((false, false)), Condvar::new()));
+            {
+                let holder = Arc::clone(&holder);
+                runtime.spawn_blocking(move || {
+                    let (lock, woke) = &*holder;
+                    {
+                        let mut flags = lock.lock().expect("the holder's lock");
+                        flags.0 = true;
+                        woke.notify_all();
+                        drop(flags);
+                    }
+                    wait_for(&holder, |&(_, stop)| stop);
+                });
+            }
+            // Blocking here is deliberate: an await would let the runtime
+            // advance a stopped clock by itself before the holder starts.
+            wait_for(&holder, |&(started, _)| started);
+            Self { runtime, holder }
+        }
+
+        pub(super) fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+            self.runtime.block_on(future)
+        }
+
+        /// Stops the clock at its current reading, until [`Self::resume`].
+        pub(super) fn pause(&self) {
+            self.runtime.block_on(async { tokio::time::pause() });
+        }
+
+        /// Lets the clock keep real time again, so a report that is due
+        /// measures its probes, and times them out, as it does in production.
+        pub(super) fn resume(&self) {
+            self.runtime.block_on(async { tokio::time::resume() });
+        }
+
+        /// Moves the stopped clock forward, firing what is due then.
+        pub(super) fn advance(&self, by: Duration) {
+            self.runtime.block_on(tokio::time::advance(by));
+        }
+
+        pub(super) fn now(&self) -> tokio::time::Instant {
+            self.runtime.block_on(async { tokio::time::Instant::now() })
+        }
+
+        /// Gives the endpoint `duration` of real time to answer what the clock
+        /// just started, without moving the clock.
+        pub(super) fn settle(&self, duration: Duration) {
+            self.runtime.block_on(async {
+                let _ = tokio::task::spawn_blocking(move || std::thread::sleep(duration)).await;
+            });
+        }
+
+        /// Polls `ready` for up to the test hang bound of real time.
+        pub(super) fn until(&self, what: impl std::fmt::Display, mut ready: impl FnMut() -> bool) {
+            let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+            while !ready() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "gave up waiting for {what} after {:?}",
+                    tilo_test_env::hang_bound()
+                );
+                self.settle(SETTLE);
+            }
+        }
+    }
+
+    impl Drop for Clock {
+        /// Ends the clock's holder before the runtime is shut down, which waits
+        /// for its blocking tasks; a test that panics may never resume it.
+        fn drop(&mut self) {
+            let (lock, woke) = &*self.holder;
+            let mut flags = lock.lock().expect("the holder's lock");
+            flags.1 = true;
+            woke.notify_all();
+            drop(flags);
+        }
+    }
+}
+
+/// Measures how far the test moved the stopped clock before the endpoint's
+/// next net report started, failing if none had after `most`. The report is
+/// then left to finish on real time, so the clock's next move cannot catch it
+/// probing.
+#[cfg(target_os = "linux")]
+fn wait_for_next_report(
+    clock: &clock::Clock,
+    reports: impl Fn() -> u64,
+    most: Duration,
+) -> Duration {
+    let started = clock.now();
+    let before = reports();
+    let elapsed = || clock.now().duration_since(started);
+    let wait = loop {
+        if reports() > before {
+            break elapsed();
+        }
+        assert!(
+            elapsed() < most,
+            "no net report {:?} after the one before",
+            elapsed()
+        );
+        clock.advance(clock::STEP);
+        clock.settle(clock::SETTLE);
+    };
+    clock.resume();
+    clock.settle(clock::REPORT);
+    clock.pause();
+    wait
 }
 
 #[cfg(target_os = "linux")]
@@ -50,10 +208,13 @@ fn an_endpoint_whose_relays_were_removed_sleeps() {
     let relay = relay_runtime.block_on(tilo_test_env::relay::relay());
     let url = relay.url().clone();
 
-    let runtime = endpoint_runtime();
-    let endpoint = runtime.block_on(async {
+    let clock = clock::Clock::new();
+    let endpoint = clock.block_on(async {
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Custom(relay.relays()))
+            // No router answers here, and the mapper's probes time out on the
+            // clock this test moves; the report they ride in is what is timed.
+            .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
             .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
             .expect("a loopback bind address")
             .bind()
@@ -67,54 +228,71 @@ fn an_endpoint_whose_relays_were_removed_sleeps() {
         endpoint
     });
     let server = relay.server();
-    tilo_test_env::wait_until("the relay to count the endpoint's connection", || {
+    clock.until("the server to count the endpoint's connection", || {
         server.metrics().server.accepts.get() >= 1
     });
     let accepts = server.metrics().server.accepts.get();
 
-    runtime.block_on(endpoint.remove_relay(&url));
-    tilo_test_env::wait_until("the endpoint to give up its home relay", || {
+    clock.pause();
+    // With a server to ask, the endpoint's periodic tick is due; the test
+    // moves the clock to it rather than waiting 20-26 s for it.
+    let ticks = || endpoint.metrics().socket.actor_tick_re_stun.get();
+    let ticked = ticks();
+    clock.advance(clock::MAX_PERIOD);
+    clock.until("the periodic re-STUN tick", || ticks() > ticked);
+    clock.resume();
+    clock.settle(clock::REPORT);
+    clock.pause();
+
+    clock.block_on(endpoint.remove_relay(&url));
+    clock.until("the endpoint to give up its home relay", || {
         endpoint.home_relay_status().get().is_empty()
     });
-    tilo_test_env::wait_until("the relay connection to close", || {
-        server.metrics().server.disconnects.get() >= accepts
-    });
-
-    let threads = || {
-        let mut threads = tilo_test_env::idle::sample_process(std::process::id())
-            .expect("this process's threads");
-        threads.retain(|thread| thread.comm.starts_with(ENDPOINT_THREADS));
-        threads
-    };
-    tilo_test_env::wait_until("the endpoint's runtime to finish closing the relay", || {
-        let before = threads();
-        let started = std::time::Instant::now();
-        std::thread::sleep(SETTLED);
-        tilo_test_env::idle::Wakeups::between(before, threads(), started.elapsed()).blocking() == 0
-    });
-    let before = threads();
-    let started = std::time::Instant::now();
-    std::thread::sleep(IDLE_WINDOW);
-    let wakeups = tilo_test_env::idle::Wakeups::between(before, threads(), started.elapsed());
-    eprintln!("an endpoint whose relays were removed: {wakeups}");
-    assert_eq!(
-        wakeups.blocking(),
-        0,
-        "an idle endpoint with no relays woke its runtime:\n{wakeups}"
-    );
     assert!(
         endpoint.addr().relay_urls().next().is_none(),
         "the endpoint still names the relay it gave up"
     );
-    runtime.block_on(endpoint.close());
+    // The released connection closes when its idle wait expires, a minute on,
+    // which the test spends on the clock rather than in real time.
+    let mut waited = Duration::ZERO;
+    while server.metrics().server.disconnects.get() < accepts {
+        assert!(
+            waited < Duration::from_secs(180),
+            "the released connection never closed"
+        );
+        clock.advance(Duration::from_secs(20));
+        clock.settle(clock::REPORT);
+        waited = waited.saturating_add(Duration::from_secs(20));
+    }
+
+    // Five minutes of the endpoint's clock: the span that used to hold a dozen
+    // 20-26 s ticks, each with a net report behind it.
+    let settled = ticks();
+    let reports = endpoint.metrics().net_report.reports.get();
+    for _ in 0..10 {
+        clock.advance(Duration::from_secs(30));
+        clock.settle(clock::SETTLE);
+    }
+    eprintln!(
+        "a tick with no server to ask: {} (was {settled}); net reports: {} (was {reports})",
+        ticks(),
+        endpoint.metrics().net_report.reports.get()
+    );
+    assert_eq!(ticks(), settled, "an endpoint with no server ticked");
+    assert_eq!(
+        endpoint.metrics().net_report.reports.get(),
+        reports,
+        "an endpoint with no server measured its addresses"
+    );
+
+    clock.resume();
+    clock.block_on(endpoint.close());
     drop(relay);
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn an_unchanged_net_report_rests_the_next() {
-    const RESTING: Duration = Duration::from_secs(75);
-
     let relay_runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .thread_name("relay-server")
@@ -123,15 +301,13 @@ fn an_unchanged_net_report_rests_the_next() {
         .expect("a runtime for the relay");
     let relay = relay_runtime.block_on(tilo_test_env::relay::relay());
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .thread_name("net-report-rest")
-        .enable_all()
-        .build()
-        .expect("a runtime for the endpoint");
-    let endpoint = runtime.block_on(async {
+    let clock = clock::Clock::new();
+    let endpoint = clock.block_on(async {
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Custom(relay.relays()))
+            // No router answers here, and the mapper's probes time out on the
+            // clock this test moves; the report they ride in is what is timed.
+            .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
             .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
             .expect("a loopback bind address")
             .bind()
@@ -144,20 +320,49 @@ fn an_unchanged_net_report_rests_the_next() {
         .await;
         endpoint
     });
+
     let reports = || endpoint.metrics().net_report.reports.get();
-    tilo_test_env::wait_until("two periodic net reports", || reports() >= 3);
-    let before = reports();
-    std::thread::sleep(RESTING);
-    let during = reports() - before;
+    // The endpoint's first report is what made it online above, so none is in
+    // flight when the clock stops.
+    clock.until("the endpoint's first net report", || reports() >= 1);
+    clock.pause();
+
+    // The wait between unchanged periodic reports grows: the 20-26 s period
+    // while a report still finds something new, then four periods (80-104 s),
+    // then the five-minute cap. How many reports the start takes to settle
+    // depends on the network it starts on, so the test reads the waits until
+    // the first long one instead of counting reports.
+    let most = Duration::from_secs(109);
+    let mut short = 0;
+    let rest = loop {
+        let wait = wait_for_next_report(&clock, reports, most);
+        if wait <= Duration::from_secs(31) {
+            short += 1;
+            assert!(
+                short < 5,
+                "unchanged net reports never rested: {short} waits of {wait:?} at the 20-26 s period"
+            );
+            continue;
+        }
+        break wait;
+    };
+    let capped = wait_for_next_report(&clock, reports, Duration::from_secs(305));
     eprintln!(
-        "net reports in the {} s after an unchanged one: {during}",
-        RESTING.as_secs()
+        "unchanged net reports came {short} waits of the period, then {:.0} s and {:.0} s apart",
+        rest.as_secs_f32(),
+        capped.as_secs_f32()
     );
-    assert_eq!(
-        during, 0,
-        "an unchanged net report must rest the next for 80-104 s"
+    assert!(
+        rest >= Duration::from_secs(80) && rest <= Duration::from_secs(109),
+        "the rested wait was {rest:?}, not the four periods of 80-104 s"
     );
-    runtime.block_on(endpoint.close());
+    assert!(
+        capped >= Duration::from_secs(295) && capped <= Duration::from_secs(305),
+        "the capped wait was {capped:?}, not five minutes"
+    );
+
+    clock.resume();
+    clock.block_on(endpoint.close());
     drop(relay);
 }
 
