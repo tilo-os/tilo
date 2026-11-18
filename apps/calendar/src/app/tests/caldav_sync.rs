@@ -382,3 +382,113 @@ fn corrupt_events(doc: &mut AutoCommit) {
     automerge::transaction::Transactable::put(doc, ROOT, "events", "not a keyed collection")
         .expect("the field is written");
 }
+
+/// The entry `kept` is in the app and in what the calendar keeps as it was,
+/// and its person was told why: `told`.
+fn stays_and_is_said(
+    app: &CalendarApp,
+    state: &automerge::AutoCommit,
+    kept: &crate::model::Event,
+    told: &str,
+    what: &str,
+) {
+    assert_eq!(
+        app.model.event(kept.id),
+        Some(kept),
+        "{what}: the entry stays as it was"
+    );
+    assert!(
+        crate::resource::read_doc(state).events.iter().any(|e| {
+            e.id == kept.id
+                && e.title == kept.title
+                && e.start == kept.start
+                && e.color == kept.color
+        }),
+        "{what}: and so does what the calendar keeps of it"
+    );
+    assert_eq!(
+        app.status.text(),
+        Some(told),
+        "{what}: its person is told why"
+    );
+}
+
+#[test]
+fn an_entry_of_a_calendar_kept_for_reading_is_not_changed_and_its_person_is_told() {
+    let mut app = CalendarApp::new_demo();
+    let mut state = demo_document(&app);
+    present(&mut app, &mut state, &automerge::ROOT);
+    app.apply_action(Action::Sync, &mut Edits::lend(&mut state)); // pull the sample synced events
+    let synced = app
+        .model
+        .events
+        .iter()
+        .find(|e| e.calendar_id.is_some())
+        .cloned()
+        .expect("a synced event with a calendar id");
+    let local = app
+        .model
+        .events
+        .iter()
+        .find(|e| e.calendar_id.is_none())
+        .cloned()
+        .expect("an event kept on this device");
+    // Every account here is connected for reading only: its calendars are
+    // kept as ones that cannot be written, whatever their servers allow.
+    for account in &mut app.configured.accounts {
+        account.read_only = true;
+        account.calendars = account.kept_calendars();
+    }
+    app.show_accounts();
+    let told = crate::resource::t("calendar-kept-for-reading");
+    assert!(
+        told.contains("reading only"),
+        "the sentence is the bundle's own: {told}"
+    );
+
+    // Taking it out.
+    app.apply_action(Action::DeleteEvent(synced.id), &mut Edits::lend(&mut state));
+    stays_and_is_said(&app, &state, &synced, &told, "a removal");
+    let deletes = crate::outbox::deletes(&crate::resource::read_doc(&state), &app.accounts);
+    assert!(
+        !deletes.iter().any(|(id, _)| *id == synced.id),
+        "nothing is owed to its server"
+    );
+
+    // Its colour and whether it takes the whole day, from its form.
+    app.status.dismiss();
+    app.select_event(synced.id);
+    let other = if synced.color == Palette::Red {
+        Palette::Blue
+    } else {
+        Palette::Red
+    };
+    app.apply_action(Action::SetEventColor(other), &mut Edits::lend(&mut state));
+    stays_and_is_said(&app, &state, &synced, &told, "another colour");
+    app.status.dismiss();
+    app.apply_action(Action::ToggleAllDay, &mut Edits::lend(&mut state));
+    stays_and_is_said(&app, &state, &synced, &told, "the whole day");
+
+    // Moving it to the day after.
+    app.status.dismiss();
+    let original = synced.start.date();
+    let day = original.tomorrow().expect("a day after it");
+    app.apply_action(
+        Action::MoveEventToDay {
+            id: synced.id,
+            original,
+            day,
+        },
+        &mut Edits::lend(&mut state),
+    );
+    stays_and_is_said(&app, &state, &synced, &told, "another day");
+
+    // An entry kept on this device is changed as before.
+    app.status.dismiss();
+    app.apply_action(Action::DeleteEvent(local.id), &mut Edits::lend(&mut state));
+    assert!(
+        app.model.event(local.id).is_none(),
+        "an entry of no server's is the person's to take out"
+    );
+    assert_ne!(app.status.text(), Some(told.as_str()));
+}

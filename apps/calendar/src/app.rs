@@ -1082,6 +1082,9 @@ impl CalendarApp {
         if title_dirty.is_none() && loc_dirty.is_none() {
             return;
         }
+        if self.kept_for_reading(id) {
+            return;
+        }
         let title = self.title_input.value().to_string();
         let location = self.location_input.value().to_string();
         let Some(e) = self.model.event_mut(id) else {
@@ -1107,6 +1110,9 @@ impl CalendarApp {
         let Some(Sel::Event(event_id)) = self.selection else {
             return;
         };
+        if self.kept_for_reading(event_id) {
+            return;
+        }
         let email = self.invite_input.value().trim().to_string();
         let valid = email
             .split_once('@')
@@ -1279,6 +1285,9 @@ impl CalendarApp {
     }
 
     fn delete_event(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
+        if self.kept_for_reading(id) {
+            return;
+        }
         self.model.events.retain(|e| e.id != id);
         self.submit(doc, Calendar::DELETE_EVENT.with(crate::model::key(id)));
         if self.selection == Some(Sel::Event(id)) {
@@ -1496,6 +1505,9 @@ impl CalendarApp {
         day: Date,
         doc: &mut ui::widget::Edits<'_>,
     ) {
+        if self.kept_for_reading(id) {
+            return;
+        }
         if day == original {
             return;
         }
@@ -2094,6 +2106,10 @@ impl CalendarApp {
         let Some(Sel::Event(id)) = self.selection else {
             return;
         };
+        if self.kept_for_reading(id) {
+            self.event_popovers.close();
+            return;
+        }
         let remote_color = match target {
             CalTarget::Remote(cid) => self
                 .accounts
@@ -2310,6 +2326,11 @@ impl CalendarApp {
     }
 
     fn cycle_event<F: Fn(&mut Event)>(&mut self, doc: &mut ui::widget::Edits<'_>, f: F) {
+        if let Some(Sel::Event(id)) = self.selection
+            && self.kept_for_reading(id)
+        {
+            return;
+        }
         if let Some(Sel::Event(id)) = self.selection
             && let Some(e) = self.model.event_mut(id)
         {

@@ -85,14 +85,29 @@ pub fn select_calendars(
         same_origin_url(&server, id)?;
         calendars.push(calendar.clone());
     }
+    // An account connected for reading only stays so when its calendars are
+    // chosen again, and none of them is taken as one that can be written,
+    // whatever its server answered for it.
+    let read_only = account
+        .config
+        .get("calendar")
+        .and_then(|kept| kept.get("read_only"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_default();
+    for calendar in &mut calendars {
+        calendar.read_only |= read_only;
+    }
     let mut payload = serde_json::to_value(config).map_err(|error| error.to_string())?;
-    payload
+    let settings = payload
         .as_object_mut()
-        .ok_or("calendar settings are not an object")?
-        .insert(
-            "calendars".into(),
-            serde_json::to_value(calendars).map_err(|error| error.to_string())?,
-        );
+        .ok_or("calendar settings are not an object")?;
+    settings.insert(
+        "calendars".into(),
+        serde_json::to_value(calendars).map_err(|error| error.to_string())?,
+    );
+    if read_only {
+        settings.insert("read_only".into(), true.into());
+    }
     let object = account
         .config
         .as_object_mut()

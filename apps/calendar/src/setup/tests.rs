@@ -70,6 +70,70 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase an_account_connected_for_reading_only_stays_so_when_its_calendars_are_chosen_again;
+    {
+        let config = CalDavConfig {
+            server_url: "https://cloud.example/remote.php/dav/".into(),
+            username: "internal".into(),
+            ..Default::default()
+        };
+        // Its server would let the person write this calendar.
+        let calendars = vec![collection("https://cloud.example")];
+        let mut account = Account::new("canonical-nextcloud", "nextcloud");
+        account.config = serde_json::json!({
+            "server_url": "https://cloud.example/remote.php/dav/files/internal/",
+            "username": "internal",
+            "use_files": true,
+            "calendar": {
+                "server_url": "https://cloud.example/remote.php/dav/",
+                "username": "internal",
+                "read_only": true,
+            },
+        });
+        select_calendars(
+            &mut account,
+            &config,
+            &calendars,
+            &[calendars[0].id.clone()],
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            account.config["calendar"]["read_only"], true,
+            "the account keeps its word: {}",
+            account.config
+        );
+        assert_eq!(
+            account.config["calendar"]["calendars"][0]["read_only"], true,
+            "no calendar of it is taken as one that can be written: {}",
+            account.config
+        );
+        let mut shared = AccountStore::new();
+        shared.upsert(account);
+        let projection = crate::AccountStore::from_shared(&shared, None);
+        assert_eq!(projection.accounts.len(), 1);
+        assert!(projection.accounts[0].read_only);
+        assert!(projection.accounts[0].calendars[0].read_only);
+
+        // An account that is written to is chosen as its server answers.
+        let mut writing = Account::new("another-nextcloud", "nextcloud");
+        writing.config = serde_json::json!({
+            "server_url": "https://cloud.example/remote.php/dav/files/internal/",
+            "username": "internal",
+            "use_files": true,
+        });
+        select_calendars(
+            &mut writing,
+            &config,
+            &calendars,
+            &[calendars[0].id.clone()],
+            false,
+        )
+        .unwrap();
+        assert!(writing.config["calendar"].get("read_only").is_none());
+        assert_eq!(writing.config["calendar"]["calendars"][0]["read_only"], false);
+    }
+
     phase selection_rejects_unconfirmed_duplicate_and_cross_origin_urls_without_mutation;
     {
         let mut account = Account::new("a", "nextcloud");
