@@ -2244,9 +2244,15 @@ impl FrameHarness {
 
     /// A debug build's proof of a quiet frame, as the accessibility walk proves an unchanged tree: run
     /// the tick, sync and publication it skipped and require that they changed nothing the frame shows
-    /// and that the skipped History walks still rest.
+    /// and that the skipped History walks still rest. `decided_on` is what the frame decided with: input
+    /// that reached it since (a store's write landing, a save the window has yet to show) is the next
+    /// frame's, not work this frame skipped.
     #[cfg(debug_assertions)]
-    fn verify_quiet_frame(&mut self, history_settled: bool) {
+    fn verify_quiet_frame(&mut self, history_settled: bool, decided_on: Option<&FrameObservation>) {
+        if decided_on.is_none_or(|observation| !self.observation_holds(observation)) {
+            self.request_layout();
+            return;
+        }
         /// Run `verify` with the clocks held still: a frame that redraws the time it shows
         /// because a minute turned changed what the wall clock says, not what it publishes.
         fn fixed_clock<T>(verify: impl FnOnce() -> T) -> T {
@@ -4174,7 +4180,7 @@ impl FrameHarness {
         let quiet = quiet && !self.owes_the_next_frame();
         #[cfg(debug_assertions)]
         if quiet {
-            self.verify_quiet_frame(history_settled);
+            self.verify_quiet_frame(history_settled, held.as_ref());
         }
         if quiet && history_settled {
             self.settled_history_frames = self.settled_history_frames.saturating_add(1);
