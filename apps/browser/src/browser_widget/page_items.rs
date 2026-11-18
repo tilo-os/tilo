@@ -17,6 +17,7 @@ use ui::webview::{PageActor, PageRequest};
 
 use super::{BrowserWidget, action_failed};
 use crate::page_items::{ASKED_FIRST, ItemAnswer, ItemAsk, ItemSource, released_origin};
+use crate::session_items::{ItemRequests, LendingQuestion, SessionRequests};
 
 /// How long a fill waits for its item's text before it ends with nothing filled.
 pub(super) const ITEM_WAIT: Duration = Duration::from_secs(30);
@@ -43,6 +44,50 @@ impl BrowserWidget {
     pub fn set_item_source(&mut self, source: Rc<dyn ItemSource>) {
         self.item_source = Some(source);
         self.structure_dirty = true;
+    }
+
+    /// Hand this window a client of its own for vault items: what it asks its session with
+    /// once it is live ([`Self::attach_item_lending`]).
+    pub(crate) fn with_item_client(
+        mut self,
+        client: Option<ui::collaboration::browser_service_sessions::Client>,
+    ) -> Self {
+        self.item_client = client;
+        self
+    }
+
+    /// Ask this window's session, from now on, whether it lends vault items to the window's
+    /// pages: `waker` wakes the window when the session answers. A window without a client
+    /// of its own asks nobody.
+    pub(crate) fn attach_item_lending(&mut self, waker: ui::WakeHandle) {
+        if let Some(client) = self.item_client.take() {
+            self.set_item_requests(Rc::new(SessionRequests::new(client, waker)));
+        }
+    }
+
+    /// Ask the session through `requests` whether it lends vault items to this window's
+    /// pages. The window offers `fill-page-item` once the session says so, and has every
+    /// item asked for through `requests` from then on.
+    pub(crate) fn set_item_requests(&mut self, requests: Rc<dyn ItemRequests>) {
+        if self.item_source.is_none() && self.item_lending.is_none() {
+            self.item_lending = Some(LendingQuestion::new(requests));
+        }
+    }
+
+    /// Ask the session whether it lends items, or read what it answered, and take the way to
+    /// the vault it stands for once it says it does.
+    pub(super) fn drive_item_lending(&mut self) {
+        let Some(question) = self.item_lending.as_mut() else {
+            return;
+        };
+        let source = question.drive();
+        let settled = question.settled();
+        if let Some(source) = source {
+            self.set_item_source(source);
+        }
+        if settled {
+            self.item_lending = None;
+        }
     }
 
     /// Start the fill of `element` from the vault item `item` names, as `invocation`: the
