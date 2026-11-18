@@ -411,17 +411,6 @@ fn open(rule: &DiskRule, matched: usize, described: &str) -> Choice<'static> {
     }
 }
 
-/// How the same plan reaches a machine.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Delivery {
-    /// A USB image or ISO of the installer.
-    Medium,
-    /// A command for a rescue or netboot system.
-    Netboot,
-    /// An installation alongside the system the machine already has.
-    Alongside,
-}
-
 /// The artifact name of the installer for `destination`.
 #[must_use]
 pub fn installer_image(destination: &str) -> &'static str {
@@ -431,7 +420,8 @@ pub fn installer_image(destination: &str) -> &'static str {
     }
 }
 
-/// What a person does once the plan exists, per [`Delivery`].
+/// What a person does once the plan exists: the medium to make, and the
+/// commands a rescue system or a Linux system already on the machine is given.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commands {
     /// The installer image to write to a removable drive.
@@ -455,7 +445,10 @@ pub fn commands(
 ) -> Commands {
     let image = installer_image(&plan.destination);
     Commands {
-        medium: format!("{image}-{architecture}: write it to a removable drive"),
+        medium: format!(
+            "{image}-{architecture}: write it to a removable drive with plan {plan} and the token in {token_file}",
+            plan = plan.plan,
+        ),
         netboot: format!(
             "curl -fsSL {installer_url} | sh -s -- --plan {plan} --token-file {token_file}",
             plan = plan.plan,

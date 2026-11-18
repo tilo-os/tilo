@@ -189,6 +189,7 @@ impl Servers {
         let id = Id::from_raw(plan.clone());
         match self.servers.get_mut(&id) {
             Some(server) => {
+                server.label = label;
                 server.plan.destination = destination;
                 server.plan.disk = disk;
                 server.plan.open = open;
