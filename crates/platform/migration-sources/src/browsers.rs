@@ -219,7 +219,7 @@ pub fn firefox_sections(ini: &str) -> Vec<(String, String, Option<bool>)> {
         {
             let value = value.trim();
             match key.trim() {
-                "Name" => *name = value.to_owned(),
+                "Name" => value.clone_into(name),
                 "Path" => *path = Some(value.to_owned()),
                 "IsRelative" => *relative = Some(value == "1"),
                 _ => {}
