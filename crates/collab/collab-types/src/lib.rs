@@ -92,8 +92,8 @@ pub const DOCUMENT_URI_SCHEME: &str = "tilo-document";
 pub use artifact::ArtifactId;
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
-    Access, CapDecision, CapOverride, DeviceCap, Effect, Expiry, FsAuthority, LaunchGrants,
-    ResourceRef, Scope, decide_app, decide_capability, host_covers, path_covers,
+    Access, CapDecision, CapOverride, DeviceCap, Effect, FsAuthority, LaunchGrants, ResourceRef,
+    Scope, decide_app, decide_capability, host_covers, path_covers,
 };
 pub use claim::{
     ChangeClaim, ClaimError, ClaimedAction, CommitNamed, FrameworkChange, UnitPath, check_claimed,

@@ -818,7 +818,7 @@ fn a_refused_grant_change_says_why_and_keeps_the_grant() {
                 collab_types::caps::Access::Read,
             )
             .through("so.tilo.notes")
-            .expiring(collab_types::caps::Expiry::EndOfSession),
+            .lasting(tilo_action_policy::Lifetime::Session),
         );
     session.session().handle().replace_tree(tree);
     let mut app = settings_sheet(&mut session);
@@ -1854,7 +1854,6 @@ fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
         let mut recording = grants.record(
             &request,
             grant,
-            tilo_action_broker::app_actions::AppActionConsent::Always,
         );
         // Written into the governance, the grant is not yet in force: the session does not carry it.
         let held = |engine: &crate::engine::Engine| {

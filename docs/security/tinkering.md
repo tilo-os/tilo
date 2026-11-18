@@ -436,9 +436,9 @@ decorative.
 
 **Grants are leases.** A lease is `(capability, argument constraint, holder,
 expiry)`. Default expiry is the session that asked. The existing
-`Expiry::{AfterUse, EndOfSession, Never}` is exactly this vocabulary, the existing
-prompt widget already offers exactly these four buttons, and `EndOfSession` is
-already never written to disk. `tilo-hold list` shows live leases; `tilo-hold drop`
+`Lifetime::{Once, Session, Until, UntilRevoked}` is exactly this vocabulary, every
+permission prompt offers its durations from one list, and a `Session` answer is
+never written to disk. `tilo-hold list` shows live leases; `tilo-hold drop`
 revokes one; the same list appears in the permissions panel.
 
 **Denial is legible.** For the user's own shell, every refusal prints what was

@@ -57,8 +57,13 @@ impl Policy {
                 continue;
             }
             let resource = ResourceRef::FsPath(raw.clone());
-            if decide_app(RUNTIME_APP_ID, &resource, verb, &self.capabilities, now)
-                != CapDecision::Allow
+            if decide_app(
+                RUNTIME_APP_ID,
+                &resource,
+                verb,
+                &self.capabilities,
+                now.map(|now| now.saturating_mul(1000)),
+            ) != CapDecision::Allow
             {
                 continue;
             }
@@ -96,7 +101,7 @@ impl Policy {
                 &resource,
                 Access::Read,
                 &self.capabilities,
-                now,
+                now.map(|now| now.saturating_mul(1000)),
             ) != CapDecision::Allow
             {
                 continue;
@@ -153,7 +158,6 @@ impl Policy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::caps::Expiry;
     use tilo_environment::dir_grant;
 
     fn granted(path: &str, write: bool) -> Policy {
@@ -238,7 +242,7 @@ mod tests {
             );
 
             let mut expiring = granted("/var/home/you/src", true);
-            expiring.capabilities[0].expiry = Expiry::AtUnix(500);
+            expiring.capabilities[0].lifetime = tilo_action_policy::Lifetime::Until(500_000);
             assert_eq!(expiring.trusted_dirs(Some(499)).len(), 1);
             assert!(expiring.trusted_dirs(Some(501)).is_empty());
         }
@@ -256,7 +260,7 @@ mod tests {
             assert!(egress.allows("github.com").is_some());
             assert!(egress.allows("example.com").is_none());
 
-            policy.capabilities[0].expiry = Expiry::AtUnix(500);
+            policy.capabilities[0].lifetime = tilo_action_policy::Lifetime::Until(500_000);
             assert_eq!(policy.net_hosts(Some(501)), [".crates.io"]);
 
             let mut other = tilo_environment::host_grant("example.com").unwrap();

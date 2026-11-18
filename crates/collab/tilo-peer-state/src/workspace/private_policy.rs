@@ -101,7 +101,7 @@ fn grants(
     let mut expiries = Vec::new();
     for grant in &policy.grants {
         match grant.lifetime {
-            Lifetime::Once | Lifetime::Session(_) => return Err(rule(Rule::Nonpersistent)),
+            Lifetime::Once | Lifetime::Session => return Err(rule(Rule::Nonpersistent)),
             // Expiries are compared in seconds, rounded up so a grant is never
             // reported gone before it is.
             Lifetime::Until(at) => work

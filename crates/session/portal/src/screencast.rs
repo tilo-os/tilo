@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use tilo_action_policy::Lifetime;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Answer, Question};
 use zbus::interface;
@@ -66,9 +67,8 @@ pub(crate) struct Selection {
     pub types: u32,
     pub cursor_mode: u32,
     pub multiple: bool,
-    /// What the app asked to be remembered for: 0, 1 or 2; it is
-    /// remembered until it quits at most.
-    pub persist_mode: u32,
+    /// How long the app asked the share to be remembered; see [`kept_for`].
+    pub kept: Lifetime,
     /// What a restore key the app handed back shares again.
     pub restore: Option<Grant>,
 }
@@ -155,8 +155,8 @@ impl Casts {
 /// What a share started.
 pub(crate) struct Shared {
     pub streams: Vec<(CaptureSource, Stream)>,
-    /// The persist mode granted: 0 when nothing is remembered.
-    pub persist_mode: u32,
+    /// How long it is remembered: [`Lifetime::Once`] when it is not.
+    pub kept: Lifetime,
     /// The restore key it shared again under, handed back unchanged.
     pub restored: Option<String>,
 }
@@ -231,8 +231,8 @@ pub(crate) struct Ask<'a> {
     pub selection: Option<&'a Selection>,
     /// What a restore key shares again without asking.
     pub restore: Option<&'a Grant>,
-    /// What the app asked to be remembered for: 0, 1 or 2.
-    pub persist_mode: u32,
+    /// How long the app asked the share to be remembered.
+    pub kept: Lifetime,
     /// The question's kind.
     pub kind: &'a str,
     /// The devices a remote desktop drives.
@@ -264,10 +264,10 @@ pub(crate) async fn share(portal: &Portal, ask: Ask<'_>) -> Result<Shared, Ended
         .map_or(cursor_mode::HIDDEN, |selection| selection.cursor_mode);
     Ok(Shared {
         streams: start_streams(portal, ask.path, ask.caller, sources, cursor).await?,
-        persist_mode: if restored.is_some() {
-            1
+        kept: if restored.is_some() {
+            Lifetime::Session
         } else {
-            ask.persist_mode.min(1)
+            ask.kept
         },
         restored,
     })
@@ -380,7 +380,7 @@ pub(crate) fn remember(
 ) -> Result<(), Ended> {
     let key = match &shared.restored {
         Some(key) => key.clone(),
-        None if shared.persist_mode == 0 => return Ok(()),
+        None if shared.kept == Lifetime::Once => return Ok(()),
         None => {
             let key = portal.grants.insert(Grant {
                 key: String::new(),
@@ -400,7 +400,10 @@ pub(crate) fn remember(
         }
     };
     results.insert("restore_data".into(), restore_data(key).or_fail()?);
-    results.insert("persist_mode".into(), OwnedValue::from(shared.persist_mode));
+    results.insert(
+        "persist_mode".into(),
+        OwnedValue::from(u32::from(shared.kept == Lifetime::Session)),
+    );
     Ok(())
 }
 
@@ -458,15 +461,26 @@ pub(crate) fn selection_of(
     let types = option::<u32>(options, "types").unwrap_or_else(|| first_bit(available)) & available;
     let cursor =
         option::<u32>(options, "cursor_mode").unwrap_or_else(|| first_bit(cursors)) & cursors;
-    let persist_mode = option::<u32>(options, "persist_mode").unwrap_or(0);
-    (types != 0 && cursor != 0 && persist_mode <= 2).then(|| Selection {
+    let kept = kept_for(options)?;
+    (types != 0 && cursor != 0).then(|| Selection {
         types,
         // One mode, the plainest the app allowed.
         cursor_mode: first_bit(cursor),
         multiple: option::<bool>(options, "multiple").unwrap_or(false),
-        persist_mode,
+        kept,
         restore: None,
     })
+}
+
+/// How long the portal's `persist_mode` option asks a share to be remembered: 0 not at all, 1 or
+/// 2 (until revoked) for this session at most, as a restore key never outlives the session. `None`
+/// for a mode the portal does not define.
+pub(crate) fn kept_for(options: &HashMap<String, OwnedValue>) -> Option<Lifetime> {
+    match option::<u32>(options, "persist_mode").unwrap_or(0) {
+        0 => Some(Lifetime::Once),
+        1 | 2 => Some(Lifetime::Session),
+        _ => None,
+    }
 }
 
 /// The `org.freedesktop.impl.portal.ScreenCast` interface.
@@ -615,7 +629,7 @@ impl ScreenCast {
                             caller: &auth.caller,
                             selection: Some(&selection),
                             restore: selection.restore.as_ref(),
-                            persist_mode: selection.persist_mode,
+                            kept: selection.kept,
                             kind: SCREENCAST_QUESTION,
                             devices: 0,
                         },

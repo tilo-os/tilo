@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use collab_types::caps::{
     Access, CapDecision, CapOverride, DeviceCap, ResourceRef, Scope, decide_app,
 };
+use tilo_action_policy::Lifetime;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HostPolicy {
@@ -27,7 +28,7 @@ pub struct HostPolicy {
     pub capabilities: Vec<CapOverride>,
 }
 
-/// This login session's allows: `Expiry::EndOfSession` and `Expiry::AfterUse`
+/// This login session's allows: [`Lifetime::Session`] and [`Lifetime::Once`]
 /// grants, which are never written to disk. They live in the supervisor,
 /// which the user's service manager runs for the login session, so they are
 /// gone at logout.
@@ -42,22 +43,20 @@ impl HostPolicy {
         policy
     }
 
-    /// Record the person's allow for `app_id` with its lifetime, from the
-    /// shared vocabulary: "Always" (`Never`, or a deadline) on disk; "This
-    /// session" (`EndOfSession`) and "Allow" (`AfterUse`) in this session
-    /// only.
+    /// Record the person's allow for `app_id` for `lifetime`: a durable one on
+    /// disk, a one-use or session one in this session only.
     pub fn record_allow(
         store: &crate::store::Store,
         app_id: &str,
-        expiry: collab_types::caps::Expiry,
+        lifetime: Lifetime,
     ) -> std::io::Result<()> {
         let mut grant = Self::default();
         let id = grant.allow_host_shell(app_id);
         let Some(mut cap) = grant.capabilities.pop() else {
             return Ok(());
         };
-        cap.expiry = expiry;
-        if expiry.persists_across_restart() {
+        cap.lifetime = lifetime;
+        if lifetime.is_durable() {
             let path = Self::path(store);
             let mut policy = Self::load(&path);
             policy.capabilities.retain(|c| c.id != id);
@@ -74,7 +73,7 @@ impl HostPolicy {
     pub fn spend_one_time(app_id: &str) {
         let id = format!("ush-host-shell-{app_id}");
         if let Ok(mut session) = SESSION_GRANTS.lock() {
-            session.retain(|c| !(c.id == id && c.expiry == collab_types::caps::Expiry::AfterUse));
+            session.retain(|c| !(c.id == id && c.lifetime == Lifetime::Once));
         }
     }
 
@@ -95,7 +94,7 @@ impl HostPolicy {
             capabilities: self
                 .capabilities
                 .iter()
-                .filter(|c| c.persists_across_restart())
+                .filter(|c| c.is_durable())
                 .cloned()
                 .collect(),
         };
@@ -114,7 +113,8 @@ impl HostPolicy {
             &ResourceRef::Device(DeviceCap::HostShell),
             Access::Write,
             &self.capabilities,
-            now,
+            // `now` in seconds; a lifetime ends in milliseconds.
+            now.map(|now| now.saturating_mul(1000)),
         ) == CapDecision::Allow
     }
 

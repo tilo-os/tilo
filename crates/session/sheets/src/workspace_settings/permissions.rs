@@ -352,7 +352,7 @@ pub(super) fn sample() -> Permissions {
             ],
             how_long: "For how long".to_owned(),
             expiries: vec![
-                choice("never", "Until revoked"),
+                choice("always", "Until revoked"),
                 choice("session", "This session"),
                 choice("once", "Once"),
             ],

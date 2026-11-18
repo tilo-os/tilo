@@ -124,7 +124,7 @@ fn grant_sandbox(
     capability: &collab_types::caps::CapOverride,
     by: tilo_action_policy::MemberId,
 ) -> Result<(), String> {
-    if !capability.persists_across_restart() {
+    if !capability.is_durable() {
         return Err(
             "a capability that ends with a session or a single use is never written into the workspace"
                 .into(),

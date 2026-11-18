@@ -95,13 +95,13 @@ tilo_test_env::scenario! {
     {
         let cases: &[(Lifetime, &[u8])] = &[
             (Lifetime::Once, &[0x00]),
-            (Lifetime::Session("s1".into()), &[0x01, 0x02, b's', b'1']),
+            (Lifetime::Session, &[0x01]),
             (Lifetime::Until(5), &[0x02, 0x05]),
             (Lifetime::UntilRevoked, &[0x03]),
         ];
         for (lifetime, golden) in cases {
             match lifetime {
-                Lifetime::Once | Lifetime::Session(_) | Lifetime::Until(_) | Lifetime::UntilRevoked => {
+                Lifetime::Once | Lifetime::Session | Lifetime::Until(_) | Lifetime::UntilRevoked => {
                     stored_as!(lifetime, golden);
                 }
             }

@@ -4,7 +4,7 @@
 mod https_completion {
     use super::*;
     use crate::app_actions::{
-        AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
+        AppActionAnswer, AppActionConsentPrompter, AppActionConsentRequest,
         ModerationConsentPreview, ModerationConsentPurpose,
     };
 
@@ -593,14 +593,9 @@ mod https_completion {
                         "nothing is delivered before consent"
                     );
                     answer
-                        .send(
-                            if allow {
-                                AppActionConsent::Once
-                            } else {
-                                AppActionConsent::Deny
-                            }
-                            .into(),
-                        )
+                        .send(AppActionAnswer::unedited(
+                            allow.then_some(tilo_action_policy::Lifetime::Once),
+                        ))
                         .unwrap();
                     let result = bounded("durable admission after consent", call).await;
                     if allow {
@@ -721,7 +716,9 @@ mod https_completion {
                         futures::poll!(&mut delivery).is_pending(),
                         "nothing is delivered before consent"
                     );
-                    answer.send(AppActionConsent::Once.into()).unwrap();
+                    answer
+                        .send(tilo_action_policy::Lifetime::Once.into())
+                        .unwrap();
                     bounded("native admission after consent", call)
                         .await
                         .unwrap();

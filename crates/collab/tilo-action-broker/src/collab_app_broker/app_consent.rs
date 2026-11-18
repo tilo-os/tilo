@@ -17,9 +17,8 @@ use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest, RemoteActionM
 
 use super::AppBrokerState;
 use super::action_provider::{ConnectionActionProvider, RowScope};
-use crate::app_actions::{
-    AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
-};
+use crate::app_actions::{AppActionAnswer, AppActionConsentPrompter, AppActionConsentRequest};
+use tilo_action_policy::Lifetime;
 
 /// What happens to an application's invocation before it is served.
 pub(crate) enum ConsentStep {
@@ -217,7 +216,7 @@ impl AppBrokerState {
     fn keep_app_action_consent(
         &self,
         consent: &PendingConsent,
-        answer: AppActionConsent,
+        lifetime: Lifetime,
     ) -> Result<(), String> {
         let settings = self
             .services
@@ -225,17 +224,18 @@ impl AppBrokerState {
             .as_deref()
             .ok_or_else(|| "this device keeps no answers".to_owned())?;
         let key = key_of(&consent.request);
-        match answer {
-            // The call it was given for, and no other.
-            AppActionConsent::Once | AppActionConsent::Deny => Ok(()),
-            AppActionConsent::Session => self
+        match lifetime {
+            // The call it was given for, and no other. The settings keep no time, so an answer
+            // for a while is this call's too.
+            Lifetime::Once | Lifetime::Until(_) => Ok(()),
+            Lifetime::Session => self
                 .app_consent_session
                 .lock()
                 .map(|mut held| {
                     held.insert(key);
                 })
                 .map_err(|_| "this session's answers are unreadable".to_owned()),
-            AppActionConsent::Always => settings_store::app_consent::allow(settings, &key)
+            Lifetime::UntilRevoked => settings_store::app_consent::allow(settings, &key)
                 .map_err(|error| format!("the answer could not be saved: {error}")),
         }
     }
@@ -266,11 +266,14 @@ pub(super) fn serve_after_consent(
                     reason: "the sheet closed without the person's answer".into(),
                 },
             ),
-            Ok(answer) if !answer.consent.grants() => {
+            Ok(AppActionAnswer { lifetime: None, .. }) => {
                 refuse(&message, ActionCallError::NotPermitted)
             }
-            Ok(answer) => {
-                if let Err(reason) = state.keep_app_action_consent(&consent, answer.consent) {
+            Ok(AppActionAnswer {
+                lifetime: Some(lifetime),
+                ..
+            }) => {
+                if let Err(reason) = state.keep_app_action_consent(&consent, lifetime) {
                     refuse(&message, ActionCallError::Refused { reason })
                 } else {
                     // Answered at admission, as before waits existed: an answer

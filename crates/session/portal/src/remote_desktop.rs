@@ -129,7 +129,7 @@ pub enum ControlEffect {
 struct Remote {
     devices: u32,
     selected: bool,
-    persist_mode: u32,
+    kept: tilo_action_policy::Lifetime,
     restore: Option<Grant>,
     starting: bool,
     started: bool,
@@ -451,8 +451,8 @@ impl RemoteDesktop {
                     .owned(path, auth.owner.as_str(), &auth.caller)
                     == Some(SessionKind::RemoteDesktop),
             )?;
-            let persist_mode = option::<u32>(&options, "persist_mode").unwrap_or(0);
-            ensure(persist_mode <= 2)?;
+            let kept = crate::screencast::kept_for(&options);
+            ensure(kept.is_some())?;
             let restore = restore_key(&options)
                 .and_then(|key| self.portal.grants.get(&key, &auth.caller))
                 .filter(|grant| grant.devices != 0);
@@ -475,7 +475,7 @@ impl RemoteDesktop {
                     }
                     remote.devices = devices;
                     remote.selected = true;
-                    remote.persist_mode = persist_mode;
+                    remote.kept = kept.unwrap_or_default();
                     remote.restore = restore;
                     true
                 });
@@ -529,7 +529,7 @@ impl RemoteDesktop {
                             caller: &auth.caller,
                             selection: selection.as_ref(),
                             restore: remote.restore.as_ref(),
-                            persist_mode: remote.persist_mode,
+                            kept: remote.kept,
                             kind: REMOTE_DESKTOP_QUESTION,
                             devices: remote.devices,
                         },

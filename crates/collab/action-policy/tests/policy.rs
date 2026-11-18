@@ -422,6 +422,35 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase every_prompt_offers_the_same_lifetimes;
+    {
+        let offered = Lifetime::offered(NOW);
+        assert_eq!(
+            offered,
+            [
+                Lifetime::Once,
+                Lifetime::Session,
+                Lifetime::Until(NOW + tilo_action_policy::OFFERED_SPAN_MS),
+                Lifetime::UntilRevoked,
+            ]
+        );
+        for lifetime in offered {
+            assert_eq!(Lifetime::chosen(lifetime.choice(), NOW), Some(lifetime));
+        }
+        assert_eq!(Lifetime::chosen(4, NOW), None);
+        let keys: Vec<_> = offered.iter().map(|lifetime| lifetime.key()).collect();
+        assert_eq!(keys, ["once", "session", "until", "always"]);
+        let durable: Vec<_> = offered.iter().map(|lifetime| lifetime.is_durable()).collect();
+        assert_eq!(durable, [false, false, true, true]);
+        assert!(Lifetime::Until(NOW).is_live_at(Some(NOW - 1)));
+        assert!(!Lifetime::Until(NOW).is_live_at(Some(NOW)));
+        assert!(Lifetime::Until(NOW).is_live_at(None));
+        // Ordered by how long each lives.
+        let by_length = offered.map(|lifetime| lifetime.max(Lifetime::Until(NOW)));
+        assert_eq!(by_length[..2], [Lifetime::Until(NOW); 2]);
+        assert_eq!(by_length[2..], offered[2..]);
+    }
+
     phase expired_grants_are_not_live;
     {
         let grants = [
@@ -432,24 +461,6 @@ tilo_test_env::scenario! {
         let earlier = Context::at(NOW - 1);
         let decision = decide(&grants, &[alice()], &send(), ActionKind::Outside, &earlier);
         assert_eq!(decision.answer, Answer::Deny);
-    }
-
-    phase session_grants_live_only_in_their_session;
-    {
-        let grants = [grant("s", mail(), KindSet::ALL, Answer::Allow)
-            .with_lifetime(Lifetime::Session("s1".into()))];
-        let here = cx().in_session("s1");
-        let elsewhere = cx().in_session("s2");
-        assert_eq!(
-            decide(&grants, &[alice()], &send(), ActionKind::Read, &here).answer,
-            Answer::Allow
-        );
-        assert_eq!(
-            decide(&grants, &[alice()], &send(), ActionKind::Read, &elsewhere).answer,
-            Answer::Deny
-        );
-        // A receiver that does not know sessions leaves the refusal to the device.
-        assert_eq!(answer(&grants, &send(), ActionKind::Read), Answer::Allow);
     }
 
     phase once_grants_are_reported_for_consumption;
@@ -922,7 +933,7 @@ tilo_test_env::scenario! {
                 KindSet::READ,
                 Answer::Allow,
             )
-            .with_lifetime(Lifetime::Session("s".into())),
+            .with_lifetime(Lifetime::Session),
         ];
         assert_eq!(
             describe(&grants, &Names),

@@ -194,19 +194,10 @@ pub enum WorkspaceDefaultError {
     InvalidSelection(desktop_policy::DefaultAppError),
 }
 
-/// The decision context at `now`, Unix seconds, in this process's session:
-/// a grant given "until log out" ([`Lifetime::Session`] of
-/// [`session_id`]) is dead in any later one.
+/// The decision context at `now`, Unix seconds.
 #[must_use]
 pub fn context_at(now: u64) -> Context<'static> {
-    Context::at_secs(now).in_session(session_id())
-}
-
-/// This process's session, which a grant given "until log out" names.
-#[must_use]
-pub fn session_id() -> &'static str {
-    static SESSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    SESSION.get_or_init(|| uuid::Uuid::new_v4().to_string())
+    Context::at_secs(now)
 }
 
 /// Every authority question takes the caller's clock as `now`, Unix
@@ -279,7 +270,7 @@ impl Workspace {
     // The sandbox: what apps' code may reach, granted through portals.
 
     pub fn app_capabilities_at(&self, app_id: &str, now: u64) -> Vec<&CapOverride> {
-        let live_at = Some(now);
+        let live_at = Some(now.saturating_mul(1000));
         self.sandbox
             .iter()
             .filter(|c| c.names_app(app_id) && c.effect == Effect::Grant && c.is_live_at(live_at))
@@ -307,7 +298,13 @@ impl Workspace {
         access: Access,
         now: u64,
     ) -> CapDecision {
-        decide_app(app, resource, access, &self.sandbox, Some(now))
+        decide_app(
+            app,
+            resource,
+            access,
+            &self.sandbox,
+            Some(now.saturating_mul(1000)),
+        )
     }
 
     /// May `acting` reach `resource` with `access` under the workspace's sandbox?
@@ -318,12 +315,18 @@ impl Workspace {
         access: Access,
         now: u64,
     ) -> CapDecision {
-        decide_capability(acting, resource, access, &self.sandbox, Some(now))
+        decide_capability(
+            acting,
+            resource,
+            access,
+            &self.sandbox,
+            Some(now.saturating_mul(1000)),
+        )
     }
 
     /// Record a sandbox capability, minting an id if the caller didn't supply
     /// one. A re-grant of the same (grantee, app, scope, effect, access) merges,
-    /// keeping the longer-lived expiry.
+    /// keeping the longer lifetime.
     pub fn grant_sandbox(&mut self, mut cap: CapOverride) -> String {
         if let Some(held) = self.sandbox.iter_mut().find(|c| {
             c.grantee == cap.grantee
@@ -332,7 +335,7 @@ impl Workspace {
                 && c.effect == cap.effect
                 && c.access == cap.access
         }) {
-            held.expiry = collab_types::caps::Expiry::longest(held.expiry, cap.expiry);
+            held.lifetime = held.lifetime.max(cap.lifetime);
             if !cap.id.is_empty() {
                 held.id = cap.id;
             }
@@ -466,21 +469,14 @@ impl Workspace {
     /// every decision answers the same as at `now` unless the workspace is
     /// written. `None` while nothing expires later.
     pub fn next_grant_expiry_after(&self, now: u64) -> Option<u64> {
-        let grants = self
-            .policy
-            .grants
-            .iter()
-            .filter_map(|grant| match grant.lifetime {
+        let lifetimes = self.policy.grants.iter().map(|grant| grant.lifetime);
+        lifetimes
+            .chain(self.sandbox.iter().map(|cap| cap.lifetime))
+            .filter_map(|lifetime| match lifetime {
                 // Live while the clock is before `at` milliseconds.
                 Lifetime::Until(at) => Some(at.div_ceil(1000)),
                 _ => None,
-            });
-        let sandbox = self.sandbox.iter().filter_map(|cap| match cap.expiry {
-            collab_types::caps::Expiry::AtUnix(deadline) => Some(deadline),
-            _ => None,
-        });
-        grants
-            .chain(sandbox)
+            })
             .filter(|deadline| *deadline > now)
             .min()
     }
@@ -651,7 +647,7 @@ impl Workspace {
             let until = match grant.lifetime {
                 Lifetime::Until(ms) => Some(ms / 1000),
                 Lifetime::UntilRevoked => None,
-                Lifetime::Once | Lifetime::Session(_) => continue,
+                Lifetime::Once | Lifetime::Session => continue,
             };
             let held = readers.entry(person.to_owned()).or_insert(until);
             *held = match (*held, until) {

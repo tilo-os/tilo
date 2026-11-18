@@ -4,16 +4,14 @@
 /// The clock these fixtures run at, Unix seconds.
 const NOW: u64 = 1_800_000_000;
 
-use collab_types::caps::{
-    Access, CapDecision, CapOverride, DeviceCap, Effect, Expiry, ResourceRef, Scope,
-};
-use tilo_action_policy::Grantee;
+use collab_types::caps::{Access, CapDecision, CapOverride, DeviceCap, Effect, ResourceRef, Scope};
+use tilo_action_policy::{Grantee, Lifetime};
 use tilo_desktop_model::*;
 
-fn grant(app: &str, scope: Scope, access: Access, expiry: Expiry) -> CapOverride {
+fn grant(app: &str, scope: Scope, access: Access, lifetime: Lifetime) -> CapOverride {
     CapOverride::grant(Grantee::person("ada"), scope, access)
         .through(app)
-        .expiring(expiry)
+        .lasting(lifetime)
 }
 
 tilo_test_env::scenario! {
@@ -65,13 +63,13 @@ tilo_test_env::scenario! {
             "org.gnome.gedit",
             Scope::FsPath("/home/u/work".into()),
             Access::Write,
-            Expiry::Never,
+            Lifetime::UntilRevoked,
         ));
         ws.grant_sandbox(grant(
             "org.gnome.gedit",
             Scope::NetHost("github.com".into()),
             Access::Write,
-            Expiry::EndOfSession,
+            Lifetime::Session,
         ));
 
         let json = serde_json::to_string(&ws).expect("serialize");
@@ -136,7 +134,7 @@ tilo_test_env::scenario! {
     // What the broker re-checks at: the earliest expiry still ahead, over every
     // workspace, and nothing for grants that never expire or already did.
     {
-        use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
+        use tilo_action_policy::{Answer, Grant, KindSet, TreePath};
         const SOON: u64 = NOW + 5;
         const LATER: u64 = NOW + 60;
         let member = |person: &str, until: Option<u64>| {
@@ -164,7 +162,12 @@ tilo_test_env::scenario! {
         );
         first.grant(member("later", Some(LATER)));
         let mut second = Workspace::new(WorkspaceId::from_u128(2), "Second");
-        second.grant(member("sooner", Some(SOON)));
+        second.grant_sandbox(grant(
+            "org.gnome.gedit",
+            Scope::FsPath("/home/u/work".into()),
+            Access::Write,
+            Lifetime::Until(SOON * 1000),
+        ));
         assert_eq!(first.next_grant_expiry_after(NOW), Some(LATER));
         assert_eq!(second.next_grant_expiry_after(NOW), Some(SOON));
         let tree = Layout {
@@ -193,13 +196,13 @@ tilo_test_env::scenario! {
             TERMINAL,
             Scope::Device(DeviceCap::DesktopControl),
             Access::Write,
-            Expiry::Never,
+            Lifetime::UntilRevoked,
         ));
         ws.grant_sandbox(grant(
             TERMINAL,
             Scope::NetHost("*".into()),
             Access::Write,
-            Expiry::Never,
+            Lifetime::UntilRevoked,
         ));
         assert!(holds(&ws, TERMINAL));
         assert!(

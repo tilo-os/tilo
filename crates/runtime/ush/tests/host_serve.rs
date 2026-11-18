@@ -14,7 +14,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use collab_types::caps::Expiry;
+use tilo_action_policy::Lifetime;
 use ush::host::{HostPolicy, TERMINAL_APP_ID, encode_handoff};
 use ush::store::Store;
 use ush::supervisor::{ServeResponse, recv_with_fd};
@@ -84,14 +84,14 @@ fn ask(
     (response, fd, stream)
 }
 
-fn allow(socket: &Path, app: Option<&str>, expiry: Expiry) -> ServeResponse {
+fn allow(socket: &Path, app: Option<&str>, lifetime: Lifetime) -> ServeResponse {
     let stream = UnixStream::connect(socket).unwrap();
     if let Some(app) = app {
         (&stream).write_all(&encode_handoff(app).unwrap()).unwrap();
     }
     let mut line = serde_json::to_vec(&serde_json::json!({
         "op": "allow-host",
-        "expiry": expiry,
+        "expiry": lifetime,
     }))
     .unwrap();
     line.push(b'\n');
@@ -108,15 +108,12 @@ fn allows_last_as_long_as_the_person_said_and_only_the_shell_records_them() {
     let _env = identities(dir.path(), OWNER, OWNER);
     let (socket, store) = serving(dir.path());
 
-    let response = allow(&socket, Some(TERMINAL_APP_ID), Expiry::Never);
+    let response = allow(&socket, Some(TERMINAL_APP_ID), Lifetime::UntilRevoked);
     assert!(reason(&response).contains("shell"), "{response:?}");
     let (response, _, _) = ask(&socket, Some(TERMINAL_APP_ID), "person");
     assert!(matches!(response, ServeResponse::HostNotAllowed { .. }));
 
-    assert_eq!(
-        allow(&socket, None, Expiry::AfterUse),
-        ServeResponse::Allowed
-    );
+    assert_eq!(allow(&socket, None, Lifetime::Once), ServeResponse::Allowed);
     let (response, fd, _first) = ask(&socket, Some(TERMINAL_APP_ID), "person");
     assert!(
         matches!(response, ServeResponse::Session { .. }),
@@ -131,7 +128,7 @@ fn allows_last_as_long_as_the_person_said_and_only_the_shell_records_them() {
 
     // "This session": every session until logout, never on disk.
     assert_eq!(
-        allow(&socket, None, Expiry::EndOfSession),
+        allow(&socket, None, Lifetime::Session),
         ServeResponse::Allowed
     );
     for _ in 0..2 {
@@ -148,7 +145,10 @@ fn allows_last_as_long_as_the_person_said_and_only_the_shell_records_them() {
         "a session's allow is never written to disk"
     );
 
-    assert_eq!(allow(&socket, None, Expiry::Never), ServeResponse::Allowed);
+    assert_eq!(
+        allow(&socket, None, Lifetime::UntilRevoked),
+        ServeResponse::Allowed
+    );
     assert!(HostPolicy::load(&HostPolicy::path(&store)).allows_host_shell(TERMINAL_APP_ID, None));
 }
 

@@ -384,7 +384,8 @@ async fn capabilities_grant_exactly_their_path_verb_and_lifetime() {
         f.shutdown().await;
     }
     {
-        let expired = read_cap(ALICE, "/w/docs").with_expiry(1_000);
+        let expired =
+            read_cap(ALICE, "/w/docs").lasting(tilo_action_policy::Lifetime::Until(1_000_000));
 
         let live = cap_fixture(ALICE, std::slice::from_ref(&expired), Some(999)).await;
         assert_eq!(
