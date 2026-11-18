@@ -69,6 +69,10 @@ pub struct Base {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one field per independent switch vm create keeps for the VM"
+)]
 pub struct VmEntry {
     pub hypervisor: String,
     /// `[user@]host[:port]`; when absent the adapter discovers the address.
@@ -108,6 +112,12 @@ pub struct VmEntry {
     /// choice was kept: the domain then resolves it again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_node: Option<String>,
+    /// Vulkan on the host GPU for the guest (virtio-gpu Venus); needs `gl`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vulkan: bool,
+    /// A sound card whose output QEMU writes to `<disk>.wav` (`vm sound`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sound: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

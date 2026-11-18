@@ -5,6 +5,11 @@
 # of. A use of Tilo's own concept never goes here: rename it.
 
 [[allow]]
+reason = "A WAV recording's audio channels (left, right), not a Tilo channel."
+words = ["channel"]
+paths = ["crates/dev/tilo-vm/src/sound.rs"]
+
+[[allow]]
 reason = "The peer-state and workspace service APIs' own names a test that drives them calls: a device's own workspace service (`OwnHost`, `own_host`), the holders of a workspace (`hosts`) and a holder address's `host` field, the action that hands a workspace to another holder (`HOST_WORKSPACE`), and a link's `run`."
 words = ["host", "run"]
 identifiers = ["OwnHost", "own_host", "hosts", "host", "HOST_WORKSPACE", "run"]

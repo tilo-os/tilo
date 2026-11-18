@@ -1015,6 +1015,17 @@ pub enum VmCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Measure what the VM's sound card played (a VM created with --sound): seconds written and the loudness of the newest stretch.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm sound dev                 # total seconds and the last 2 s\n  tilo-vm vm sound dev --window 5\n\nQEMU writes the guest's sound output to <disk>.wav while a stream plays.\nSound kept playing across a restart when a second measurement shows more\nseconds than the first and its newest stretch is not silent. tilo-vm guide devices."
+    )]
+    Sound {
+        /// The VM (default: the one this worktree uses).
+        name: Option<String>,
+        /// Seconds at the end of the recording whose loudness to report.
+        #[arg(long, default_value_t = 2.0)]
+        window: f64,
+    },
     /// Hard-reset the VM.
     #[command(after_help = "Examples:\n  tilo-vm vm reset")]
     Reset {
@@ -1158,6 +1169,16 @@ pub struct CreateArgs {
     /// --rendernode.
     #[arg(long, requires = "gl")]
     pub render_node: Option<String>,
+    /// libvirt or QEMU with --gl: Vulkan on that same GPU in the guest
+    /// (virtio-gpu Venus), so vkcube and DXVK render on the host GPU instead
+    /// of the guest's CPU Vulkan driver. tilo-vm guide devices.
+    #[arg(long, requires = "gl")]
+    pub vulkan: bool,
+    /// libvirt or QEMU: a sound card whose output QEMU writes to
+    /// `<disk>.wav` next to the VM's disk, never to this computer's speakers;
+    /// `tilo-vm vm sound` measures it.
+    #[arg(long)]
+    pub sound: bool,
     /// libvirt or QEMU: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
     #[arg(long, value_parser = parse_resolution)]
     pub resolution: Option<String>,
