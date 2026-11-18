@@ -440,7 +440,7 @@ paths = ["crates/runtime/tilo-mcp/src/mcp_serve_tests.rs"]
 [[allow]]
 reason = "A replica test drives the platform's Host API: `migrate` is only on Host, and the tests' own field for it keeps that name while the API is being renamed."
 words = ["host"]
-paths = ["crates/platform/tilolang-tilo/tests/migrations.rs"]
+paths = ["crates/platform/tilolang-tilo/tests/migrations.rs", "crates/platform/tilolang-tilo/tests/gallery.rs"]
 identifiers = ["host"]
 
 [[allow]]

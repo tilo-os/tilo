@@ -826,6 +826,7 @@ package = "tilolang-tilo"
 # task's session holds a native app's package from its surface.
 inputs = [
   "apps/tl/",
+  "apps/tl/gallery/",
   "apps/chat/",
   "apps/tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
@@ -845,6 +846,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/discussion.rs",
   "crates/platform/tilolang-tilo/tests/done_days.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
+  "crates/platform/tilolang-tilo/tests/gallery.rs",
   "crates/platform/tilolang-tilo/tests/history_views.rs",
   "crates/platform/tilolang-tilo/tests/headings.rs",
   "crates/platform/tilolang-tilo/tests/legacy.rs",
@@ -891,6 +893,7 @@ package = "tilolang-process"
 # their surfaces, as a session hands them.
 inputs = [
   "apps/tl/",
+  "apps/tl/gallery/",
   "apps/chat/",
   "apps/tasks/",
   "crates/platform/tilo-app-window/locales/",

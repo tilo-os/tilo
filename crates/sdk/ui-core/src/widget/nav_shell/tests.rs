@@ -2665,3 +2665,37 @@ impl Widget for Remounting {
         "Remounting"
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_page_window_at_a_laptop_width_stands_its_sidebar_beside_the_page;
+
+    // A gallery is a page beside its groups' list: at a laptop's width the list stands beside
+    // the page rather than folding behind a control.
+    phase its_sidebar_stands_beside_the_page_at_930_wide;
+    {
+        let mut h = harness(settings_shell(), 930, 700, Theme::dark());
+        settle(&mut h, 930, 700);
+        let g = geometry(&h);
+        assert_eq!(g.sidebar, SidebarPlacement::Docked);
+        assert!(g.sidebar_column.width() > 0.0);
+        assert!(
+            g.content_column.width() >= Metrics::resolve(&Theme::dark()).page_min - 0.5,
+            "the page keeps its reading width beside the list"
+        );
+    }
+
+    // Narrower than a page and a list, the list folds behind the shell's own control, which the
+    // window's bar shows.
+    phase a_folded_sidebar_is_a_control_away;
+    {
+        let mut h = harness(settings_shell(), 600, 700, Theme::dark());
+        settle(&mut h, 600, 700);
+        let g = geometry(&h);
+        assert_ne!(g.sidebar, SidebarPlacement::Docked);
+        let shell = h.root::<NavShell>();
+        assert!(
+            shell.window_toolbar().sidebar.is_some(),
+            "the bar offers the sidebar while it is folded"
+        );
+    }
+}

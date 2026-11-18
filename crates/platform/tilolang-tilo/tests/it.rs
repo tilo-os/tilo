@@ -32,6 +32,7 @@ mod done_days;
 mod engines;
 mod fixtures;
 mod foreign;
+mod gallery;
 mod headings;
 #[cfg(feature = "document")]
 mod history_views;

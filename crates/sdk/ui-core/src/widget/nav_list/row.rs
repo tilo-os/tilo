@@ -604,12 +604,23 @@ impl Widget for NavRow {
                 });
             }
             NavRowKind::Section { title, .. } => {
+                // As the canvas draws it: a heading in the row's band, inset from the list's
+                // edge, clear of the gap the section keeps above it.
                 cx.element("div");
-                cx.text(TextLook::new(
-                    title.clone(),
-                    &theme.text(crate::tokens::TextRole::Caption),
-                    Some(quiet),
-                ));
+                let face = NavSectionFace::new(self.rect, title);
+                let layout = nav_section_layout(&theme, &face);
+                let style = theme.text(TextRole::Subheading);
+                cx.words(
+                    "title",
+                    "h3",
+                    Rect::new(
+                        layout.title_x0,
+                        layout.band.y0,
+                        layout.title_x1,
+                        layout.band.y1,
+                    ),
+                    TextLook::new(title.clone(), &style, Some(quiet)),
+                );
             }
             NavRowKind::Caption { caption, .. } => {
                 cx.element("p");
