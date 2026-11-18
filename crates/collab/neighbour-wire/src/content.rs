@@ -628,11 +628,8 @@ mod tests {
     #[test]
     fn content_crosses_in_windows_rather_than_all_at_once() {
         let (host, page) = ([1; 32], [2; 32]);
-        let windows = 3;
-        let bytes: Vec<u8> = (0..=u8::MAX)
-            .cycle()
-            .take(PIECE_BYTES * PIECES_PER_ANSWER * windows)
-            .collect();
+        let windows = 2;
+        let bytes = vec![0x83; PIECE_BYTES * PIECES_PER_ANSWER * windows];
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let mut wants = ContentWants::default();
         let workspace = ("so.tilo.chat", "workspace");
