@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::fabric::{DeviceFabric, DeviceId, Ipv4Subnet, MAX_WAKE_ROUTES, WakeOutcome, WakeRoute};
+use crate::fabric::{DeviceId, Ipv4Subnet, MAX_WAKE_ROUTES, PersonDevices, WakeOutcome, WakeRoute};
 
 /// The port a magic packet goes to.
 pub const MAGIC_PACKET_PORT: u16 = 9;
@@ -121,20 +121,20 @@ pub struct WakePlan {
 /// # Errors
 ///
 /// Returns why `name` names no single device.
-pub fn resolve_device(fabric: &DeviceFabric, name: &str) -> Result<DeviceId, WakeRefusal> {
+pub fn resolve_device(fabric: &PersonDevices, name: &str) -> Result<DeviceId, WakeRefusal> {
     let name = name.trim();
     if let Some(snapshot) = fabric
-        .snapshots()
+        .devices()
         .values()
-        .find(|snapshot| snapshot.owner.as_str() == name)
+        .find(|snapshot| snapshot.device.as_str() == name)
     {
-        return Ok(snapshot.owner.clone());
+        return Ok(snapshot.device.clone());
     }
     let mut matches = fabric
-        .snapshots()
+        .devices()
         .values()
-        .filter(|snapshot| snapshot.presence.label.eq_ignore_ascii_case(name))
-        .map(|snapshot| snapshot.owner.clone());
+        .filter(|snapshot| snapshot.about.label.eq_ignore_ascii_case(name))
+        .map(|snapshot| snapshot.device.clone());
     match (matches.next(), matches.next()) {
         (Some(device), None) => Ok(device),
         (Some(_), Some(_)) => Err(WakeRefusal::AmbiguousDevice(name.to_owned())),
@@ -143,10 +143,10 @@ pub fn resolve_device(fabric: &DeviceFabric, name: &str) -> Result<DeviceId, Wak
 }
 
 /// The subnets a magic packet can wake `target` on, in its own order.
-fn wakeable_subnets(fabric: &DeviceFabric, target: &DeviceId) -> Vec<Ipv4Subnet> {
+fn wakeable_subnets(fabric: &PersonDevices, target: &DeviceId) -> Vec<Ipv4Subnet> {
     let mut subnets = Vec::new();
     for route in fabric
-        .snapshots()
+        .devices()
         .get(target)
         .map(|snapshot| snapshot.presence.wake_routes.as_slice())
         .unwrap_or_default()
@@ -178,7 +178,7 @@ fn on_subnet(routes: &[WakeRoute], subnet: Ipv4Subnet) -> bool {
 ///
 /// Returns why nothing can wake the target, naming the subnets searched.
 pub fn plan_wake(
-    fabric: &DeviceFabric,
+    fabric: &PersonDevices,
     local: &DeviceId,
     local_routes: &[WakeRoute],
     target: &DeviceId,
@@ -188,9 +188,9 @@ pub fn plan_wake(
         return Err(WakeRefusal::LocalDevice);
     }
     let label = fabric
-        .snapshots()
+        .devices()
         .get(target)
-        .map(|snapshot| snapshot.presence.label.clone())
+        .map(|snapshot| snapshot.about.label.clone())
         .ok_or_else(|| WakeRefusal::UnknownDevice(target.as_str().to_owned()))?;
     let subnets = wakeable_subnets(fabric, target);
     if subnets.is_empty() {
@@ -209,13 +209,13 @@ pub fn plan_wake(
         return Ok(plan(local, subnet));
     }
     for subnet in &subnets {
-        if let Some(sibling) = fabric.snapshots().values().find(|snapshot| {
-            &snapshot.owner != target
-                && &snapshot.owner != local
-                && awake(&snapshot.owner)
+        if let Some(sibling) = fabric.devices().values().find(|snapshot| {
+            &snapshot.device != target
+                && &snapshot.device != local
+                && awake(&snapshot.device)
                 && on_subnet(&snapshot.presence.wake_routes, *subnet)
         }) {
-            return Ok(plan(&sibling.owner, *subnet));
+            return Ok(plan(&sibling.device, *subnet));
         }
     }
     Err(WakeRefusal::NoAwakeSibling(subnets))
@@ -225,12 +225,12 @@ pub fn plan_wake(
 /// of the target on a subnet this device is on.
 #[must_use]
 pub fn magic_packets_for(
-    fabric: &DeviceFabric,
+    fabric: &PersonDevices,
     local_routes: &[WakeRoute],
     target: &DeviceId,
 ) -> Vec<([u8; 6], Ipv4Subnet)> {
     fabric
-        .snapshots()
+        .devices()
         .get(target)
         .map(|snapshot| snapshot.presence.wake_routes.as_slice())
         .unwrap_or_default()
@@ -541,10 +541,9 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
-    use crate::fabric::FabricStamp;
     use crate::fabric::{
-        DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-        FabricCapabilities, OwnerSession, WakeInterfaceKind,
+        DeviceAbout, DeviceKind, DevicePresence, FabricCapabilities, PersonDevice,
+        WakeInterfaceKind,
     };
 
     fn id(value: &str) -> DeviceId {
@@ -565,41 +564,25 @@ mod tests {
         }
     }
 
-    fn device(name: &str, label: &str, routes: Vec<WakeRoute>) -> DeviceFabricSnapshot {
-        let owner = id(name);
-        DeviceFabricSnapshot {
-            schema_version: FABRIC_SCHEMA_VERSION,
-            owner: owner.clone(),
-            presence: DevicePresence {
-                device: owner.clone(),
+    fn device(name: &str, label: &str, routes: Vec<WakeRoute>) -> PersonDevice {
+        let mut device = PersonDevice::new(
+            id(name),
+            DeviceAbout {
                 label: label.into(),
                 kind: DeviceKind::Laptop,
                 capabilities: FabricCapabilities::default(),
-                online: true,
-                last_seen_unix_ms: 1,
-                wake_routes: routes,
-                session: OwnerSession::default(),
-                stamp: FabricStamp {
-                    counter: 1,
-                    device: owner,
-                },
             },
-            media: Vec::new(),
-            clipboard: Vec::new(),
-            settings: Vec::new(),
-            wifi: Vec::new(),
-            display: None,
-            unlock: crate::fabric::unlock::UnlockFabricState::default(),
-            speakers: crate::fabric::speaker_group::SpeakerFabricState::default(),
-        }
+        );
+        device.online = true;
+        device.presence = DevicePresence {
+            wake_routes: routes,
+            ..DevicePresence::default()
+        };
+        device
     }
 
-    fn fabric(devices: Vec<DeviceFabricSnapshot>) -> DeviceFabric {
-        let mut fabric = DeviceFabric::default();
-        for snapshot in devices {
-            fabric.upsert(snapshot).unwrap();
-        }
-        fabric
+    fn fabric(devices: Vec<PersonDevice>) -> PersonDevices {
+        PersonDevices::new(devices, Vec::new())
     }
 
     #[test]

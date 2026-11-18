@@ -215,8 +215,8 @@ mod tests {
     use std::time::Duration;
 
     use crate::platform::fabric::{
-        DeviceFabric, DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-        FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
+        DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
+        PersonalFabricAction,
     };
     use crate::platform::fabric::{
         FabricLink, NearbySpoolOffer, PersonalFabricSendError, SharedLink,
@@ -226,40 +226,25 @@ mod tests {
     use super::*;
     use crate::platform::fabric::Continuity;
 
-    /// One of the person's devices as it last published itself.
-    fn device(id: &str, label: &str, online: bool, counter: u64) -> DeviceFabricSnapshot {
-        let owner = DeviceId::new(id).expect("a device id");
-        DeviceFabricSnapshot {
-            schema_version: FABRIC_SCHEMA_VERSION,
-            owner: owner.clone(),
-            presence: DevicePresence {
-                device: owner.clone(),
+    /// One of the person's devices as it last said itself.
+    fn device(id: &str, label: &str, online: bool) -> PersonDevice {
+        let mut device = PersonDevice::new(
+            DeviceId::new(id).expect("a device id"),
+            DeviceAbout {
                 label: label.to_owned(),
                 kind: DeviceKind::Laptop,
                 capabilities: FabricCapabilities::default(),
-                online,
-                last_seen_unix_ms: 10,
-                wake_routes: Vec::new(),
-                session: OwnerSession::default(),
-                stamp: FabricStamp {
-                    counter,
-                    device: owner,
-                },
             },
-            media: Vec::new(),
-            clipboard: Vec::new(),
-            settings: Vec::new(),
-            wifi: Vec::new(),
-            display: None,
-            unlock: crate::platform::fabric::UnlockFabricState::default(),
-            speakers: crate::platform::fabric::SpeakerFabricState::default(),
-        }
+        );
+        device.online = online;
+        device.last_seen_unix_ms = 10;
+        device
     }
 
-    /// The person's fabric as a session sees it, recording what it is asked to carry instead of
+    /// The person's devices as a session sees them, keeping what it is asked to carry instead of
     /// carrying it.
     struct FakeFabric {
-        fabric: DeviceFabric,
+        fabric: PersonDevices,
         local: DeviceId,
         online: BTreeSet<DeviceId>,
         /// Every action offered, with the device it was offered to.
@@ -273,13 +258,13 @@ mod tests {
         fn new() -> Self {
             let local = DeviceId::new("device-this").expect("a device id");
             let phone = DeviceId::new("device-phone").expect("a device id");
-            let mut fabric = DeviceFabric::default();
-            fabric
-                .upsert(device("device-this", "This laptop", true, 1))
-                .expect("this device");
-            fabric
-                .upsert(device("device-phone", "Ada's phone", true, 2))
-                .expect("the phone");
+            let fabric = PersonDevices::new(
+                [
+                    device("device-this", "This laptop", true),
+                    device("device-phone", "Ada's phone", true),
+                ],
+                Vec::new(),
+            );
             let online = [local.clone(), phone].into_iter().collect();
             Self {
                 fabric,
@@ -300,7 +285,7 @@ mod tests {
     }
 
     impl FabricLink for FakeFabric {
-        fn device_fabric(&self) -> DeviceFabric {
+        fn devices(&self) -> PersonDevices {
             self.fabric.clone()
         }
 

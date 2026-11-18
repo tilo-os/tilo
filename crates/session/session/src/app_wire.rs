@@ -20,15 +20,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
-use tilo_workspace_service::apps::NativePeerBrokerConfig;
-use tilo_workspace_service::apps::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
-use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
-use tilo_workspace_service::apps::services::{
-    ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
-    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
-    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
-    WifiContinuityServices, WorkspaceMemberships,
-};
 use tilo_actions::ApiError;
 use tilo_broker_core::services::{
     ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
@@ -38,6 +29,15 @@ use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
 use tilo_workspace_keys::KeyProvider;
+use tilo_workspace_service::apps::NativePeerBrokerConfig;
+use tilo_workspace_service::apps::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
+use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
+use tilo_workspace_service::apps::services::{
+    ApplicationServices, BrowserServiceSessionServices, Caller, DisplayControlServices,
+    DriveServices, ProcessServices, PublishedResources, Reading, ResourceWatch,
+    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
+    WifiContinuityServices, WorkspaceMemberships,
+};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::activity_provider::ActivityWire;
@@ -551,9 +551,11 @@ pub(crate) fn owner_publisher(
     engine.map_or_else(PeerPublisher::disabled, |engine| {
         PeerPublisher::with_optional_owner_commit(
             None,
-            std::sync::Arc::new(tilo_workspace_service::apps::owner_commits::NativeOwnerCommits::new(
-                engine, records,
-            )),
+            std::sync::Arc::new(
+                tilo_workspace_service::apps::owner_commits::NativeOwnerCommits::new(
+                    engine, records,
+                ),
+            ),
         )
     })
 }
@@ -1115,8 +1117,8 @@ fn broker_services(
     let steps_fabric = fabric.clone();
     // The certificate checks this session's broker decides a join and a
     // retained action against: the session's own, or one of the tests'.
-    let certificates: std::sync::Arc<dyn tilo_workspace_service::apps::CertificateAuthority> = certificates
-        .unwrap_or_else(|| {
+    let certificates: std::sync::Arc<dyn tilo_workspace_service::apps::CertificateAuthority> =
+        certificates.unwrap_or_else(|| {
             std::sync::Arc::new(tilo_identity_authority::NativeCertificates::default())
         });
     // This person's settings on this device: each app reaches its own entries
@@ -1284,7 +1286,10 @@ fn broker_services(
         // screenshot and a file alike, and the receiving device's person
         // chooses where it lands there.
         nearby_transfer: BrokerService::when(nearby.map(|nearby| {
-            nearby as std::sync::Arc<dyn tilo_workspace_service::apps::services::NearbyTransferServices>
+            nearby
+                as std::sync::Arc<
+                    dyn tilo_workspace_service::apps::services::NearbyTransferServices,
+                >
         })),
         // A person copies and cuts in Files and pastes the copy in another
         // folder or another app: what they copied is offered here, and every
@@ -1299,7 +1304,8 @@ fn broker_services(
             std::sync::Arc::new(SessionGrants::new(
                 engine,
                 std::sync::Arc::clone(&grants_layout),
-            )) as std::sync::Arc<dyn tilo_workspace_service::apps::services::WorkspaceGrants>
+            ))
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::WorkspaceGrants>
         })),
         launchable_catalogue: BrokerService::when(launchable_catalogue),
         document_content: BrokerService::when(document_content.map(|content| content.route())),
@@ -1522,7 +1528,9 @@ impl AppWire {
 
     /// The route to one window's app, for the step of a move it is asked for:
     /// what answers on the window's continuation channel.
-    pub(crate) fn handoff(&self) -> tilo_workspace_service::apps::collab_broker::SessionFollowDispatcher {
+    pub(crate) fn handoff(
+        &self,
+    ) -> tilo_workspace_service::apps::collab_broker::SessionFollowDispatcher {
         self.broker.follow_dispatcher()
     }
 
@@ -1530,7 +1538,8 @@ impl AppWire {
     /// through, while it takes work.
     pub(crate) fn agent_broker(
         &self,
-    ) -> Option<std::sync::Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>> {
+    ) -> Option<std::sync::Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>>
+    {
         self.broker.fanout.app_broker()
     }
 
@@ -1587,66 +1596,50 @@ mod tests {
         AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
     };
     use crate::platform::fabric::{
-        DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
-        FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, OwnerSession, PersonalFabricAction,
+        DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
+        PersonalFabricAction,
     };
     use crate::platform::fabric::{FabricLink, PersonalFabricSendError};
 
-    /// This laptop's device fabric, with the one output it publishes.
+    /// This laptop's devices, with the one output it publishes.
     struct Fabric {
         local: DeviceId,
-        converged: DeviceFabric,
+        converged: PersonDevices,
     }
 
     impl Fabric {
         fn laptop() -> Self {
             let local = DeviceId::new("this-laptop").expect("a device id");
-            let mut converged = DeviceFabric::default();
-            converged
-                .upsert(DeviceFabricSnapshot {
-                    schema_version: FABRIC_SCHEMA_VERSION,
-                    owner: local.clone(),
-                    presence: DevicePresence {
-                        device: local.clone(),
-                        label: "This laptop".into(),
-                        kind: DeviceKind::Laptop,
-                        capabilities: FabricCapabilities {
-                            audio_output: true,
-                            audio_group: true,
-                            ..FabricCapabilities::default()
-                        },
-                        online: true,
-                        last_seen_unix_ms: 1,
-                        wake_routes: Vec::new(),
-                        session: OwnerSession::default(),
-                        stamp: FabricStamp {
-                            counter: 1,
-                            device: local.clone(),
-                        },
+            let mut device = PersonDevice::new(
+                local.clone(),
+                DeviceAbout {
+                    label: "This laptop".into(),
+                    kind: DeviceKind::Laptop,
+                    capabilities: FabricCapabilities {
+                        audio_output: true,
+                        audio_group: true,
+                        ..FabricCapabilities::default()
                     },
-                    media: Vec::new(),
-                    clipboard: Vec::new(),
-                    settings: Vec::new(),
-                    wifi: Vec::new(),
-                    display: None,
-                    speakers: SpeakerFabricState {
-                        endpoints: vec![AudioEndpoint {
-                            selector: EndpointSelector::mint(&local, "alsa_output.analog-stereo"),
-                            kind: AudioEndpointKind::Output,
-                            label: "Speakers".into(),
-                            is_default: true,
-                        }],
-                        ..SpeakerFabricState::default()
-                    },
-                    unlock: crate::platform::fabric::UnlockFabricState::default(),
-                })
-                .expect("the snapshot is valid");
+                },
+            );
+            device.online = true;
+            device.last_seen_unix_ms = 1;
+            device.speakers = SpeakerFabricState {
+                endpoints: vec![AudioEndpoint {
+                    selector: EndpointSelector::mint(&local, "alsa_output.analog-stereo"),
+                    kind: AudioEndpointKind::Output,
+                    label: "Speakers".into(),
+                    is_default: true,
+                }],
+                ..SpeakerFabricState::default()
+            };
+            let converged = PersonDevices::new([device], Vec::new());
             Self { local, converged }
         }
     }
 
     impl FabricLink for Fabric {
-        fn device_fabric(&self) -> DeviceFabric {
+        fn devices(&self) -> PersonDevices {
             self.converged.clone()
         }
 

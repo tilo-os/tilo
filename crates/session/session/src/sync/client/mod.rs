@@ -51,9 +51,8 @@ use crate::engine::Engine;
 #[cfg(target_os = "linux")]
 use crate::platform::fabric::DeviceId;
 #[cfg(target_os = "linux")]
-use crate::platform::fabric::FabricRuntime;
 #[cfg(target_os = "linux")]
-use crate::platform::fabric::{Continuity, SessionFabric};
+use crate::platform::fabric::{Continuity, Reach, SessionFabric};
 #[cfg(target_os = "linux")]
 use crate::workspace_keys::KeyLink;
 #[cfg(target_os = "linux")]
@@ -756,12 +755,12 @@ impl Local {
         }
     }
 
-    /// Tell the person's other devices what this device says of itself, when that moved since they
-    /// last heard: the session's pass calls this once it offered the clipboard, so a copy leaves on
-    /// the pass that made it.
+    /// Tell the person's other devices what this device says of itself and the copies it offers,
+    /// when either moved since they last heard: the session's pass calls this once it offered the
+    /// clipboard, so a copy leaves on the pass that made it.
     pub(crate) fn announce_fabric(&self) {
         if let Some(fabric) = &self.fabric {
-            fabric.announce(true);
+            fabric.announce();
         }
     }
 
@@ -1328,9 +1327,9 @@ pub struct Entry {
     pub continuity: Continuity,
     /// What tells the peer actor the network speaks.
     pub wake: Arc<dyn Fn() + Send + Sync>,
-    /// Where this device keeps its part of the person's device fabric between runs, one
-    /// checkpoint per device key; `None` keeps nothing (a test, a stand-in session).
-    pub fabric: Option<std::path::PathBuf>,
+    /// The person's own store, where what lasts of each of their devices is kept; `None` keeps
+    /// nothing of this device for the others (a test, a stand-in session).
+    pub personal: Option<tilo_peer_state::PersonalSync>,
     /// The relays the person's setting names ([`tilo_endpoint_reachability::relays`]), which this
     /// device's endpoint holds back until something needs it dialable.
     pub relays: tilo_endpoint_reachability::EndpointRelays,
@@ -1373,11 +1372,11 @@ impl Client {
         };
         let outgoing: Arc<dyn Outbox> = Arc::new(host_outbox.clone());
         let link_outbox = host_outbox.clone();
-        let fabric = restored_fabric(
+        let fabric = fabric_of(
             identity.as_ref(),
+            entry.personal,
             host_outbox,
             entry.continuity,
-            entry.fabric,
             lan.clone(),
         );
         // What the actor serves is installed before it starts: every actor built after answers it.
@@ -2132,51 +2131,35 @@ fn certified_as(identity: Option<&HostIdentity>) -> (Option<[u8; 32]>, String) {
     )
 }
 
-/// This device's fabric before the endpoint runs, so a device that proves itself at the actor's
-/// first tick is recorded with it: the record it keeps is this device's, named by its certificate.
-/// What it kept in its last run under `state` is restored, so its record continues its own line of
-/// revisions: a record said again from revision one is one the person's other devices already hold
-/// something else at, and refuse.
+/// This device's link onto the person's other devices before the endpoint runs, so a device that
+/// proves itself at the actor's first tick is heard: named by this device's certificate, with what
+/// lasts of the person's devices in `personal`.
 #[cfg(target_os = "linux")]
-fn restored_fabric(
+fn fabric_of(
     identity: Option<&HostIdentity>,
+    personal: Option<tilo_peer_state::PersonalSync>,
     outgoing: HostOutbox,
     continuity: Continuity,
-    state: Option<std::path::PathBuf>,
     lan: tilo_endpoint_reachability::Nearby,
 ) -> Option<Arc<SessionFabric>> {
     let identity = identity?;
-    let device = (
-        DeviceId::new(hex::encode(identity.device_cert.device_public_key)).ok()?,
-        identity.device_cert.device_label.clone(),
-    );
-    let kept = state.map(|state| fabric_checkpoint(&state, &device.0));
-    let checkpoint = kept.as_deref().and_then(|path| std::fs::read(path).ok());
-    let runtime = match FabricRuntime::restored(Some(device.clone()), checkpoint.as_deref()) {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            tracing::warn!(%error, "this device's kept fabric does not read; it starts anew");
-            FabricRuntime::restored(Some(device), None).ok()?
-        }
+    let device = DeviceId::new(hex::encode(identity.device_cert.device_public_key)).ok()?;
+    let reach = Reach {
+        outgoing,
+        user_public_key: identity.device_cert.user_public_key,
+        // Secrets the person's devices seal to this one open with its endpoint's key.
+        device_signing_key: ed25519_dalek::SigningKey::from_bytes(
+            &identity.signer.endpoint_secret()?,
+        ),
+        continuity,
+        lan,
     };
     Some(SessionFabric::new(
-        runtime,
-        outgoing,
-        identity.device_cert.user_public_key,
-        // Secrets the person's devices seal to this one open with its endpoint's key.
-        ed25519_dalek::SigningKey::from_bytes(&identity.signer.endpoint_secret()?),
-        continuity,
-        kept,
-        lan,
+        device,
+        identity.device_cert.device_label.clone(),
+        personal,
+        reach,
     ))
-}
-
-/// The file under `state` the fabric of the device `device` names is kept in: one per device key,
-/// so a machine copied from another, re-keyed at its first boot, starts a line of its own rather
-/// than continuing the one it was copied with.
-#[cfg(target_os = "linux")]
-pub(crate) fn fabric_checkpoint(state: &std::path::Path, device: &DeviceId) -> std::path::PathBuf {
-    state.join(format!("{}.fabric", device.as_str()))
 }
 
 /// The endpoint the peer actor binds, and the relays held back from it until something needs this

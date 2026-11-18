@@ -79,6 +79,13 @@ pub const WORKSPACES_KIND: &str = "identity.workspaces";
 /// The kind of the person's resource that holds the settings that follow
 /// them between their devices: one value per setting, under its key.
 pub const SETTINGS_KIND: &str = "identity.settings";
+/// The kind of the person's resource that holds the Wi-Fi passphrases their
+/// devices share: one sealed credential per network, under its id in hex.
+pub const WIFI_KIND: &str = "identity.wifi";
+/// The name of the part of a device's own subtree that holds what the device
+/// says of itself that lasts: what it is, its speaker groups and its disk
+/// unlock, each under its own key.
+pub const DEVICE_FACTS: &str = "facts";
 /// The most devices that resource names to this device: entries past it are
 /// not read, and this device adds none.
 const MAX_DEVICES: usize = 256;
@@ -725,6 +732,28 @@ impl PersonalStore {
             key,
             now,
         )
+    }
+
+    /// The resource `name` of `device`'s own subtree ([`scopes`]) as this
+    /// device holds it: what that device alone wrote, whole. `None` while it
+    /// wrote none, or none reached this device.
+    #[must_use]
+    pub fn device_part(&self, device: &[u8; 32], name: &str) -> Option<Vec<u8>> {
+        self.document(DEVICES_APP, &scopes::device_resource(device, name))
+    }
+
+    /// Write `mutation` of the resource `name` of this device's own subtree:
+    /// signed with `key`, admitted here, and returned as the frame for the
+    /// person's other devices.
+    pub fn publish_device_part(
+        &mut self,
+        name: &str,
+        mutation: &DocumentMutation,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        let resource = scopes::device_resource(&self.device.device_public_key, name);
+        self.publish(DEVICES_APP, &resource, mutation, key, now)
     }
 
     fn route(app: &str, resource: &str) -> Route {

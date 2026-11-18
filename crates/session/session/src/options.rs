@@ -319,7 +319,7 @@ pub(crate) fn start_collaboration(
             hosts: sync::configured_hosts(),
             continuity,
             wake: options.wake.handle(),
-            fabric: tilo_paths::state_dir().map(|root| root.join("tilo/fabric")),
+            personal: personal.as_ref().map(|personal| personal.sync().clone()),
             lan: None,
             relays: options
                 .relays

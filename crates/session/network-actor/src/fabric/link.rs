@@ -1,13 +1,13 @@
-//! What a service on the person's device fabric needs from the transport
-//! that carries it: the fabric as last converged, who is online, and a
-//! way to send one device an action.
+//! What a service on the person's devices needs from the session that reaches
+//! them: the devices as this one knows them, who is online, and a way to send
+//! one device an action.
 
 use std::collections::BTreeSet;
 
 use crate::NearbyTransferCheckpoint;
 use crate::fabric::{DeviceId, DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect};
 
-use crate::fabric::{ClipboardEntry, DeviceFabric, OwnerSession, PersonalFabricAction, WakeRoute};
+use crate::fabric::{ClipboardEntry, OwnerSession, PersonDevices, PersonalFabricAction, WakeRoute};
 
 /// One of this device's files, staged in its private Nearby spool, on its way
 /// to one of the person's other devices: the checkpoint the stream resumes
@@ -43,8 +43,9 @@ impl std::fmt::Display for PersonalFabricSendError {
 
 /// The person's device fabric, as a service on it sees it.
 pub trait FabricLink {
-    /// The fabric as this device last converged it.
-    fn device_fabric(&self) -> DeviceFabric;
+    /// The person's devices as this one knows them: what each keeps in their store and what
+    /// each said live.
+    fn devices(&self) -> PersonDevices;
     /// The devices with a live session right now.
     fn online_device_ids(&self) -> BTreeSet<DeviceId>;
     /// The person's other devices heard on this device's local network now,
@@ -90,8 +91,8 @@ pub trait FabricLink {
         let _ = (ssid, security);
         None
     }
-    /// Seal `password`, which this device learned for `ssid`, to this device and every
-    /// device of the person's in the fabric.
+    /// Seal `password`, which this device learned for `ssid`, to every device of the
+    /// person's, and keep it in their store.
     /// # Errors
     /// Why the passphrase is not one to carry between the person's devices, or why this
     /// session takes no part in a fabric to carry it on.
@@ -102,11 +103,11 @@ pub trait FabricLink {
         password: &str,
     ) -> Result<(), String> {
         let _ = (ssid, security, password);
-        Err("this session's fabric carries no Wi-Fi credentials".to_owned())
+        Err("this session keeps no Wi-Fi credentials".to_owned())
     }
-    /// Offer what this device copies to the person's other devices. A link whose
-    /// transport does not carry the clipboard yet ignores the offer; what their devices
-    /// shared still merges in from [`Self::device_fabric`].
+    /// Offer what this device copies to the person's other devices that are there now. A
+    /// link whose transport does not carry the clipboard ignores the offer; what their
+    /// devices offer is in [`Self::devices`].
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         let _ = entries;
     }
@@ -135,8 +136,8 @@ pub trait FabricLink {
         false
     }
 
-    /// Offer what this device publishes about disk unlock to the person's other devices:
-    /// the sibling halves it holds for them, and the auto-approvals they set here.
+    /// Keep what this device says about disk unlock in its part of the person's store:
+    /// its enrolments, the auto-approvals the person set here and its answers to boots.
     fn share_unlock(&self, unlock: crate::fabric::unlock::UnlockFabricState) {
         let _ = unlock;
     }
@@ -167,8 +168,8 @@ pub trait FabricLink {
 pub type SharedLink = std::sync::Arc<dyn FabricLink + Send + Sync>;
 
 impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
-    fn device_fabric(&self) -> DeviceFabric {
-        (**self).device_fabric()
+    fn devices(&self) -> PersonDevices {
+        (**self).devices()
     }
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {

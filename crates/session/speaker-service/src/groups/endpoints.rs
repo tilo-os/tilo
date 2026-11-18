@@ -1,16 +1,16 @@
-//! This device's audio endpoints, as its fabric snapshot publishes them.
+//! This device's audio endpoints, as it keeps them in its part of the person's
+//! store.
 //!
-//! The snapshot builder asks for them on every fabric sample, about once a
-//! second while the desktop is in use, and must never wait on the audio
-//! graph. Reading the graph runs `pw-dump`, a process that prints all of
-//! `PipeWire`'s objects, so it is read only when the device graph changed:
-//! a thread of its own follows [`media::audio_watch::watch`] and reads the
-//! graph on each change it reports, its first report included. Between
-//! changes nothing runs.
+//! The session asks for them on every pass, about once a second while the
+//! desktop is in use, and must never wait on the audio graph. Reading the
+//! graph starts `pw-dump`, a process that prints all of `PipeWire`'s objects,
+//! so it is read only when the device graph changed: a thread of its own
+//! follows [`media::audio_watch::watch`] and reads the graph on each change it
+//! reports, its first report included. Between changes nothing happens.
 //!
 //! While `PipeWire` cannot be reached there is no graph to read (`pw-dump`
 //! connects the same way the watch does), so the list is empty and the
-//! watch is tried again on a later sample, at most every [`RETRY`].
+//! watch is tried again on a later pass, at most every [`RETRY`].
 //!
 //! A read can fail while the watch stays up (`pw-dump` not finishing in
 //! time while the machine is busy logging in). No change may follow to
@@ -150,8 +150,8 @@ mod tests {
 
         phase the_graph_is_read_on_each_change_not_on_each_sample;
         // The graph is read when the watch reports a change and at no other
-        // time, however often the snapshot asks; the list the snapshot
-        // publishes is the one last read.
+        // time, however often the session asks; the list this device keeps is
+        // the one last read.
         {
             let cache = Mutex::new(GraphCache::default());
             let (report, reports) = mpsc::channel::<Notify>();

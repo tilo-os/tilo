@@ -1147,8 +1147,8 @@ impl FakeFabric {
 }
 
 impl crate::platform::fabric::FabricLink for FakeFabric {
-    fn device_fabric(&self) -> crate::platform::fabric::DeviceFabric {
-        crate::platform::fabric::DeviceFabric::default()
+    fn devices(&self) -> crate::platform::fabric::PersonDevices {
+        crate::platform::fabric::PersonDevices::default()
     }
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {

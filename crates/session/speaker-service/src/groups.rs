@@ -6,10 +6,10 @@
 //!
 //! Three things are kept apart:
 //!
-//! * **Configuration** — the groups this device leads. They roam in its
-//!   snapshot and only this device edits them.
+//! * **Configuration** — the groups this device leads. They live in its part
+//!   of the person's store and only this device edits them.
 //! * **Consent** — memberships this device agreed to. Each is asked for once,
-//!   on this device, and authored into this device's snapshot. A change to
+//!   on this device, and written into its part of the person's store. A change to
 //!   the member's output or role in the group no longer matches it, so the
 //!   member is asked again.
 //! * **Sessions** — one playback to a group. Any of the person's devices may
@@ -35,7 +35,7 @@ use tilo_network_actor::fabric::speaker_group::{
     SpeakerGroupId, SpeakerGroupMember, SpeakerListener, SpeakerMemberStatus, SpeakerMembership,
     SpeakerRole, SpeakerTrim,
 };
-use tilo_network_actor::fabric::{DeviceFabric, PersonalFabricAction};
+use tilo_network_actor::fabric::{PersonDevices, PersonalFabricAction};
 
 mod endpoints;
 mod listening;
@@ -134,8 +134,8 @@ struct InviteRecord {
 /// The speaker-group policy, independent of transport and wall time.
 #[derive(Default)]
 pub struct SpeakerGroupCore {
-    /// Groups this device leads. `None` until seeded from the persisted
-    /// snapshot, so a restart keeps the configuration.
+    /// Groups this device leads. `None` until seeded from what it kept in its
+    /// part of the person's store, so a restart keeps the configuration.
     groups: Option<Vec<SpeakerGroup>>,
     /// Consents this device gave, seeded the same way.
     memberships: Option<Vec<SpeakerMembership>>,
@@ -175,7 +175,7 @@ impl SpeakerGroupCore {
         }
     }
 
-    /// The records this device publishes, stamped for its next snapshot.
+    /// The state this device publishes, stamped as its own.
     #[must_use]
     pub fn authored(
         &self,
@@ -233,7 +233,7 @@ impl SpeakerGroupCore {
     /// Create a group this device leads and invite its remote members.
     pub fn create_group(
         &mut self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         id: SpeakerGroupId,
         name: &str,
@@ -262,7 +262,7 @@ impl SpeakerGroupCore {
     /// removed members are told to leave, changed ones are asked again.
     pub fn update_group(
         &mut self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         id: SpeakerGroupId,
         name: &str,
@@ -415,7 +415,7 @@ impl SpeakerGroupCore {
     /// Resolve a join prompt on this device.
     pub fn resolve_consent(
         &mut self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         group_id: SpeakerGroupId,
         approved: bool,
@@ -473,7 +473,7 @@ impl SpeakerGroupCore {
     /// Start playing `source` to a group from this device.
     pub fn start_session(
         &mut self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         group_id: SpeakerGroupId,
         source: GroupAudioSource,
@@ -564,7 +564,7 @@ impl SpeakerGroupCore {
     )]
     pub fn handle(
         &mut self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         source: &DeviceId,
         action: &PersonalFabricAction,
@@ -752,7 +752,7 @@ impl SpeakerGroupCore {
     /// published.
     fn consent_covers(
         &self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         group: SpeakerGroupId,
     ) -> bool {
@@ -773,13 +773,9 @@ impl SpeakerGroupCore {
     /// Periodic maintenance. With media continuity disabled everything ends
     /// and consents are withdrawn; otherwise stale consent, sessions whose
     /// peers or consent vanished, and unanswered invites are handled.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one maintenance pass keeps every teardown rule in policy order"
-    )]
     pub fn pump(
         &mut self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         enabled: bool,
         now: Instant,
@@ -808,13 +804,14 @@ impl SpeakerGroupCore {
         }
 
         // A consent whose group its leader no longer publishes as it was
-        // agreed is void. Only a leader whose snapshot is known can void it.
+        // agreed is void. Only a leader whose part of the person's store is
+        // known can void it.
         let stale = self
             .memberships
             .iter()
             .flatten()
             .filter(|membership| {
-                fabric.snapshots().contains_key(&membership.leader)
+                fabric.contains(&membership.leader)
                     && !fabric.speaker_group(membership.group).is_some_and(|group| {
                         group
                             .member(local)
@@ -828,17 +825,11 @@ impl SpeakerGroupCore {
                 .retain(|membership| !stale.contains(&membership.group));
         }
 
-        let online = |device: &DeviceId| {
-            fabric
-                .snapshots()
-                .get(device)
-                .is_some_and(|snapshot| snapshot.presence.online)
-        };
+        let online = |device: &DeviceId| fabric.get(device).is_some_and(|known| known.online);
         self.consents.retain(|group, pending| {
             now.saturating_duration_since(pending.received) < CONSENT_TTL
                 && online(&pending.leader)
-                && !(fabric.snapshots().contains_key(&pending.leader)
-                    && fabric.speaker_group(*group).is_none())
+                && !(fabric.contains(&pending.leader) && fabric.speaker_group(*group).is_none())
         });
 
         let revoked = self
@@ -935,9 +926,9 @@ impl SpeakerGroupCore {
     ) -> Vec<Egress> {
         let mut out = Vec::new();
         for session in self.outbound.values_mut() {
-            let snapshot = session.clone();
+            let current = session.clone();
             for member in &mut session.members {
-                if member.phase == SessionMemberPhase::Refused || !predicate(&snapshot, member) {
+                if member.phase == SessionMemberPhase::Refused || !predicate(&current, member) {
                     continue;
                 }
                 if member.phase != SessionMemberPhase::Local {
@@ -966,21 +957,20 @@ impl SpeakerGroupCore {
     )]
     pub fn view(
         &self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         playout: &dyn Fn([u8; 16]) -> Option<ClockSyncState>,
     ) -> SpeakerGroupsView {
         let label = |device: &DeviceId| {
-            fabric.snapshots().get(device).map_or_else(
+            fabric.get(device).map_or_else(
                 || device.as_str().to_string(),
-                |snapshot| snapshot.presence.label.clone(),
+                |known| known.about.label.clone(),
             )
         };
         let output_label = |device: &DeviceId, output: EndpointSelector| {
             fabric
-                .snapshots()
                 .get(device)
-                .and_then(|snapshot| snapshot.speakers.output(output))
+                .and_then(|known| known.speakers.output(output))
                 .map(|endpoint| endpoint.label.clone())
         };
         let groups = fabric
@@ -1135,7 +1125,7 @@ impl SpeakerGroupCore {
     /// Every audio route this device should run right now, derived from the
     /// sessions it plays and the sessions it admitted as a member.
     #[must_use]
-    pub fn route_specs(&self, fabric: &DeviceFabric, local: &DeviceId) -> Vec<RouteSpec> {
+    pub fn route_specs(&self, fabric: &PersonDevices, local: &DeviceId) -> Vec<RouteSpec> {
         let playing = self.outbound.values().flat_map(|session| {
             session.members.iter().filter_map(move |member| {
                 match (member.phase, member.authorization) {
@@ -1176,7 +1166,7 @@ impl SpeakerGroupCore {
     #[must_use]
     pub fn sweep_output(
         &self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         source: &DeviceId,
         group: SpeakerGroupId,
@@ -1209,7 +1199,7 @@ impl SpeakerGroupCore {
     #[must_use]
     pub fn grant(
         &self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         local: &DeviceId,
         session_id: [u8; 16],
         source: &DeviceId,
@@ -1325,7 +1315,7 @@ fn stop_members(session: &GroupSession) -> Vec<Egress> {
 }
 
 fn consent_matches(
-    fabric: &DeviceFabric,
+    fabric: &PersonDevices,
     local: &DeviceId,
     group: SpeakerGroupId,
     pending: &PendingConsent,
@@ -1800,8 +1790,9 @@ fn local_device(network: &dyn FabricLink) -> Result<DeviceId, String> {
         .ok_or_else(|| crate::i18n::t("device-fabric-error-no-identity"))
 }
 
-/// The speaker records for this device's next snapshot. Called by the
-/// snapshot builder; publishes nothing while media continuity is off.
+/// What this device keeps about its speaker groups in its part of the person's
+/// store. The session asks for it on each pass and keeps the answer in that
+/// device's own part; nothing is written while media continuity is off.
 pub fn authored_state(
     device: &DeviceId,
     previous: Option<&SpeakerFabricState>,
@@ -1835,7 +1826,7 @@ pub fn handle_action(
         return true;
     }
     if let PersonalFabricAction::SpeakerSweep { group, start_ns } = envelope.action {
-        let fabric = network.device_fabric();
+        let fabric = network.devices();
         let output = core()
             .lock()
             .ok()
@@ -1852,7 +1843,7 @@ pub fn handle_action(
         start_ns,
     } = envelope.action
     {
-        let fabric = network.device_fabric();
+        let fabric = network.devices();
         let allowed = core().lock().is_ok_and(|core| {
             core.may_listen(&fabric, &local, &envelope.source, group, microphone)
         });
@@ -1878,17 +1869,12 @@ pub fn handle_action(
         crate::calibration::deliver_hearing(&envelope.source, *group, *sweep, hearing.clone());
         return true;
     }
-    let fabric = network.device_fabric();
+    let fabric = network.devices();
     let out = {
         let Ok(mut core) = core().lock() else {
             return false;
         };
-        core.seed(
-            fabric
-                .snapshots()
-                .get(&local)
-                .map(|snapshot| &snapshot.speakers),
-        );
+        core.seed(fabric.get(&local).map(|device| &device.speakers));
         core.handle(
             &fabric,
             &local,
@@ -1923,10 +1909,10 @@ pub fn identify(
     if device == &local {
         return play_identify_locally(&local, output);
     }
-    let fabric = network.device_fabric();
-    let offered = fabric.snapshots().get(device).is_some_and(|snapshot| {
-        snapshot.presence.online && snapshot.speakers.output(output).is_some()
-    });
+    let fabric = network.devices();
+    let offered = fabric
+        .get(device)
+        .is_some_and(|known| known.online && known.speakers.output(output).is_some());
     if !offered {
         return Err(crate::i18n::t("speaker-error-speaker-unavailable"));
     }
@@ -2016,17 +2002,12 @@ pub fn pump(network: &dyn FabricLink, media_enabled: bool) {
     let Ok(local) = local_device(network) else {
         return;
     };
-    let fabric = network.device_fabric();
+    let fabric = network.devices();
     let out = core().lock().map_or_else(
         |_| Vec::new(),
         |mut core| {
             if media_enabled {
-                core.seed(
-                    fabric
-                        .snapshots()
-                        .get(&local)
-                        .map(|snapshot| &snapshot.speakers),
-                );
+                core.seed(fabric.get(&local).map(|device| &device.speakers));
             }
             core.pump(&fabric, &local, media_enabled, Instant::now())
         },
@@ -2063,7 +2044,7 @@ fn running_routes() -> &'static Mutex<RunningRoutes> {
 /// session of a route the audio path dropped on its own.
 fn reconcile_routes(
     network: &dyn FabricLink,
-    fabric: &DeviceFabric,
+    fabric: &PersonDevices,
     local: &DeviceId,
     media_enabled: bool,
 ) {
@@ -2214,19 +2195,14 @@ fn with_core<T>(
     network: &dyn FabricLink,
     apply: impl FnOnce(
         &mut SpeakerGroupCore,
-        &DeviceFabric,
+        &PersonDevices,
         &DeviceId,
     ) -> Result<(T, Vec<Egress>), String>,
 ) -> Result<T, String> {
     let local = local_device(network)?;
-    let fabric = network.device_fabric();
+    let fabric = network.devices();
     let mut core = core().lock().map_err(|_| unavailable())?;
-    core.seed(
-        fabric
-            .snapshots()
-            .get(&local)
-            .map(|snapshot| &snapshot.speakers),
-    );
+    core.seed(fabric.get(&local).map(|device| &device.speakers));
     let applied = apply(&mut core, &fabric, &local);
     drop(core);
     let (value, out) = applied?;
@@ -2329,7 +2305,7 @@ pub fn listener_candidates(
     let Ok(local) = local_device(network) else {
         return Vec::new();
     };
-    let fabric = network.device_fabric();
+    let fabric = network.devices();
     core().lock().map_or_else(
         |_| Vec::new(),
         |core| core.listener_candidates(&fabric, &local, group, Instant::now()),
@@ -2376,7 +2352,7 @@ pub fn view(network: &dyn FabricLink) -> SpeakerGroupsView {
     let Ok(local) = local_device(network) else {
         return SpeakerGroupsView::default();
     };
-    let fabric = network.device_fabric();
+    let fabric = network.devices();
     // Read before taking the core: the audio path takes the core while it
     // holds its own state.
     let playouts = crate::remote_audio::group_route_playouts();
@@ -2404,7 +2380,7 @@ pub fn member_grant(
     source: &DeviceId,
 ) -> Option<MemberPlaybackGrant> {
     let local = local_device(network).ok()?;
-    let fabric = network.device_fabric();
+    let fabric = network.devices();
     core()
         .lock()
         .ok()?

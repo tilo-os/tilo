@@ -1360,8 +1360,8 @@ mod tests {
     }
 
     impl crate::platform::fabric::FabricLink for Recorded {
-        fn device_fabric(&self) -> crate::platform::fabric::DeviceFabric {
-            crate::platform::fabric::DeviceFabric::default()
+        fn devices(&self) -> crate::platform::fabric::PersonDevices {
+            crate::platform::fabric::PersonDevices::default()
         }
 
         fn online_device_ids(&self) -> BTreeSet<DeviceId> {

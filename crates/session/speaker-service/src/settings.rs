@@ -35,8 +35,8 @@ use crate::calibration::{
 use crate::groups::{
     ListenerCandidate, ListenerState, MemberSpec, SpeakerGroupsView, SpeakerSessionStatus,
 };
-use tilo_network_actor::fabric::DeviceFabric;
 use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::PersonDevices;
 use tilo_network_actor::fabric::speaker_group::{
     AudioEndpointKind, EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerRole, SpeakerTrim,
     StereoSide, SurroundChannel,
@@ -138,14 +138,14 @@ pub fn playback_info(
 
 /// Every device's endpoints as Settings shows them.
 #[must_use]
-pub fn devices(fabric: &DeviceFabric, local: &DeviceId) -> Vec<SpeakerDeviceInfo> {
+pub fn devices(fabric: &PersonDevices, local: &DeviceId) -> Vec<SpeakerDeviceInfo> {
     fabric
-        .snapshots()
+        .devices()
         .values()
         .take(runtime_collab::MAX_SPEAKER_DEVICES)
-        .map(|snapshot| {
+        .map(|known| {
             let endpoints = |kind| {
-                snapshot
+                known
                     .speakers
                     .endpoints
                     .iter()
@@ -158,11 +158,11 @@ pub fn devices(fabric: &DeviceFabric, local: &DeviceId) -> Vec<SpeakerDeviceInfo
                     .collect::<Vec<_>>()
             };
             SpeakerDeviceInfo {
-                id: snapshot.owner.as_str().to_string(),
-                label: snapshot.presence.label.clone(),
-                online: snapshot.presence.online,
-                local: &snapshot.owner == local,
-                can_join: &snapshot.owner == local || snapshot.presence.capabilities.audio_group,
+                id: known.device.as_str().to_string(),
+                label: known.about.label.clone(),
+                online: known.online,
+                local: &known.device == local,
+                can_join: &known.device == local || known.about.capabilities.audio_group,
                 outputs: endpoints(AudioEndpointKind::Output),
                 microphones: endpoints(AudioEndpointKind::Microphone),
             }
@@ -204,7 +204,7 @@ impl Calibrations {
     /// stands.
     pub fn pump(
         &mut self,
-        fabric: &DeviceFabric,
+        fabric: &PersonDevices,
         consent: &BTreeMap<SpeakerGroupId, Vec<ListenerCandidate>>,
         now: Instant,
     ) {
@@ -380,7 +380,7 @@ pub fn admit_identify(now: Instant) -> bool {
 
 /// Advance calibration runs; called from the fabric runtime's pump.
 pub fn pump(network: &dyn FabricLink) {
-    let fabric = network.device_fabric();
+    let fabric = network.devices();
     let waiting = state()
         .lock()
         .map(|state| state.calibrations.awaiting_consent())
@@ -411,7 +411,7 @@ fn snapshot(network: &dyn FabricLink) -> SpeakerSnapshot {
     if !media_enabled {
         return SpeakerSnapshot::default();
     }
-    let fabric = network.device_fabric();
+    let fabric = network.devices();
     let view = crate::groups::view(network);
     let output = output_group(&view);
     let groups = view
@@ -860,7 +860,7 @@ fn start_calibration(
     let (local, _) = network
         .local_device_fabric_identity()
         .ok_or_else(|| crate::i18n::t("device-fabric-error-no-identity"))?;
-    let fabric = network.device_fabric();
+    let fabric = network.devices();
     let published = fabric
         .speaker_group(id)
         .ok_or_else(|| crate::i18n::t("speaker-error-group-unavailable"))?;
@@ -886,9 +886,9 @@ fn start_calibration(
         .members
         .iter()
         .map(|member| {
-            fabric.snapshots().get(&member.device).map_or_else(
+            fabric.get(&member.device).map_or_else(
                 || member.device.as_str().to_string(),
-                |snapshot| snapshot.presence.label.clone(),
+                |known| known.about.label.clone(),
             )
         })
         .collect::<Vec<_>>();

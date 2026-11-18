@@ -7,11 +7,12 @@
 //! offers to be woken on, the packets it sends, the probes it answers, and
 //! what the person is told once the device comes back or does not.
 //!
-//! The routes this machine offers travel in its own record, so its devices
-//! know whether a packet from here could reach a sleeping one: they are read
-//! from `/sys/class/net` at most every [`ROUTE_SCAN_INTERVAL`], and an
-//! interface that was last seen on a network keeps that subnet while it is
-//! off it, or the machine would stop being wakeable the moment it slept.
+//! The routes this machine offers travel with what it says of itself while it
+//! is there, so its devices know whether a packet from here could reach a
+//! sleeping one: they are read from `/sys/class/net` at most every
+//! [`ROUTE_SCAN_INTERVAL`], and an interface that was last seen on a network
+//! keeps that subnet while it is off it, or the machine would stop being
+//! wakeable the moment it slept.
 //!
 //! Everything the fabric decides is in the crate's own module; here is only
 //! what touches the machine: the socket, the interfaces, the clock.
@@ -189,7 +190,7 @@ impl Wake {
         let (local, _) = fabric
             .local_device_fabric_identity()
             .ok_or_else(|| "this device has no identity in the person's devices".to_owned())?;
-        let converged = fabric.device_fabric();
+        let converged = fabric.devices();
         let target =
             wake::resolve_device(&converged, name).map_err(|refusal| refusal.to_string())?;
         let local_routes = self.publish(fabric);
@@ -235,7 +236,7 @@ impl Wake {
         target: &DeviceId,
         requester: Option<DeviceId>,
     ) -> WakeOutcome {
-        let converged = fabric.device_fabric();
+        let converged = fabric.devices();
         let routes = self.publish(fabric);
         let packets = wake::magic_packets_for(&converged, &routes, target);
         let Some((_, subnet)) = packets.first().copied() else {
@@ -339,9 +340,9 @@ fn tell(notifications: &SessionNotifications, event: &WakeEvent) {
 
 /// The label the person knows `device` by.
 fn label_of(fabric: &SharedLink, device: &DeviceId) -> String {
-    fabric.device_fabric().snapshots().get(device).map_or_else(
+    fabric.devices().get(device).map_or_else(
         || device.as_str().to_owned(),
-        |device| device.presence.label.clone(),
+        |device| device.about.label.clone(),
     )
 }
 

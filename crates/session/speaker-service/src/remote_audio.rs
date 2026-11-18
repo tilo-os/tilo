@@ -1176,13 +1176,11 @@ pub fn request(
         .local_device_fabric_identity()
         .map(|(device, _)| device)
         .ok_or_else(|| crate::i18n::t("device-fabric-error-no-identity"))?;
-    let fabric = network.device_fabric();
-    let snapshot = fabric
-        .snapshots()
+    let fabric = network.devices();
+    let target_device = fabric
         .get(target)
         .ok_or_else(|| crate::i18n::t("device-fabric-error-target-not-enrolled"))?;
-    if target == &local || !snapshot.presence.online || !snapshot.presence.capabilities.audio_output
-    {
+    if target == &local || !target_device.online || !target_device.about.capabilities.audio_output {
         return Err(crate::i18n::t("remote-audio-error-target-not-output"));
     }
     let (session_id, selection, label) = {
@@ -2155,9 +2153,9 @@ mod tests {
     }
 
     impl FabricLink for CountingLink {
-        fn device_fabric(&self) -> tilo_network_actor::fabric::DeviceFabric {
+        fn devices(&self) -> tilo_network_actor::fabric::PersonDevices {
             self.cloned.set(self.cloned.get() + 1);
-            tilo_network_actor::fabric::DeviceFabric::default()
+            tilo_network_actor::fabric::PersonDevices::default()
         }
         fn online_device_ids(&self) -> BTreeSet<DeviceId> {
             self.borrowed.set(self.borrowed.get() + 1);

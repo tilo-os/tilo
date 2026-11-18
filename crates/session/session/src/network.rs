@@ -127,14 +127,7 @@ pub(crate) fn device_at(fabric: Option<&SharedLink>, endpoint: &str) -> Option<S
     let endpoint: iroh::EndpointId = endpoint.parse().ok()?;
     let fabric = fabric?;
     let device = fabric.device_behind(endpoint)?;
-    let label = fabric
-        .device_fabric()
-        .snapshots()
-        .get(&device)?
-        .presence
-        .label
-        .trim()
-        .to_owned();
+    let label = fabric.devices().get(&device)?.about.label.trim().to_owned();
     (!label.is_empty()).then_some(label)
 }
 

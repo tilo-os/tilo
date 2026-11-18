@@ -4,18 +4,14 @@
 //! applies one policy model to media, clipboard, roaming preferences, secret
 //! references and cross-screen input.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use thiserror::Error;
 
+use crate::fabric::MAX_FABRIC_ACTION_BYTES;
 use crate::fabric::carried::CarriedDrag;
 use crate::fabric::{DeviceId, FabricStamp};
-use crate::fabric::{
-    DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect, MAX_FABRIC_ACTION_BYTES,
-    MAX_FABRIC_CHECKPOINT_BYTES,
-};
 
 /// Locally derived focus identity of a physical gamepad's target. None of
 /// these fields are accepted from a remote peer or an untrusted application.
@@ -26,15 +22,11 @@ pub struct PhysicalGamepadBinding {
     pub session_id: String,
 }
 
-pub const FABRIC_SCHEMA_VERSION: u16 = 8;
 pub const MAX_DEVICES: usize = 64;
 /// More network interfaces than any one device wakes through.
 pub const MAX_WAKE_ROUTES: usize = 8;
-pub const MAX_MEDIA_SESSIONS: usize = 64;
 pub const MAX_CLIPBOARD_ITEMS: usize = 50;
 pub const MAX_CLIPBOARD_ITEM_BYTES: usize = 256 * 1024;
-pub const MAX_ROAMING_SETTINGS: usize = 2048;
-pub const MAX_SETTING_BYTES: usize = settings_store::placement::MAX_PERSONAL_VALUE_BYTES;
 pub const MAX_WIFI_CREDENTIALS: usize = 256;
 pub const MAX_SEALED_SECRET_BYTES: usize = 16 * 1024;
 pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
@@ -169,27 +161,12 @@ pub struct WakeRoute {
 }
 
 impl WakeRoute {
-    fn valid(&self) -> bool {
+    pub(super) fn valid(&self) -> bool {
         // A unicast, non-zero MAC; a multicast one cannot address a NIC.
         self.mac != [0; 6]
             && self.mac.first().is_some_and(|octet| octet & 1 == 0)
             && self.subnet.is_none_or(Ipv4Subnet::is_canonical)
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DevicePresence {
-    pub device: DeviceId,
-    pub label: String,
-    pub kind: DeviceKind,
-    pub capabilities: FabricCapabilities,
-    pub online: bool,
-    pub last_seen_unix_ms: u64,
-    /// How siblings on the same LAN can wake this device.
-    pub wake_routes: Vec<WakeRoute>,
-    /// The person's session here, which their other devices' locks follow.
-    pub session: OwnerSession,
-    pub stamp: FabricStamp,
 }
 
 /// Whether the person's session on a device is locked, when they last locked
@@ -210,69 +187,9 @@ pub struct OwnerSession {
 /// How finely [`OwnerSession::active_unix_ms`] follows input.
 pub const OWNER_SESSION_ACTIVE_STEP_MS: u64 = 10_000;
 
-impl DevicePresence {
-    fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
-        if &self.device != owner || &self.stamp.device != owner {
-            return Err(FabricError::ForeignAuthorship);
-        }
-        if self.label.is_empty()
-            || self.label.len() > 128
-            || self.label.chars().any(char::is_control)
-        {
-            return Err(FabricError::InvalidLabel);
-        }
-        if self.wake_routes.len() > MAX_WAKE_ROUTES {
-            return Err(FabricError::SnapshotTooLarge);
-        }
-        if !self.wake_routes.iter().all(WakeRoute::valid) {
-            return Err(FabricError::InvalidWakeRoute);
-        }
-        unique(self.wake_routes.iter().map(|route| route.mac))
-    }
-}
-
-/// A logical player, never a local `PipeWire` node or file path.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MediaSession {
-    pub id: String,
-    pub app_id: String,
-    pub title: String,
-    pub content_id: String,
-    pub position_ms: u64,
-    pub duration_ms: Option<u64>,
-    pub playing: bool,
-    pub has_video: bool,
-    pub output_device: DeviceId,
-    pub stamp: FabricStamp,
-}
-
-impl MediaSession {
-    fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
-        if &self.stamp.device != owner {
-            return Err(FabricError::ForeignAuthorship);
-        }
-        if [&self.id, &self.app_id, &self.content_id]
-            .into_iter()
-            .any(|value| !valid_fabric_identifier(value, 256))
-        {
-            return Err(FabricError::InvalidIdentifier);
-        }
-        if self.title.len() > 512 || self.title.chars().any(char::is_control) {
-            return Err(FabricError::InvalidLabel);
-        }
-        if self
-            .duration_ms
-            .is_some_and(|duration| self.position_ms > duration)
-        {
-            return Err(FabricError::InvalidMediaPosition);
-        }
-        Ok(())
-    }
-}
-
 /// A locator usable on another Tilo device. Workspace paths hydrate through
 /// Files; stream URLs travel only in an ephemeral exact-target action and are
-/// never persisted in the fabric snapshot.
+/// never kept anywhere.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaSourceLocator {
@@ -1383,7 +1300,10 @@ impl ClipboardEntry {
         })
     }
 
-    fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
+    /// Whether this is a copy `owner` made, as it made it.
+    /// # Errors
+    /// A copy another device made, or one whose content is not what its id names.
+    pub fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
         if &self.origin != owner || &self.stamp.device != owner {
             return Err(FabricError::ForeignAuthorship);
         }
@@ -1445,34 +1365,6 @@ impl ClipboardHistory {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RoamingSetting {
-    pub key: String,
-    pub value: Value,
-    pub stamp: FabricStamp,
-}
-
-impl RoamingSetting {
-    fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
-        if &self.stamp.device != owner || !valid_setting_key(&self.key) {
-            return Err(FabricError::InvalidRoamingSetting);
-        }
-        if serde_json::to_vec(&self.value)
-            .map_err(|_| FabricError::InvalidRoamingSetting)?
-            .len()
-            > MAX_SETTING_BYTES
-        {
-            return Err(FabricError::SettingTooLarge);
-        }
-        if self.key == settings_store::person_displays::PLACEMENTS_KEY
-            && settings_store::person_displays::Placements::from_value(&self.value).is_none()
-        {
-            return Err(FabricError::InvalidRoamingSetting);
-        }
-        Ok(())
-    }
-}
-
 /// Versioned per-recipient ciphertext envelopes. Plaintext credentials are
 /// intentionally impossible to represent in fabric state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1486,10 +1378,10 @@ pub struct WifiCredential {
 }
 
 impl WifiCredential {
-    fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
-        if &self.stamp.device != owner {
-            return Err(FabricError::ForeignAuthorship);
-        }
+    /// Whether this is a sealed passphrase of a network one could join.
+    /// # Errors
+    /// [`FabricError::InvalidWifiCredential`] for anything else.
+    pub fn validate(&self) -> Result<(), FabricError> {
         if self.ssid.is_empty()
             || self.ssid.len() > 128
             || matches!(
@@ -1503,47 +1395,6 @@ impl WifiCredential {
         }
         crate::fabric::secrets::validate_wifi_envelopes(&self.sealed_secret)
             .map_err(|_| FabricError::InvalidWifiCredential)?;
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DisplayPlacement {
-    pub device: DeviceId,
-    /// Ephemeral extension received separately; preserve the schema-6 checkpoint.
-    #[serde(skip)]
-    pub outputs: Vec<DisplayConnectorPlacement>,
-    pub rect: DisplayRect,
-    pub scale_milli: u16,
-    pub stamp: FabricStamp,
-}
-
-impl DisplayPlacement {
-    fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
-        if &self.device != owner
-            || &self.stamp.device != owner
-            || self.rect.width == 0
-            || self.rect.height == 0
-            || !(500..=4000).contains(&self.scale_milli)
-        {
-            return Err(FabricError::InvalidDisplayPlacement);
-        }
-        if self.outputs.len() > 32 {
-            return Err(FabricError::InvalidDisplayPlacement);
-        }
-        unique(self.outputs.iter().map(|output| output.connector.as_str()))?;
-        for output in &self.outputs {
-            if output.connector.is_empty()
-                || output.connector.len() > 256
-                || output.connector.chars().any(char::is_control)
-                || output.label.len() > 256
-                || output.label.chars().any(char::is_control)
-                || output.rect.logical_placement().is_none()
-                || !(500..=4000).contains(&output.scale_milli)
-            {
-                return Err(FabricError::InvalidDisplayPlacement);
-            }
-        }
         Ok(())
     }
 }
@@ -1649,547 +1500,6 @@ impl InputLease {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceFabricSnapshot {
-    pub schema_version: u16,
-    pub owner: DeviceId,
-    pub presence: DevicePresence,
-    pub media: Vec<MediaSession>,
-    pub clipboard: Vec<ClipboardEntry>,
-    pub settings: Vec<RoamingSetting>,
-    pub wifi: Vec<WifiCredential>,
-    pub display: Option<DisplayPlacement>,
-    pub speakers: crate::fabric::speaker_group::SpeakerFabricState,
-    /// Disk-unlock enrolments of this device and the owner's unlock
-    /// settings published from it.
-    pub unlock: crate::fabric::unlock::UnlockFabricState,
-}
-
-impl DeviceFabricSnapshot {
-    /// Validate authorship, size, uniqueness and feature-specific invariants.
-    /// # Errors
-    /// The first violated fabric invariant.
-    pub fn validate(&self) -> Result<(), FabricError> {
-        if self.schema_version != FABRIC_SCHEMA_VERSION {
-            return Err(FabricError::UnsupportedSchema(self.schema_version));
-        }
-        if self.media.len() > MAX_MEDIA_SESSIONS
-            || self.clipboard.len() > MAX_CLIPBOARD_ITEMS
-            || self.settings.len() > MAX_ROAMING_SETTINGS
-            || self.wifi.len() > MAX_WIFI_CREDENTIALS
-        {
-            return Err(FabricError::SnapshotTooLarge);
-        }
-        self.presence.validate(&self.owner)?;
-        for item in &self.media {
-            item.validate(&self.owner)?;
-        }
-        for item in &self.clipboard {
-            item.validate(&self.owner)?;
-        }
-        for item in &self.settings {
-            item.validate(&self.owner)?;
-        }
-        for item in &self.wifi {
-            item.validate(&self.owner)?;
-        }
-        if let Some(display) = &self.display {
-            display.validate(&self.owner)?;
-        }
-        self.speakers.validate(&self.owner)?;
-        self.unlock.validate(&self.owner)?;
-        unique(self.media.iter().map(|item| item.id.as_str()))?;
-        unique(self.clipboard.iter().map(|item| item.id))?;
-        unique(self.settings.iter().map(|item| item.key.as_str()))?;
-        unique(self.wifi.iter().map(|item| item.network_id))?;
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceFabric {
-    snapshots: BTreeMap<DeviceId, DeviceFabricSnapshot>,
-    /// Revision-bound observations stay outside the schema-6 checkpoint.
-    #[serde(skip)]
-    display_outputs: BTreeMap<DeviceId, (FabricStamp, Vec<DisplayOutputObservation>)>,
-}
-
-impl DeviceFabric {
-    pub fn snapshots(&self) -> &BTreeMap<DeviceId, DeviceFabricSnapshot> {
-        &self.snapshots
-    }
-
-    /// Highest logical counter observed in any authenticated record.
-    pub fn max_counter(&self) -> u64 {
-        self.snapshots
-            .values()
-            .flat_map(|snapshot| {
-                std::iter::once(snapshot.presence.stamp.counter)
-                    .chain(snapshot.media.iter().map(|item| item.stamp.counter))
-                    .chain(snapshot.clipboard.iter().map(|item| item.stamp.counter))
-                    .chain(snapshot.settings.iter().map(|item| item.stamp.counter))
-                    .chain(snapshot.wifi.iter().map(|item| item.stamp.counter))
-                    .chain(snapshot.display.iter().map(|item| item.stamp.counter))
-                    .chain(
-                        snapshot
-                            .speakers
-                            .groups
-                            .iter()
-                            .map(|item| item.stamp.counter),
-                    )
-                    .chain(
-                        snapshot
-                            .speakers
-                            .memberships
-                            .iter()
-                            .map(|item| item.stamp.counter),
-                    )
-                    .chain(
-                        snapshot
-                            .unlock
-                            .enrolments
-                            .iter()
-                            .map(|item| item.stamp.counter),
-                    )
-            })
-            .max()
-            .unwrap_or(0)
-    }
-
-    /// Encode a validated, bounded aggregate for durable local storage.
-    /// # Errors
-    /// Retained state is invalid or exceeds its wire bound.
-    pub fn encode_checkpoint(&self) -> Result<Vec<u8>, FabricError> {
-        if self.snapshots.len() > MAX_DEVICES {
-            return Err(FabricError::TooManyDevices);
-        }
-        for (owner, snapshot) in &self.snapshots {
-            if owner != &snapshot.owner {
-                return Err(FabricError::ForeignAuthorship);
-            }
-            snapshot.validate()?;
-        }
-        let bytes = postcard::to_allocvec(self).map_err(|_| FabricError::InvalidCheckpoint)?;
-        if bytes.len() > MAX_FABRIC_CHECKPOINT_BYTES {
-            return Err(FabricError::CheckpointTooLarge);
-        }
-        Ok(bytes)
-    }
-
-    /// Decode and validate an aggregate before it reaches live fabric state.
-    /// # Errors
-    /// Malformed, oversized or invariant-violating input.
-    pub fn decode_checkpoint(bytes: &[u8]) -> Result<Self, FabricError> {
-        if bytes.len() > MAX_FABRIC_CHECKPOINT_BYTES {
-            return Err(FabricError::CheckpointTooLarge);
-        }
-        let (decoded, remaining): (Self, &[u8]) =
-            postcard::take_from_bytes(bytes).map_err(|_| FabricError::InvalidCheckpoint)?;
-        if !remaining.is_empty() {
-            return Err(FabricError::InvalidCheckpoint);
-        }
-        // Re-encoding applies every per-device validation and also rejects a
-        // malicious aggregate that expands beyond the in-memory device bound.
-        let _ = decoded.encode_checkpoint()?;
-        Ok(decoded)
-    }
-
-    /// Merge one device's newest self-authored snapshot.
-    /// # Errors
-    /// Invalid state, capacity exhaustion, or an equal revision with conflicting
-    /// content.
-    pub fn upsert(&mut self, snapshot: DeviceFabricSnapshot) -> Result<bool, FabricError> {
-        snapshot.validate()?;
-        if !self.snapshots.contains_key(&snapshot.owner) && self.snapshots.len() >= MAX_DEVICES {
-            return Err(FabricError::TooManyDevices);
-        }
-        let mut snapshot = snapshot;
-        if let Some(current) = self.snapshots.get(&snapshot.owner)
-            && let (Some(incoming), Some(previous)) = (&mut snapshot.display, &current.display)
-            && incoming.stamp == previous.stamp
-            && incoming.outputs.is_empty()
-        {
-            incoming.outputs.clone_from(&previous.outputs);
-        }
-        match self.snapshots.get(&snapshot.owner) {
-            Some(current)
-                if !snapshot
-                    .presence
-                    .stamp
-                    .is_newer_than(&current.presence.stamp) =>
-            {
-                if snapshot == *current {
-                    Ok(false)
-                } else if snapshot.presence.stamp == current.presence.stamp {
-                    // The device itself sending its last revision again, after
-                    // this side marked it gone ([`Self::mark_departed`]): back.
-                    let mut present = current.clone();
-                    present.presence.online = true;
-                    if !current.presence.online && snapshot == present {
-                        self.snapshots.insert(snapshot.owner.clone(), snapshot);
-                        return Ok(true);
-                    }
-                    Err(FabricError::ConflictingRevision)
-                } else {
-                    Ok(false)
-                }
-            }
-            _ => {
-                self.snapshots.insert(snapshot.owner.clone(), snapshot);
-                Ok(true)
-            }
-        }
-    }
-
-    /// Apply owner-authored connector observations for the exact display revision.
-    /// They are an optional transport extension and confer no input authority.
-    /// # Errors
-    /// Rejects unknown owners, stale revisions, invalid bounds or conflicting observations.
-    pub fn observe_display_connectors(
-        &mut self,
-        owner: &DeviceId,
-        stamp: &FabricStamp,
-        outputs: Vec<DisplayConnectorPlacement>,
-    ) -> Result<bool, FabricError> {
-        let current = self
-            .snapshots
-            .get_mut(owner)
-            .and_then(|snapshot| snapshot.display.as_mut())
-            .ok_or(FabricError::InvalidDisplayPlacement)?;
-        if &stamp.device != owner || stamp != &current.stamp {
-            return Err(FabricError::ForeignAuthorship);
-        }
-        let mut candidate = current.clone();
-        candidate.outputs = outputs;
-        candidate.validate(owner)?;
-        if candidate == *current {
-            return Ok(false);
-        }
-        if !current.outputs.is_empty() {
-            return Err(FabricError::ConflictingRevision);
-        }
-        *current = candidate;
-        Ok(true)
-    }
-
-    /// Admit bounded hardware facts for the owner's exact live display revision.
-    /// # Errors
-    /// Rejects unknown owners, stale revisions, conflicting facts and metadata
-    /// that disagrees with the independently admitted connector geometry.
-    pub fn observe_display_outputs(
-        &mut self,
-        owner: &DeviceId,
-        stamp: &FabricStamp,
-        outputs: Vec<DisplayOutputObservation>,
-    ) -> Result<bool, FabricError> {
-        let display = self
-            .snapshots
-            .get(owner)
-            .and_then(|snapshot| snapshot.display.as_ref())
-            .ok_or(FabricError::InvalidDisplayPlacement)?;
-        if &stamp.device != owner || stamp != &display.stamp {
-            return Err(FabricError::ForeignAuthorship);
-        }
-        if outputs.len() > settings_store::person_displays::MAX_DEVICE_OUTPUTS {
-            return Err(FabricError::InvalidDisplayPlacement);
-        }
-        unique(outputs.iter().map(|item| item.connector.as_str()))?;
-        unique(outputs.iter().map(|item| item.output.id.as_str()))?;
-        for item in &outputs {
-            if item.connector.is_empty()
-                || item.connector.len() > 256
-                || item.connector.chars().any(char::is_control)
-                || !item.output.valid()
-            {
-                return Err(FabricError::InvalidDisplayPlacement);
-            }
-            if item.output.active() {
-                let Some(connector) = display
-                    .outputs
-                    .iter()
-                    .find(|connector| connector.connector == item.connector)
-                else {
-                    return Err(FabricError::InvalidDisplayPlacement);
-                };
-                let output = &item.output;
-                if connector.rect
-                    != (DisplayRect {
-                        x: output.x,
-                        y: output.y,
-                        width: output.width,
-                        height: output.height,
-                    })
-                    || connector.scale_milli != output.scale_milli
-                {
-                    return Err(FabricError::InvalidDisplayPlacement);
-                }
-            } else if display
-                .outputs
-                .iter()
-                .any(|connector| connector.connector == item.connector)
-            {
-                return Err(FabricError::InvalidDisplayPlacement);
-            }
-        }
-        if display.outputs.iter().any(|connector| {
-            !outputs
-                .iter()
-                .any(|item| item.connector == connector.connector && item.output.active())
-        }) {
-            return Err(FabricError::InvalidDisplayPlacement);
-        }
-        if let Some((previous_stamp, previous)) = self.display_outputs.get(owner)
-            && previous_stamp == stamp
-        {
-            return if previous == &outputs {
-                Ok(false)
-            } else {
-                Err(FabricError::ConflictingRevision)
-            };
-        }
-        self.display_outputs
-            .insert(owner.clone(), (stamp.clone(), outputs));
-        Ok(true)
-    }
-
-    /// The current revision's observed facts; stale metadata is never projected.
-    pub fn display_outputs(&self, owner: &DeviceId) -> Option<&[DisplayOutputObservation]> {
-        let display = self.snapshots.get(owner)?.display.as_ref()?;
-        let (stamp, outputs) = self.display_outputs.get(owner)?;
-        (stamp == &display.stamp).then_some(outputs.as_slice())
-    }
-
-    /// Certified device observations consumed by the shared layout model.
-    pub fn person_devices(
-        &self,
-        local: &DeviceId,
-    ) -> Vec<settings_store::person_displays::PersonDevice> {
-        self.snapshots
-            .values()
-            .map(|snapshot| settings_store::person_displays::PersonDevice {
-                device: snapshot.owner.as_str().to_owned(),
-                label: snapshot.presence.label.clone(),
-                local: &snapshot.owner == local,
-                online: snapshot.presence.online,
-                outputs: self
-                    .display_outputs(&snapshot.owner)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|item| item.output.clone())
-                    .collect(),
-            })
-            .collect()
-    }
-
-    /// Mark `device` offline because it went away: what a device says of
-    /// itself holds only while it can still say it, so once its route is
-    /// gone it shows offline, keeps its place and published displays, and
-    /// is back with its next snapshot. Returns whether it was online.
-    pub fn mark_departed(&mut self, device: &DeviceId) -> bool {
-        self.snapshots
-            .get_mut(device)
-            .is_some_and(|snapshot| std::mem::replace(&mut snapshot.presence.online, false))
-    }
-
-    /// Every device but `local` offline, as after a restart: a checkpoint
-    /// keeps what the devices said, not that they are still here.
-    #[must_use]
-    pub fn restored(mut self, local: Option<&DeviceId>) -> Self {
-        for (device, snapshot) in &mut self.snapshots {
-            snapshot.presence.online &= Some(device) == local;
-        }
-        self
-    }
-
-    /// Forget everything a device published, e.g. once it left the fleet.
-    /// Returns whether it had published anything.
-    pub fn remove_device(&mut self, device: &DeviceId) -> bool {
-        self.display_outputs.remove(device);
-        self.snapshots.remove(device).is_some()
-    }
-
-    pub fn online_devices(&self) -> impl Iterator<Item = &DevicePresence> {
-        self.snapshots
-            .values()
-            .map(|snapshot| &snapshot.presence)
-            .filter(|device| device.online)
-    }
-
-    /// Resolve roaming keys from authenticated authored records. Display
-    /// placements merge per display; other keys keep their newest record.
-    /// Keeping the stamp and author lets runtimes distinguish a remote apply
-    /// from a fresh local edit instead of echoing every received preference.
-    pub fn merged_setting_records(&self) -> BTreeMap<String, RoamingSetting> {
-        use settings_store::person_displays::{PLACEMENTS_KEY, Placements};
-
-        let mut winners: BTreeMap<&str, &RoamingSetting> = BTreeMap::new();
-        for item in self
-            .snapshots
-            .values()
-            .flat_map(|snapshot| &snapshot.settings)
-        {
-            if winners
-                .get(item.key.as_str())
-                .is_none_or(|current| item.stamp.is_newer_than(&current.stamp))
-            {
-                winners.insert(item.key.as_str(), item);
-            }
-        }
-        let mut merged: BTreeMap<_, _> = winners
-            .into_iter()
-            .map(|(key, item)| (key.to_string(), item.clone()))
-            .collect();
-        if let Some(record) = merged.get_mut(PLACEMENTS_KEY) {
-            let placements = self
-                .snapshots
-                .values()
-                .flat_map(|snapshot| &snapshot.settings)
-                .filter(|setting| setting.key == PLACEMENTS_KEY)
-                .filter_map(|setting| {
-                    Placements::from_value(&setting.value)
-                        .map(|placement| (setting.stamp.device.as_str(), placement))
-                });
-            // Keep the newest authored record for provenance and echo suppression,
-            // but resolve each display independently so concurrent edits survive.
-            record.value = Placements::merge(placements).to_value();
-        }
-        merged
-    }
-
-    pub fn merged_settings(&self) -> BTreeMap<String, Value> {
-        self.merged_setting_records()
-            .into_iter()
-            .map(|(key, item)| (key, item.value))
-            .collect()
-    }
-
-    pub fn merged_wifi(&self) -> BTreeMap<[u8; 32], WifiCredential> {
-        let mut winners = BTreeMap::<[u8; 32], WifiCredential>::new();
-        for item in self.snapshots.values().flat_map(|snapshot| &snapshot.wifi) {
-            if winners
-                .get(&item.network_id)
-                .is_none_or(|current| item.stamp.is_newer_than(&current.stamp))
-            {
-                winners.insert(item.network_id, item.clone());
-            }
-        }
-        winners
-    }
-
-    pub fn merged_clipboard(&self) -> ClipboardHistory {
-        let mut items: Vec<_> = self
-            .snapshots
-            .values()
-            .flat_map(|snapshot| snapshot.clipboard.iter().cloned())
-            .collect();
-        items.sort_by(|a, b| (b.created_unix_ms, &b.stamp).cmp(&(a.created_unix_ms, &a.stamp)));
-        let mut history = ClipboardHistory::default();
-        for item in items {
-            if history.push(item).is_err() {
-                break;
-            }
-        }
-        history
-    }
-}
-
-impl DeviceFabric {
-    /// Every group any certified device leads, newest record per id.
-    pub fn speaker_groups(&self) -> Vec<&crate::fabric::speaker_group::SpeakerGroup> {
-        let mut winners = BTreeMap::<
-            crate::fabric::speaker_group::SpeakerGroupId,
-            &crate::fabric::speaker_group::SpeakerGroup,
-        >::new();
-        for group in self
-            .snapshots
-            .values()
-            .flat_map(|snapshot| &snapshot.speakers.groups)
-        {
-            if winners
-                .get(&group.id)
-                .is_none_or(|current| group.stamp.is_newer_than(&current.stamp))
-            {
-                winners.insert(group.id, group);
-            }
-        }
-        let mut groups = winners.into_values().collect::<Vec<_>>();
-        groups.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
-        groups
-    }
-
-    pub fn speaker_group(
-        &self,
-        id: crate::fabric::speaker_group::SpeakerGroupId,
-    ) -> Option<&crate::fabric::speaker_group::SpeakerGroup> {
-        self.speaker_groups()
-            .into_iter()
-            .find(|group| group.id == id)
-    }
-
-    /// Where each member of `group` stands, in member order.
-    pub fn speaker_member_states(
-        &self,
-        group: &crate::fabric::speaker_group::SpeakerGroup,
-    ) -> Vec<crate::fabric::speaker_group::SpeakerMemberStatus> {
-        use crate::fabric::speaker_group::SpeakerMemberStatus;
-        group
-            .members
-            .iter()
-            .map(|member| {
-                let Some(snapshot) = self.snapshots.get(&member.device) else {
-                    return SpeakerMemberStatus::NotCertified;
-                };
-                if member.device != group.leader && !snapshot.presence.capabilities.audio_group {
-                    return SpeakerMemberStatus::Unavailable;
-                }
-                if snapshot.speakers.output(member.output).is_none() {
-                    return SpeakerMemberStatus::OutputMissing;
-                }
-                let consented = member.device == group.leader
-                    || snapshot
-                        .speakers
-                        .memberships
-                        .iter()
-                        .any(|membership| membership.covers(group, member));
-                if !consented {
-                    SpeakerMemberStatus::AwaitingConsent
-                } else if snapshot.presence.online {
-                    SpeakerMemberStatus::Ready
-                } else {
-                    SpeakerMemberStatus::Offline
-                }
-            })
-            .collect()
-    }
-
-    /// Admission rules for a group its leader is about to publish: every member is one of
-    /// this person's certified devices, can join speaker groups (the leader's own outputs
-    /// always can), and offers the named output.
-    /// # Errors
-    /// [`FabricError::InvalidSpeakerGroup`] for a structural problem,
-    /// [`FabricError::UnknownDevice`] for a device outside the fabric, and
-    /// [`FabricError::IneligibleSpeakerMember`] for a device that cannot join or does not
-    /// offer that output.
-    pub fn admit_speaker_group(
-        &self,
-        group: &crate::fabric::speaker_group::SpeakerGroup,
-    ) -> Result<(), FabricError> {
-        group.validate(&group.leader)?;
-        for member in &group.members {
-            let snapshot = self
-                .snapshots
-                .get(&member.device)
-                .ok_or(FabricError::UnknownDevice)?;
-            if (member.device != group.leader && !snapshot.presence.capabilities.audio_group)
-                || snapshot.speakers.output(member.output).is_none()
-            {
-                return Err(FabricError::IneligibleSpeakerMember);
-            }
-        }
-        Ok(())
-    }
-}
-
 pub(crate) fn valid_fabric_identifier(value: &str, max: usize) -> bool {
     !value.is_empty()
         && value.len() <= max
@@ -2272,16 +1582,7 @@ fn valid_bluetooth_pairing_action(
     request_id != &[0; 16] && authorization != &[0; 16] && os_actions::bluez::valid_address(address)
 }
 
-/// Whether a settings-store leaf is part of a person's fabric: a leaf of a
-/// section the person holds ([`settings_store::placement`]). A section
-/// nobody declared stays on the device.
-pub fn valid_setting_key(key: &str) -> bool {
-    valid_fabric_identifier(key, 256)
-        && settings_store::placement::holder_of_key(key)
-            == Some(settings_store::placement::Holder::Person)
-}
-
-fn unique<T: Ord>(items: impl IntoIterator<Item = T>) -> Result<(), FabricError> {
+pub(super) fn unique<T: Ord>(items: impl IntoIterator<Item = T>) -> Result<(), FabricError> {
     let mut seen = BTreeSet::new();
     if items.into_iter().all(|item| seen.insert(item)) {
         Ok(())
@@ -2292,22 +1593,14 @@ fn unique<T: Ord>(items: impl IntoIterator<Item = T>) -> Result<(), FabricError>
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FabricError {
-    #[error("unsupported device-fabric schema {0}")]
-    UnsupportedSchema(u16),
-    #[error("the snapshot exceeds a device-fabric bound")]
-    SnapshotTooLarge,
-    #[error("the device-fabric checkpoint exceeds its transport bound")]
-    CheckpointTooLarge,
-    #[error("invalid device-fabric checkpoint")]
-    InvalidCheckpoint,
+    #[error("what a device says of itself exceeds its bound")]
+    TooLarge,
     #[error("a value was authored by a different device")]
     ForeignAuthorship,
     #[error("invalid device label")]
     InvalidLabel,
     #[error("invalid identifier")]
     InvalidIdentifier,
-    #[error("invalid media position")]
-    InvalidMediaPosition,
     #[error("clipboard item exceeds the sync limit")]
     ClipboardItemTooLarge,
     #[error("clipboard MIME type is invalid or secret-only")]
@@ -2316,10 +1609,6 @@ pub enum FabricError {
     ClipboardHashMismatch,
     #[error("clipboard history is full of pinned entries")]
     ClipboardHistoryFull,
-    #[error("invalid roaming setting")]
-    InvalidRoamingSetting,
-    #[error("roaming setting exceeds the sync limit")]
-    SettingTooLarge,
     #[error("invalid encrypted Wi-Fi credential")]
     InvalidWifiCredential,
     #[error("invalid display placement")]
@@ -2328,12 +1617,8 @@ pub enum FabricError {
     InvalidInputLease,
     #[error("input lease has expired")]
     ExpiredInputLease,
-    #[error("duplicate item in a device snapshot")]
+    #[error("a device says one thing twice")]
     DuplicateItem,
-    #[error("too many devices are enrolled")]
-    TooManyDevices,
-    #[error("same device revision carried conflicting state")]
-    ConflictingRevision,
     #[error("unknown target device")]
     UnknownDevice,
     #[error("invalid personal-fabric action")]

@@ -266,15 +266,15 @@ impl Routes {
 
         // The person's devices as their fabric names them: whose name to show beside the route,
         // which of them could carry it, and which of them may route through this one.
-        let devices = fabric.device_fabric();
+        let devices = fabric.devices();
         let mut labels = BTreeMap::new();
         let mut online = BTreeSet::new();
-        for snapshot in devices.snapshots().values() {
-            let Some(key) = key_of(&snapshot.owner) else {
+        for device in devices.devices().values() {
+            let Some(key) = key_of(&device.device) else {
                 continue;
             };
-            labels.insert(key, snapshot.presence.label.clone());
-            if snapshot.presence.online {
+            labels.insert(key, device.about.label.clone());
+            if device.online {
                 online.insert(key);
             }
         }

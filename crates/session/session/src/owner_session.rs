@@ -145,17 +145,17 @@ impl SessionFollow {
     }
 }
 
-/// The person's latest input on another of their devices that shares a network with this one and is
-/// unlocked; idle time here counts from it.
+/// The person's latest input on another of their devices that is here, shares a network with this
+/// one and is unlocked; idle time here counts from it.
 #[must_use]
 pub fn latest_use_nearby<'a>(
     own: &DevicePresence,
-    others: impl IntoIterator<Item = &'a DevicePresence>,
+    others: impl IntoIterator<Item = (&'a DevicePresence, bool)>,
 ) -> Option<u64> {
     others
         .into_iter()
-        .filter(|other| other.online && !other.session.locked && shares_network(own, other))
-        .map(|other| other.session.active_unix_ms)
+        .filter(|(other, online)| *online && !other.session.locked && shares_network(own, other))
+        .map(|(other, _)| other.session.active_unix_ms)
         .max()
 }
 
@@ -188,25 +188,25 @@ impl Session {
         let input_ms = now_ms.saturating_sub(since_input);
         let locked = self.compositor.locked();
         let in_use = self.compositor.in_use();
-        let device = fabric.device_fabric();
+        let device = fabric.devices();
         let local = fabric
             .local_device_fabric_identity()
             .map(|(local, _)| local);
         let own = local
             .as_ref()
-            .and_then(|local| device.snapshots().get(local))
-            .map(|snapshot| snapshot.presence.clone());
-        let others: Vec<DevicePresence> = device
-            .snapshots()
+            .and_then(|local| device.get(local))
+            .map(|device| device.presence.clone());
+        let others: Vec<(&DevicePresence, bool)> = device
+            .devices()
             .iter()
             .filter(|(id, _)| Some(*id) != local.as_ref())
-            .map(|(_, snapshot)| snapshot.presence.clone())
+            .map(|(_, device)| (&device.presence, device.online))
             .collect();
         // Idle time here counts from the person's last input on a device of theirs nearby: neither
         // locks while they are on the other.
         let used_nearby = own
             .as_ref()
-            .and_then(|own| latest_use_nearby(own, others.iter()));
+            .and_then(|own| latest_use_nearby(own, others.iter().copied()));
         if let Some(used) = used_nearby
             && let Some(at) = now.checked_sub(std::time::Duration::from_millis(
                 now_ms.saturating_sub(used),
@@ -218,7 +218,7 @@ impl Session {
             locked,
             input_ms,
             in_use,
-            others.iter().map(|other| {
+            others.iter().map(|(other, _)| {
                 let nearby = own.as_ref().is_some_and(|own| shares_network(own, other));
                 (other.session, nearby)
             }),

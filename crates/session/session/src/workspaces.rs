@@ -2131,7 +2131,7 @@ mod tests {
             let b_identity = identity(0x11, 0x22, "The desktop");
             let b_device = b_identity.device_cert.device_public_key;
             let b_store = store_of(&b_identity.device_cert, std::sync::Arc::clone(&b_identity.signer));
-            let mut b_list = open(b_identity.clone(), Some(b_state.path()));
+            let mut b_list = open(b_identity, Some(b_state.path()));
             b_list.publish_local(&b);
             assert!(
                 hand_over(
@@ -2236,7 +2236,7 @@ mod tests {
             let b = session();
             let b_identity = identity(0x11, 0x22, "The desktop");
             let (a_store, b_store) = (store_of(&a_identity.device_cert, std::sync::Arc::clone(&a_identity.signer)), store_of(&b_identity.device_cert, std::sync::Arc::clone(&b_identity.signer)));
-            let mut b_list = open(b_identity.clone(), Some(b_state.path()));
+            let mut b_list = open(b_identity, Some(b_state.path()));
             hand_over(
                 (&mut a_list, &a_store),
                 (&mut b_list, &b_store),
@@ -2323,7 +2323,7 @@ mod tests {
                 (b_device, false, "The desktop"),
                 "the control shows the workspace kept off the desktop"
             );
-            let reopened = open(a_identity.clone(), Some(a_state.path()));
+            let reopened = open(a_identity, Some(a_state.path()));
             assert_eq!(
                 reopened.device_choices(a_id),
                 choices,

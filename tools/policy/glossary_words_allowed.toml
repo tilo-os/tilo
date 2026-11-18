@@ -394,6 +394,12 @@ words = ["channel"]
 identifiers = ["sync_channel"]
 
 [[allow]]
+reason = "A LUKS key slot: the one of a volume's keys a boot asks a sibling to unlock with."
+words = ["slot"]
+identifiers = ["slot", "SlotId"]
+paths = ["crates/session/session/src/platform/fabric/linux/store_tests.rs"]
+
+[[allow]]
 reason = "A file's name: `./host.mjs` is the module that puts the wasm runtime in a page, and these two files name it in their imports."
 words = ["host"]
 identifiers = ["host"]

@@ -400,7 +400,7 @@ reason = "renames RecordsArrived to ResourcesArrived in place: the runtime inter
 [[break]]
 file = "crates/session/network-actor/src/lib.rs"
 enum = "PersonalFabricPayload"
-reason = "renames the RecordContent variants to DocumentContent in place: devices of one person speak one build's format"
+reason = "frames between two of one person's devices are never kept and both speak one build's format: the RecordContent variants became DocumentContent in place, and what a device says of itself is a Presence frame where its stamped state was"
 
 [[break]]
 file = "crates/collab/actions/src/remote/workspace_activity.rs"

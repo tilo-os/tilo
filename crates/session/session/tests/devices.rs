@@ -27,15 +27,12 @@ use tilo_compositor::OutputConfig;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_quick_settings::RowPart;
 use tilo_quick_settings::hosted::{ASK_KEY, DevicesReading, HostedActions, ROUTE_KEY, SOUND_KEY};
-use tilo_session::platform::fabric::SpeakerFabricState;
-use tilo_session::platform::fabric::UnlockFabricState;
 use tilo_session::platform::fabric::wake::{self, MagicPackets};
 use tilo_session::platform::fabric::{
-    DeviceFabric, DeviceFabricSnapshot, DeviceId, DeviceKind, DevicePresence,
-    FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp, Ipv4Subnet, MediaSourceLocator,
-    OwnerSession, PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
-    REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
-    WakeInterfaceKind, WakeRoute,
+    DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, Ipv4Subnet, MediaSourceLocator,
+    OwnerSession, PersonDevice, PersonDevices, PersonalFabricAction, PersonalFabricActionEnvelope,
+    REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION,
+    REMOTE_AUDIO_SAMPLE_RATE_HZ, WakeInterfaceKind, WakeRoute,
 };
 use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_session::surfaces::Surface;
@@ -118,15 +115,13 @@ impl WakeInterfaces for FixedInterfaces {
     }
 }
 
-/// The fabric as a stand-in transport keeps it, and what the session sent through it.
+/// The person's devices as a stand-in transport keeps them, and what the session sent through it.
 #[derive(Default)]
 struct Fabric {
-    converged: DeviceFabric,
+    converged: PersonDevices,
     sent: Vec<(DeviceId, PersonalFabricAction)>,
-    /// What this device's session said of itself, as its record carries it.
+    /// What this device's session said of itself.
     published: Option<OwnerSession>,
-    /// The revision the next record a device says of itself is said at.
-    counter: u64,
 }
 
 #[derive(Clone, Default)]
@@ -221,7 +216,7 @@ impl FakeLink {
         link
     }
 
-    /// A device of the person's says of itself what it says now, at a revision newer than its last.
+    /// A device of the person's says of itself what it says now.
     fn put_device(
         &self,
         device: DeviceId,
@@ -237,17 +232,9 @@ impl FakeLink {
                 .expect("the online devices")
                 .insert(device.clone());
         }
-        let mut fabric = self.fabric.lock().expect("the fabric");
-        fabric.counter = fabric.counter.saturating_add(1);
-        let stamp = FabricStamp {
-            counter: fabric.counter,
-            device: device.clone(),
-        };
-        let snapshot = DeviceFabricSnapshot {
-            schema_version: FABRIC_SCHEMA_VERSION,
-            owner: device.clone(),
-            presence: DevicePresence {
-                device,
+        let mut known = PersonDevice::new(
+            device,
+            DeviceAbout {
                 label: label.to_owned(),
                 kind: DeviceKind::Laptop,
                 capabilities: FabricCapabilities {
@@ -255,24 +242,16 @@ impl FakeLink {
                     audio_output: true,
                     ..FabricCapabilities::default()
                 },
-                online,
-                last_seen_unix_ms: 0,
-                wake_routes: routes,
-                session,
-                stamp,
             },
-            media: Vec::new(),
-            clipboard: Vec::new(),
-            settings: Vec::new(),
-            wifi: Vec::new(),
-            display: None,
-            speakers: SpeakerFabricState::default(),
-            unlock: UnlockFabricState::default(),
-        };
-        fabric
+        );
+        known.online = online;
+        known.presence.wake_routes = routes;
+        known.presence.session = session;
+        self.fabric
+            .lock()
+            .expect("the fabric")
             .converged
-            .upsert(snapshot)
-            .expect("the snapshot is valid");
+            .insert(known);
     }
 
     /// The session the person's laptop says it has now.
@@ -303,7 +282,7 @@ impl FakeLink {
 }
 
 impl FabricLink for FakeLink {
-    fn device_fabric(&self) -> DeviceFabric {
+    fn devices(&self) -> PersonDevices {
         self.fabric.lock().expect("the fabric").converged.clone()
     }
 

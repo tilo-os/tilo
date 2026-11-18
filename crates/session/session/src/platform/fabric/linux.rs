@@ -1,9 +1,15 @@
-//! What this desktop's session provides of the fabric: the link over its peer connection and what it carries.
+//! What this desktop's session provides of the person's devices: what each keeps in their store
+//! ([`store`]), what each says live on its session with this one ([`live`]), and the link that
+//! carries both ([`session`]).
 
+mod live;
+#[cfg(test)]
+pub(crate) use live::Live;
 mod session;
+mod store;
 
 pub use session::Continuity;
-pub(crate) use session::SessionFabric;
+pub(crate) use session::{Reach, SessionFabric};
 
 pub use tilo_network_actor::fabric::link::{
     FabricLink, NearbySpoolOffer, PersonalFabricSendError, SharedLink,
@@ -11,7 +17,6 @@ pub use tilo_network_actor::fabric::link::{
 pub use tilo_network_actor::fabric::notification::{
     ContinuityNotificationProjection, MAX_CONTINUITY_NOTIFICATION_TTL_MS,
 };
-pub use tilo_network_actor::fabric::runtime::FabricRuntime;
 pub use tilo_network_actor::fabric::secrets::open_wifi_credential;
 pub use tilo_network_actor::fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
@@ -23,12 +28,12 @@ pub use tilo_network_actor::fabric::unlock::{
 };
 pub use tilo_network_actor::fabric::wake::WakeEvent;
 pub use tilo_network_actor::fabric::{
-    CarriedDrag, CarriedOffer, ClipboardEntry, ClipboardPayload, DeviceFabric,
-    DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION, FabricCapabilities,
-    FabricInputEvent, InputLease, Ipv4Subnet, MAX_INPUT_LEASE_MS, MAX_WAKE_ROUTES,
-    MediaSourceLocator, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession, PersonalFabricAction,
-    PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
-    REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ, ScrollUnit, WakeInterfaceKind,
-    WakeOutcome, WakeRoute,
+    CarriedDrag, CarriedOffer, ClipboardEntry, ClipboardPayload, DeviceAbout, DeviceDisplay,
+    DeviceKind, DevicePresence, FabricCapabilities, FabricError, FabricInputEvent, InputLease,
+    Ipv4Subnet, MAX_CLIPBOARD_ITEMS, MAX_FABRIC_ACTION_AGE_MS, MAX_INPUT_LEASE_MS, MAX_WAKE_ROUTES,
+    MediaSourceLocator, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession, PersonDevice, PersonDevices,
+    PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
+    REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
+    ScrollUnit, WakeInterfaceKind, WakeOutcome, WakeRoute, WifiCredential,
 };
 pub use tilo_network_actor::fabric::{clock, wake};

@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::platform::fabric::DeviceFabric;
+use crate::platform::fabric::PersonDevices;
 use crate::platform::fabric::{DecisionOutcome, UnlockDecisionEntry};
 use crate::platform::fabric::{FabricLink as _, SharedLink};
 use automerge::transaction::{CommitOptions, Transactable as _};
@@ -118,11 +118,11 @@ impl UnlockHistory {
             return false;
         };
         let mut wrote = false;
-        let fabric = link.device_fabric();
-        for (owner, snapshot) in fabric.snapshots() {
-            for answer in &snapshot.unlock.decisions {
-                // Only the device whose snapshot carries it signed it: another device's answer is
-                // in that device's own snapshot.
+        let fabric = link.devices();
+        for (owner, device) in fabric.devices() {
+            for answer in &device.unlock.decisions {
+                // Only the device whose part carries it signed it: another device's answer is in
+                // that device's own part of the person's store.
                 if answer.validate(owner).is_err() {
                     continue;
                 }
@@ -175,17 +175,18 @@ impl UnlockHistory {
         self.doc.borrow().base_heads()
     }
 
-    /// How the devices that answered are known: each by the name its own snapshot gives it.
+    /// How the devices that answered are known: each by the name it gives itself in the person's
+    /// store.
     pub(crate) fn authors(&self) -> BTreeMap<String, String> {
         let Some(link) = self.link.borrow().clone() else {
             return BTreeMap::new();
         };
-        let fabric = link.device_fabric();
+        let fabric = link.devices();
         fabric
-            .snapshots()
+            .devices()
             .iter()
-            .filter(|(_, snapshot)| !snapshot.unlock.decisions.is_empty())
-            .map(|(owner, snapshot)| (owner.as_str().to_owned(), snapshot.presence.label.clone()))
+            .filter(|(_, device)| !device.unlock.decisions.is_empty())
+            .map(|(owner, device)| (owner.as_str().to_owned(), device.about.label.clone()))
             .collect()
     }
 
@@ -214,20 +215,20 @@ struct Boot {
 }
 
 /// The device `answer` 's boot belongs to, by the enrolment it names.
-fn boot_of(fabric: &DeviceFabric, answer: &UnlockDecisionEntry) -> Boot {
-    for snapshot in fabric.snapshots().values() {
-        for enrolment in &snapshot.unlock.enrolments {
+fn boot_of(fabric: &PersonDevices, answer: &UnlockDecisionEntry) -> Boot {
+    for known in fabric.devices().values() {
+        for enrolment in &known.unlock.enrolments {
             if enrolment.id() != Some(answer.boot_cert_digest) {
                 continue;
             }
             let device = hex::encode(enrolment.cert.device_public_key);
             let label = fabric
-                .snapshots()
-                .values()
-                .find(|snapshot| snapshot.owner.as_str() == device)
+                .devices()
+                .iter()
+                .find(|(id, _)| id.as_str() == device)
                 .map_or_else(
                     || t("unlock-history-unknown-device"),
-                    |snapshot| snapshot.presence.label.clone(),
+                    |(_, known)| known.about.label.clone(),
                 );
             return Boot { device, label };
         }

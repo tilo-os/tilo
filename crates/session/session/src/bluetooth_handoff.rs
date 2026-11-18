@@ -223,12 +223,12 @@ impl Handoffs {
         if target == local {
             return;
         }
-        let converged = fabric.device_fabric();
-        let Some(destination) = converged.snapshots().get(&target) else {
+        let converged = fabric.devices();
+        let Some(destination) = converged.get(&target) else {
             refused(shared, address, &t("session-bluetooth-target-unknown"));
             return;
         };
-        if !destination.presence.online {
+        if !destination.online {
             refused(shared, address, &t("session-bluetooth-target-away"));
             return;
         }
@@ -805,9 +805,9 @@ fn release(request_id: [u8; 16], address: &str) -> Work {
 
 /// What the person's other device is called, as its own session says.
 fn label(fabric: &SharedLink, peer: &DeviceId) -> String {
-    fabric.device_fabric().snapshots().get(peer).map_or_else(
+    fabric.devices().get(peer).map_or_else(
         || peer.as_str().to_owned(),
-        |snapshot| snapshot.presence.label.clone(),
+        |device| device.about.label.clone(),
     )
 }
 
