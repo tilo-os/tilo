@@ -106,6 +106,9 @@ iroh.workspace = true
 iroh-base.workspace = true
 # The packet relay this host runs for the pages it serves.
 iroh-relay = { version = "1.0.3", features = ["server"] }
+# A machine with no token shows its enrollment line as a code the console
+# draws, for a camera to read off a screen or a photograph of one.
+qrcode.workspace = true
 
 # Identity + workspace directory + cert-chain verification.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }

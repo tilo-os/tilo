@@ -251,11 +251,14 @@ pub(super) fn wait_for_approval(
             let _ = ready.send(());
         }
         let address = dial_of(&endpoint);
+        let line = scan_line(&address, &code);
         println!("Enrollment code: {code}");
-        println!(
-            "On one of your devices, approve {}, then start its approval with",
-            scan_line(&address, &code)
-        );
+        if let Some(code) = qr(&line) {
+            println!("Scan this code on one of your devices:");
+            println!("{code}");
+        }
+        println!("Or paste this line there to approve this machine:");
+        println!("{line}");
         let solicitation = PairSolicitation {
             magic: PAIR_MAGIC,
             device_public_key: device.verifying_key().to_bytes(),
@@ -342,6 +345,22 @@ fn scan_line(address: &Dial, code: &str) -> String {
     format!(
         "tilo://enroll?endpoint={}{relay}&code={code}",
         hex::encode(address.endpoint)
+    )
+}
+
+/// `line` as a QR code a camera reads off the console: dark modules left blank
+/// and light ones drawn as blocks, which a dark terminal shows as a white code
+/// on black, two module rows to a line. `None` when the line does not fit a code,
+/// which leaves the line itself to be read.
+fn qr(line: &str) -> Option<String> {
+    use qrcode::render::unicode::Dense1x2;
+    let code = qrcode::QrCode::new(line.as_bytes()).ok()?;
+    Some(
+        code.render::<Dense1x2>()
+            .quiet_zone(true)
+            .dark_color(Dense1x2::Light)
+            .light_color(Dense1x2::Dark)
+            .build(),
     )
 }
 

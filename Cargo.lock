@@ -21592,6 +21592,7 @@ dependencies = [
  "package-store",
  "photos",
  "postcard",
+ "qrcode",
  "rand 0.10.3",
  "rcgen",
  "ring",
