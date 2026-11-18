@@ -2154,7 +2154,6 @@ dependencies = [
 name = "chat"
 version = "0.1.0"
 dependencies = [
- "agent-provider-config",
  "chat",
  "durable-store",
  "emoji",
@@ -2166,7 +2165,6 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
- "settings-store",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -2179,7 +2177,6 @@ dependencies = [
  "tilo-emoji-engine",
  "tilo-files",
  "tilo-model-client",
- "tilo-model-gateway",
  "tilo-paths",
  "tilo-reference",
  "tilo-rich-text",
@@ -2188,7 +2185,6 @@ dependencies = [
  "tilo-view",
  "tilo-view-macros",
  "tilo-winit",
- "tokio",
  "uuid",
  "workspace-hack",
 ]

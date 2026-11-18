@@ -4,8 +4,6 @@ pub mod caller;
 #[cfg(all(unix, feature = "server"))]
 pub mod http_service;
 pub mod openai;
-/// The model service a browser page runs for its own windows.
-pub mod page_service;
 /// What each known model's tokens cost, and what an answer is charged.
 pub mod pricing;
 #[cfg(all(unix, feature = "server"))]

@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_provider_config::presets::{Authentication, Preset};
+use agent_provider_config::protocol::{ModelError, ModelRequest, ModelResponse};
 use agent_provider_config::{
     AgentModel, EndpointLocation, Interaction, ModelDescriptor, ProviderConfig, ProviderProfile,
     capabilities, transform,
@@ -46,6 +47,8 @@ use super::person_settings::{
 const MAX_MODEL_LIST_BYTES: usize = 2 * 1024 * 1024;
 /// How long a provider may take to list its models.
 const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(20);
+/// The longest a window's turn of the person's model may take.
+const TURN_TIMEOUT: Duration = Duration::from_secs(120);
 /// The longest id a model named by hand has.
 const MAX_MODEL_ID_BYTES: usize = 256;
 
@@ -85,6 +88,10 @@ impl Workspaces {
         let reach = self.model_reach();
         let changed = match request.target.address.action.as_str() {
             person_models::LIST => return answer(&providers(&root)),
+            person_models::ASK => {
+                let asked: ModelRequest = argument(request, "a model request")?;
+                return self.ask_person_model(person, workspace_id, &asked).await;
+            }
             person_models::ADD_PROVIDER => {
                 let adding: person_models::AddProvider = argument(request, "a provider to add")?;
                 answer(&add_provider(&root, &adding, reach.destinations))
@@ -131,6 +138,34 @@ impl Workspaces {
             self.person_settings_changed();
         }
         changed
+    }
+}
+
+impl Workspaces {
+    /// One turn of `person`'s own model, for a window of theirs that has no
+    /// model service of its own (a page): the model they chose for a request,
+    /// asked with the key their vault keeps for its provider, as every
+    /// model call this host makes for them is. The answer is the turn or
+    /// the reason there is none, as a model failure the window shows.
+    async fn ask_person_model(
+        &self,
+        person: [u8; 32],
+        workspace_id: Option<collab_types::WorkspaceId>,
+        asked: &ModelRequest,
+    ) -> Result<Value, ActionCallError> {
+        let mut model = self.person_model(person, Interaction::Request);
+        if let Some(workspace) = workspace_id {
+            model = model.working_in(workspace);
+        }
+        let deadline = tilo_clock::now() + TURN_TIMEOUT;
+        let answered: Result<ModelResponse, ModelError> = model
+            .answer(asked, deadline, &mut |_| {})
+            .await
+            .map(|answer| answer.response)
+            .map_err(|refusal| refusal.model_error());
+        serde_json::to_value(answered).map_err(|error| ActionCallError::Refused {
+            reason: error.to_string(),
+        })
     }
 }
 

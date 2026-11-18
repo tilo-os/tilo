@@ -9,7 +9,10 @@
 //! one is kept, and no reading carries it back.
 //!
 //! The host asks a provider for its models too ([`REFRESH_MODELS`]), with the
-//! key it keeps: a page never holds a key it could ask with.
+//! key it keeps: a page never holds a key it could ask with. For the same
+//! reason a page's windows ask the person's model here ([`ASK`]): the server
+//! makes the call with the key from the vault, as it does for the person's
+//! agents, and answers the turn.
 //!
 //! Local models are not here: they run on a device, which is where the pane
 //! that manages them lives.
@@ -60,6 +63,14 @@ pub const SET_ASSIGNMENT: &str = "set-assignment";
 /// Choose one model for several kinds of work together
 /// ([`SetAssignments`]), answering the providers as a [`ModelProviders`].
 pub const SET_ASSIGNMENTS: &str = "set-assignments";
+
+/// Ask the person's model for one turn, as the model they chose for a
+/// request (else their default) answers it, with the key their vault keeps.
+/// The argument is an `agent_provider_config::protocol::ModelRequest`; the
+/// answer is a `Result<ModelResponse, ModelError>` as serde writes one
+/// (`{"Ok": ...}` or `{"Err": ...}`), so a refusal keeps the kind a window
+/// decides by (no provider yet, no key) and the words the person reads.
+pub const ASK: &str = "ask";
 
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]

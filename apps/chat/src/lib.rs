@@ -125,8 +125,6 @@ mod live_share_tests;
 mod message_view_tests;
 #[cfg(all(test, unix))]
 mod native_models_tests;
-#[cfg(all(test, not(target_family = "wasm")))]
-mod page_models_tests;
 #[cfg(test)]
 mod question_tests;
 #[cfg(test)]

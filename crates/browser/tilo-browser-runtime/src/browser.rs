@@ -276,12 +276,13 @@ struct Config {
 }
 
 impl Config {
-    /// The host's administration grant, else the page's own model service's,
-    /// which only Model Providers is ever lent.
+    /// The embedder's administration grant, which only Model Providers
+    /// is ever lent. Without one, Model Providers shows the providers the
+    /// person keeps on their server, as Settings does.
     fn provider_admin(&self) -> Result<ui::models::ProviderAdministration, JsValue> {
         match &self.provider_management {
             Some(granted) => granted.connect().map_err(error),
-            None => Ok(crate::host_services::provider_admin(self.peer.is_some())),
+            None => Ok(ui::models::ProviderAdministration::default()),
         }
     }
 
@@ -292,11 +293,16 @@ impl Config {
         Ok(())
     }
 
-    /// The host's model service, else the page's own.
+    /// The embedder's model service, else the person's own model on
+    /// their server; none for a page with no server.
     fn models(&self) -> Result<ui::models::Models, JsValue> {
         match &self.models {
             Some(lent) => lent.connect().map_err(error),
-            None => Ok(crate::host_services::page_models()),
+            None => Ok(crate::host_services::server_models(
+                self.peer,
+                &self.workspace,
+                &self.author(),
+            )),
         }
     }
     fn author(&self) -> String {
@@ -1459,6 +1465,8 @@ fn mount_search(
         crate::page_search::SearchParts {
             handle: handle.clone(),
             person: config.author(),
+            peer: config.peer,
+            workspace: config.workspace.clone(),
             store: records_store,
             content: content_store,
             files: files.cloned(),

@@ -82,16 +82,10 @@ it in the host's model backend rather than a process-global singleton.
 `transport::ModelClient<T>` adapts any transport to the portable
 `agent_provider_config::protocol::ModelBackend` for one selected profile/model.
 
-A page whose host lends no model service runs its own:
-`page_service::PageService` is the same `ModelBackend` for its windows and
-the same `ProviderAdmin` for Model Providers, over the person's settings
-document and their provider keys in the browser's encrypted secret store
-(`tilo-secrets`), each bound to its provider's origin as here. It speaks the
-providers' dialects through `conversation`, which reads an OpenAI-compatible
-answer with the gateway's own `openai::read_turn`, directly
-to a provider that answers browsers and through the workspace host's fetch
-proxy (relayed, never kept) to one that does not. Sign-ins stay on Tilo
-computers; in a browser a provider takes an API key.
+A page whose server lends no model service keeps no provider key and asks no
+provider itself: its windows ask the person's own model on their workspace
+server (the `tilo.models` `ask` action), which the server answers with the key the
+person's vault keeps there, as it answers their hosted agents.
 
 HTTP responses are no-store NDJSON. Requests/individual events are capped at
 2 MiB, intermediate events have a bounded eight-frame queue and event count,

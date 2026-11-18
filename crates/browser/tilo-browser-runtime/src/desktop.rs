@@ -252,19 +252,17 @@ impl LateFeedback {
         }
         let sender = crate::feedback_code::install(startup, Rc::clone(&self.store))?;
         *shared.feedback.borrow_mut() = Some(sender);
-        // The model this page may use also looks over reports before they
-        // are sent: its host's, or a provider the person set up here.
-        // Without one, the model the workspace's host lends its reporters does,
-        // asked through the workspace.
+        // Reports are looked over before they are sent: by the model the
+        // embedder lends this page, else the one the reports' owner
+        // lends its reporters, else the person's own model on their server.
         let lent = if !self.model_name.is_empty() {
             Some((self.models.clone(), self.model_name.clone()))
-        } else if self.models.is_available() && crate::host_services::page_models_set_up() {
-            Some((
-                self.models.clone(),
-                "the model provider you set up".to_owned(),
-            ))
         } else {
-            crate::feedback_code::owner_model(self.peer)
+            crate::feedback_code::owner_model(self.peer).or_else(|| {
+                self.models
+                    .is_available()
+                    .then(|| (self.models.clone(), "your own model".to_owned()))
+            })
         };
         if let (Some(feedback), Some((models, name))) = (shared.feedback.borrow().as_ref(), lent) {
             feedback.set_models(models, name);

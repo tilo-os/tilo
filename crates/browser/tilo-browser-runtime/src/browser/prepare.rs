@@ -74,8 +74,8 @@ pub(super) fn host_offers(config: &Config) -> crate::shell::HostOffers {
 /// What the page's shell asks its history: the session's activity over this page's store, its apps
 /// and the people presence knows, and the model this page may ask.
 ///
-/// The model is the host's, else a provider the person set up here: without one nothing is asked
-/// and the history keeps its deterministic digest. Only where this page's copy is the shell: in a
+/// The model is the one the embedder lends: without one nothing is asked and the history
+/// keeps its deterministic digest. Only where this page's copy is the shell: in a
 /// workspace the shell is the workspace's document, and its metadata reaches everyone from the
 /// device that writes it there.
 pub(super) fn serve_history(
@@ -87,11 +87,11 @@ pub(super) fn serve_history(
     here: &tilo_desktop::here::Here,
     people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
 ) -> tilo_session::activity::Activity {
-    let describes = config.peer.is_none()
-        && (config.models.is_some() || crate::host_services::page_models_set_up());
-    let models = describes.then(|| {
-        Arc::new(PageModels(config.models.clone())) as Arc<dyn tilo_session::platform::Models>
-    });
+    let models = config
+        .models
+        .clone()
+        .filter(|_| config.peer.is_none())
+        .map(|lent| Arc::new(PageModels(lent)) as Arc<dyn tilo_session::platform::Models>);
     let people = crate::page_activity::person_of(here, people, config.author());
     let activity = tilo_session::activity::Activity::over(tilo_session::activity::Given {
         layouts: Box::new(crate::page_activity::PageLayout(persistence.layout())),
@@ -116,16 +116,13 @@ pub(super) fn serve_history(
     activity
 }
 
-/// The page's model service, as the session's own questions ask it: its models hold the page's own
-/// handles, so each question builds the capability where it is asked.
-struct PageModels(Option<crate::host_services::ModelConfig>);
+/// The embedder's model service, as the session's own questions ask it: its models hold the
+/// page's own handles, so each question builds the capability where it is asked.
+struct PageModels(crate::host_services::ModelConfig);
 
 impl tilo_session::platform::Models for PageModels {
     fn models(&self) -> Option<ui::models::Models> {
-        match &self.0 {
-            Some(config) => config.connect().ok(),
-            None => Some(crate::host_services::page_models()),
-        }
+        self.0.connect().ok()
     }
 }
 
