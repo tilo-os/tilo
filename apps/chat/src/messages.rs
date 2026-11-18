@@ -971,6 +971,10 @@ impl ChatPart {
     pub fn stop_agent(&mut self, cx: &mut ActionCx, message: &Id) -> Result<(), Refusal> {
         let starter = crate::cause::starter(cx)?;
         let at = seconds(cx);
+        // Whoever shows an agent at work holds its reply, where the work is kept: a stop that
+        // names the reply is a stop of the message it answers, held to the same check.
+        let answered = self.answered_by(message);
+        let message = answered.as_ref().unwrap_or(message);
         let row = self
             .messages
             .get_mut(message)
@@ -1436,6 +1440,22 @@ impl Chained for ChatPart {
 }
 
 impl ChatPart {
+    /// The message `reply` answers, when `reply` is what an agent writes in answer on the
+    /// attempt that goes now ([`reply_id_at`]): the message its turn's stop stands on.
+    fn answered_by(&self, reply: &Id) -> Option<Id> {
+        let row = self.messages.get(reply)?;
+        row.work.as_ref()?;
+        let thread = row.parent.as_ref()?;
+        self.messages
+            .iter()
+            .find(|&(id, asked)| {
+                asked.channel == row.channel
+                    && (id == thread || asked.parent.as_ref() == Some(thread))
+                    && reply_id_at(id, &row.author, asked.attempts) == *reply
+            })
+            .map(|(id, _)| id.clone())
+    }
+
     /// The message a verb on one message names.
     fn item_of(action: &ChatPartAction) -> Option<Id> {
         match action {
