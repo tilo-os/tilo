@@ -93,7 +93,7 @@ impl Membership {
         self.workspaces
             .set_member_role(
                 WORKSPACE,
-                &self.member.endpoint.host_cert,
+                &self.member.endpoint.server_cert,
                 tilo_server::workspaces::SetMemberRoleRequest {
                     request_id: *blake3::hash(
                         format!("{role:?} {}", tilo_clock::unix_now_ns()).as_bytes(),
@@ -149,7 +149,7 @@ impl Membership {
 
 impl WorkspaceDocumentsLink for Membership {
     fn user_public_key(&self) -> [u8; 32] {
-        self.member.endpoint.host_cert.user_public_key
+        self.member.endpoint.server_cert.user_public_key
     }
     fn own_device(&self) -> HostDevice {
         self.member.clone()

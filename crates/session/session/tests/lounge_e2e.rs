@@ -78,7 +78,7 @@ struct WorkspaceService {
     workspace: String,
     /// The owner root the service serves: its person.
     owner: ed25519_dalek::SigningKey,
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     /// The service's iroh endpoint: how its pages reach its session.
     host: ServerAddress,
     /// The runtime the page and the service's routes run on: the host's own session and its HTTP
@@ -207,14 +207,14 @@ impl WorkspaceService {
             .enable_all()
             .build()
             .expect("a runtime for the service's page");
-        let info = host_info(&runtime, &plain).expect("the host's certificate");
+        let info = server_info(&runtime, &plain).expect("the host's certificate");
         Self {
             child,
             stdin,
             plain,
             workspace,
             owner,
-            host_cert: info.host_cert,
+            server_cert: info.server_cert,
             host: ServerAddress::at(
                 info.address
                     .expect("the service publishes its iroh endpoint")
@@ -321,12 +321,12 @@ fn client() -> Result<tilo_net::Client, String> {
 
 /// What the host publishes for a page: its certificate, and the iroh endpoint its session and
 /// live sessions are reached at.
-fn host_info(
+fn server_info(
     runtime: &tokio::runtime::Runtime,
     plain: &str,
-) -> Result<tilo_server_protocol::web::HostInfo, String> {
+) -> Result<tilo_server_protocol::web::ServerInfo, String> {
     runtime
-        .block_on(tilo_server_client::https::host_info(&Plain(
+        .block_on(tilo_server_client::https::server_info(&Plain(
             plain.to_owned(),
         )))
         .map_err(|error| error.to_string())
@@ -340,7 +340,7 @@ fn page(service: &WorkspaceService, member: &Member) -> Link {
         PeerConfig {
             host: service.host.clone(),
             cert: member.cert.clone(),
-            host_cert: service.host_cert.clone(),
+            server_cert: service.server_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
             entering: None,
         },

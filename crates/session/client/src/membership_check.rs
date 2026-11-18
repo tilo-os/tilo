@@ -43,7 +43,7 @@ pub struct PeerEntry {
     /// This device's root-signed certificate.
     pub cert: Option<DeviceCert>,
     /// The host certificate pinned at certification.
-    pub host_cert: Option<DeviceCert>,
+    pub server_cert: Option<DeviceCert>,
 }
 
 /// Persistence for a [`PeerEntry`]. The page implements it over `IndexedDB`

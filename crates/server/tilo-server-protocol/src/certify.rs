@@ -8,7 +8,7 @@
 //! requester → host:  CertifyOpen::Request(CertificationRequest)
 //! host → requester:  CertifyReply::Pending { pairing_code }
 //!                    … later, on the same stream …
-//! host → requester:  CertifyReply::Issued { cert, host_cert, label }
+//! host → requester:  CertifyReply::Issued { cert, server_cert, label }
 //!                  | CertifyReply::Denied { reason } | CertifyReply::Expired
 //!
 //! approver → host:   CertifyOpen::Approver(Hello)   then the usual
@@ -133,7 +133,7 @@ pub enum CertifyReply {
         cert: DeviceCert,
         /// The host's own certificate, which the device pins for later
         /// sessions.
-        host_cert: DeviceCert,
+        server_cert: DeviceCert,
         /// The name the host gave the device: the one it proposed when no
         /// other device of the person reads by it, else the next numbered
         /// name (`Laptop 2`), so two devices set up the same way read apart.

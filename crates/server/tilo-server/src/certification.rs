@@ -858,7 +858,7 @@ impl CertificationProtocol {
         approver.approved(&request);
         entry.answer.send_replace(Some(CertifyReply::Issued {
             cert,
-            host_cert: self.identity.cert.clone(),
+            server_cert: self.identity.cert.clone(),
             label: entry.label.clone(),
         }));
         drop(pending);
@@ -985,7 +985,7 @@ impl CertificationProtocol {
                         entry.delegation = Some(delegation);
                         CertifyReply::Issued {
                             cert,
-                            host_cert: self.identity.cert.clone(),
+                            server_cert: self.identity.cert.clone(),
                             label: entry.label.clone(),
                         }
                     }
@@ -1001,7 +1001,7 @@ impl CertificationProtocol {
                         }
                         CertifyReply::Issued {
                             cert,
-                            host_cert: self.identity.cert.clone(),
+                            server_cert: self.identity.cert.clone(),
                             label: entry.label.clone(),
                         }
                     }

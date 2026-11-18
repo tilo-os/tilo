@@ -84,6 +84,7 @@ fn open_time(directory: &std::path::Path) -> std::time::Duration {
 /// How long opening History over the notebook in `directory` takes.
 fn history_open_time(directory: &std::path::Path) -> std::time::Duration {
     let mut app = TestApp::<NotesShell>::open_data_dir(directory).unwrap();
+    app.serve_history();
     let harness = app.harness();
     let started = std::time::Instant::now();
     harness
@@ -100,6 +101,7 @@ fn a_notebook_with_a_long_typing_history_opens_history_a_page_at_a_time() {
     typed_notebook(directory.path());
     let mut app = TestApp::<NotesShell>::open_data_dir(directory.path()).unwrap();
     assert!(app.harness().targets().contains_key("block_editor"));
+    app.serve_history();
     let harness = app.harness();
     harness
         .open_history()

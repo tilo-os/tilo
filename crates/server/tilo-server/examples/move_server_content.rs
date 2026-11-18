@@ -233,7 +233,7 @@ async fn named_by_workspace(
 ) -> anyhow::Result<BTreeMap<String, tilo_server::content::collection::Named>> {
     let root = read_root(&args.root_file)?;
     let host = read_host_key(&args.state.join("host-device.key"))?;
-    let cert = host_cert(&root, &host, &args.persistent)?;
+    let cert = server_cert(&root, &host, &args.persistent)?;
     let scratch = tempfile::tempdir()?;
     // Bound to this machine alone, and found by nobody: no member reaches
     // the host while its content moves.
@@ -348,7 +348,7 @@ fn read_host_key(path: &Path) -> anyhow::Result<SigningKey> {
 /// workspaces name it among their hosts; a certificate signed any other way
 /// is another device to them, and opening under it would change their
 /// governance.
-fn host_cert(root: &SigningKey, host: &SigningKey, name: &str) -> anyhow::Result<DeviceCert> {
+fn server_cert(root: &SigningKey, host: &SigningKey, name: &str) -> anyhow::Result<DeviceCert> {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: host.verifying_key().to_bytes(),
@@ -594,7 +594,7 @@ mod tests {
                         user_public_key: root.verifying_key().to_bytes(),
                         device_signing_key: host.clone(),
                         // As `tilo-server workspace --persistent lounge` signs it.
-                        device_cert: host_cert(root, host, "lounge").unwrap(),
+                        device_cert: server_cert(root, host, "lounge").unwrap(),
                         revocations: RevocationList::new(),
                     },
                 )

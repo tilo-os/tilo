@@ -471,14 +471,14 @@ fn parse_role(role: &str) -> Result<Role, String> {
 fn hosted_identity(
     root: &SigningKey,
     host: SigningKey,
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     server_state: &Path,
 ) -> anyhow::Result<ServerIdentity> {
     tilo_server::daemon::with_persisted_revocations(
         ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: host,
-            device_cert: host_cert,
+            device_cert: server_cert,
             revocations: RevocationList::new(),
         },
         server_state,
@@ -1231,7 +1231,7 @@ fn settled(workspace: &str, result: anyhow::Result<()>) {
 async fn settle_listing(
     workspaces: &Workspaces,
     workspace: &str,
-    host_cert: &DeviceCert,
+    server_cert: &DeviceCert,
     persistent: &PersistentArgs,
 ) -> anyhow::Result<()> {
     let Some(description) = &persistent.listing_description else {
@@ -1240,7 +1240,7 @@ async fn settle_listing(
     workspaces
         .publish(
             workspace,
-            host_cert,
+            server_cert,
             Listing {
                 description: description.clone(),
                 default_role: persistent.default_role.unwrap_or(Role::Viewer),
@@ -1256,18 +1256,18 @@ async fn settle_listing(
 async fn settle_invitation_only(
     workspaces: &Workspaces,
     workspace: &str,
-    host_cert: &DeviceCert,
+    server_cert: &DeviceCert,
     persistent: &PersistentArgs,
 ) -> anyhow::Result<()> {
     if !persistent.invitation_only {
         return Ok(());
     }
     workspaces
-        .list_invitation_only(workspace, host_cert, true)
+        .list_invitation_only(workspace, server_cert, true)
         .await
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     workspaces
-        .list_wait_list_max(workspace, host_cert, persistent.wait_list_max)
+        .list_wait_list_max(workspace, server_cert, persistent.wait_list_max)
         .await
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     Ok(())
@@ -1350,7 +1350,7 @@ pub(crate) async fn run(
                 as std::sync::Arc<dyn tilo_agent_session::FeedbackReviewer>
         });
     let host = host_key(&state)?;
-    let host_cert = enrol(
+    let server_cert = enrol(
         &root,
         &host,
         &format!("{name} workspace host"),
@@ -1375,7 +1375,7 @@ pub(crate) async fn run(
         work: hold_for(persistent.hold_for.as_deref())?,
         ..Default::default()
     };
-    let identity = hosted_identity(&root, host, host_cert, &config.state_root)?;
+    let identity = hosted_identity(&root, host, server_cert, &config.state_root)?;
     // A host that places its workspaces' browser sessions certifies them as
     // the person's stand-in, which it makes from the root it holds: nobody
     // else approves for them here.
@@ -1429,23 +1429,23 @@ pub(crate) async fn run(
         // the host's own after a workspace was made with it, and the host took
         // the record's back (`Workspaces::serving_certificate`). Every governed
         // operation below names it, so a renamed certificate is no refusal.
-        let host_cert = workspaces.serving_certificate().clone();
+        let server_cert = workspaces.serving_certificate().clone();
         // A setting of the operator's that the workspace's governance refuses
         // stops the start only where going on without it would let in more than
         // the operator configured: the entry, the guests' outside effects and the
         // removals above. The rest is said and settled again at the next start.
         settled(
             &workspace,
-            settle_listing(&workspaces, &workspace, &host_cert, &persistent).await,
+            settle_listing(&workspaces, &workspace, &server_cert, &persistent).await,
         );
-        settle_invitation_only(&workspaces, &workspace, &host_cert, &persistent)
+        settle_invitation_only(&workspaces, &workspace, &server_cert, &persistent)
             .await
             .map_err(|error| anyhow::anyhow!("settle the workspace's entry: {error}"))?;
-        seed_apps(&workspaces, &workspace, &host_cert, &persistent.seed_apps).await?;
+        seed_apps(&workspaces, &workspace, &server_cert, &persistent.seed_apps).await?;
         settle_chat(
             &workspaces,
             &workspace,
-            &host_cert,
+            &server_cert,
             &persistent.seed_apps,
             &persistent.chat_channels,
             persistent.feedback_channel.as_deref(),
@@ -1453,21 +1453,26 @@ pub(crate) async fn run(
             &persistent.discussions,
         )
         .await?;
-        settle_strips(&workspaces, &workspace, &host_cert, &persistent.strips).await?;
-        ensure_guest_policy(&workspaces, &workspace, &host_cert).await?;
+        settle_strips(&workspaces, &workspace, &server_cert, &persistent.strips).await?;
+        ensure_guest_policy(&workspaces, &workspace, &server_cert).await?;
         settle_moderation(&workspaces, &workspace, &persistent).await?;
         // Members inviting, or not, never lets in anyone the entry does not.
         settled(
             &workspace,
-            settle_member_invites(&workspaces, &workspace, &host_cert, persistent.members_only)
-                .await,
+            settle_member_invites(
+                &workspaces,
+                &workspace,
+                &server_cert,
+                persistent.members_only,
+            )
+            .await,
         );
         settle_owners(&workspaces, &workspace, &persistent.owners).await?;
         // A record the operator named whose retained history lost the base its
         // deltas were written over: founded again from what the workspace still
         // reads, its old history archived beside the replay. Runs once per start
         // that names it; a record that still reads is left as it is.
-        refound_records(&workspaces, &workspace, &host_cert, &persistent.refound).await?;
+        refound_records(&workspaces, &workspace, &server_cert, &persistent.refound).await?;
         // The wait list, when the workspace takes people by invitation and
         // keeps one: the addresses' windows and the mail the entry sends from
         // its page (the web entry, or the entry `--wait-list-mail` names). What
@@ -1529,7 +1534,7 @@ pub(crate) async fn run(
                 tilo_server::workspace_bots::ModerationBot::new(
                     workspaces.clone(),
                     workspace.clone(),
-                    host_cert.clone(),
+                    server_cert.clone(),
                     agent,
                 )
                 .run(),
@@ -1562,7 +1567,7 @@ pub(crate) async fn run(
         let (runners, discord) = start_bots(
             &workspaces,
             &workspace,
-            &host_cert,
+            &server_cert,
             &root,
             &bots,
             &connector_host,
@@ -1583,7 +1588,7 @@ pub(crate) async fn run(
                 tilo_server::workspace_bots::attachments::WorkspaceAttachments::new(
                     workspaces.clone(),
                     workspace.clone(),
-                    host_cert.device_public_key,
+                    server_cert.device_public_key,
                     posted,
                     state.join("attachments.json"),
                     limits,
@@ -1597,7 +1602,7 @@ pub(crate) async fn run(
         let requested = tokio::spawn(
             tilo_server::workspace_bots::requested::Following {
                 workspaces: workspaces.clone(),
-                host: host_cert.clone(),
+                host: server_cert.clone(),
                 root: root.clone(),
                 state: state.clone(),
                 operator: BTreeMap::from([(
@@ -2115,15 +2120,15 @@ mod tests {
     /// A server governing one workspace `Plaza`, its workspaces and the host's
     /// device certificate.
     async fn plaza(dir: &Path) -> (tilo_server::daemon::Server, Workspaces, DeviceCert, String) {
-        let (server, workspaces, host_cert) = host(dir).await;
+        let (server, workspaces, server_cert) = host(dir).await;
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-        (server, workspaces, host_cert, workspace)
+        (server, workspaces, server_cert, workspace)
     }
 
     /// Seeds as the operator's start does, naming the apps it asked `--seed-app`
     /// for, and answers with what the workspace seeded.
     async fn seeded(
-        host_cert: &DeviceCert,
+        server_cert: &DeviceCert,
         workspaces: &Workspaces,
         workspace: &str,
         apps: &[&str],
@@ -2131,7 +2136,7 @@ mod tests {
         seed_apps(
             workspaces,
             workspace,
-            host_cert,
+            server_cert,
             &apps.iter().map(|app| (*app).to_owned()).collect::<Vec<_>>(),
         )
         .await
@@ -2146,11 +2151,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_fresh_workspace_seeds_its_apps_and_keeps_them() {
         let dir = tempfile::tempdir().unwrap();
-        let (server, workspaces, host_cert) =
+        let (server, workspaces, server_cert) =
             host_with(dir.path(), tilo_user_identity::DeviceCapabilities::member()).await;
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         let apps = ["so.tilo.notes", "so.tilo.chat"];
-        let first = seeded(&host_cert, &workspaces, &workspace, &apps).await;
+        let first = seeded(&server_cert, &workspaces, &workspace, &apps).await;
         assert_eq!(
             first,
             apps.iter()
@@ -2158,7 +2163,7 @@ mod tests {
                 .collect::<BTreeSet<_>>()
         );
         // A restart seeds nothing again: what the first start seeded is kept.
-        let again = seeded(&host_cert, &workspaces, &workspace, &apps).await;
+        let again = seeded(&server_cert, &workspaces, &workspace, &apps).await;
         assert_eq!(again, first);
         server.shutdown().await;
     }
@@ -2188,7 +2193,7 @@ mod tests {
             |bytes| bytes.try_into().unwrap(),
         );
         let host = SigningKey::from_bytes(&key);
-        let host_cert = enrol(&root, &host, "host", capabilities).unwrap();
+        let server_cert = enrol(&root, &host, "host", capabilities).unwrap();
         let server = tilo_server::daemon::Server::start(
             tilo_server::ServerConfig {
                 state_root: dir.join("server"),
@@ -2198,14 +2203,14 @@ mod tests {
             ServerIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host,
-                device_cert: host_cert.clone(),
+                device_cert: server_cert.clone(),
                 revocations: RevocationList::new(),
             },
         )
         .await
         .unwrap();
         let workspaces = server.workspaces().unwrap().clone();
-        (server, workspaces, host_cert)
+        (server, workspaces, server_cert)
     }
 
     /// A host started as `tilo-server workspace` starts one: the operator's root
@@ -2214,12 +2219,12 @@ mod tests {
     async fn start_workspace(
         root: &SigningKey,
         host: &SigningKey,
-        host_cert: &DeviceCert,
+        server_cert: &DeviceCert,
         server_state: &Path,
         state: &Path,
     ) -> tilo_server::daemon::Server {
         let identity =
-            hosted_identity(root, host.clone(), host_cert.clone(), server_state).unwrap();
+            hosted_identity(root, host.clone(), server_cert.clone(), server_state).unwrap();
         tilo_server::daemon::Server::start(
             tilo_server::ServerConfig {
                 state_root: server_state.to_path_buf(),
@@ -2247,7 +2252,7 @@ mod tests {
         let server_state = tilo_server_protocol::metrics::workspace_server_root(&state);
         let root = SigningKey::from_bytes(&[0x11; 32]);
         let host = SigningKey::from_bytes(&[0x22; 32]);
-        let host_cert = enrol(&root, &host, "host", DeviceCapabilities::member()).unwrap();
+        let server_cert = enrol(&root, &host, "host", DeviceCapabilities::member()).unwrap();
         let leaked = SigningKey::from_bytes(&[0x33; 32]);
         let leaked_cert = enrol(&root, &leaked, "leaked", DeviceCapabilities::member()).unwrap();
         let sibling = SigningKey::from_bytes(&[0x44; 32]);
@@ -2262,7 +2267,7 @@ mod tests {
 
         // Before the operator withdraws it, the device connects: what the
         // refusal below is the log's doing, not the device's.
-        let server = start_workspace(&root, &host, &host_cert, &server_state, &state).await;
+        let server = start_workspace(&root, &host, &server_cert, &server_state, &state).await;
         let addr = server.node_addr();
         let admitted = tilo_server::ServerClient::connect(
             endpoint().await,
@@ -2286,7 +2291,7 @@ mod tests {
         .unwrap();
         assert!(changed, "a first revocation changes the log");
 
-        let server = start_workspace(&root, &host, &host_cert, &server_state, &state).await;
+        let server = start_workspace(&root, &host, &server_cert, &server_state, &state).await;
         let addr = server.node_addr();
         let refused = tilo_server::ServerClient::connect(
             endpoint().await,
@@ -2451,17 +2456,17 @@ mod tests {
     #[tokio::test]
     async fn a_declared_owner_is_let_in_and_governs_from_the_start() {
         let dir = tempfile::tempdir().unwrap();
-        let (server, workspaces, host_cert, workspace) = plaza(dir.path()).await;
-        ensure_guest_policy(&workspaces, &workspace, &host_cert)
+        let (server, workspaces, server_cert, workspace) = plaza(dir.path()).await;
+        ensure_guest_policy(&workspaces, &workspace, &server_cert)
             .await
             .unwrap();
-        settle_member_invites(&workspaces, &workspace, &host_cert, false)
+        settle_member_invites(&workspaces, &workspace, &server_cert, false)
             .await
             .unwrap();
         workspaces
             .publish(
                 &workspace,
-                &host_cert,
+                &server_cert,
                 Listing {
                     description: "A plaza".into(),
                     default_role: Role::Editor,
@@ -2472,7 +2477,7 @@ mod tests {
         settle_invitation_only(
             &workspaces,
             &workspace,
-            &host_cert,
+            &server_cert,
             &PersistentArgs {
                 invitation_only: true,
                 ..PersistentArgs::default()
@@ -2552,12 +2557,12 @@ mod tests {
     #[tokio::test]
     async fn taking_people_by_invitation_the_invitation_admits_the_guest() {
         let dir = tempfile::tempdir().unwrap();
-        let (server, workspaces, host_cert, workspace) = plaza(dir.path()).await;
-        ensure_guest_policy(&workspaces, &workspace, &host_cert)
+        let (server, workspaces, server_cert, workspace) = plaza(dir.path()).await;
+        ensure_guest_policy(&workspaces, &workspace, &server_cert)
             .await
             .unwrap();
         // An open workspace settles as one at every start, holding no such grant.
-        settle_member_invites(&workspaces, &workspace, &host_cert, false)
+        settle_member_invites(&workspaces, &workspace, &server_cert, false)
             .await
             .unwrap();
 
@@ -2567,7 +2572,7 @@ mod tests {
         workspaces
             .publish(
                 &workspace,
-                &host_cert,
+                &server_cert,
                 Listing {
                     description: "A plaza".into(),
                     default_role: Role::Editor,
@@ -2593,8 +2598,11 @@ mod tests {
         let asked = invite(&workspaces, &workspace, &member.1).await;
         assert!(matches!(asked, WorkspacesReply::Refused(_)), "{asked:?}");
 
-        workspaces.unpublish(&workspace, &host_cert).await.unwrap();
-        settle_member_invites(&workspaces, &workspace, &host_cert, true)
+        workspaces
+            .unpublish(&workspace, &server_cert)
+            .await
+            .unwrap();
+        settle_member_invites(&workspaces, &workspace, &server_cert, true)
             .await
             .unwrap();
 
@@ -2629,7 +2637,7 @@ mod tests {
             "the invited stranger is a member"
         );
 
-        settle_member_invites(&workspaces, &workspace, &host_cert, false)
+        settle_member_invites(&workspaces, &workspace, &server_cert, false)
             .await
             .unwrap();
         let asked = invite(&workspaces, &workspace, &member.1).await;
@@ -2643,17 +2651,17 @@ mod tests {
     #[tokio::test]
     async fn a_lived_in_workspace_takes_its_hosts_settings_after_a_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let (server, workspaces, host_cert, workspace) = plaza(dir.path()).await;
-        ensure_guest_policy(&workspaces, &workspace, &host_cert)
+        let (server, workspaces, server_cert, workspace) = plaza(dir.path()).await;
+        ensure_guest_policy(&workspaces, &workspace, &server_cert)
             .await
             .unwrap();
-        settle_member_invites(&workspaces, &workspace, &host_cert, false)
+        settle_member_invites(&workspaces, &workspace, &server_cert, false)
             .await
             .unwrap();
         workspaces
             .publish(
                 &workspace,
-                &host_cert,
+                &server_cert,
                 Listing {
                     description: "A plaza".into(),
                     default_role: Role::Editor,
@@ -2678,7 +2686,7 @@ mod tests {
         workspaces
             .set_member_administrator(
                 &workspace,
-                &host_cert,
+                &server_cert,
                 [1; 32],
                 people[0].1.user_public_key,
                 None,
@@ -2688,7 +2696,7 @@ mod tests {
         workspaces
             .set_member_role(
                 &workspace,
-                &host_cert,
+                &server_cert,
                 tilo_server_session::workspaces::SetMemberRoleRequest {
                     request_id: [2; 32],
                     user_public_key: people[1].1.user_public_key,
@@ -2700,7 +2708,7 @@ mod tests {
         workspaces
             .ban_member(
                 &workspace,
-                &host_cert,
+                &server_cert,
                 tilo_server_session::workspaces::RemoveMemberRequest {
                     request_id: [3; 32],
                     user_public_key: people[2].1.user_public_key,
@@ -2710,15 +2718,15 @@ mod tests {
             .unwrap();
         server.shutdown().await;
 
-        let (server, workspaces, host_cert) = host(dir.path()).await;
+        let (server, workspaces, server_cert) = host(dir.path()).await;
         for step in 0..2 {
-            ensure_guest_policy(&workspaces, &workspace, &host_cert)
+            ensure_guest_policy(&workspaces, &workspace, &server_cert)
                 .await
                 .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
-            settle_member_invites(&workspaces, &workspace, &host_cert, false)
+            settle_member_invites(&workspaces, &workspace, &server_cert, false)
                 .await
                 .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
-            settle_member_invites(&workspaces, &workspace, &host_cert, true)
+            settle_member_invites(&workspaces, &workspace, &server_cert, true)
                 .await
                 .unwrap_or_else(|error| panic!("start {step}: {error:#}"));
         }

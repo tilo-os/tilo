@@ -197,4 +197,4 @@ fn row(entry: &wire::Entry, id: HistoryEntryId) -> HistoryEntry {
 
 #[cfg(any(test, feature = "test-support"))]
 #[path = "feed_tests.rs"]
-pub mod tests;
+pub(crate) mod tests;

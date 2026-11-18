@@ -35,7 +35,7 @@ fn a_document_this_device_is_behind_in_is_asked_for_again_until_its_compaction_i
             None,
         ),
         cert: bootstrap.device_cert,
-        host_cert: server,
+        server_cert: server,
         revocations: RevocationList::new(),
         entering: None,
     };

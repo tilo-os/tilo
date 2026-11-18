@@ -65,8 +65,8 @@ impl Member {
         let peer = tilo_session_client::start_session(
             PeerConfig {
                 host: own_device.endpoint.host.clone(),
-                cert: own_device.endpoint.host_cert.clone(),
-                host_cert: own_device.endpoint.host_cert.clone(),
+                cert: own_device.endpoint.server_cert.clone(),
+                server_cert: own_device.endpoint.server_cert.clone(),
                 revocations: RevocationList::new(),
                 entering: None,
             },

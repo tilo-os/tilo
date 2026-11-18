@@ -255,7 +255,7 @@ pub struct SignIn {
     /// This device's certificate: a member of the person's, for thirty days.
     pub cert: DeviceCert,
     /// The server's certificate, pinned.
-    pub host_cert: DeviceCert,
+    pub server_cert: DeviceCert,
 }
 
 /// Ask `link`'s server to have the person's root certify `signer`'s device as
@@ -276,7 +276,7 @@ pub async fn sign_in(
     signer: &dyn DeviceSigner,
     on_pending: impl FnOnce(&str),
 ) -> Result<SignIn, CertifyError> {
-    let info = https::host_info(client).await?;
+    let info = https::server_info(client).await?;
     let server = match &info.address {
         Some(address) => ServerAddress::published(address),
         None => {
@@ -287,7 +287,7 @@ pub async fn sign_in(
         }
     };
     let invite = link.invite.unwrap_or([0; 16]);
-    let (cert, host_cert, label) = crate::certify::certify(
+    let (cert, server_cert, label) = crate::certify::certify(
         &server,
         link.user_public_key,
         label,
@@ -302,7 +302,7 @@ pub async fn sign_in(
         label,
         server,
         cert,
-        host_cert,
+        server_cert,
     })
 }
 

@@ -158,7 +158,7 @@ impl HostedWorkspaces {
             PeerConfig {
                 host: tilo_server_client::ServerAddress::at(placed.host.endpoint_addr.clone()),
                 cert: identity.device_cert.clone(),
-                host_cert: placed.host.device_certificate.clone(),
+                server_cert: placed.host.device_certificate.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
                 entering: None,
             },

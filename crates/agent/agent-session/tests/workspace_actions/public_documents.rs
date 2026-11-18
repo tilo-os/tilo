@@ -497,7 +497,7 @@ async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
     arguments.insert("channel".into(), serde_json::json!(format!("c_{CHANNEL}")));
     arguments.insert("text".into(), serde_json::json!("hello from the agent"));
     let posted = member
-        .invoke(request(
+        .invoke_settled(request(
             &record_provider(&chat),
             ActionAddress::new(
                 ui::resource::chain_resource_id(&chat::parts::chain()),

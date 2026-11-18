@@ -71,7 +71,7 @@ impl Task {
             return;
         };
         let workspace_id = *workspace_id;
-        let host = self.config.host_cert.device_public_key;
+        let host = self.config.server_cert.device_public_key;
         let Ok(said) = HostSaid::open(said, signature, workspace_id, &host) else {
             return;
         };

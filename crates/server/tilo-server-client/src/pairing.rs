@@ -485,17 +485,19 @@ pub async fn certify_with_root(
     signer: &dyn DeviceSigner,
     label: &str,
 ) -> Result<(DeviceCert, DeviceCert), CertifyError> {
-    let host_cert = https::host_info(client).await?.host_cert;
-    check_host(&host_cert, root.device_public_key())?;
+    let server_cert = https::server_info(client).await?.server_cert;
+    check_host(&server_cert, root.device_public_key())?;
     let cert =
         issue_device_cert(root, signer.device_public_key(), label, IssuedRole::Browser).await?;
-    Ok((cert, host_cert))
+    Ok((cert, server_cert))
 }
 
-fn check_host(host_cert: &DeviceCert, user_public_key: [u8; 32]) -> Result<(), CertifyError> {
-    verify_device_cert_at(host_cert, tilo_clock::unix_now_ns())
+fn check_host(server_cert: &DeviceCert, user_public_key: [u8; 32]) -> Result<(), CertifyError> {
+    verify_device_cert_at(server_cert, tilo_clock::unix_now_ns())
         .map_err(|error| CertifyError::Denied(format!("server certificate refused: {error}")))?;
-    if host_cert.user_public_key != user_public_key || !host_cert.capabilities.can_own_workspaces {
+    if server_cert.user_public_key != user_public_key
+        || !server_cert.capabilities.can_own_workspaces
+    {
         return Err(CertifyError::Denied(
             "the certificate is not a device of this person".into(),
         ));

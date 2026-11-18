@@ -750,6 +750,7 @@ async fn live(token: String, guild_id: String) -> usize {
             &workspace.ada,
             chat::parts::ChatMessages::POST.with(chat::messages::chat_messages::Post {
                 message: chat::messages::NewMessage {
+                    id: None,
                     channel: Id::from_raw(&general),
                     text: "notes from Tilo".into(),
                     parent: None,

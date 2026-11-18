@@ -295,7 +295,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         PeerConfig {
             host: host.iroh(),
             cert: script_cert,
-            host_cert: host_device.cert.clone(),
+            server_cert: host_device.cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
             entering: None,
         },

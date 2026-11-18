@@ -994,6 +994,7 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
         .as_ada_on_messages(chat::parts::ChatMessages::POST.with(
             chat::messages::chat_messages::Post {
                 message: chat::messages::NewMessage {
+                    id: None,
                     channel: Id::from_raw(&bridge.general),
                     text: "the notes".into(),
                     parent: None,
@@ -1054,6 +1055,7 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
         .as_ada_on_messages(chat::parts::ChatMessages::POST.with(
             chat::messages::chat_messages::Post {
                 message: chat::messages::NewMessage {
+                    id: None,
                     channel: Id::from_raw(&bridge.general),
                     text: "after".into(),
                     parent: None,

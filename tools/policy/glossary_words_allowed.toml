@@ -269,6 +269,11 @@ paths = [
 ]
 
 [[allow]]
+reason = "A test that opens Chat on the canvas names the conversation the way the session publishes it, `chat.workspace/channels/<id>`, as `canvas_point.rs` beside it does."
+words = ["channel"]
+paths = ["crates/session/session/tests/canvas_turn_open.rs"]
+
+[[allow]]
 reason = "The room speakers are calibrated in."
 words = ["room"]
 paths = [
@@ -1138,6 +1143,12 @@ paths = [
 reason = "The machine a container runs on, and the web host names the tilo.sh stack serves and checks: origins, `Host` headers and ssh `Host` entries, all network names."
 words = ["host"]
 paths = ["os/containers/*"]
+
+[[allow]]
+reason = "The two JSON field names a published page handoff already gives the server's device certificate, `host_cert` on `ServerInfo` and the page's `hostCert`: a page reads them as they are."
+words = ["host"]
+identifiers = ["host_cert", "hostCert"]
+paths = ["crates/server/tilo-server-protocol/src/web.rs"]
 
 [[allow]]
 reason = "A registry address's host, the network name a registry is reached at, which the glossary keeps as a network host name."

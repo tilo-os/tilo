@@ -78,13 +78,13 @@ fn new_key() -> SigningKey {
 /// A page of `name` entering `workspace` through its entry.
 async fn arrive(
     host: ServerAddress,
-    host_cert: &tilo_user_identity::DeviceCert,
+    server_cert: &tilo_user_identity::DeviceCert,
     workspace: &str,
     name: &str,
 ) -> Link {
     let (root, key) = (new_key(), new_key());
     let (cert, entry) = entry_request(
-        host_cert,
+        server_cert,
         workspace,
         &key,
         Entering {
@@ -100,7 +100,7 @@ async fn arrive(
     enter_page(
         host,
         cert,
-        host_cert.clone(),
+        server_cert.clone(),
         key,
         std::sync::Arc::new(MemoryPeerStore::default()),
         entry,

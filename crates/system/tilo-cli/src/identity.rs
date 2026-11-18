@@ -316,19 +316,19 @@ async fn through_entry(person: &Person, site: &str) -> Result<()> {
     else {
         return Ok(());
     };
-    let info = https::host_info(&Origin::new(&http, host)).await?;
+    let info = https::server_info(&Origin::new(&http, host)).await?;
     let address = info
         .address
         .as_ref()
         .context("the host takes no device connections")?;
     let held = Held {
         cert: person.cert.clone(),
-        host_cert: Some(info.host_cert.clone()),
+        server_cert: Some(info.server_cert.clone()),
     };
     let began = std::time::Instant::now();
     loop {
         let (cert, entry) = device::entry_request(
-            &info.host_cert,
+            &info.server_cert,
             &workspace,
             &person.device,
             Entering {
@@ -345,7 +345,7 @@ async fn through_entry(person: &Person, site: &str) -> Result<()> {
             tilo_session_client::PeerConfig {
                 host: tilo_server_client::ServerAddress::published(address),
                 cert,
-                host_cert: info.host_cert.clone(),
+                server_cert: info.server_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
                 entering: Some(entry),
             },

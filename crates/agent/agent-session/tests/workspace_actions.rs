@@ -595,7 +595,7 @@ struct DeliveryReadFixture {
 
 impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryReadFixture {
     fn user_public_key(&self) -> [u8; 32] {
-        self.member.endpoint.host_cert.user_public_key
+        self.member.endpoint.server_cert.user_public_key
     }
     fn own_device(&self) -> tilo_agent_session::workspace_actions::HostDevice {
         self.member.clone()
@@ -660,7 +660,7 @@ impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryR
             origin: "https://fixture.tilo.invalid".into(),
             web_entry: Some("https://fixture.tilo.invalid/qos-runtime/".into()),
             workspace: workspace.into(),
-            host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
+            host_device: hex::encode(self.member.endpoint.server_cert.device_public_key),
             provider: provider.into(),
         })
     }

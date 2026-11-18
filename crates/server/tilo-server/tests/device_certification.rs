@@ -143,7 +143,7 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
     );
     let CertificationOutcome::Issued {
         cert: issued,
-        host_cert,
+        server_cert,
         label,
     } = waiting.await.unwrap().unwrap()
     else {
@@ -151,7 +151,7 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
     };
     assert_eq!(label, "Browser", "the host keeps the name it was asked for");
     assert_eq!(issued, cert);
-    assert!(host_cert.capabilities.can_own_workspaces);
+    assert!(server_cert.capabilities.can_own_workspaces);
     assert!(!issued.capabilities.can_admit_devices);
 
     // The new certificate authenticates on the server ALPN with a signer.
@@ -159,7 +159,7 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
         client_endpoint().await,
         host,
         Some(user.user_pk),
-        Some(host_cert.device_public_key),
+        Some(server_cert.device_public_key),
         tilo_server_session::ClientCredentials {
             cert: issued,
             signer: &browser_key,
@@ -171,7 +171,7 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
     .unwrap();
     assert_eq!(
         client.server_peer.device_public_key,
-        host_cert.device_public_key
+        server_cert.device_public_key
     );
     approver.close();
 }
@@ -415,10 +415,10 @@ async fn devices_whose_clocks_run_ahead_of_the_hosts_pair_and_their_link_works_o
         ApproverReply::Decided,
         "the host reads the certificate by its own clock, which is behind the approver's"
     );
-    let (issued, host_cert) = match waiting.await.unwrap().unwrap() {
+    let (issued, server_cert) = match waiting.await.unwrap().unwrap() {
         CertificationOutcome::Issued {
-            cert, host_cert, ..
-        } => (cert, host_cert),
+            cert, server_cert, ..
+        } => (cert, server_cert),
         other => panic!("the browser was not certified: {other:?}"),
     };
     assert_eq!(issued, cert);
@@ -429,7 +429,7 @@ async fn devices_whose_clocks_run_ahead_of_the_hosts_pair_and_their_link_works_o
         client_endpoint().await,
         host.clone(),
         Some(user.user_pk),
-        Some(host_cert.device_public_key),
+        Some(server_cert.device_public_key),
         tilo_server_session::ClientCredentials {
             cert: issued,
             signer: &browser_key,
@@ -441,7 +441,7 @@ async fn devices_whose_clocks_run_ahead_of_the_hosts_pair_and_their_link_works_o
     .unwrap();
     assert_eq!(
         client.server_peer.device_public_key,
-        host_cert.device_public_key
+        server_cert.device_public_key
     );
 
     // The allowance lets no link work twice: a second device that answers

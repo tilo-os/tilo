@@ -84,7 +84,7 @@ impl Reading {
 
 impl WorkspaceDocumentsLink for Reading {
     fn user_public_key(&self) -> [u8; 32] {
-        self.member.endpoint.host_cert.user_public_key
+        self.member.endpoint.server_cert.user_public_key
     }
     fn own_device(&self) -> HostDevice {
         self.member.clone()

@@ -41,7 +41,7 @@ async fn main() -> Result<(), String> {
     }
     let client = builder.build().map_err(|error| error.to_string())?;
     let host = tilo_server_client::https::Origin::new(&client, &server);
-    let info = tilo_server_client::https::host_info(&host)
+    let info = tilo_server_client::https::server_info(&host)
         .await
         .map_err(|error| format!("the server: {error}"))?;
     let address = info.address.ok_or("the server takes no device sessions")?;
@@ -65,10 +65,10 @@ async fn main() -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         let held = tilo_session_client::device::Held {
             cert,
-            host_cert: Some(info.host_cert.clone()),
+            server_cert: Some(info.server_cert.clone()),
         };
         let (cert, entering) = tilo_session_client::device::entry_request(
-            &info.host_cert,
+            &info.server_cert,
             &workspace,
             &device,
             tilo_session_client::device::Entering {
@@ -85,7 +85,7 @@ async fn main() -> Result<(), String> {
             tilo_session_client::PeerConfig {
                 host: tilo_server_client::ServerAddress::published(&address),
                 cert,
-                host_cert: info.host_cert.clone(),
+                server_cert: info.server_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
                 entering: Some(entering),
             },

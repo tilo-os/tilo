@@ -168,7 +168,7 @@ async fn through_entry(
         tilo_workspace_directory::client().map_err(|error| tilo_sheets::directory::said(&error))?;
     let origin = entry.origin().ascii_serialization();
     let host = tilo_server_client::https::Origin::new(&client, &origin);
-    let info = tilo_server_client::https::host_info(&host)
+    let info = tilo_server_client::https::server_info(&host)
         .await
         .map_err(|error| format!("the workspace's host could not be reached: {error}"))?;
     let address = info
@@ -189,8 +189,8 @@ async fn through_entry(
     let session = tilo_server_session::ServerClient::connect_with_signer(
         endpoint,
         address.endpoint_addr,
-        Some(info.host_cert.user_public_key),
-        Some(info.host_cert.device_public_key),
+        Some(info.server_cert.user_public_key),
+        Some(info.server_cert.device_public_key),
         tilo_server_session::ClientCredentials {
             cert,
             signer: identity.signer.as_ref(),
@@ -200,7 +200,7 @@ async fn through_entry(
                 // This device's channels ask for the workspace's keys as a member, once it holds
                 // the workspace.
                 access: None,
-                host_cert: info.host_cert,
+                server_cert: info.server_cert,
             }),
         },
     )

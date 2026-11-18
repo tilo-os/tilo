@@ -461,7 +461,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     let mut base = desktop_base(64 * 1024);
     let first = Member {
         host: page_host(),
-        host_cert: host_device.cert.clone(),
+        server_cert: host_device.cert.clone(),
         workspace: lounge.workspace.clone(),
         workspace_id: lounge.workspace_id,
         desktop: desktop.clone(),
@@ -558,11 +558,11 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
 
     // What the site hands its page about the host, which its deployment asked
     // once, as `tilo-server page-host` does: no guest asks it again.
-    let site = tilo_server_client::https::host_info(&*https)
+    let site = tilo_server_client::https::server_info(&*https)
         .await
         .unwrap()
         .for_site();
-    assert_eq!(site.host_cert, host_device.cert);
+    assert_eq!(site.server_cert, host_device.cert);
     let place = Place {
         https: &*https,
         site: &site,
@@ -598,7 +598,7 @@ const ARRIVING: usize = 16;
 #[derive(Clone)]
 struct Member {
     host: ServerAddress,
-    host_cert: tilo_user_identity::DeviceCert,
+    server_cert: tilo_user_identity::DeviceCert,
     workspace: String,
     workspace_id: WorkspaceId,
     desktop: DocumentRoute,
@@ -609,7 +609,7 @@ impl Member {
     async fn arrive(&self, name: &str) -> Link {
         let (root, key) = (new_key(), new_key());
         let (cert, entry) = entry_request(
-            &self.host_cert,
+            &self.server_cert,
             &self.workspace,
             &key,
             Entering {
@@ -625,7 +625,7 @@ impl Member {
         let page = enter_page(
             self.host.clone(),
             cert,
-            self.host_cert.clone(),
+            self.server_cert.clone(),
             key,
             std::sync::Arc::new(MemoryPeerStore::default()),
             entry,
@@ -1062,7 +1062,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
     let root = new_key();
     let key = new_key();
     let (cert, entry) = entry_request(
-        &place.site.host_cert,
+        &place.site.server_cert,
         place.workspace,
         &key,
         Entering {
@@ -1079,7 +1079,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
     let page = enter_page(
         host,
         cert,
-        place.site.host_cert.clone(),
+        place.site.server_cert.clone(),
         key,
         std::sync::Arc::new(MemoryPeerStore::default()),
         entry,

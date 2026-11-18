@@ -84,7 +84,7 @@ pub struct MemberConfig {
     /// The workspace's host.
     pub host: ServerAddress,
     /// The host's certificate: whose actions the agent's tools ask.
-    pub host_cert: DeviceCert,
+    pub server_cert: DeviceCert,
     /// The workspace uuid.
     pub workspace: String,
 }
@@ -161,7 +161,8 @@ impl AgentMember {
             &config.workspace,
         )
         .ok_or_else(|| "the agent's certificate names no device".to_string())?;
-        let actions = SessionActions::new(&peer, workspace_id, config.host_cert.device_public_key);
+        let actions =
+            SessionActions::new(&peer, workspace_id, config.server_cert.device_public_key);
         Ok(Self {
             identity,
             control,
@@ -557,7 +558,7 @@ fn join(
         PeerConfig::member(
             config.host.clone(),
             identity.cert.clone(),
-            config.host_cert.clone(),
+            config.server_cert.clone(),
         ),
         Arc::new(identity.key.clone()),
         store,

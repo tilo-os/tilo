@@ -226,8 +226,8 @@ async fn connect_entering(
     let link = dialer.link(Purpose::Session).await?;
     ServerClient::connect_over_link(
         link,
-        Some(config.host_cert.user_public_key),
-        Some(config.host_cert.device_public_key),
+        Some(config.server_cert.user_public_key),
+        Some(config.server_cert.device_public_key),
         tilo_server_session::ClientCredentials {
             cert: config.cert.clone(),
             signer,
@@ -238,7 +238,7 @@ async fn connect_entering(
                 .map(|entering| tilo_server_session::Entry {
                     entering,
                     access,
-                    host_cert: config.host_cert.clone(),
+                    server_cert: config.server_cert.clone(),
                 }),
         },
     )

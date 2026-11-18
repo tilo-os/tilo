@@ -2329,17 +2329,16 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .collect()
     }
 
-    /// Serve the document's history to History, as the session serves the history of the document
-    /// a window shows: without it History lists nothing, since what it lists is the workspace's
-    /// history and not the frame's own reading of the changes.
+    /// Serve the history of the resources the window keeps to History, as the session serves them:
+    /// without it History lists nothing, since what it lists is the workspace's history and not the
+    /// frame's own reading of the changes.
     #[cfg(feature = "test-support")]
     pub fn serve_history(&self) {
-        let doc = self.read_document(Clone::clone);
-        ui_core::testing::serve_history(&doc);
+        ui_core::testing::serve_history(&self.records, &self.checkout().id);
     }
 
-    /// What each version of the record `id` did through an action, oldest
-    /// first: a record the app keeps beside its own, such as a part of a
+    /// What each version of the resource `id` did through an action, oldest
+    /// first: a resource the app keeps beside its own, such as a part of a
     /// chain, as this window holds it.
     pub fn history_of(&self, id: &DocumentId) -> Vec<tilo_actions::ActionContext> {
         self.versions_of(id)

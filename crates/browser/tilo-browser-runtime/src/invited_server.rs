@@ -41,9 +41,9 @@ pub fn invited_server(invitation: &[u8]) -> Result<String, JsError> {
         .find(|server| server.holds_keys)
         .or_else(|| servers.first())
         .ok_or_else(|| js_error("this invitation names no server to dial"))?;
-    let info = tilo_server_protocol::web::HostInfo {
-        host_cert: server.device_certificate.clone(),
-        address: Some(tilo_server_protocol::web::HostAddress {
+    let info = tilo_server_protocol::web::ServerInfo {
+        server_cert: server.device_certificate.clone(),
+        address: Some(tilo_server_protocol::web::ServerAddress {
             endpoint_addr: server.endpoint_addr.clone(),
             relay_url: server
                 .packet_relay_url

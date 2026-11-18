@@ -310,7 +310,7 @@ async fn session(device: &Box_, key: &(SigningKey, DeviceCert)) -> Device {
         PeerConfig {
             host: tilo_server_client::ServerAddress::at(addr(&device.endpoint)),
             cert: key.1.clone(),
-            host_cert: device.cert.clone(),
+            server_cert: device.cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
             entering: None,
         },

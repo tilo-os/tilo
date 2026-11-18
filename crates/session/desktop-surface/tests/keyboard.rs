@@ -1283,7 +1283,10 @@ fn a_host_set_while_search_is_open_feeds_it() {
         "nothing finds the plan before the host is here: {rows:?}"
     );
     let host = shell.with_host();
-    shell.settle();
+    // Its source answers on a worker, as the page's own does: the search asks
+    // it again for the query typed before it was here, and shows its row when
+    // the answer arrives.
+    shell.settle_search();
     let (query, rows) = shell.handle.search_rows();
     assert_eq!(query, "quarterly", "the person's query stays");
     assert!(

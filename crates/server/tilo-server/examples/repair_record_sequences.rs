@@ -241,7 +241,7 @@ async fn open_host(
     root: &SigningKey,
     host: &SigningKey,
 ) -> anyhow::Result<tilo_server::Server> {
-    let cert = host_cert(root, host, &args.persistent)?;
+    let cert = server_cert(root, host, &args.persistent)?;
     let scratch = tempfile::tempdir()?;
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&host.to_bytes()))
@@ -1095,7 +1095,7 @@ fn read_host_key(path: &Path) -> anyhow::Result<SigningKey> {
 /// exactly as the host signs it at every start: the host's workspaces name it
 /// among their hosts, so the repair acts as the host itself and changes
 /// nothing in their governance.
-fn host_cert(root: &SigningKey, host: &SigningKey, name: &str) -> anyhow::Result<DeviceCert> {
+fn server_cert(root: &SigningKey, host: &SigningKey, name: &str) -> anyhow::Result<DeviceCert> {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: host.verifying_key().to_bytes(),

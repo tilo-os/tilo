@@ -462,6 +462,11 @@ impl DesktopSurface {
             // tab keeps it and holds the app's for when the person clears theirs.
             let mut renamed = Vec::new();
             for tab in tabs {
+                // A tab that shows one thing of the app is the person's place of that thing: it
+                // names itself by what it shows, and no window's name is written into it.
+                if tilo_desktop_model::apps::shows_a_view(tab) {
+                    continue;
+                }
                 let before = tab.title.clone();
                 if let Some(name) = names.get(&tab.id) {
                     changed |= tab.set_window_title(name);

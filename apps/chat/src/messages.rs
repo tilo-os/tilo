@@ -253,6 +253,10 @@ impl ChatMessages {
 /// A message to post: the parameters of [`ChatMessages::post`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NewMessage {
+    /// The id the sender gives the message, so it knows which message it posted before the post
+    /// is written (a part still arriving takes it later); leave it out to have one made
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<Id>,
     /// The channel
     pub channel: Id,
     /// The message; @Name mentions a member
@@ -306,6 +310,7 @@ impl ChatMessages {
         #[param(flatten)] message: NewMessage,
     ) -> Result<(), Refusal> {
         let NewMessage {
+            id: named,
             channel,
             text,
             parent,
@@ -320,7 +325,18 @@ impl ChatMessages {
             return Err(Refusal::new("a message says something"));
         }
         let origin = ui::tilo_resource::Origin::checked_option(origin)?;
-        let id = cx.id();
+        let id = match named {
+            Some(named) if self.messages.get(&named).is_some() => {
+                return Err(Refusal::new("a message with that id is already here"));
+            }
+            Some(named) if !valid_message_id(&named) => {
+                return Err(Refusal::new(
+                    "a message's id is up to 64 letters, digits and dashes",
+                ));
+            }
+            Some(named) => named,
+            None => cx.id(),
+        };
         let appearance = cx.appearance();
         // A message moved from elsewhere stands where it was written there.
         let ts = match origin.as_ref().and_then(|origin| origin.created_ms) {
@@ -1335,6 +1351,7 @@ impl Chained for ChatMessages {
             ChatMessagesAction::Post(chat_messages::Post {
                 message:
                     NewMessage {
+                        id: None,
                         parent: Some(parent),
                         ..
                     },
@@ -1851,3 +1868,14 @@ pub fn read_part(doc: &tilo_actions::Doc) -> ChatMessages {
 
 #[cfg(test)]
 mod tests;
+
+/// Whether `id`, named by whoever posts a message, can be a message's id: what a made one is
+/// (letters and digits), at most 64 of them, dashes allowed for a UUID's form.
+fn valid_message_id(id: &Id) -> bool {
+    let id = id.as_str();
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}

@@ -821,7 +821,7 @@ struct Lounge {
     _web: tilo_server::web::WebHandle,
     runtime: tokio::runtime::Runtime,
     workspaces: tilo_server::workspaces::Workspaces,
-    host_cert: tilo_user_identity::DeviceCert,
+    server_cert: tilo_user_identity::DeviceCert,
     /// The certificate of the site's page, the device that recorded in the workspace before anyone
     /// joined.
     page_device: tilo_user_identity::DeviceCert,
@@ -934,7 +934,7 @@ impl Lounge {
             _web: web,
             runtime,
             workspaces: host.workspaces,
-            host_cert: host.host_cert,
+            server_cert: host.server_cert,
             page_device: host.page_device,
             page_desktop: std::cell::RefCell::new(automerge::AutoCommit::new()),
             person,
@@ -959,7 +959,7 @@ fn lounge_key() -> [u8; 32] {
 struct LoungeHost {
     server: tilo_server::daemon::Server,
     workspaces: tilo_server::workspaces::Workspaces,
-    host_cert: tilo_user_identity::DeviceCert,
+    server_cert: tilo_user_identity::DeviceCert,
     /// The key and certificate of the site's page, the device that recorded in the workspace before
     /// anyone joined.
     page_key: ed25519_dalek::SigningKey,
@@ -972,7 +972,7 @@ impl LoungeHost {
     fn start(runtime: &tokio::runtime::Runtime, state: &std::path::Path) -> Self {
         let owner_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
         let host_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
-        let host_cert = certified(
+        let server_cert = certified(
             &owner_key,
             &host_key,
             "The lounge's host",
@@ -995,7 +995,7 @@ impl LoungeHost {
                     tilo_server::daemon::ServerIdentity {
                         user_public_key: owner_key.verifying_key().to_bytes(),
                         device_signing_key: host_key.clone(),
-                        device_cert: host_cert.clone(),
+                        device_cert: server_cert.clone(),
                         revocations: tilo_user_identity::RevocationList::new(),
                     },
                     test_server::relay_mode(),
@@ -1021,7 +1021,7 @@ impl LoungeHost {
         Self {
             server,
             workspaces,
-            host_cert,
+            server_cert,
             page_key,
             page_device,
             workspace,
@@ -1044,7 +1044,7 @@ impl LoungeHost {
                 PeerConfig {
                     host: ServerAddress::at(self.server.node_addr()),
                     cert: self.page_device.clone(),
-                    host_cert: self.host_cert.clone(),
+                    server_cert: self.server_cert.clone(),
                     revocations: tilo_user_identity::RevocationList::new(),
                     entering: None,
                 },
@@ -1101,7 +1101,7 @@ impl LoungeHost {
                 self.workspaces
                     .publish(
                         &self.workspace,
-                        &self.host_cert,
+                        &self.server_cert,
                         tilo_server_protocol::directory::Listing {
                             description: "Where the site's people talk".to_owned(),
                             default_role: Role::Editor,
@@ -1112,7 +1112,7 @@ impl LoungeHost {
             }
             if admission == LoungeAdmission::InvitationOnly {
                 self.workspaces
-                    .list_invitation_only(&self.workspace, &self.host_cert, true)
+                    .list_invitation_only(&self.workspace, &self.server_cert, true)
                     .await
                     .expect("the lounge takes people by invitation");
             }
@@ -1298,7 +1298,7 @@ impl Lounge {
             "the lounge to issue this person an invitation",
             self.workspaces.issue(
                 &self.workspace,
-                &self.host_cert,
+                &self.server_cert,
                 tilo_workspace_join::invitations::IssueInvitationRequest {
                     request_id: [0x61; 32],
                     role: tilo_workspace_join::Role::Editor,
@@ -1382,7 +1382,7 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
         "the lounge's owner is named here",
         |session| owner_on_shell(session, &lounge.workspace).is_some(),
     );
-    let host = hex::encode(lounge.host_cert.user_public_key);
+    let host = hex::encode(lounge.server_cert.user_public_key);
     assert_eq!(
         owner_on_shell(&session, &lounge.workspace).as_deref(),
         Some(host.as_str()),
@@ -1894,7 +1894,7 @@ fn chat_here(session: &Session, workspace: &str) -> Option<String> {
 
 /// The publisher the lounge's host is known by.
 fn host_publisher(lounge: &Lounge) -> String {
-    publisher_of(&lounge.host_cert)
+    publisher_of(&lounge.server_cert)
 }
 
 /// The publisher the lounge's page is known by.
@@ -2021,7 +2021,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
         "the lounge to remove this person",
         lounge.workspaces.remove_member(
             &lounge.workspace,
-            &lounge.host_cert,
+            &lounge.server_cert,
             RemoveMemberRequest {
                 request_id: [0x62; 32],
                 user_public_key: person,

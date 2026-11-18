@@ -253,10 +253,10 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
     let messages = || Ok(vec![b"governance".to_vec()]);
     let mut log = JoinLog::default();
     let challenge = {
-        let host_cert = peer.owner_certificates()[0].clone();
+        let server_cert = peer.owner_certificates()[0].clone();
         let workspace = Governed {
             peer: (&peer).into(),
-            host: &host_cert,
+            host: &server_cert,
             workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             generation: 1,
             governance_messages: Some(&messages),
@@ -278,10 +278,10 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
         proof: sign_membership_proof(challenge, &device).unwrap(),
     };
     let renewal = {
-        let host_cert = peer.owner_certificates()[0].clone();
+        let server_cert = peer.owner_certificates()[0].clone();
         let workspace = Governed {
             peer: (&peer).into(),
-            host: &host_cert,
+            host: &server_cert,
             workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
             generation: 1,
             governance_messages: Some(&messages),
@@ -293,10 +293,10 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
     peer.governance_mut()
         .renew_member_certificate(&renewed, &authority, now)
         .unwrap();
-    let host_cert = peer.owner_certificates()[0].clone();
+    let server_cert = peer.owner_certificates()[0].clone();
     let workspace = Governed {
         peer: (&peer).into(),
-        host: &host_cert,
+        host: &server_cert,
         workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
         generation: 2,
         governance_messages: Some(&messages),

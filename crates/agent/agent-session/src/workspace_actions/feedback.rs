@@ -98,7 +98,7 @@ pub(super) fn answer(
         .filter(|policy| policy.workspace == route.cluster_id)
         .ok_or_else(|| unavailable("certified feedback admission unavailable"))?;
     let own_device = link.own_device();
-    let cert = &own_device.endpoint.host_cert;
+    let cert = &own_device.endpoint.server_cert;
     if cert.user_public_key != link.user_public_key()
         || cert.device_public_key != own_device.key.verifying_key().to_bytes()
     {

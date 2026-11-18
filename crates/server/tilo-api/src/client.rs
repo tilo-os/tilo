@@ -1075,7 +1075,7 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
         cert: hex::encode(canonical),
         reached_at: match &device.server_address {
             Some(address) => Some(crate::server::ServerInfo {
-                host_cert: device.certs()?.1,
+                server_cert: device.certs()?.1,
                 address: Some(address.clone()),
             }),
             None => None,

@@ -903,7 +903,7 @@ async fn host_at(
             Ok((status, answer))
         })
     });
-    let info = tilo_server_client::https::host_info(&asked)
+    let info = tilo_server_client::https::server_info(&asked)
         .await
         .map_err(|error| match error {
             // What a site answers a refusal with stays with it: an owner
@@ -914,7 +914,7 @@ async fn host_at(
     let address = info
         .address
         .ok_or_else(|| format!("{origin} names no address to reach its host at"))?;
-    Ok((info.host_cert.device_public_key, address.endpoint_addr))
+    Ok((info.server_cert.device_public_key, address.endpoint_addr))
 }
 
 impl Workspaces {

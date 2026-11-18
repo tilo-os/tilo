@@ -74,6 +74,7 @@ mod layout_window;
 mod link;
 mod listing;
 mod member;
+mod naming;
 mod opened;
 mod opened_file;
 mod outcome;
@@ -87,6 +88,7 @@ mod search_access;
 mod session_voice;
 mod share;
 mod terminal;
+mod timing;
 mod tree_put;
 pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
@@ -116,8 +118,10 @@ use collab_types::DocumentMutation;
 use invocation_log::InvocationLog;
 use jobs::Jobs;
 use keys::{Keys, catalogue_keys};
+use naming::{is_part, named, named_document};
 use outcome::{
-    confirms, exact_view_query, log_outcome, opens_as_its_own, rejected, speaks_for_a_member,
+    commit_failed, confirms, exact_view_query, log_outcome, opens_as_its_own, rejected, settles,
+    speaks_for_a_member,
 };
 use part_wait::Invoked;
 use publish::Unsaved;
@@ -133,6 +137,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate, MemberId};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
+use timing::{timing_done, timing_start};
 use ui::permissions::policy::{ActionKind, Answer, TreePath};
 
 /// Records whose rows a catalogue naming no provider lists.
@@ -756,30 +761,6 @@ struct Mounted {
     used: u64,
 }
 
-/// Whether the wire record `record` is a part of a chain an app keeps
-/// beside its own record ([`ui::resource::DocumentId::part`]): held with that
-/// record, never on its own.
-fn is_part(record: &str) -> bool {
-    ui::resource::DocumentId::parse(record).is_some_and(|id| id.chain_part().is_some())
-}
-
-/// How a person reads the record `record` of `app` in a message or a log: an
-/// app's own record of the workspace travels with no id
-/// ([`ui::resource::DocumentId::package_primary`]), so it is named for its app
-/// rather than left blank.
-fn named_document(app: &str, record: &str) -> String {
-    if record.is_empty() {
-        format!("{app}'s own record")
-    } else {
-        format!("{app} record {record}")
-    }
-}
-
-/// [`named_document`] of the record at `route`.
-pub(super) fn named(route: &DocumentRoute) -> String {
-    named_document(&route.app_id, &route.document)
-}
-
 /// What running an action came to: its answer and where it left its actor.
 pub(super) type Performed = Result<(ActionOutput, Option<ActorPlace>), Outcome>;
 
@@ -995,7 +976,7 @@ impl Workspace {
         Ok(Self {
             sessions: session_voice::Sessions::new(
                 workspace_id,
-                own_device.endpoint.host_cert.device_public_key,
+                own_device.endpoint.server_cert.device_public_key,
             ),
             id: workspace_id,
             peer: member.peer().clone(),
@@ -1303,43 +1284,6 @@ fn acts_for(caller: &Caller, person: &str) -> bool {
 /// What a held record publishes that its API runs now.
 fn live_actions(app: &ConfinedReplica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
-}
-
-/// Whether a failure is this invocation's answer. One the caller may ask
-/// again is not: the same request under the same id runs it again rather
-/// than being handed the failure it already has, which is what a change the
-/// workspace took none of because the session it rode was replaced needs.
-fn settles(error: &ActionFailure) -> bool {
-    !error.retryable
-}
-
-/// The outcome of an action whose change could not be committed.
-pub(super) fn commit_failed(message: String, retryable: bool) -> Outcome {
-    Outcome::Failed(ActionFailure {
-        code: "commit_failed".into(),
-        message,
-        details: None,
-        retryable,
-    })
-}
-
-/// A clock read for timing one phase of an action, when the
-/// `tilo_agent_session::timing` target is at debug: off, it reads no clock.
-fn timing_start() -> Option<Instant> {
-    tracing::enabled!(target: "tilo_agent_session::timing", tracing::Level::DEBUG)
-        .then(Instant::now)
-}
-
-/// Time the phase `step`, begun at `started` ([`timing_start`]), in
-/// microseconds: `TIMING <step> <µs>` says where a slow action waited.
-fn timing_done(step: &'static str, started: Option<Instant>) {
-    if let Some(started) = started {
-        tracing::debug!(
-            target: "tilo_agent_session::timing",
-            "TIMING {step} {}",
-            started.elapsed().as_micros()
-        );
-    }
 }
 
 /// Everything `app` changed since the last take, each with the route it

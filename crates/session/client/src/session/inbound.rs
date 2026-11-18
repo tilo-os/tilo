@@ -157,7 +157,7 @@ impl Task {
         }
         // A host is dialled by its certified key, so a session that got this far holds a valid one.
         if let Ok(peer) =
-            iroh_base::EndpointId::from_bytes(&self.config.host_cert.device_public_key)
+            iroh_base::EndpointId::from_bytes(&self.config.server_cert.device_public_key)
         {
             self.reports.emit(&crate::Event::HostReady {
                 ws: workspace_id,
@@ -241,8 +241,8 @@ impl Task {
             envelope => {
                 if let Some(event) = addressed(
                     envelope,
-                    self.config.host_cert.device_public_key,
-                    self.config.host_cert.user_public_key,
+                    self.config.server_cert.device_public_key,
+                    self.config.server_cert.user_public_key,
                 ) {
                     // A request another device addressed to this one is this
                     // device's to answer: handed to what serves them, and never
@@ -320,8 +320,8 @@ impl Task {
             self.surfaces_arrived |= crate::surfaces::keep(&arrived.hash, arrived.bytes);
         } else if let Some(event) = addressed(
             envelope,
-            self.config.host_cert.device_public_key,
-            self.config.host_cert.user_public_key,
+            self.config.server_cert.device_public_key,
+            self.config.server_cert.user_public_key,
         ) {
             self.reports.emit(&event);
         }

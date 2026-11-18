@@ -311,6 +311,7 @@ fn select_version(app: &mut TestApp<NotesShell>, version: &[automerge::ChangeHas
     let [hash] = version else {
         panic!("a single-author edit leaves one head");
     };
+    app.serve_history();
     app.harness().open_history().unwrap();
     let entry = format!("timeline-entry:{}", &hash.to_string()[..32]);
     for _ in 0..4 {

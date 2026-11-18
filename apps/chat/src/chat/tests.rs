@@ -169,6 +169,7 @@ tilo_test_env::scenario! {
         ada.set_now_ms(1_234_000);
         ada.apply(ChatMessages::POST.with(chat_messages::Post {
             message: NewMessage {
+                id: None,
                 written: Some(5),
                 ..post_fields("c_chat", "from the past")
             },
@@ -327,6 +328,7 @@ tilo_test_env::scenario! {
 fn reply(parent: &Id, text: &str) -> Invoke<ChatMessages> {
     ChatMessages::POST.with(chat_messages::Post {
         message: NewMessage {
+            id: None,
             channel: id("c_chat"),
             text: text.into(),
             parent: Some(parent.clone()),
@@ -356,6 +358,7 @@ fn post_to(channel: &str, text: &str) -> Invoke<ChatMessages> {
 
 fn post_fields(channel: &str, text: &str) -> NewMessage {
     NewMessage {
+        id: None,
         channel: id(channel),
         text: text.into(),
         parent: None,
@@ -1530,6 +1533,7 @@ tilo_test_env::scenario! {
         assert!(
             ada.apply(ChatMessages::POST.with(chat_messages::Post {
                 message: NewMessage {
+                    id: None,
                     channel: id("c_chat"),
                     text: "look".into(),
                     parent: None,
@@ -1580,6 +1584,7 @@ tilo_test_env::scenario! {
         let blob = "ab".repeat(32);
         ada.apply(ChatMessages::POST.with(chat_messages::Post {
             message: NewMessage {
+                id: None,
                 channel: id("c_chat"),
                 text: String::new(),
                 parent: None,
@@ -1635,6 +1640,7 @@ tilo_test_env::scenario! {
         );
         ada.apply(ChatMessages::POST.with(chat_messages::Post {
             message: NewMessage {
+                id: None,
                 channel: id("c_chat"),
                 text: "what is left?".into(),
                 parent: None,
@@ -1689,6 +1695,7 @@ tilo_test_env::scenario! {
         };
         ada.apply(ChatMessages::POST.with(chat_messages::Post {
             message: NewMessage {
+                id: None,
                 channel: id("c_chat"),
                 text: "so the summer is the flat one".into(),
                 parent: Some(parent.clone()),
@@ -1744,6 +1751,7 @@ tilo_test_env::scenario! {
             assert!(
                 ada.apply(ChatMessages::POST.with(chat_messages::Post {
                     message: NewMessage {
+                        id: None,
                         channel: id("c_chat"),
                         text: "an answer".into(),
                         parent: Some(parent.clone()),
@@ -1765,6 +1773,7 @@ tilo_test_env::scenario! {
         assert!(
             ada.apply(ChatMessages::POST.with(chat_messages::Post {
                 message: NewMessage {
+                    id: None,
                     channel: id("c_chat"),
                     text: "an answer".into(),
                     parent: Some(accented),
@@ -1809,6 +1818,7 @@ fn a_moved_message_shows_its_author_there_at_its_time_and_stays_the_movers() {
     };
     part.apply(ChatMessages::POST.with(chat_messages::Post {
         message: NewMessage {
+            id: None,
             origin: Some(origin.clone()),
             ..post_fields("general", "From before")
         },

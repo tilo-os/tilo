@@ -95,7 +95,7 @@ fn workspace_policy(member: &str) -> tilo_action_policy::WorkspacePolicy {
 
 impl WorkspaceDocumentsLink for Member {
     fn user_public_key(&self) -> [u8; 32] {
-        self.host.endpoint.host_cert.user_public_key
+        self.host.endpoint.server_cert.user_public_key
     }
     fn own_device(&self) -> HostDevice {
         self.host.clone()
@@ -643,6 +643,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
     let mut commands_ran = 0;
     // The agents and keys whose note the host made: each made a run.
     let mut agents = Vec::new();
+    let mut notes_status: Vec<String> = Vec::new();
     for (app, action, arguments) in invocations {
         let (route, all) = &every[app];
         let descriptor = all
@@ -682,6 +683,9 @@ async fn both_routes_decide_every_callers_actions_alike() {
                 differences.push(format!(
                     "{who} {app}#{action}: the host {by_host:?} ({status:?}), the broker {by_broker:?}"
                 ));
+            }
+            if app == NOTES {
+                notes_status.push(format!("{who}: {status:?}"));
             }
             if app == NOTES && by_host == Admitted::Runs && caller.agent_session().is_some() {
                 agents.push((
@@ -752,9 +756,10 @@ async fn both_routes_decide_every_callers_actions_alike() {
             })
         {
             differences.push(format!(
-                "{name}'s changes on the host: runs {named:?} of {}",
+                "{name}'s changes on the server: sessions {named:?} of {}",
                 groups.len()
             ));
+            differences.push(format!("notes statuses: {notes_status:#?}"));
         }
     }
     if groups
