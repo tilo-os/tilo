@@ -218,6 +218,44 @@ impl Wall {
     }
 }
 
+/// A note is labelled by its text. A verb whose argument names a note is
+/// about that note, and its change says so in one line, however much the note
+/// reads: the change does not grow with the label.
+#[test]
+fn a_verbs_change_names_its_item_by_one_line() {
+    let left_beside = |text: &str| {
+        let mut wall = Replica::<Wall>::new();
+        wall.apply(Wall::LEAVE.with((Id::from_raw("lobby"), text.to_owned())))
+            .unwrap();
+        let first = wall.state().unwrap().notes.ids().next().unwrap().clone();
+        let label = wall
+            .apply(Wall::LEAVE.with((first, "Seen".to_owned())))
+            .unwrap()
+            .context
+            .as_ref()
+            .and_then(|entry| entry.item.as_ref())
+            .map(|item| item.label.clone())
+            .unwrap();
+        let bytes = wall
+            .doc_mut()
+            .get_changes(&[])
+            .last()
+            .map_or(0, |change| change.raw_bytes().len());
+        (label, bytes)
+    };
+    let (label, short) = left_beside("Mind the step");
+    assert_eq!(label, "Mind the step");
+    let long = "Mind the step ".repeat(4_000);
+    let (label, bytes) = left_beside(&long);
+    assert_eq!(label.chars().count(), 96, "{label}");
+    assert!(long.starts_with(&label), "{label}");
+    assert!(
+        bytes.saturating_sub(short) < 200,
+        "a change beside a note of {} bytes is {bytes} bytes; beside one of 13 bytes, {short}",
+        long.len()
+    );
+}
+
 fn published(replica: &Replica<Shelf>) -> tilo_actions::ResourceSpec {
     tilo_resource::publish::<Shelf>("shelf", "Shelf", &replica.state().unwrap())
 }

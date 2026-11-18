@@ -126,6 +126,45 @@ fn verbs_and_field_edits_change_one_snippet() {
     );
 }
 
+/// A verb on a snippet names it in its change by one line of its title: the change does not
+/// grow with the title.
+#[test]
+fn a_change_names_its_snippet_by_one_line() {
+    let copied = |title: &str| {
+        let mut library = Replica::<Snippets>::new();
+        let id = create(&mut library, title, None);
+        let label = library
+            .apply(Snippets::DUPLICATE.with(snippets::Duplicate {
+                snippet: id,
+                title: Some("Copy".into()),
+            }))
+            .unwrap()
+            .context
+            .as_ref()
+            .and_then(|entry| entry.item.as_ref())
+            .map(|item| item.label.clone())
+            .unwrap();
+        let bytes = library
+            .doc_mut()
+            .get_changes(&[])
+            .last()
+            .map_or(0, |change| change.raw_bytes().len());
+        (label, bytes)
+    };
+    let (label, short) = copied("Deploy");
+    assert_eq!(label, "Deploy");
+    let long = "Deploy the app ".repeat(4_000);
+    let (label, bytes) = copied(&long);
+    assert_eq!(label.chars().count(), 96, "{label}");
+    assert!(long.starts_with(&label), "{label}");
+    assert!(
+        bytes.saturating_sub(short) < 200,
+        "a copy of a snippet titled in {} bytes is a change of {bytes} bytes; of one titled in 6 \
+         bytes, {short}",
+        long.len()
+    );
+}
+
 /// Every way in runs the snippet's invariant: a blank or padded tag, a padded folder are
 /// refused whole.
 #[test]
