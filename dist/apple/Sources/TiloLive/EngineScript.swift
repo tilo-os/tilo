@@ -150,25 +150,21 @@ public enum EngineScript {
       addEventListener('hashchange', state);
 
       // What the page shows changed: its own description of itself for assistive technology
-      // did. Said at most once in forty milliseconds; the engine reads what it wants then.
-      let pending = 0;
-      const changed = () => {
-        if (pending) return;
-        pending = setTimeout(() => { pending = 0; post({kind: 'changed'}); }, 40);
-      };
+      // did. Said at once, by the page's own message to the engine and by no timer of the page:
+      // a page nobody sees gets its timers late, by up to a second, and an answer that is being
+      // written is shown piece by piece. The engine takes the words that come while its
+      // listener reads as one word.
+      const changed = () => post({kind: 'changed'});
       // Tilo's page says `tiloChanges` at every frame it draws and at every word of its
       // session: many times a second while nothing happens. What its device heard and which
       // documents it holds is what `tiloChannels` reads as, so only when that moved is the
-      // word handed on, looked at eight times a second at most. What arrives in a document
-      // the device holds already does not always move it, so while the app expects a change
-      // (it just changed something itself, or an agent is at work on what it shows) every
-      // word is handed on, as often.
+      // word handed on, and then at once. What arrives in a document the device holds already
+      // does not always move it, so while the app expects a change (it just changed something
+      // itself, or an agent is at work on what it shows) every word is handed on.
       let heard = '';
-      let weighing = 0;
       let expecting = 0;
       const expect = ms => { expecting = Math.max(expecting, Date.now() + Math.min(Math.max(Number(ms) || 0, 0), 60000)); };
-      const weigh = () => {
-        weighing = 0;
+      const perhaps = () => {
         if (Date.now() < expecting) { changed(); return; }
         let now = heard;
         try { now = String(globalThis.tiloChannels()); } catch { /* said at the page's next word */ }
@@ -176,7 +172,6 @@ public enum EngineScript {
         heard = now;
         changed();
       };
-      const perhaps = () => { if (!weighing) weighing = setTimeout(weigh, 120); };
       let watching;
       let listening;
       const watch = () => {

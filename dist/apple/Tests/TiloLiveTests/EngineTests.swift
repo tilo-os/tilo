@@ -12,6 +12,8 @@ final class EngineTests: XCTestCase {
     private var engine: TiloEngine!
     private var stood: [TiloEngine.State] = []
     private var changes = 0
+    /// How often a listener that takes its time over each word read.
+    private var readings = 0
     private var listening: [Task<Void, Never>] = []
 
     override func setUp() async throws {
@@ -588,8 +590,13 @@ final class EngineTests: XCTestCase {
         _ = try await engine.view.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
     }
 
-    func testAPageThatSaysAWordAtEveryFrameIsHeardOnlyWhenWhatItsDeviceHeardMoved() async throws {
+    /// Enter as a page that says what its device heard, which is looked at before a word is handed on.
+    private func enterWeighed() async throws {
         try await inPage("window.heardSoFar = 'heard 1 object(s)'; globalThis.tiloChannels = () => window.heardSoFar; location.hash = '#/w/ws-1/so.tilo.chat'; offerChanges(); enter()")
+    }
+
+    func testAPageThatSaysAWordAtEveryFrameIsHeardOnlyWhenWhatItsDeviceHeardMoved() async throws {
+        try await enterWeighed()
         try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
         try await until("the first word") { self.changes >= 1 }
         try await Task.sleep(for: .milliseconds(500))
@@ -608,6 +615,71 @@ final class EngineTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(150))
         try await inPage("told[0]()")
         try await until("a word is handed on while the app expects one") { self.changes > quiet }
+    }
+
+    /// A page nobody sees gets its timers late, by up to a second. Here the page's timers never
+    /// fire at all: a word of a change is handed on by the page's own message, and needs none.
+    func testAWordOfAChangeIsHandedOnWithNoTimerOfThePage() async throws {
+        try await inPage("location.hash = '#/w/ws-1/so.tilo.chat'; offerChanges(); enter()")
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
+        try await until("the first word") { self.changes >= 1 }
+        try await Task.sleep(for: .milliseconds(300))
+        try await inPage("window.setTimeout = () => 1; window.setInterval = () => 1")
+        for word in 1...3 {
+            let before = changes
+            try await inPage("told[0]()")
+            try await until("word \(word) of a change is handed on with no timer of the page") { self.changes > before }
+        }
+    }
+
+    /// The same where the page says what its device heard, which is looked at before a word is
+    /// handed on: what moved is handed on with no timer, and so is every word while the app
+    /// expects a change, as it does while an answer is written.
+    func testAWordThatIsWeighedIsHandedOnWithNoTimerOfThePage() async throws {
+        try await enterWeighed()
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
+        try await until("the first word") { self.changes >= 1 }
+        try await Task.sleep(for: .milliseconds(500))
+        try await inPage("window.setTimeout = () => 1; window.setInterval = () => 1")
+        // Nothing heard and nothing held anew: the word is not handed on.
+        let quiet = changes
+        try await inPage("told[0]()")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(changes, quiet)
+        // What the device heard moved: the page's next word is handed on.
+        try await inPage("window.heardSoFar = 'heard 2 object(s)'; told[0]()")
+        try await until("what the device heard is handed on with no timer of the page") { self.changes > quiet }
+        // While the app expects a change, a word is handed on though nothing was heard.
+        try await Task.sleep(for: .milliseconds(200))
+        let before = changes
+        engine.expectChanges(for: .seconds(5))
+        try await Task.sleep(for: .milliseconds(150))
+        try await inPage("told[0]()")
+        try await until("a word is handed on while the app expects one, with no timer of the page") { self.changes > before }
+    }
+
+    /// While an answer is written the page says a word for every piece of it, and nothing holds
+    /// those words back. The ones that come while the app reads are one word to it: it reads
+    /// once more, not once for each.
+    func testWordsThatComeWhileTheAppReadsAreOneWordToIt() async throws {
+        try await inPage("location.hash = '#/w/ws-1/so.tilo.chat'; offerChanges(); enter()")
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
+        try await until("the first word") { self.changes >= 1 }
+        try await Task.sleep(for: .milliseconds(300))
+        let engine = engine!
+        let reader = Task {
+            for await _ in engine.changes() {
+                self.readings += 1
+                // A reading takes its time.
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
+        defer { reader.cancel() }
+        try await Task.sleep(for: .milliseconds(100))
+        try await inPage("for (let word = 0; word < 40; word++) told[0]()")
+        try await Task.sleep(for: .milliseconds(1000))
+        XCTAssertGreaterThanOrEqual(readings, 1, "forty words of a change were never read")
+        XCTAssertLessThanOrEqual(readings, 2, "forty words in one breath were read \(readings) times")
     }
 
     func testWhatTheAppItselfChangedIsReadAgainWithoutThePagesWord() async throws {
