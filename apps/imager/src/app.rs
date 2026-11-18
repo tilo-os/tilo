@@ -1261,7 +1261,7 @@ impl ImagerApp {
     }
 
     fn target_write_binding(&self) -> Option<tilo_actions::ActionBinding<()>> {
-        let row = self.target_row(self.target()?).into_resource();
+        let row = self.target_row(self.target()?);
         tilo_actions::ActionBinding::static_json_for(&row, "write", serde_json::Map::new()).ok()
     }
 

@@ -574,10 +574,9 @@ impl CameraApp {
     fn media_handoff_emitter(app_id: &str, name: &str) -> Option<ActionEmitter<String>> {
         use ui::tilo_actions::ActionBinding;
 
-        let resource =
-            Self::media_handoff_resource(app_id, &crate::CATALOG.t(name)).into_resource();
-        let spec = resource.actions.first()?;
-        ActionBinding::new(&resource, spec, |content_hash| {
+        let row = Self::media_handoff_resource(app_id, &crate::CATALOG.t(name));
+        let spec = row.operations().first()?;
+        ActionBinding::new(&row, spec, |content_hash| {
             let mut arguments = serde_json::Map::new();
             arguments.insert(
                 "content_hash".into(),
@@ -596,14 +595,13 @@ impl CameraApp {
         // affordance. The action payload itself delegates to Photos, but the
         // host can still re-resolve this address against the current Camera
         // resource surface before permitting the launch.
-        let resource = ui::framework::LiveRow::new(
+        let row = ui::framework::LiveRow::new(
             "camera.capture",
             "camera.capture",
             crate::CATALOG.t("camera-resource-capture"),
         )
-        .operation(crate::actions::open_photos_action())
-        .into_resource();
-        ActionBinding::unit_for(&resource, "open-photos")
+        .operation(crate::actions::open_photos_action());
+        ActionBinding::unit_for(&row, "open-photos")
             .ok()
             .map(ActionEmitter::new)
     }
