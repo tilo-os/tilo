@@ -183,7 +183,7 @@ impl Rig {
 
     /// A run of the desktop, taking up what the keepers hold as the session's `main` does:
     /// `following` an in-place restart, or a start of its own.
-    fn run(&self, following: bool) -> Run {
+    fn desktop(&self, following: bool) -> Run {
         let mut environment = tilo_app_launch::SessionEnvironment::from_process();
         environment.wayland_socket = Some(self.home.runtime().join("wayland-7"));
         let apps = Rc::new(Apps::with_launcher(
@@ -370,7 +370,7 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
     let _settled = ui::motion::testing::settled();
     let titles = ["First", "Second", "Third"];
     let rig = Rig::new(&titles);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     let placed = shown_and_told(&rig, &mut first, &titles);
     let (dir, pid, at) = rig.kept();
@@ -396,7 +396,7 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
         "the app outlives the desktop that started it"
     );
 
-    let mut second = rig.run(true);
+    let mut second = rig.desktop(true);
     let back = shown_and_told(&rig, &mut second, &titles);
     assert_eq!(
         places(&second.session, &back),
@@ -434,13 +434,13 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
 fn a_start_that_follows_no_restart_ends_what_a_restart_left() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     shown_and_told(&rig, &mut first, &["Only"]);
     let (dir, pid, _) = rig.kept();
     first.end(Teardown::InPlaceRestart);
 
-    let second = rig.run(false);
+    let second = rig.desktop(false);
     tilo_test_env::exited("an app a restart left that no run takes back", pid);
     assert!(!dir.exists(), "and its keeper's directory is gone");
     second.end(Teardown::Logout);
@@ -451,7 +451,7 @@ fn a_window_the_app_closed_while_no_desktop_was_there_closes_its_tab() {
     let _settled = ui::motion::testing::settled();
     let titles = ["Stays", "Closes"];
     let rig = Rig::new(&titles);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     let placed = shown_and_told(&rig, &mut first, &titles);
     let (_, pid, _) = rig.kept();
@@ -460,7 +460,7 @@ fn a_window_the_app_closed_while_no_desktop_was_there_closes_its_tab() {
     signal(pid, libc::SIGUSR1);
     tilo_test_env::wait_until("the app closed its window", || rig.told().len() == 1);
 
-    let mut second = rig.run(true);
+    let mut second = rig.desktop(true);
     let back = shown_and_told(&rig, &mut second, &["Stays"]);
     assert_eq!(back[0], placed[0], "the window it kept is back in its tab");
     until(
@@ -480,7 +480,7 @@ fn a_window_the_app_closed_while_no_desktop_was_there_closes_its_tab() {
 fn a_restart_ends_an_app_whose_keeper_stopped_answering() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     shown_and_told(&rig, &mut first, &["Only"]);
     let (dir, pid, _) = rig.kept();
@@ -500,7 +500,7 @@ fn a_restart_ends_an_app_whose_keeper_stopped_answering() {
 fn an_app_from_before_an_update_says_so_in_its_tab_and_restart_opens_it_again() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     let placed = shown_and_told(&rig, &mut first, &["Only"]);
     let (dir, pid, at) = rig.kept();
@@ -508,7 +508,7 @@ fn an_app_from_before_an_update_says_so_in_its_tab_and_restart_opens_it_again() 
     // The update changed how the desktop speaks to the app's keeper.
     testing::age(&dir, true).expect("aged");
 
-    let mut second = rig.run(true);
+    let mut second = rig.desktop(true);
     crate::common::wait_for(
         &mut second.session,
         "its tab says it is from before the update",
@@ -541,13 +541,13 @@ fn an_app_from_before_an_update_says_so_in_its_tab_and_restart_opens_it_again() 
 fn a_logout_ends_an_app_from_before_an_update() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     shown_and_told(&rig, &mut first, &["Only"]);
     let (dir, pid, _) = rig.kept();
     first.end(Teardown::InPlaceRestart);
     testing::age(&dir, true).expect("aged");
-    let mut second = rig.run(true);
+    let mut second = rig.desktop(true);
     crate::common::wait_for(
         &mut second.session,
         "its tab says it is from before the update",
@@ -562,7 +562,7 @@ fn a_logout_ends_an_app_from_before_an_update() {
 fn an_app_from_before_an_update_that_left_no_tab_says_so_in_a_tab_of_its_own() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     shown_and_told(&rig, &mut first, &["Only"]);
     let (dir, pid, at) = rig.kept();
@@ -580,7 +580,7 @@ fn an_app_from_before_an_update_that_left_no_tab_says_so_in_a_tab_of_its_own() {
     };
     fs::write(dir.join("launch"), launch.encode()).expect("the launch rewritten");
 
-    let mut second = rig.run(true);
+    let mut second = rig.desktop(true);
     crate::common::wait_for(&mut second.session, "a tab of its own says so", |session| {
         crate::common::control_on_screen(session, "Restart").map(|_| ())
     });
@@ -596,4 +596,83 @@ fn an_app_from_before_an_update_that_left_no_tab_says_so_in_a_tab_of_its_own() {
     assert!(running(pid, at), "it goes on with what it holds");
     second.end(Teardown::Logout);
     tilo_test_env::exited("the app from before the update at logout", pid);
+}
+
+/// A keeper a service started (the Linux VM's window forwarder), with the app in it: the session
+/// finds it in the registry by itself.
+fn start_service_keeper(rig: &Rig) -> std::process::Child {
+    use std::os::unix::process::CommandExt as _;
+    let launch = tilo_app_launch::kept::KeptLaunch {
+        version: tilo_app_launch::kept::LAUNCH_VERSION,
+        app: "vm.linux".into(),
+        title: "Linux".into(),
+        workspace: String::new(),
+        asked: None,
+        window_identities: Vec::new(),
+        service: true,
+    };
+    let dir = testing::new_dir(&rig.root, &launch).expect("the keeper's directory");
+    let exe = std::env::current_exe().unwrap();
+    std::process::Command::new(&rig.keeper)
+        .arg("--dir")
+        .arg(&dir)
+        .arg("--launch")
+        .arg(launch.encode())
+        .arg("--app-id-prefix")
+        .arg("vm.linux.")
+        .arg("--")
+        .arg("/usr/bin/env")
+        .arg(format!("{APP_DIR}={}", rig.app.display()))
+        .arg(exe)
+        .args(["--exact", "kept_apps::kept_app", "--nocapture"])
+        .process_group(0)
+        .spawn()
+        .expect("the service's keeper starts")
+}
+
+#[test]
+fn a_services_window_takes_the_keyboard_on_a_click_and_hears_the_keys() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Guest"]);
+    let mut desktop = rig.desktop(false);
+    let mut keeper = start_service_keeper(&rig);
+    let window = crate::common::wait_for(
+        &mut desktop.session,
+        "the guest's window shows",
+        |session| {
+            let (info, _) = session
+                .compositor()
+                .windows()
+                .into_iter()
+                .find(|(info, _)| info.title.as_deref() == Some("Guest"))?;
+            session
+                .compositor()
+                .window_rect(info.id)
+                .map(|rect| (info.id, rect))
+        },
+    );
+    let (_, (x, y, width, height)) = window;
+    crate::common::window::click(
+        &mut desktop.session,
+        f64::from(x + width / 2),
+        f64::from(y + height / 2),
+    );
+    crate::common::wait_for(
+        &mut desktop.session,
+        "the window has the keyboard",
+        |session| {
+            session
+                .compositor()
+                .focused_window()
+                .is_some_and(|window| window.title.as_deref() == Some("Guest"))
+                .then_some(())
+        },
+    );
+    crate::common::window::tap_key(&mut desktop.session, KEY_A);
+    until(&mut desktop.session, "the app hears the key", |_| {
+        rig.keys() == 1
+    });
+    let _ = keeper.kill();
+    let _ = keeper.wait();
+    desktop.end(Teardown::Logout);
 }
