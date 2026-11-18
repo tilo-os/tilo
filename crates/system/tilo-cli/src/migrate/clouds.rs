@@ -60,7 +60,7 @@ pub fn connect(
     source: &Source,
     url: Option<&str>,
     login: Option<&str>,
-    key_file: Option<&Path>,
+    secret_file: Option<&Path>,
 ) -> Result<Value> {
     let root = config_root()?;
     let store = credentials(&root);
@@ -68,9 +68,9 @@ pub fn connect(
     let (mut account, secret) = if let Some(cloud) = OAuthCloud::from_type_id(type_id) {
         sign_in(&store, cloud, source, login)?
     } else if type_id == cloud_types::ICLOUD_DRIVE {
-        icloud(&store, login, key_file)?
+        icloud(&store, login, secret_file)?
     } else {
-        password_account(source, type_id, url, login, key_file)?
+        password_account(source, type_id, url, login, secret_file)?
     };
     cloud_types::set_files_mode(&mut account.config, FilesMode::Import);
     let id = migration_sources::vault::persist(
@@ -148,7 +148,7 @@ fn open_browser(link: &str) {
 fn icloud(
     store: &CredentialStore,
     login: Option<&str>,
-    key_file: Option<&Path>,
+    secret_file: Option<&Path>,
 ) -> Result<(Account, accounts::Secret)> {
     use account_credentials::icloud::ICloudSignIn;
     let apple_id = login
@@ -160,7 +160,7 @@ fn icloud(
     }
     let password = super::secret(
         &format!("Password of {apple_id} (it is not shown): "),
-        key_file,
+        secret_file,
     )?;
     let session = match store
         .icloud()
@@ -187,7 +187,7 @@ fn password_account(
     type_id: &str,
     url: Option<&str>,
     login: Option<&str>,
-    key_file: Option<&Path>,
+    secret_file: Option<&Path>,
 ) -> Result<(Account, accounts::Secret)> {
     let server = url
         .map(str::trim)
@@ -210,7 +210,7 @@ fn password_account(
     } else {
         "Password (it is not shown): "
     };
-    let password = super::secret(what, key_file)?;
+    let password = super::secret(what, secret_file)?;
     if password.is_empty() {
         bail!("nothing was typed");
     }

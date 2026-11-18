@@ -35,7 +35,7 @@ pub const HOME: &str = "home";
 /// How many files are copied at once.
 const COPIES_AT_ONCE: usize = 16;
 /// How many files one `files#open` step puts into the tree.
-const TREE_STEP_FILES: usize = 5_000;
+const TREE_STEP_FILES: usize = 2_000;
 
 /// One file under a chosen item.
 #[derive(Clone, Debug)]
