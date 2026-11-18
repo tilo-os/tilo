@@ -270,11 +270,13 @@ pub fn admit_workspace_changes(
 
 /// What a holder that is no member may write: the redemptions of
 /// invitations, each admitting the person its signed invitation names
-/// ([`super::membership::admit_operations`]), and nothing else. Whether the
-/// sender is a holder is read where the batch was written (its
-/// dependencies), from the signed holder entries there, so every receiver
-/// decides it alike whenever the batch reaches it. Adding people otherwise,
-/// and every change of a role, stays a member's.
+/// ([`super::membership::admit_operations`]), and the device rows of a
+/// member's further device or key, which any key holder writes in
+/// ([`super::membership::admit_operations`] checks the row's person is a
+/// member's), and nothing else. Whether the sender is a holder is read where
+/// the batch was written (its dependencies), from the signed holder entries
+/// there, so every receiver decides it alike whenever the batch reaches it.
+/// Adding people otherwise, and every change of a role, stays a member's.
 fn holder_redemptions(
     input: &WorkspaceAdmission<'_>,
     changes: &[Vec<u8>],
@@ -298,11 +300,13 @@ fn holder_redemptions(
     let only_admissions = crate::members::ops(&candidate)
         .iter()
         .filter(|(id, _)| !held.contains_key(*id))
-        .all(|(_, op)| {
-            matches!(
-                op.command,
-                crate::members::MembershipOpCommand::Admit { .. }
-            )
+        .all(|(_, op)| match &op.command {
+            crate::members::MembershipOpCommand::Admit { .. } => true,
+            // A member's further device is a device row and nothing else.
+            crate::members::MembershipOpCommand::Governance { rows } => {
+                *rows == [super::GovernanceRow::Identities]
+            }
+            crate::members::MembershipOpCommand::Project { .. } => false,
         });
     let grown =
         crate::members::growth(Some(before), &candidate).map_err(WorkspaceRefusal::Membership)?;

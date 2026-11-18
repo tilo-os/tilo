@@ -259,7 +259,7 @@ impl Workspaces {
                 .map_err(|error| error.to_string())?;
             let governed = governed.lock().await;
             let mut bootstrap = governed
-                .governed()
+                .governed(self.serving_certificate())
                 .bootstrap([0; 32], member.clone(), Role::Editor)
                 .map_err(|error| error.to_string())?;
             // The host follows governance alone: records reach it over the

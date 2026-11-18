@@ -313,13 +313,6 @@ impl NativeWorkspaceOwner {
                 if key.device_public_key() != record.device.device_public_key {
                     return Err("invitation is not signed by this device".into());
                 }
-                view.peer().require_member_writer(key, now)?;
-                if makes_administrator {
-                    view.peer().require_administrator_invitation(key, now)?;
-                } else {
-                    view.peer()
-                        .require_invitation_authority(key, request.role, now)?;
-                }
                 let issued = {
                     let governed = Governed {
                         peer: view.peer().into(),

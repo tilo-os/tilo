@@ -713,12 +713,23 @@ impl PeerGovernanceMut<'_> {
         }
     }
     /// Admit `device`, a device certified by the root of someone already a
-    /// member, as that member's: it needs no invitation, and any member's
-    /// device `key` writes it in when it first asks. Whether the workspace changed.
+    /// member, as that member's: it needs no invitation, and the device
+    /// `key` that keeps the workspace's keys writes it in when it first
+    /// asks, whether its person is a member or a holder that is none.
+    /// Whether the workspace changed.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not a current member's device, `device`
+    /// Admit `device`, a device certified by the root of someone already a
+    /// member, as that member's: it needs no invitation, and the device
+    /// `key` that keeps the workspace's keys writes it in when it first
+    /// asks, whether its person is a member or a holder that is none.
+    /// Whether the workspace changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not a current member's device nor one of
+    /// the workspace's key-holding holders, `device`
     /// does not verify, is revoked or conflicts with the workspace's, its person
     /// is not a member, or governance cannot be updated.
     pub fn admit_member_device(
@@ -727,7 +738,7 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_member_writer(key, now)?;
+        self.peer.require_admitting_writer(key, now)?;
         tilo_user_identity::verify_device_cert_at(device, now_ns(now)).map_err(err)?;
         if self.peer.core.revocations.refuses(device) {
             return Err("device revoked".into());

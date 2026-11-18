@@ -93,9 +93,10 @@ pub(super) struct Written {
 }
 
 impl GovernedWorkspace {
-    /// The workspace as its join log reads it: committed now.
-    pub(super) fn governed(&self) -> Governed<'_> {
-        governed(&self.record, self.peer().into())
+    /// The workspace as its join log reads it: committed now, answered by
+    /// `answering`, the device that answers its joins here.
+    pub(super) fn governed<'a>(&'a self, answering: &'a DeviceCert) -> Governed<'a> {
+        governed(&self.record, self.peer().into(), answering)
     }
 
     /// The workspace as its join log reads it, from the state the caller
@@ -103,8 +104,9 @@ impl GovernedWorkspace {
     pub(super) fn governed_from<'a>(
         &'a self,
         peer: &'a tilo_peer_state::StatePeer,
+        answering: &'a DeviceCert,
     ) -> Governed<'a> {
-        governed(&self.record, peer.into())
+        governed(&self.record, peer.into(), answering)
     }
 
     /// Keep the people `removed` out of the workspace's public entry for the
@@ -126,14 +128,17 @@ impl GovernedWorkspace {
     }
 }
 
-/// `record` and `peer`, a workspace's committed state, as its join log reads it.
+/// `record` and `peer`, a workspace's committed state, as its join log reads
+/// it, answered by `answering`: the device that answers this workspace's
+/// joins here, which need not be the device that governs it.
 fn governed<'a>(
     record: &'a WorkspaceDocumentEntry,
     peer: tilo_peer_state::join_log::PeerRef<'a>,
+    answering: &'a DeviceCert,
 ) -> Governed<'a> {
     Governed {
         peer,
-        host: &record.owner,
+        host: answering,
         workspace_id: record.workspace_id,
         generation: record.generation,
         // A newcomer admits the workspace's governance alone: one message
@@ -267,7 +272,7 @@ impl Workspaces {
         let transport = vec![self.transport_hint(workspace)?];
         let mut log = workspace.collaboration().clone();
         let issued = log.issue_as(
-            &workspace.governed(),
+            &workspace.governed(self.serving_certificate()),
             administrator,
             request,
             makes_administrator,
@@ -1500,7 +1505,9 @@ impl Workspaces {
         let (admitted, committed) = {
             let shared = workspace.peer.shared();
             let mut replica = shared.lock();
-            let mut held = HeldWorkspace::new(key, workspace, &mut replica);
+            let mut held =
+                HeldWorkspace::new(key, self.serving_certificate(), workspace, &mut replica);
+
             let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, key, now);
             (admitted, held.committed)
         };
@@ -1631,6 +1638,9 @@ impl Workspaces {
 /// committed that its members have not been sent yet.
 struct HeldWorkspace<'a> {
     key: &'a SigningKey,
+    /// The device answering this workspace's joins: this server's own, which
+    /// need not be the device that governs the workspace.
+    answering: &'a DeviceCert,
     workspace: &'a mut GovernedWorkspace,
     /// The workspace's state, held for the decision: a member's write reaches
     /// the replica over the link it syncs on, without this workspace's lock.
@@ -1642,11 +1652,13 @@ struct HeldWorkspace<'a> {
 impl<'a> HeldWorkspace<'a> {
     const fn new(
         key: &'a SigningKey,
+        answering: &'a DeviceCert,
         workspace: &'a mut GovernedWorkspace,
         replica: &'a mut tilo_peer_state::StatePeer,
     ) -> Self {
         Self {
             key,
+            answering,
             workspace,
             replica,
             staged: false,
@@ -1661,7 +1673,7 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
     }
 
     fn governed(&self) -> Governed<'_> {
-        self.workspace.governed_from(self.replica)
+        self.workspace.governed_from(self.replica, self.answering)
     }
 
     fn log(&self) -> &CollaborationState {
@@ -1686,7 +1698,10 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
             peer,
             (self.key, system_time(now)),
             super::Change::Other,
-            |record, peer| log(&governed(record, peer.into())).map_err(|error| error.to_string()),
+            |record, peer| {
+                log(&governed(record, peer.into(), self.answering))
+                    .map_err(|error| error.to_string())
+            },
         )?;
         // The commit wrote the whole record, the log staged before
         // included.
@@ -1706,7 +1721,10 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
             peer,
             (self.key, system_time(now)),
             super::Change::Admission,
-            |record, peer| log(&governed(record, peer.into())).map_err(|error| error.to_string()),
+            |record, peer| {
+                log(&governed(record, peer.into(), self.answering))
+                    .map_err(|error| error.to_string())
+            },
         )?;
         self.staged = false;
         self.committed = true;
@@ -1742,7 +1760,12 @@ impl JoinWorkspaces for Workspaces {
             // one it is committed over.
             let shared = locked.peer.shared();
             let mut replica = shared.lock();
-            let mut held = HeldWorkspace::new(&self.inner.host.key, &mut locked, &mut replica);
+            let mut held = HeldWorkspace::new(
+                &self.inner.host.key,
+                self.serving_certificate(),
+                &mut locked,
+                &mut replica,
+            );
             let answer = decide(&mut held);
             (answer, held.staged, held.committed)
         };

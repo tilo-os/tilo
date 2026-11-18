@@ -92,14 +92,15 @@ impl Presented {
     }
 
     /// The verified redemption, for an invitation `workspace` issued and
-    /// still holds redeemable.
+    /// still holds redeemable, at the device answering for it.
     fn redeem(
         &self,
         workspace: &GovernedWorkspace,
+        answering: &DeviceCert,
         now: u64,
     ) -> Result<VerifiedRedemption, CollaborationError> {
         workspace.collaboration().redeem_on_connection(
-            &workspace.governed(),
+            &workspace.governed(answering),
             &self.invitation,
             &self.cert,
             self.request_id,
@@ -1145,9 +1146,11 @@ impl Workspaces {
             )
             .await?;
         let workspace = workspace.lock().await;
-        let join = workspace
-            .collaboration()
-            .inspect(&workspace.governed(), invitation, now)?;
+        let join = workspace.collaboration().inspect(
+            &workspace.governed(self.serving_certificate()),
+            invitation,
+            now,
+        )?;
         Ok(JoinReply::Invitation {
             workspace: workspace.workspace().to_owned(),
             workspace_id: workspace.workspace_id(),
@@ -1266,7 +1269,7 @@ impl Workspaces {
         if workspace.admitted_device(request_id) == Some(device) {
             return Self::admitted(&workspace, device, now);
         }
-        let redemption = presented.redeem(&workspace, now)?;
+        let redemption = presented.redeem(&workspace, self.serving_certificate(), now)?;
         let invite_id = redemption.join().invite_id();
         if workspace.redeemed(invite_id) {
             return Err(CollaborationError::new("invitation was already redeemed"));
@@ -1525,7 +1528,7 @@ impl Workspaces {
     {
         let redemption = join
             .presented
-            .redeem(workspace, now)
+            .redeem(workspace, self.serving_certificate(), now)
             .map_err(|error| Box::new(Err(error)))?;
         let invite_id = redemption.join().invite_id();
         if workspace.redeemed(invite_id) || !invites.insert(invite_id) {

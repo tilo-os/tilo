@@ -547,7 +547,7 @@ impl StatePeer {
     /// Restore a peer from durable state produced by [`StatePeer::durable`].
     /// The workspace's owner is the one its governance names, which the
     /// durable state carries; `owner_device` is the device this replica was
-    /// made on or joined through (`[`StatePeer::from_join`]).
+    /// made on or joined through ([`StatePeer::from_join`]).
     #[expect(
         clippy::needless_pass_by_value,
         reason = "public API: callers hand over the pinned revocation list"
@@ -606,18 +606,8 @@ impl StatePeer {
         )
         .map_err(err)?;
         peer.core.receipts = durable.receipts.into();
-        peer.core.workspace_doc = durable
-            .workspace_bytes
-            .as_deref()
-            .map(restored_workspace)
-            .transpose()?;
-        // The governance is what names the workspace's owner: the durable
-        // state of another owner's is not this workspace's.
-        if let Some(doc) = peer.core.workspace_doc.as_deref()
-            && super::receiving::owner_named_by(doc, workspace) != Some(owner)
-        {
-            return Err("durable admission namespace mismatch".into());
-        }
+        peer.core.workspace_doc =
+            restored_governance(durable.workspace_bytes.as_deref(), workspace, owner)?;
         for document in durable.documents {
             check_governed_snapshot(
                 peer.core.workspace_doc.as_deref(),
@@ -863,4 +853,21 @@ fn restored_workspace(bytes: &[u8]) -> Result<CachedDocument, String> {
         .map(CachedDocument::from)
         .map_err(err)
         .and_then(|doc| doc.stored_as(bytes))
+}
+
+/// `bytes`, the workspace's governance as durable state kept it, checked as
+/// the governance of `owner`'s workspace: what names another owner is not
+/// this workspace's.
+fn restored_governance(
+    bytes: Option<&[u8]>,
+    workspace: &str,
+    owner: [u8; 32],
+) -> Result<Option<CachedDocument>, String> {
+    let governance = bytes.map(restored_workspace).transpose()?;
+    if let Some(doc) = governance.as_deref()
+        && super::receiving::owner_named_by(doc, workspace) != Some(owner)
+    {
+        return Err("durable admission namespace mismatch".into());
+    }
+    Ok(governance)
 }
