@@ -189,10 +189,9 @@ fn stamp(kept: &FsStore) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for holder in [Holder::Person, Holder::Device] {
-        let stamped = kept
-            .local_path(&key(holder))
-            .and_then(|path| tilo_files::native::stamp(&path));
-        stamped.hash(&mut hasher);
+        kept.local_path(&key(holder))
+            .and_then(|path| tilo_files::native::stamp(&path))
+            .hash(&mut hasher);
     }
     hasher.finish()
 }
