@@ -34,9 +34,9 @@ const NOTES: &str = "so.tilo.notes";
 const FILES: &str = "so.tilo.file-explorer";
 /// Where Notes publishes the pages it keeps its notes in: the resource that makes a note.
 fn notes_pages() -> String {
-    ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
+    collab_types::document::chain_resource_id(&collab_types::document::DocumentId::derived(
         "pages",
-        &ui::resource::DocumentId::workspace_default(),
+        &collab_types::document::DocumentId::workspace_default(),
     ))
 }
 /// The most of an issue's note a session is told, in bytes: the rest it reads itself.

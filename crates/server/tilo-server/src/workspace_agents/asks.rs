@@ -30,6 +30,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use collaboration::permissions::MemberId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::person_asking::{
@@ -43,7 +44,6 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::Resource as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::Agent;
-use ui::permissions::MemberId;
 
 use super::{
     Ask, CHAT, HostAgents, Turn, WRITE_WAIT, WorkspaceActionProvider, invoke_named, later,
@@ -319,7 +319,7 @@ async fn post(
         holder,
         asker,
         &route,
-        &ui::resource::chain_resource_id(&chat::parts::chain()),
+        &collab_types::document::chain_resource_id(&chat::parts::chain()),
         "ask",
         arguments,
     )
@@ -851,7 +851,7 @@ impl HostAgents {
         let mut parts = Vec::new();
         for (app, document) in routes {
             if app != CHAT
-                || ui::resource::DocumentId::parse(&document)
+                || collab_types::document::DocumentId::parse(&document)
                     .is_none_or(|part| chat::parts::part_index(&part).is_none())
             {
                 continue;

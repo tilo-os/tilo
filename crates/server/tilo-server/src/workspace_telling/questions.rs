@@ -99,7 +99,7 @@ fn telling(
     told: String,
 ) -> ToTell {
     let secret = question.kind.0 == chat::question::SECRET;
-    let answering = ui::resource::chain_resource_id(&chat::parts::chain());
+    let answering = collab_types::document::chain_resource_id(&chat::parts::chain());
     let actions = if secret {
         Vec::new()
     } else {
@@ -160,7 +160,7 @@ pub(super) fn at_message(workspace: &str, part: &str, id: &Id) -> About {
 
 /// Whether `record` is a part of Chat's messages.
 fn is_part(record: &str) -> bool {
-    ui::resource::DocumentId::parse(record)
+    collab_types::document::DocumentId::parse(record)
         .is_some_and(|part| chat::parts::part_index(&part).is_some())
 }
 

@@ -361,13 +361,13 @@ mod tests {
         )
     }
 
-    const CHAT: &str = ui::apps::CHAT;
+    const CHAT: &str = tilo_app_id::apps::CHAT;
 
     /// Chat's messages: a chain of parts of the workspace's default record.
-    fn messages() -> ui::resource::DocumentId {
-        ui::resource::DocumentId::derived(
+    fn messages() -> collab_types::document::DocumentId {
+        collab_types::document::DocumentId::derived(
             "messages",
-            &ui::resource::DocumentId::workspace_default(),
+            &collab_types::document::DocumentId::workspace_default(),
         )
     }
 
@@ -378,7 +378,7 @@ mod tests {
 
     /// A child of a note, a record of the note's tree.
     fn note_child() -> String {
-        ui::resource::DocumentId::for_tab(7)
+        collab_types::document::DocumentId::for_tab(7)
             .child("a")
             .unwrap()
             .to_string()

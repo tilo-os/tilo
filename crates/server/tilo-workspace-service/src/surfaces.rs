@@ -41,9 +41,9 @@ fn installed() -> Option<Arc<Surfaces>> {
 /// with.
 #[cfg(feature = "agents")]
 pub fn surface_of(app: &str, hash: &str) -> Option<Vec<u8>> {
-    let carried = ui::app_surface::hash_of(app)?;
+    let carried = collab_types::app_surface::hash_of(app)?;
     (hex::encode(carried) == hash)
-        .then(|| ui::app_surface::bytes_of(app).map(<[u8]>::to_vec))
+        .then(|| collab_types::app_surface::bytes_of(app).map(<[u8]>::to_vec))
         .flatten()
 }
 
@@ -142,7 +142,7 @@ pub(crate) fn address(hash: &str) -> Option<[u8; 32]> {
 /// the app with, for its own writes and its bots' alike.
 #[cfg(feature = "agents")]
 fn signed_surface(app: &str) -> Option<[u8; 32]> {
-    ui::app_surface::hash_of(app)
+    collab_types::app_surface::hash_of(app)
 }
 
 /// A server running no app in its own process signs no app's changes.

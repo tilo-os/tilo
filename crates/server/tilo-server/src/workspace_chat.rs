@@ -5,7 +5,7 @@
 
 use tilo_resource::Fields;
 
-pub use ui::apps::CHAT as CHAT_APP;
+pub use tilo_app_id::apps::CHAT as CHAT_APP;
 /// The longest starting channel name.
 const CHANNEL_NAME_MAX: usize = 64;
 

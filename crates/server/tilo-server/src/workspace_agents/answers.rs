@@ -245,7 +245,7 @@ impl HostAgents {
             &WorkspaceActionProvider::new(self.actions.clone(), workspace_id),
             &waker,
             &route,
-            &ui::resource::chain_resource_id(&chat::parts::chain()),
+            &collab_types::document::chain_resource_id(&chat::parts::chain()),
             "ask-agent",
             arguments,
         )

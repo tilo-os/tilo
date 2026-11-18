@@ -58,7 +58,7 @@ pub(super) fn told(
 
 /// Whether `document` is a part of the tracker's issues.
 fn keeps_issues(document: &str) -> bool {
-    ui::resource::DocumentId::parse(document)
+    collab_types::document::DocumentId::parse(document)
         .and_then(|id| id.chain_part())
         .is_some_and(|(chain, _)| chain == tasks::issue_list::chain())
 }

@@ -1468,7 +1468,7 @@ mod settings_documents_tests {
         settings_resources,
     };
 
-    const APP: &str = ui::apps::SETTINGS;
+    const APP: &str = tilo_app_id::apps::SETTINGS;
     const RESOURCE: &str = "settings:power";
 
     /// The session's settings, in its place: one section whose lock delay

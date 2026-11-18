@@ -65,13 +65,13 @@ async fn local_host_lease(
     rig: &Rig,
     caller: &tilo_actions::remote::Caller,
     invocation: tilo_actions::InvocationId,
-) -> ui::invocation_scope::PublishedInvocationLease {
+) -> collaboration::invocation_scope::PublishedInvocationLease {
     let delivered =
         tilo_test_env::within("the admitted delivery", rig.stream.as_ref().unwrap().read())
             .await
             .unwrap();
     assert_eq!(delivered.invocation_uuid, *invocation.0.as_bytes());
-    let request = ui::invocation_scope::PublishedInvocationRequest {
+    let request = collaboration::invocation_scope::PublishedInvocationRequest {
         wire_id: delivered.id,
         invocation,
         address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
@@ -119,8 +119,9 @@ async fn certified_local_host_preserves_eager_and_directory_original_ownership()
                         .unwrap();
                 }
                 let (caller, evidence) = local_host_evidence(&env);
-                let facade =
-                    crate::apps::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+                let facade = crate::apps::collab_broker::AppActionBroker::from_state_for_test(
+                    rig.state.clone(),
+                );
                 let host = facade
                     .certified_local_action_provider(&caller, &evidence)
                     .unwrap();
@@ -248,8 +249,9 @@ async fn certified_local_host_directory_wait_cannot_refresh_original_authority()
                 let env = Environment::new();
                 let rig = Rig::new(&env).await;
                 let (caller, evidence) = local_host_evidence(&env);
-                let facade =
-                    crate::apps::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+                let facade = crate::apps::collab_broker::AppActionBroker::from_state_for_test(
+                    rig.state.clone(),
+                );
                 let host = facade
                     .certified_local_action_provider(&caller, &evidence)
                     .unwrap();
@@ -927,8 +929,9 @@ async fn certified_local_host_open_list_and_invoke_cost() {
                     .await
                     .unwrap();
                 let (caller, evidence) = local_host_evidence(&env);
-                let facade =
-                    crate::apps::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+                let facade = crate::apps::collab_broker::AppActionBroker::from_state_for_test(
+                    rig.state.clone(),
+                );
                 let mut listing = Duration::ZERO;
                 for round in 0..=LISTINGS {
                     let caller = caller.clone().in_new_execution();

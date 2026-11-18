@@ -258,7 +258,7 @@ pub async fn join_worker(
     peer: u64,
 ) -> (
     Connection,
-    ui::invocation_scope::PublishedInvocationAuthorizer,
+    collaboration::invocation_scope::PublishedInvocationAuthorizer,
 ) {
     let (socket, authorize) = state
         .connect_local_worker_with_authorizer(route.clone(), cert)
@@ -475,7 +475,7 @@ impl OriginalWorkspace {
         peer: u64,
     ) -> (
         Connection,
-        ui::invocation_scope::PublishedInvocationAuthorizer,
+        collaboration::invocation_scope::PublishedInvocationAuthorizer,
     ) {
         join_worker(
             &self.state,

@@ -114,6 +114,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 
 use collab_types::inbound::OpAdmission;
+use collab_types::presence::PresenceKey;
 use collab_types::presence::PresencePayload;
 use collab_types::{
     ArtifactId, ArtifactKind, RedactedMarker, SignedOp, ValidationError,
@@ -124,7 +125,6 @@ use collab_types::{DocumentMutation, document_artifact_id, document_attestation_
 use runtime_collab::event::CollabEvent;
 use runtime_collab::wire::ContextUpdate;
 use tilo_action_policy::{ActionKind, Answer, MemberId, TreePath, WorkspacePolicy, roles};
-use ui::presence::PresenceKey;
 
 use crate::apps::collab_broker::{
     AuditEntry, BrokerChannels, CrdtRoute, FanoutState, apply_redaction_from_envelope,
@@ -545,7 +545,7 @@ fn admit_verified_join_at(
 fn person_document_join(app: &str, route: &CrdtRoute) -> Result<(), String> {
     let kind = collab_types::person_resource_type(&route.document_id)
         .ok_or("an app joins the person's workspace only for one of their records")?;
-    if !ui::app_surface::keeps_person_resource(app, kind) {
+    if !collab_types::app_surface::keeps_person_resource(app, kind) {
         return Err(format!(
             "{app} declares no record of the person's of kind {kind}"
         ));
@@ -1472,7 +1472,7 @@ impl AppBrokerState {
         let admitted = self.current_action_caller(caller)?;
         if request.host != self.invocation_host()?
             || request.invocation.0.is_nil()
-            || request.peer_id == ui::collaboration::CURRENT_CONNECTION_PEER_ID
+            || request.peer_id == collaboration::CURRENT_CONNECTION_PEER_ID
             || [
                 &request.app_id,
                 &request.document_id,
@@ -2486,7 +2486,7 @@ struct ContextSub {
 #[derive(Clone)]
 struct NativeContext {
     admitted: AdmittedJoinIdentity,
-    roster: Vec<ui::collaboration::Member>,
+    roster: Vec<collaboration::Member>,
 }
 
 /// Per-channel subscriber registry, keyed by `join_channel(id)`. A
@@ -5491,7 +5491,7 @@ impl AppBrokerState {
             ),
             owner,
             original: OriginalInvocationData::capture(
-                ui::invocation_scope::PublishedInvocationRequest {
+                collaboration::invocation_scope::PublishedInvocationRequest {
                     wire_id: id,
                     invocation,
                     address: tilo_actions::ActionAddress {
@@ -6735,7 +6735,7 @@ impl AppBrokerState {
     fn fanout_context<'a>(
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
-        members: &[ui::collaboration::Member],
+        members: &[collaboration::Member],
         permissions: &[String],
         apps: &[collab_types::history::NamedApp],
     ) {
@@ -7027,7 +7027,7 @@ impl AppBrokerState {
                 // The colour their member row stores: the one they chose, else the one their
                 // identity derives.
                 let colour = row.map_or_else(
-                    || ui::tokens::PresenceHue::of_identity(&person),
+                    || collab_types::presence::PresenceHue::of_identity(&person),
                     |row| row.colour,
                 );
                 let mut member = collab_types::Member::of_person(
@@ -7057,7 +7057,7 @@ impl AppBrokerState {
         &self,
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
-    ) -> Result<Vec<ui::collaboration::Member>, String> {
+    ) -> Result<Vec<collaboration::Member>, String> {
         let now = self.policy_now_ns()? / 1_000_000_000;
         let (agents, people) = self
             .membership
@@ -7282,10 +7282,7 @@ impl AppBrokerState {
         admitted: &AdmittedJoinIdentity,
         current: &AdmittedJoinIdentity,
     ) -> Result<bool, String> {
-        fn same_roster(
-            left: &[ui::collaboration::Member],
-            right: &[ui::collaboration::Member],
-        ) -> bool {
+        fn same_roster(left: &[collaboration::Member], right: &[collaboration::Member]) -> bool {
             left.len() == right.len()
                 && left.iter().zip(right).all(|(left, right)| {
                     left.id == right.id
@@ -7599,7 +7596,7 @@ fn joined_resource_type(kind: &str) -> Result<Option<String>, BrokerError> {
     if kind.is_empty() {
         return Ok(None);
     }
-    if !ui::resource::ResourceType::new(kind).is_valid() {
+    if !collab_types::document::ResourceType::new(kind).is_valid() {
         return Err(BrokerError::failed(format!("invalid record kind `{kind}`")));
     }
     Ok(Some(kind.to_owned()))
@@ -7747,7 +7744,7 @@ fn private_display_control(
     route: &CrdtRoute,
     identity: &AdmittedJoinIdentity,
 ) -> Option<runtime_collab::settings::host::DisplayControl> {
-    if route.app_id != ui::apps::SETTINGS || identity.agent_id.is_some() {
+    if route.app_id != tilo_app_id::apps::SETTINGS || identity.agent_id.is_some() {
         return None;
     }
     let registration = identity.worker_registration.clone()?;
@@ -7885,9 +7882,9 @@ fn delegate_realtime_command(
 }
 
 /// The only application that may send files to nearby devices.
-use ui::apps::FILE_EXPLORER as NEARBY_TRANSFER_APP_ID;
+use tilo_app_id::apps::FILE_EXPLORER as NEARBY_TRANSFER_APP_ID;
 /// The only application that may carry Wi-Fi credentials between devices.
-use ui::apps::SETTINGS as WIFI_CONTINUITY_APP_ID;
+use tilo_app_id::apps::SETTINGS as WIFI_CONTINUITY_APP_ID;
 
 fn delegate_wifi_continuity_command(
     services: &ProcessServices,
@@ -7996,7 +7993,7 @@ fn nearby_transfer_change(
 }
 
 /// The only application that manages the person's speaker groups.
-use ui::apps::SETTINGS as SPEAKER_APP_ID;
+use tilo_app_id::apps::SETTINGS as SPEAKER_APP_ID;
 
 /// The wait for the speaker groups' next change past `after` for a
 /// connection on `route_app`: only the certified Settings route may wait, as
@@ -10475,7 +10472,7 @@ pub mod tests {
     #[tokio::test(start_paused = true)]
     async fn launcher_attestation_decides_on_one_look() {
         use tokio::io::AsyncWriteExt as _;
-        const APP: &str = ui::apps::CALCULATOR;
+        const APP: &str = tilo_app_id::apps::CALCULATOR;
         const WORKSPACE: &str = "5ba25f73-87c5-447f-a5a6-880dc4249a81";
         let launches = Arc::new(RecordedLaunches(Mutex::new(Vec::new())));
         let services = ProcessServices {
@@ -13111,7 +13108,7 @@ pub mod tests {
         for agent in roster.iter().filter(|row| !row.id.is_person()) {
             assert_eq!(
                 agent.colour,
-                ui::tokens::PresenceHue::of_member(&agent.id),
+                collab_types::presence::PresenceHue::of_member(&agent.id),
                 "{}",
                 agent.id
             );

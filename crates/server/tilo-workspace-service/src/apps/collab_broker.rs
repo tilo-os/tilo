@@ -912,7 +912,7 @@ impl BrokerHandle {
     ) -> Result<
         (
             std::os::unix::net::UnixStream,
-            ui::invocation_scope::PublishedInvocationAuthorizer,
+            collaboration::invocation_scope::PublishedInvocationAuthorizer,
         ),
         String,
     > {
@@ -1183,9 +1183,9 @@ mod presence_origin_tests {
         );
         let origin = CrdtRoute::record("so.tilo.chat", "workspace", "derived:main");
         let event = CollabEvent::RemotePresenceUpdate {
-            member: ui::permissions::MemberId::person("peer@1"),
-            key: ui::presence::PresenceKey::pointer_default(),
-            payload: ui::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+            member: collaboration::permissions::MemberId::person("peer@1"),
+            key: collab_types::presence::PresenceKey::pointer_default(),
+            payload: collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
         };
         fanout.fanout_presence(&event, 0, &origin.to_cluster_scope(), &origin);
         drop(fanout);

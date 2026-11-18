@@ -160,7 +160,7 @@ mod durable_local_matrix {
         directories: Rc<LocalActionDirectoryRegistry>,
         worker: Connection,
         stream: Option<runtime_collab::InvocationStream>,
-        authorize: ui::invocation_scope::PublishedInvocationAuthorizer,
+        authorize: collaboration::invocation_scope::PublishedInvocationAuthorizer,
         bridge_task: tokio::task::JoinHandle<()>,
     }
     impl Rig {
@@ -316,7 +316,7 @@ mod durable_local_matrix {
         async fn delivered_effect(&self, env: &Environment, id: tilo_actions::InvocationId) -> u64 {
             let delivered = self.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(delivered.invocation_uuid, *id.0.as_bytes());
-            let request = ui::invocation_scope::PublishedInvocationRequest {
+            let request = collaboration::invocation_scope::PublishedInvocationRequest {
                 wire_id: delivered.id,
                 invocation: id,
                 address: tilo_actions::ActionAddress {

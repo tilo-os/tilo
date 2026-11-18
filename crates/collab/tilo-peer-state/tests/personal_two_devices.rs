@@ -12,13 +12,13 @@ use crate::common::{addr, device, localhost_endpoint};
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
+use collab_types::document::ResourceType;
+use collaboration::permissions::MemberId;
 use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
 use std::time::Duration;
 use tilo_peer_state::{PERSONAL_ALPN, PersonalStore, PersonalSync, RefusalReason};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationReason};
-use ui::permissions::MemberId;
-use ui::resource::ResourceType;
 use ui::resource::person::PersonResources;
 use web_time::SystemTime;
 

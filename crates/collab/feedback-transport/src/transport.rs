@@ -2,12 +2,15 @@
 //! No constructor enrolls a device, grants a capability or chooses a workspace.
 use std::rc::Rc;
 
+use collab_types::document::DocumentId;
+use collaboration::permissions::{
+    Acting, ActionKind, Answer, MemberAccess, PermissionContext, TreePath,
+};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::feedback::{FeedbackAnswer, FeedbackDestination};
-use ui::permissions::{Acting, ActionKind, Answer, MemberAccess, PermissionContext, TreePath};
-use ui::resource::{DocumentId, ResourceStore};
+use ui::resource::ResourceStore;
 
 use tilo_feedback::{
     Destination, DurableStore, Error, FeedbackHost, MaskedScreenshot, Receipt, Recorded,
@@ -304,11 +307,11 @@ pub struct CanonicalRecord {
     /// The owner's durable content store, where the workspace keeps what its
     /// records reference. Without one a report with a screenshot is never
     /// acknowledged: its metadata alone does not prove the picture is kept.
-    pub content: Option<ui::content::ContentStore>,
+    pub content: Option<tilo_content::ContentStore>,
 }
 
 pub type ReportProjection =
-    fn(&ui::automerge::AutoCommit, &Submission) -> Result<(Receipt, String), Error>;
+    fn(&automerge::AutoCommit, &Submission) -> Result<(Receipt, String), Error>;
 
 /// The owner's current durable source. Implementations must read the actual
 /// retained storage and validate attributed content under current authority;
@@ -629,13 +632,13 @@ impl CanonicalReceiptSource for CanonicalRecord {
             .records
             .save_status(&self.record)
             .map_err(|_| Error::NotDurable)?
-            != ui::resource::ResourceSaveStatus::Saved
+            != collaboration::document::ResourceSaveStatus::Saved
         {
             return Err(Error::NotDurable);
         }
         self.records
             .read(&self.record, |doc| {
-                let scope = ui::resource::workspace_scope(doc);
+                let scope = collaboration::resource::workspace_scope(doc);
                 if scope
                     .as_deref()
                     .is_some_and(|scope| scope != submission.destination.workspace)

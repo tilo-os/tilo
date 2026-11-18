@@ -634,7 +634,7 @@ impl BotRunner {
             // part of a chat's messages) is what happened since: read whole.
             // So is a record every app of the workspace opens (the workspace's
             // emoji), which its first change creates.
-            let part = ui::resource::DocumentId::parse(&record)
+            let part = collab_types::document::DocumentId::parse(&record)
                 .is_some_and(|record| record.chain_part().is_some())
                 || collab_types::workspace_document(&app, &record).is_some();
             let since = match self.progress.records.get(&key).cloned() {
@@ -647,7 +647,7 @@ impl BotRunner {
             };
             // A part is of its own resource (a chat's messages), as its
             // record names it.
-            let kind = ui::resource::identity(&doc)
+            let kind = collaboration::resource::identity(&doc)
                 .map(|checkout| checkout.kind.as_str().to_owned())
                 .or_else(|| {
                     self.catalogue
@@ -900,7 +900,7 @@ impl BotRunner {
         // with it.
         let mut routes = self.routes().await?;
         routes.sort_by_key(|(_, record)| {
-            ui::resource::DocumentId::parse(record)
+            collab_types::document::DocumentId::parse(record)
                 .is_some_and(|record| record.chain_part().is_some())
         });
         for (app, record) in routes {

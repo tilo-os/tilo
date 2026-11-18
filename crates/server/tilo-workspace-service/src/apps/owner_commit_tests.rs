@@ -196,24 +196,24 @@ mod owner_commit_tests {
     /// A transport observer at the existing App boundary. The checked Writer
     /// owns and mutates its actual record; the observer records ordering only.
     struct WorkerTransport {
-        route: ui::collaboration::RouteSpec,
+        route: collaboration::RouteSpec,
         ack: bool,
-        sent: Rc<RefCell<Vec<ui::collaboration::CollabRequest>>>,
-        events: Rc<RefCell<Vec<ui::collaboration::CollabEvent>>>,
+        sent: Rc<RefCell<Vec<collaboration::CollabRequest>>>,
+        events: Rc<RefCell<Vec<collaboration::CollabEvent>>>,
     }
-    impl ui::collaboration::PeerTransport for WorkerTransport {
+    impl collaboration::PeerTransport for WorkerTransport {
         fn is_connected(&self) -> bool {
             true
         }
-        fn send(&mut self, request: ui::collaboration::CollabRequest) -> Result<(), String> {
-            if let ui::collaboration::CollabRequest::Hello {
+        fn send(&mut self, request: collaboration::CollabRequest) -> Result<(), String> {
+            if let collaboration::CollabRequest::Hello {
                 app_id,
                 cluster_id,
                 record,
                 ..
             } = &request
             {
-                self.route = ui::collaboration::RouteSpec {
+                self.route = collaboration::RouteSpec {
                     app_id: app_id.clone(),
                     cluster_id: *cluster_id,
                     document: record.clone(),
@@ -223,26 +223,26 @@ mod owner_commit_tests {
             self.sent.borrow_mut().push(request);
             Ok(())
         }
-        fn poll(&mut self) -> Vec<ui::collaboration::CollabEvent> {
+        fn poll(&mut self) -> Vec<collaboration::CollabEvent> {
             std::mem::take(&mut *self.events.borrow_mut())
         }
         fn take_primary_route_result(
             &mut self,
-        ) -> Option<Result<ui::collaboration::RouteSpec, String>> {
+        ) -> Option<Result<collaboration::RouteSpec, String>> {
             std::mem::take(&mut self.ack).then(|| Ok(self.route.clone()))
         }
         fn join_route(
             &mut self,
-            route: ui::collaboration::RouteSpec,
-            _: ui::resource::ResourceType,
+            route: collaboration::RouteSpec,
+            _: collab_types::document::ResourceType,
         ) -> Result<(), String> {
             assert_eq!(route, self.route);
             Ok(())
         }
         fn send_to_route(
             &mut self,
-            route: ui::collaboration::RouteSpec,
-            request: ui::collaboration::CollabRequest,
+            route: collaboration::RouteSpec,
+            request: collaboration::CollabRequest,
         ) -> Result<(), String> {
             assert_eq!(route, self.route);
             self.send(request)
@@ -254,10 +254,11 @@ mod owner_commit_tests {
 
     #[test]
     fn session_owner_commit_checked_writer_publishes_before_terminal() {
+        use collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
         use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
-        use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
         let workspace = uuid::Uuid::new_v4();
-        let cache = ui::portable_storage::PortableStorage::new("worker-test", "device").unwrap();
+        let cache =
+            collaboration::portable_storage::PortableStorage::new("worker-test", "device").unwrap();
         let mut owners = ui::resource::ResourceOwners::portable(cache.clone());
         let definition = word_processor::definition();
         let records = owners
@@ -274,10 +275,10 @@ mod owner_commit_tests {
                 views,
                 device_id: "device".into(),
                 instance_id: 1,
-                permissions: ui::permissions::SharedPermissions::new(
-                    ui::permissions::PermissionContext::permissive(),
+                permissions: collaboration::permissions::SharedPermissions::new(
+                    collaboration::permissions::PermissionContext::permissive(),
                 ),
-                author: ui::permissions::MemberId::person("worker"),
+                author: collaboration::permissions::MemberId::person("worker"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,
@@ -979,11 +980,11 @@ mod owner_commit_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn portable_constructor_checked_writer_commits_through_actual_owner_and_retires_authority()
      {
+        use collaboration::portable_storage::{PortableStorage, StorageKey};
+        use collaboration::{CertifiedEndpointIdentity, CollaborationManager};
         use std::os::fd::IntoRawFd;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
-        use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
-        use ui::portable_storage::{PortableStorage, StorageKey};
         use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
         struct CurrentOwner(Arc<Mutex<Option<tilo_peer_state::StatePeer>>>);
         impl crate::apps::certificate_authority::CertificateAuthority for CurrentOwner {
@@ -1165,10 +1166,10 @@ mod owner_commit_tests {
                 views,
                 device_id: "device".into(),
                 instance_id: 1,
-                permissions: ui::permissions::SharedPermissions::new(
-                    ui::permissions::PermissionContext::permissive(),
+                permissions: collaboration::permissions::SharedPermissions::new(
+                    collaboration::permissions::PermissionContext::permissive(),
                 ),
-                author: ui::permissions::MemberId::person(actor.clone()),
+                author: collaboration::permissions::MemberId::person(actor.clone()),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &target,

@@ -328,7 +328,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
                 delivered.actor,
                 tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
             );
-            let request = ui::invocation_scope::PublishedInvocationRequest {
+            let request = collaboration::invocation_scope::PublishedInvocationRequest {
                 wire_id: delivered.id,
                 invocation,
                 address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
@@ -660,14 +660,14 @@ async fn durable_admission_rechecks_original_ownership_after_the_directory_answe
                 let (entered, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
                 rig.worker
                     .handle
-                    .publish_action_directory(crate::apps::collab_app_broker::wire_answerer(Rc::new(
-                        HeldDirectory {
+                    .publish_action_directory(crate::apps::collab_app_broker::wire_answerer(
+                        Rc::new(HeldDirectory {
                             block: block.clone(),
                             entered,
                             release: release.clone(),
                             row: directory_state("original-r1").borrow().row(),
-                        },
-                    )))
+                        }),
+                    ))
                     .await
                     .unwrap();
                 admit_scribe(&env);
@@ -773,7 +773,7 @@ async fn an_agent_on_another_device_neither_sees_the_persons_invocation_nor_outl
             let invocation = id(0xf002);
             invoke(&second.handle, invocation).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            let request = ui::invocation_scope::PublishedInvocationRequest {
+            let request = collaboration::invocation_scope::PublishedInvocationRequest {
                 wire_id: delivered.id,
                 invocation,
                 address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
@@ -829,11 +829,12 @@ async fn host_execution_retirement_refuses_actual_retained_worker_ownership() {
                 .unwrap()
                 .clone();
             let caller = admitted.caller(&env.route.cluster_id).in_new_execution();
-            let origin = crate::apps::collab_app_broker::published_invocation::InvocationCaller::Local {
-                route: env.route.clone(),
-                admitted: Box::new(admitted),
-                time: rig.state.registered_policy_time().unwrap(),
-            };
+            let origin =
+                crate::apps::collab_app_broker::published_invocation::InvocationCaller::Local {
+                    route: env.route.clone(),
+                    admitted: Box::new(admitted),
+                    time: rig.state.registered_policy_time().unwrap(),
+                };
             let invocation = tilo_actions::InvocationId::new();
             let mut request = durable_request(invocation);
             request.revision = None;
@@ -847,7 +848,7 @@ async fn host_execution_retirement_refuses_actual_retained_worker_ownership() {
             .await
             .expect("the broker admits the queued original caller");
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            let request = ui::invocation_scope::PublishedInvocationRequest {
+            let request = collaboration::invocation_scope::PublishedInvocationRequest {
                 wire_id: delivered.id,
                 invocation,
                 address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),

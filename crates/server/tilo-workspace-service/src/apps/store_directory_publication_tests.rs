@@ -6,9 +6,9 @@ fn store_definition() -> &'static ui::application::ApplicationDefinition {
 
 fn store_genesis(workspace: &str) -> Vec<tilo_peer_state::SeedDocument> {
     let definition = store_definition();
-    let record = ui::resource::DocumentId::for_tab(1);
+    let record = collab_types::document::DocumentId::for_tab(1);
     let mut document = automerge::AutoCommit::new();
-    assert!(ui::resource::init_scoped(
+    assert!(collaboration::resource::init_scoped(
         &mut document,
         &record,
         &definition.resource_type,
@@ -23,14 +23,14 @@ fn store_genesis(workspace: &str) -> Vec<tilo_peer_state::SeedDocument> {
     }]
 }
 
-fn mount_store(env: &Environment, manager: ui::collaboration::CollaborationManager) -> ui::App {
+fn mount_store(env: &Environment, manager: collaboration::CollaborationManager) -> ui::App {
+    use collaboration::portable_storage::{PortableStorage, StorageKey};
     use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
-    use ui::portable_storage::{PortableStorage, StorageKey};
     use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
     let definition = store_definition();
     let record = DocumentId::parse(&env.route.document_id).unwrap();
     let mut initial = automerge::AutoCommit::new();
-    assert!(ui::resource::init_scoped(
+    assert!(collaboration::resource::init_scoped(
         &mut initial,
         &record,
         &definition.resource_type,
@@ -67,10 +67,12 @@ fn mount_store(env: &Environment, manager: ui::collaboration::CollaborationManag
             views,
             device_id: "device".into(),
             instance_id: 1,
-            permissions: ui::permissions::SharedPermissions::new(
-                ui::permissions::PermissionContext::permissive(),
+            permissions: collaboration::permissions::SharedPermissions::new(
+                collaboration::permissions::PermissionContext::permissive(),
             ),
-            author: ui::permissions::MemberId::person(person_id_for_root(env.cert.user_public_key)),
+            author: collaboration::permissions::MemberId::person(person_id_for_root(
+                env.cert.user_public_key,
+            )),
             action_context: tilo_actions::ActionContext::default(),
         },
         &target,
@@ -107,7 +109,7 @@ fn pump_store(app: &mut ui::App) {
     assert!(
         !matches!(
             app.collaboration_state(),
-            ui::collaboration::CollaborationState::Offline(_)
+            collaboration::CollaborationState::Offline(_)
         ),
         "actual Store socket disconnected"
     );
@@ -203,12 +205,14 @@ fn store_directory_children(
 }
 
 fn prove_store_directory(mut env: Environment) {
+    use collaboration::{CertifiedEndpointIdentity, CollaborationManager};
     use std::{os::fd::IntoRawFd, os::unix::fs::PermissionsExt as _};
-    use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
     let private = env.root.path().canonicalize().unwrap();
     std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
     env.route.app_id = store_definition().app_id().into();
-    env.route.document_id = ui::resource::DocumentId::for_tab(1).as_str().into();
+    env.route.document_id = collab_types::document::DocumentId::for_tab(1)
+        .as_str()
+        .into();
     env.authority = CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
     let broker = crate::apps::collab_broker::spawn_native_peer_with_services(
         private.join("store-worker.sock"),
@@ -295,9 +299,10 @@ async fn store_native_certified_directory_discloses_children_after_actual_histor
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::with_owner_initializer(|path| {
-                crate::apps::test_owner::SessionOwner::initialize_with_documents(path, |workspace| {
-                    Ok(store_genesis(workspace))
-                })
+                crate::apps::test_owner::SessionOwner::initialize_with_documents(
+                    path,
+                    |workspace| Ok(store_genesis(workspace)),
+                )
             });
             let ProvisionedEnvironment {
                 environment: env,

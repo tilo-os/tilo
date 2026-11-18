@@ -17,15 +17,19 @@ tilo-feedback = { version = "0.1.0", path = "../feedback" }
 # authority over it is the workspace's policy.
 tilo-actions = { path = "../actions" }
 durable-store = { path = "../../system/durable-store" }
-# The record a canonical owner reads its filed reports from, and the policy
-# context the admitted reporter acts under.
+# The policy context the admitted reporter acts under, and the resource
+# identity of what it files into.
+collaboration = { version = "0.1.0", path = "../collaboration" }
+collab-types = { version = "0.1.0", path = "../collab-types" }
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+automerge.workspace = true
+# The resource store a canonical owner reads its filed reports from.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 # A receipt is the owner's device signature over its own admission.
 ed25519-dalek.workspace = true
 hex.workspace = true
 
 [dev-dependencies]
-automerge.workspace = true
 tempfile.workspace = true
 # The owner's retained record is a real Chat workspace, filed into through
 # the app's own actions.

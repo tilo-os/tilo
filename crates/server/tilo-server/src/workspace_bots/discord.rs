@@ -13,10 +13,10 @@ use super::workspace_resource;
 use crate::workspaces::Workspaces;
 
 /// The Discord connector's app id, whose records the bridge keeps.
-pub use ui::apps::DISCORD as APP;
+pub use tilo_app_id::apps::DISCORD as APP;
 /// The secret the connector's worker reads its bot token from.
 pub const TOKEN_PURPOSE: &str = "bot-token";
-use ui::apps::CHAT;
+use tilo_app_id::apps::CHAT;
 
 /// The bridge bot inputs that name its [`DiscordLink`]: read by the host,
 /// never handed to the program.

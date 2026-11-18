@@ -26,12 +26,12 @@
 use std::collections::BTreeMap;
 
 use chat::chat::{Chat, Message, reply_id_at};
+use collaboration::permissions::MemberId;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::{Id, Resource as _};
 use tilo_workspace_agent::{Agent, Stands, WorkspaceAgents, sub};
-use ui::permissions::MemberId;
 
 use super::{
     Ask, Asks, CHAT, HostAgents, Outcome, Turn, WorkspaceActionProvider, WorkspaceId, going,
@@ -897,8 +897,8 @@ impl HostAgents {
         let (Some(sub), Ask::Message { part, .. }) = (&turn.agent.sub, &turn.ask) else {
             return false;
         };
-        let Some(asked_in) =
-            ui::resource::DocumentId::parse(part).and_then(|part| chat::parts::part_index(&part))
+        let Some(asked_in) = collab_types::document::DocumentId::parse(part)
+            .and_then(|part| chat::parts::part_index(&part))
         else {
             return false;
         };
@@ -1085,7 +1085,7 @@ async fn ask_agent(
         service,
         caller,
         &route,
-        &ui::resource::chain_resource_id(&chat::parts::chain()),
+        &collab_types::document::chain_resource_id(&chat::parts::chain()),
         "ask-agent",
         arguments,
     )

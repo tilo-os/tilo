@@ -62,10 +62,9 @@ fn writer_seed(workspace: &str) -> Result<Vec<u8>, String> {
     use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
     let definition = word_processor::definition();
     let checkout = DocumentCheckout::new(DocumentId::for_tab(1), definition.resource_type.clone());
-    let mut owners = ResourceOwners::portable(ui::portable_storage::PortableStorage::new(
-        "test-owner-initialize",
-        workspace,
-    )?);
+    let mut owners = ResourceOwners::portable(
+        collaboration::portable_storage::PortableStorage::new("test-owner-initialize", workspace)?,
+    );
     let records = owners
         .open(definition.app_id(), workspace)
         .map_err(|e| e.to_string())?;

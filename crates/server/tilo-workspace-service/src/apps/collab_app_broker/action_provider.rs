@@ -1405,7 +1405,7 @@ impl AppBrokerState {
                                 .and_then(|candidate| candidate.surface.clone())
                         })
                         .or_else(|| {
-                            ui::app_surface::bytes_of(app)
+                            collab_types::app_surface::bytes_of(app)
                                 .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
                         });
                 }

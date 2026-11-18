@@ -1169,7 +1169,7 @@ pub(crate) mod entry_tests {
     /// change Chat's content, the thing a Tilo computer checks before it opens
     /// Chat writable rather than read-only.
     async fn writes_in_chat(workspaces: &Workspaces, workspace: &str, device: &DeviceCert) -> bool {
-        const CHAT: &str = ui::apps::CHAT;
+        const CHAT: &str = tilo_app_id::apps::CHAT;
         let state = workspaces.workspace(workspace).await.unwrap();
         let now = tilo_clock::wall();
         let member = state

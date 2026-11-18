@@ -388,7 +388,7 @@ impl Spenders for Assistants {
                 agent: assistant.id.0.clone(),
                 name: assistant.name.clone(),
                 // The day as the agents' own runtime counts it.
-                day: ui::clock::today().to_string(),
+                day: tilo_clock::local::today().to_string(),
                 limit_micros: assistant.spend_limit_micros,
             })
         })

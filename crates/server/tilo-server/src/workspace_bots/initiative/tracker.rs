@@ -81,7 +81,7 @@ pub(super) async fn issues(workspaces: &Workspaces, workspace: &str) -> Result<V
     let mut filed = Vec::new();
     for (app, document) in routes {
         let part = app == TASKS
-            && ui::resource::DocumentId::parse(&document)
+            && collab_types::document::DocumentId::parse(&document)
                 .and_then(|id| id.chain_part())
                 .is_some_and(|(chain, _)| chain == tasks::issue_list::chain());
         if !part {
@@ -187,7 +187,7 @@ impl Tracker {
             &self.service(),
             &self.caller,
             &self.route(&tracker),
-            &ui::resource::chain_resource_id(&tasks::issue_list::chain()),
+            &collab_types::document::chain_resource_id(&tasks::issue_list::chain()),
             "create",
             arguments.as_object().cloned().unwrap_or_default(),
         )

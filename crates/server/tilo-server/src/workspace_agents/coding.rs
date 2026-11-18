@@ -340,7 +340,7 @@ async fn post(reply: &Reply, conversation: &str, words: &str) -> bool {
         &reply.provider,
         &reply.caller,
         &route,
-        &ui::resource::chain_resource_id(&chat::parts::chain()),
+        &collab_types::document::chain_resource_id(&chat::parts::chain()),
         "post",
         arguments,
     )

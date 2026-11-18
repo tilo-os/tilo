@@ -544,7 +544,7 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
     // a workspace record (Scratchpad, Notes) seeds its package primary instead.
     let app = "so.tilo.sheets";
     assert!(!catalogue.get(app).unwrap().keeps_workspace_resource());
-    let record = ui::resource::DocumentId::workspace_default()
+    let record = collab_types::document::DocumentId::workspace_default()
         .as_str()
         .to_owned();
     assert!(
@@ -561,9 +561,9 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
     let doc = automerge::AutoCommit::load(&bytes).unwrap();
     let kind = catalogue.get(app).unwrap().resource_type.clone();
     assert_eq!(
-        ui::resource::identity(&doc),
-        Some(ui::resource::DocumentCheckout::new(
-            ui::resource::DocumentId::workspace_default(),
+        ::collaboration::resource::identity(&doc),
+        Some(collab_types::document::DocumentCheckout::new(
+            collab_types::document::DocumentId::workspace_default(),
             kind
         ))
     );

@@ -41,7 +41,7 @@ pub(super) fn attested_route_access(
     if collab_types::workspace_document(&route.app_id, &route.document_id).is_some() {
         return Ok(RouteAccess::Own);
     }
-    if !personal_cluster && !ui::app_surface::reads_app(app, &route.app_id) {
+    if !personal_cluster && !collab_types::app_surface::reads_app(app, &route.app_id) {
         return Err(format!(
             "{app} declares no read of {}'s resources; it changes another app's \
              resources only by invoking its actions",
@@ -117,9 +117,9 @@ mod tests {
     /// record only through the owning app's actions.
     #[test]
     fn an_app_writes_only_its_own_route_and_reads_another_apps_only_as_declared() {
-        ui::app_surface::register_package("test.lang-notes", NOTES);
-        ui::app_surface::register_package("test.lang-board", BOARD);
-        ui::app_surface::register_package("test.lang-chat", CHAT);
+        collab_types::app_surface::register_package("test.lang-notes", NOTES);
+        collab_types::app_surface::register_package("test.lang-board", BOARD);
+        collab_types::app_surface::register_package("test.lang-chat", CHAT);
         workspace_routes_are_the_apps_own_or_declared_reads();
         person_records_are_read_never_written();
     }
@@ -207,7 +207,7 @@ mod tests {
     /// written.
     fn person_records_are_read_never_written() {
         let accounts = collab_types::person_document_id("test-person.accounts");
-        ui::app_surface::register_package("test.person-reader", TERMINAL);
+        collab_types::app_surface::register_package("test.person-reader", TERMINAL);
         assert_eq!(
             attested_route_access(
                 "test.person-reader",

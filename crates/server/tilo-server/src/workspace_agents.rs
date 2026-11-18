@@ -868,7 +868,7 @@ impl HostAgents {
         let mut team = self.team(workspace, agents).await?;
         for (app, record) in routes {
             if app != CHAT
-                || ui::resource::DocumentId::parse(record)
+                || collab_types::document::DocumentId::parse(record)
                     .is_none_or(|part| chat::parts::part_index(&part).is_none())
             {
                 continue;
@@ -905,7 +905,7 @@ impl HostAgents {
                     known.as_ref(),
                     &summons.conversation,
                     &summons.message,
-                    &ui::permissions::MemberId::agent(&summons.agent),
+                    &collaboration::permissions::MemberId::agent(&summons.agent),
                     request,
                 );
                 asks.turns.push(Turn {
@@ -967,7 +967,7 @@ impl HostAgents {
         let mut kept = Vec::new();
         for (app, record) in routes {
             if app != TASKS
-                || ui::resource::DocumentId::parse(record)
+                || collab_types::document::DocumentId::parse(record)
                     .and_then(|id| id.chain_part())
                     .is_none_or(|(chain, _)| chain != tasks::issue_list::chain())
             {
@@ -2420,7 +2420,7 @@ async fn call_tool(
 
 /// Today, `YYYY-MM-DD`, as an agent's keeper counts the days its spending is charged to.
 pub(crate) fn today() -> String {
-    ui::clock::today().to_string()
+    tilo_clock::local::today().to_string()
 }
 
 /// `micros` millionths of the currency, as a person reads an amount.

@@ -298,14 +298,14 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
                     );
                 }
                 channels[RECORDS - 1]
-                    .publish_action_directory(crate::apps::collab_app_broker::wire_answerer(Rc::new(
-                        LocalDocumentDirectory {
+                    .publish_action_directory(crate::apps::collab_app_broker::wire_answerer(
+                        Rc::new(LocalDocumentDirectory {
                             kind: tilo_actions::OperationKind::Document,
                             read: false,
                             pin_dropped: Rc::new(std::cell::Cell::new(false)),
                             resolutions: Rc::new(std::cell::Cell::new(0)),
-                        },
-                    )))
+                        }),
+                    ))
                     .await
                     .unwrap();
                 windows.push((peer, app, server, client, channels));
@@ -725,9 +725,9 @@ async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
     static TODAY: &[u8] = b"reads = [\"test.journal-notes.Note\"]\n\n[[resources]]\nkind = \"test.journal-today.Day\"\nlabel = \"Day\"\nversion = 1\n";
     static TASKS: &[u8] =
         b"[[resources]]\nkind = \"test.journal-tasks.Task\"\nlabel = \"Task\"\nversion = 1\n";
-    ui::app_surface::register_package("test.journal-notes", NOTES);
-    ui::app_surface::register_package("test.journal-today", TODAY);
-    ui::app_surface::register_package("test.journal-tasks", TASKS);
+    collab_types::app_surface::register_package("test.journal-notes", NOTES);
+    collab_types::app_surface::register_package("test.journal-today", TODAY);
+    collab_types::app_surface::register_package("test.journal-tasks", TASKS);
     tokio::task::LocalSet::new()
         .run_until(async {
             const READER_PEER: u64 = 941;

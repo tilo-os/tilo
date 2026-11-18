@@ -236,7 +236,7 @@ mod tests {
     use tilo_actions::InvocationUpdate;
     use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 
-    const APP: &str = ui::apps::WORD_PROCESSOR;
+    const APP: &str = tilo_app_id::apps::WORD_PROCESSOR;
 
     /// Starts each launch with the next ticket.
     #[derive(Default)]

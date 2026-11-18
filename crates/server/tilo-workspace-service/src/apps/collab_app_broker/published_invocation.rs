@@ -3,7 +3,7 @@ use super::{
     AdmittedJoinIdentity, AppBrokerState, Arc, CrdtRoute, PrivateWorkerRegistration,
     PublishedAction, VerifiedActionCaller, Weak,
 };
-use ui::invocation_scope::{
+use collaboration::invocation_scope::{
     PublishedInvocationAuthorizer, PublishedInvocationLease, PublishedInvocationRequest,
     PublishedInvocationSpec,
 };

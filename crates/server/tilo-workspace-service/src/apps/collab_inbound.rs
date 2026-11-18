@@ -258,7 +258,7 @@ fn fan_out(fanout: &FanoutState, envelope: SignedOp, route: &CrdtRoute) {
 /// learns the same records as it subscribes
 /// ([`crate::apps::collab_core::BrokerChannels::tree_records_held`]).
 fn announce_document(fanout: &FanoutState, route: &CrdtRoute) {
-    if ui::resource::DocumentId::parse(&route.document_id)
+    if collab_types::document::DocumentId::parse(&route.document_id)
         .is_none_or(|record| record.tree().is_none())
     {
         return;
@@ -620,13 +620,13 @@ mod tests {
     #[test]
     fn a_peer_written_part_is_announced_to_the_apps_open_window() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
-        let part = ui::resource::DocumentId::derived(
+        let part = collab_types::document::DocumentId::derived(
             "messages",
-            &ui::resource::DocumentId::workspace_default(),
+            &collab_types::document::DocumentId::workspace_default(),
         )
         .part(0)
         .to_string();
-        let conversation = ui::resource::DocumentId::for_tab(7).to_string();
+        let conversation = collab_types::document::DocumentId::for_tab(7).to_string();
         let write = |record: &str, sequence: u64, title: &str| {
             let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
             let mut op = SignedOp::new_unsigned(

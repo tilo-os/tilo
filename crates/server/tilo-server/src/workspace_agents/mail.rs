@@ -233,7 +233,7 @@ impl Sends {
         let mut found = false;
         for (app, document) in routes {
             if app != CHAT
-                || ui::resource::DocumentId::parse(&document)
+                || collab_types::document::DocumentId::parse(&document)
                     .is_none_or(|part| chat::parts::part_index(&part).is_none())
             {
                 continue;

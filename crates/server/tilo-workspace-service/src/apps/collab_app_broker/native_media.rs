@@ -81,7 +81,7 @@ pub(super) struct LocalAppConnection {
 }
 
 /// The only app that hands this broker selected objects.
-use ui::apps::FILE_EXPLORER as FILES;
+use tilo_app_id::apps::FILE_EXPLORER as FILES;
 
 /// Selected objects one Files connection may have handed over and not yet
 /// named: two whole captures, each its sources and one destination.
