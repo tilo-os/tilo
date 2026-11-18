@@ -2342,6 +2342,7 @@ version = "0.1.0"
 dependencies = [
  "chat-model",
  "tilo-model-guest",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -20898,6 +20899,7 @@ dependencies = [
  "scratchpad-model-wasm",
  "tasks-model-wasm",
  "tube-model-wasm",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -28679,6 +28681,8 @@ dependencies = [
  "chacha20poly1305 0.10.1",
  "chacha20poly1305 0.11.0",
  "chat",
+ "chat-model",
+ "chat-model-wasm",
  "chinese-number",
  "chinese-variant",
  "chip-design",

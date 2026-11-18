@@ -48,6 +48,7 @@ publisher-model-wasm = { path = "../../../apps/publisher-model-wasm" }
 scratchpad-model-wasm = { path = "../../../apps/scratchpad-model-wasm" }
 tasks-model-wasm = { path = "../../../apps/tasks-model-wasm" }
 tube-model-wasm = { path = "../../../apps/tube-model-wasm" }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true

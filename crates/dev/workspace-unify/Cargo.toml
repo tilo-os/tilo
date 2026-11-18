@@ -177,6 +177,8 @@ doc = false
 "chacha20poly1305-0_10_1" = { package = "chacha20poly1305", version = "^0.10.1", default-features = false, features = ["alloc", "default", "getrandom", "rand_core"] }
 "chacha20poly1305-0_11_0" = { package = "chacha20poly1305", version = "^0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 "chat" = { path = "../../../apps/chat", default-features = false, features = ["default", "samples", "video"] }
+"chat-model" = { path = "../../../apps/chat-model", default-features = false, features = [] }
+"chat-model-wasm" = { path = "../../../apps/chat-model-wasm", default-features = false, features = [] }
 "chinese-number-0_7_8" = { package = "chinese-number", version = "^0.7.8", default-features = false, features = ["num-bigint", "num-traits", "number-to-chinese"] }
 "chinese-variant-1_1_6" = { package = "chinese-variant", version = "^1.1.6", default-features = false, features = ["default"] }
 "chip-design" = { path = "../../../apps/chip-design", default-features = false, features = [] }
