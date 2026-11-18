@@ -1427,6 +1427,10 @@ mod reply_thinks;
 #[path = "hosted_turn_ends.rs"]
 mod turn_ends;
 
+/// What a device receives of an answer while its model writes it, measured.
+#[path = "hosted_reply_times.rs"]
+mod reply_times;
+
 /// A reply grows while its model writes it.
 #[path = "hosted_reply_grows.rs"]
 mod reply_grows;
