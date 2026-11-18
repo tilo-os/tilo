@@ -368,7 +368,7 @@ async fn put(
         agent,
         carrier: ACTION.to_owned(),
         kept: serde_json::to_value(&action).map_err(|error| error.to_string())?,
-        always: Some(asked.asked),
+        always: asked.asked,
         words: Words {
             place,
             ..asked.words
