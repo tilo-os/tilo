@@ -3982,24 +3982,20 @@ mod tests {
     #[test]
     fn a_camera_waiting_for_permission_sleeps_until_the_answer_wakes_it() {
         use std::sync::{Arc, Mutex, mpsc};
-        use tilo_capture::broker::{Client, Policy, Sources, serve, synthetic};
-        use tilo_capture::grants::{DeviceGrants, GrantPolicy};
+        use tilo_capture::broker::{Asking, Client, Policy, Sources, serve, synthetic};
 
         for allow in [true, false] {
             let dir = std::env::temp_dir().join(format!(
                 "camera-permission-wake-{}-{allow}",
                 std::process::id()
             ));
-            let grants = Arc::new(DeviceGrants::open(&dir.join("grants")).unwrap());
             let (asked_tx, asked_rx) = mpsc::channel::<()>();
             let (answer_tx, answer_rx) = mpsc::channel::<bool>();
             let prompt = Mutex::new((asked_tx, answer_rx));
             let (app_end, host_end) = std::os::unix::net::UnixDatagram::pair().unwrap();
-            let policy: Arc<dyn Policy> = Arc::new(GrantPolicy {
-                grants,
-                workspace: "r".into(),
-                app: "so.tilo.camera".into(),
+            let policy: Arc<dyn Policy> = Arc::new(Asking {
                 declared: vec![tilo_capture::DeviceKind::Camera],
+                answers: synthetic::Kept::default(),
                 consent: move |_| {
                     let prompt = prompt.lock().unwrap();
                     let _ = prompt.0.send(());

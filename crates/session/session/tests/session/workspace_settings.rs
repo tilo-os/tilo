@@ -362,16 +362,15 @@ fn workspace_settings_gives_and_revokes_a_permission() {
         .flat_map(|section| section.permissions)
         .find(|permission| permission.holder == "ada")
         .expect("the sheet lists ada's permission");
-    let camera = tilo_desktop_surface::i18n::t("workspace-settings-scope-camera");
     assert!(
-        given.detail.contains(&camera),
+        given.detail.contains("network"),
         "the row says what the permission allows: {}",
         given.detail
     );
     let held = session
         .handle()
         .read(|tree| tree.active_workspace().expect("a workspace").sandbox.len());
-    assert_eq!(held, 1, "the workspace gives ada the camera");
+    assert_eq!(held, 1, "the workspace gives ada the network");
 
     press(&mut app, &format!("ws-permission-revoke-{}", given.key));
     press(&mut app, "ws-settings-decision.primary");
@@ -379,7 +378,7 @@ fn workspace_settings_gives_and_revokes_a_permission() {
     let left = session
         .handle()
         .read(|tree| tree.active_workspace().expect("a workspace").sandbox.len());
-    assert_eq!(left, 0, "the workspace gives the camera to no one again");
+    assert_eq!(left, 0, "the workspace gives the network to no one again");
     assert!(
         session
             .workspace_settings()

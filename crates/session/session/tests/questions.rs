@@ -164,6 +164,14 @@ fn access(may_remember: bool, reason: Option<&str>) -> AccessQuestion {
     }
 }
 
+/// What the portal asks of a screen share the person may allow for good: the question, and the
+/// device its answer is kept under.
+fn remembered() -> Value {
+    let mut details = serde_json::to_value(access(true, None)).expect("details");
+    details["device"] = json!("screen");
+    details
+}
+
 /// A Wi-Fi network asking for its password.
 fn wifi(retry: bool) -> Value {
     let mut detail = vec![words(
@@ -285,7 +293,7 @@ fn the_access_question_is_answered_on_the_portal_sheet() {
         Some("org.example.Recorder"),
         "org.example.Recorder",
         "portal.access",
-        serde_json::to_value(access(true, None)).expect("details"),
+        remembered(),
     );
     pump(&mut session, |_| questions.pending().len() == 1);
     let shown = dialog(&session);
@@ -857,7 +865,7 @@ fn the_allowance_given_for_good_is_revoked_or_left_access() {
         let _settled = ui::motion::testing::settled();
         let kept = Arc::new(Mutex::new(vec![(
             "org.example.Recorder".to_owned(),
-            "screencast".to_owned(),
+            "screen".to_owned(),
         )]));
         let (mut session, questions) = asking(vec![Box::new(Allowances {
             kept: Arc::clone(&kept),
@@ -867,7 +875,7 @@ fn the_allowance_given_for_good_is_revoked_or_left_access() {
             Some("org.example.Recorder"),
             "org.example.Recorder",
             "portal.access",
-            serde_json::to_value(access(true, None)).expect("details"),
+            remembered(),
         );
         pump(&mut session, |_| questions.pending().len() == 1);
         press(&mut session, PortalEffect::SELECT.id, json!({"index": 2}));

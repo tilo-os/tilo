@@ -79,6 +79,7 @@ pub use state::{
     seed_workspace, trigger_mark, unranked, workspace_grants_of, workspace_host_actor,
     workspace_seed,
 };
+pub use state::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept};
 pub use state::{vm_lease, vm_rank};
 pub mod coverage;
 mod governed_routes;

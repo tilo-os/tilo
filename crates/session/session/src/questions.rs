@@ -95,7 +95,8 @@ enum Plan {
     Revoke {
         app_id: String,
         app_label: String,
-        capability: String,
+        /// The device it is kept under.
+        device: String,
     },
 }
 
@@ -116,7 +117,10 @@ struct Binding {
 struct Grant {
     app_id: String,
     app_label: String,
+    /// What the sheet words it as.
     capability: String,
+    /// The device it is kept under, by [`collab_types::caps::DeviceCap::name`].
+    device: String,
 }
 
 /// The question that is up, as the person left it.
@@ -273,10 +277,10 @@ impl Asker {
                 if let Plan::Revoke {
                     app_id,
                     app_label,
-                    capability,
+                    device,
                 } = &shown.plan
                 {
-                    self.revoke(app_id, app_label, capability);
+                    self.revoke(app_id, app_label, device);
                 }
                 self.take_down(shown.sheet);
             }
@@ -330,7 +334,7 @@ impl Asker {
         let plan = Plan::Revoke {
             app_id: grant.app_id,
             app_label: grant.app_label,
-            capability: grant.capability,
+            device: grant.device,
         };
         portal.show(Some(dialog.clone()));
         self.shown.replace(Some(Shown {
@@ -354,13 +358,14 @@ impl Asker {
             capability: &str,
         ) -> Option<&'a ResourceSpec> {
             resources.iter().find_map(|resource| {
+                // The answer the sheet takes back is this device's: one kept for another device
+                // names that device.
+                let presentation = resource.presentation.as_ref();
                 let allowed = resource.kind == "portal.consent"
                     && (resource.label == app_id || resource.label == app_label)
-                    && resource
-                        .presentation
-                        .as_ref()
-                        .and_then(|presentation| presentation.detail.as_deref())
-                        == Some(capability);
+                    && presentation.and_then(|presentation| presentation.detail.as_deref())
+                        == Some(capability)
+                    && presentation.is_none_or(|presentation| presentation.badge.is_none());
                 allowed
                     .then_some(resource)
                     .or_else(|| revoke_action(&resource.children, app_id, app_label, capability))
@@ -776,10 +781,16 @@ fn grant_of(question: &Question) -> Option<Grant> {
         return None;
     }
     let asked: AccessQuestion = serde_json::from_value(question.details.clone()).ok()?;
+    let device = question
+        .details
+        .get(tilo_portal::consent::DEVICE_DETAIL)
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
     asked.may_remember.then(|| Grant {
         app_id: question.app_id.clone().unwrap_or_default(),
         app_label: who(question),
         capability: asked.capability.clone(),
+        device,
     })
 }
 
@@ -1732,7 +1743,7 @@ mod tests {
         // gone. Other questions share this path, so they lose the row too.
         {
             for (kind, details) in [
-                ("portal.access", json!({"capability": "camera", "may_remember": true})),
+                ("portal.access", json!({"capability": "camera", "may_remember": true, "device": "camera"})),
                 ("portal.email", json!({"addresses": ["ada@example.org"], "cc": [], "bcc": [], "attachments": []})),
                 ("portal.print", json!({"title": "Report", "printers": ["Office"], "selected": 0, "copies": 1})),
                 ("portal.global-shortcuts", json!({"shortcuts": []})),

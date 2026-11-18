@@ -360,14 +360,14 @@ impl GrantSubject {
 /// so the table can stay `const` .
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GrantTarget {
-    Device(DeviceCap),
     AnyHost,
     WorkspaceFiles,
 }
 
 /// One entry in the composer's "what does this allow" picker. Every entry produces a capability an
-/// enforcement point actually reads (devices check the portal, `NetHost` checks egress, `FsPath`
-/// checks the sandbox binds and the filesystem, `Workspace` checks administration).
+/// enforcement point actually reads (a network grant checks egress, `FsPath` checks the sandbox binds and
+/// the filesystem). A device of a member's machine is never offered: only that person answers for
+/// it, on their own device.
 pub struct GrantChoice {
     /// What the choice is named by: the same key every host uses.
     pub key: &'static str,
@@ -384,30 +384,6 @@ impl GrantChoice {
 }
 
 static GRANT_CHOICES: &[GrantChoice] = &[
-    GrantChoice {
-        key: "camera",
-        label_key: "workspace-settings-grant-camera",
-        target: GrantTarget::Device(DeviceCap::Camera),
-        access: Access::Read,
-    },
-    GrantChoice {
-        key: "microphone",
-        label_key: "workspace-settings-grant-microphone",
-        target: GrantTarget::Device(DeviceCap::Microphone),
-        access: Access::Read,
-    },
-    GrantChoice {
-        key: "screencast",
-        label_key: "workspace-settings-grant-screencast",
-        target: GrantTarget::Device(DeviceCap::Screen),
-        access: Access::Read,
-    },
-    GrantChoice {
-        key: "remote-control",
-        label_key: "workspace-settings-grant-remote-control",
-        target: GrantTarget::Device(DeviceCap::Input),
-        access: Access::Write,
-    },
     GrantChoice {
         key: "network",
         label_key: "workspace-settings-grant-network",
@@ -604,7 +580,6 @@ pub fn draft_capability(ws: &Workspace, person: &str, draft: &GrantDraft) -> Opt
     let subject_entry = subjects.get(idx)?;
     let choice = draft.choice();
     let scope = match choice.target {
-        GrantTarget::Device(d) => Scope::Device(d),
         GrantTarget::AnyHost => Scope::NetHost("*".to_string()),
         GrantTarget::WorkspaceFiles => Scope::FsPath(WORKSPACE_FILES_PATH.to_string()),
     };
@@ -1694,7 +1669,7 @@ mod permissions_tests {
         assert_eq!(keys[0], "always", "the composer starts on a lasting grant");
         let ws = ws_with_grants();
         // One Firefox does not hold yet, so the grant is not merged into a longer one.
-        let permission = "microphone";
+        let permission = "read-files";
         let draft = draft_for(&ws, "app:firefox", permission, None, 10).expect("a draft");
         assert_eq!(draft.lifetime, Lifetime::UntilRevoked);
         let draft = draft_for(&ws, "app:firefox", permission, Some(20), 10).expect("a draft");
@@ -1748,12 +1723,12 @@ mod permissions_tests {
                 choice_index: 0,
                 lifetime: Lifetime::UntilRevoked,
             };
-            while draft.choice().label() != "Microphone" {
+            while draft.choice().label() != "Read workspace files" {
                 draft.cycle_choice();
             }
             assert!(!ws.allows(
                 &app_acting("firefox"),
-                &ResourceRef::Device(DeviceCap::Microphone),
+                &ResourceRef::FsPath(WORKSPACE_FILES_PATH.to_string()),
                 Access::Read
             ));
 
@@ -1763,7 +1738,7 @@ mod permissions_tests {
             assert!(
                 ws.allows(
                     &app_acting("firefox"),
-                    &ResourceRef::Device(DeviceCap::Microphone),
+                    &ResourceRef::FsPath(WORKSPACE_FILES_PATH.to_string()),
                     Access::Read
                 ),
                 "the granted capability must start working, not merely start rendering"
@@ -1783,7 +1758,7 @@ mod permissions_tests {
                 choice_index: 0,
                 lifetime: Lifetime::Until(5_000),
             };
-            while draft.choice().label() != "Microphone" {
+            while draft.choice().label() != "Read workspace files" {
                 draft.cycle_choice();
             }
             let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft)
@@ -1810,29 +1785,34 @@ mod permissions_tests {
                 choice_index: 0,
                 lifetime: Lifetime::Until(5_000),
             };
-            while draft.choice().label() != "Camera" {
+            while draft.choice().label() != "Read workspace files" {
                 draft.cycle_choice();
             }
+            let always = GrantDraft {
+                lifetime: Lifetime::UntilRevoked,
+                ..draft
+            };
+            apply_grant_draft(&mut ws, &OWNER.to_string(), &always).expect("the owner may grant");
             apply_grant_draft(&mut ws, &OWNER.to_string(), &draft).expect("the owner may grant");
-            let camera = ws
+            let files = ws
                 .sandbox
                 .iter()
-                .filter(|c| matches!(&c.scope, Scope::Device(DeviceCap::Camera)))
+                .filter(|c| matches!(&c.scope, Scope::FsPath(_)))
                 .collect::<Vec<_>>();
             assert_eq!(
-                camera.len(),
+                files.len(),
                 1,
                 "the re-grant merges rather than duplicating"
             );
             assert_eq!(
-                camera[0].lifetime,
+                files[0].lifetime,
                 Lifetime::UntilRevoked,
                 "the existing permanent grant is not demoted to a timed one"
             );
             let row = listed(&ws)
                 .into_iter()
-                .find(|r| r.allows.contains("camera"))
-                .expect("camera row");
+                .find(|r| r.id == files[0].id)
+                .expect("files row");
             assert_eq!(
                 row.expiry, "Always",
                 "the row must report the expiry that is stored, not the one that was asked for"
@@ -1949,7 +1929,7 @@ mod permissions_tests {
             }
 
             let mut ws = ws_with_grants();
-            let draft = draft_for(&ws, "app:firefox", "microphone", None, 0).expect("a draft");
+            let draft = draft_for(&ws, "app:firefox", "read-files", None, 0).expect("a draft");
             let mut ws2 = ws.clone();
             apply_grant_draft(&mut ws2, &OWNER.to_string(), &draft).expect("owner grants");
             ws = ws2;
@@ -1963,7 +1943,7 @@ mod permissions_tests {
         phase a_grant_set_reads_back_as_the_grants_the_workspace_holds;
         {
             let mut ws = ws_with_grants();
-            let draft = draft_for(&ws, "app:firefox", "microphone", None, 0).expect("a draft");
+            let draft = draft_for(&ws, "app:firefox", "read-files", None, 0).expect("a draft");
             let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft).expect("owner grants");
             assert_eq!(edit.sandbox_granted.len(), 1);
             let rows = listed(&ws);

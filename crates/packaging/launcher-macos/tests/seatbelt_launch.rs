@@ -593,16 +593,10 @@ fn a_confined_app_captures_only_what_its_broker_grants() {
     use tilo_capture::DeviceKind;
     use tilo_capture::broker::{Policy, Sources, serve};
     let f = fixture();
-    let grants_dir = tempfile::tempdir().unwrap();
-    let grants = Arc::new(
-        tilo_capture::grants::DeviceGrants::open(&grants_dir.path().join("grants")).unwrap(),
-    );
     let (app, runtime) = std::os::unix::net::UnixDatagram::pair().unwrap();
-    let policy: Arc<dyn Policy> = Arc::new(tilo_capture::grants::GrantPolicy {
-        grants,
-        workspace: "personal".into(),
-        app: PACKAGE.into(),
+    let policy: Arc<dyn Policy> = Arc::new(tilo_capture::broker::Asking {
         declared: vec![DeviceKind::Camera],
+        answers: tilo_capture::broker::synthetic::Kept::default(),
         consent: |_| Ok(true),
     });
     let sources: Arc<dyn Sources> = Arc::new(tilo_capture::broker::synthetic::Devices);

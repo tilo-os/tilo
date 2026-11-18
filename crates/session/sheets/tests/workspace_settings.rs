@@ -877,7 +877,7 @@ tilo_test_env::scenario! {
             state.take_asked(),
             [WorkspaceSettingsEffect::Grant {
                 subject: "member:ada".to_owned(),
-                permission: "camera".to_owned(),
+                permission: "network".to_owned(),
                 until: None,
             }]
         );

@@ -161,7 +161,6 @@ impl Standalone {
         let workspace_id = workspace.workspace();
         let workspace = Arc::new(workspace);
         let apps = Arc::new(apps::Apps::from_env(root, &workspace_id));
-        serve_device_grants(root, &apps);
         let channels = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         stage("opening the joined workspaces and channel keys");
@@ -201,6 +200,9 @@ impl Standalone {
             take_work,
             host: placed.as_ref().map(|(host, _)| host.as_ref()),
         })?;
+        // What the person answers about this device's camera and microphone is kept in their own
+        // store, where their other devices see it and can take it back.
+        apps.device_grants().keep_in(personal.sync.clone());
         let workspaces = Arc::new(Workspaces::new(&workspace, &joined));
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
@@ -1016,23 +1018,6 @@ impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority f
         uuid::Uuid::parse_str(&self.workspace) == Ok(workspace)
             && device.is_none_or(|d| *d == self.device)
     }
-}
-
-/// The person's camera and microphone decisions, as actions on the
-/// profile's console socket (macOS, where the runtime brokers capture). A
-/// socket that cannot be served leaves the runtime running without it.
-fn serve_device_grants(root: &Path, apps: &apps::Apps) {
-    #[cfg(target_os = "macos")]
-    {
-        let served = apps.device_grants().and_then(|grants| {
-            crate::device_grants::serve(grants, &root.join(crate::CONSOLE_SOCKET))
-        });
-        if let Err(error) = served {
-            tracing::warn!(%error, "the device grants are not served on the console socket");
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (root, apps);
 }
 
 /// What the person's own store is served with: the profile's state it is kept

@@ -544,6 +544,7 @@ impl InputCapture {
                     self.portal.consents.decide(
                         &caller,
                         &question_handle(request),
+                        collab_types::caps::DeviceCap::Input,
                         AccessQuestion {
                             capability: INPUT_CAPTURE_CAPABILITY.into(),
                             reason: None,
@@ -642,6 +643,7 @@ impl InputCapture {
                     self.portal.consents.decide(
                         &auth.caller,
                         &question_handle(request),
+                        collab_types::caps::DeviceCap::Input,
                         AccessQuestion {
                             capability: INPUT_CAPTURE_CAPABILITY.into(),
                             reason: None,

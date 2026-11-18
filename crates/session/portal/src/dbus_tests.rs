@@ -72,7 +72,10 @@ async fn bed_with(capture: Arc<dyn crate::Capture>) -> Bed {
         tilo_documents::Documents::new(),
     )
     .with_capture(capture)
-    .with_consents(crate::consent::Consents::new(questions.clone(), None))
+    .with_consents(crate::consent::Consents::new(
+        questions.clone(),
+        tilo_peer_state::DeviceGrants::unkept(),
+    ))
     .with_permissions(store);
     portal.serve(&backend).await.expect("served");
     let frontend = bus.connect().await;

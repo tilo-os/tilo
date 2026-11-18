@@ -290,6 +290,17 @@ pub(crate) fn start_collaboration(
             }
         }
     });
+    // The person's answers about this device's camera, screen and the rest are kept in their own
+    // store, where their other devices see them and can take them back.
+    if let (Some(personal), Some(consents)) = (
+        personal.as_ref(),
+        options
+            .desktop
+            .as_ref()
+            .and_then(|desktop| desktop.consents()),
+    ) {
+        consents.grants().keep_in(personal.sync().clone());
+    }
     let mut beside = beside;
     // Which devices are the person's is their own store's to say, for the agents that connect from
     // one of them and for those this one dials.

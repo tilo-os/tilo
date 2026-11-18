@@ -533,6 +533,13 @@ impl Session {
         if let Some(launch) = &options.launch {
             launch.attach(desktop.clone());
             launch.set_person(options.person.clone());
+            if let Some(consents) = options
+                .desktop
+                .as_ref()
+                .and_then(|desktop| desktop.consents())
+            {
+                launch.answer_devices_with(consents.grants().clone());
+            }
         }
         // One process per app per workspace: its later windows open in the
         // process the session started, with connections of their own. A

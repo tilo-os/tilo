@@ -22,6 +22,7 @@
 //! the launcher's own `socket_for` sites and the services every app's
 //! manifest declares — and fails when one has no row here.
 
+use collab_types::caps::DeviceCap;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -403,13 +404,16 @@ fn system_info(
         return None;
     }
     let path = launcher::services::socket_for(tilo_system_stats::SERVICE);
-    let prompter: Arc<dyn Prompter> =
-        match consents.or_else(|| questions.map(tilo_portal::consent::Consents::for_session)) {
-            Some(consents) => Arc::new(ConsentsPrompter { consents }),
-            // A session with nobody to ask still serves the readings: the apps the image hands the
-            // machine to read them, and anyone else is answered no.
-            None => Arc::new(tilo_system_stats::server::NoPrompter),
-        };
+    let prompter: Arc<dyn Prompter> = match consents.or_else(|| {
+        questions.map(|questions| {
+            tilo_portal::consent::Consents::new(questions, tilo_peer_state::DeviceGrants::unkept())
+        })
+    }) {
+        Some(consents) => Arc::new(ConsentsPrompter { consents }),
+        // A session with nobody to ask still serves the readings: the apps the image hands the
+        // machine to read them, and anyone else is answered no.
+        None => Arc::new(tilo_system_stats::server::NoPrompter),
+    };
     match Server::bind(&path, Hub::shared().clone(), prompter) {
         Ok(server) => {
             tracing::info!("serving the machine's readings to the apps the launcher starts");
@@ -432,6 +436,15 @@ struct ConsentsPrompter {
     consents: tilo_portal::consent::Consents,
 }
 
+/// The device of the machine a reading of the system information service is.
+const fn device(grant: Grant) -> DeviceCap {
+    match grant {
+        Grant::SystemInfo => DeviceCap::SystemInfo,
+        Grant::Processes => DeviceCap::Processes,
+        Grant::CommandLines => DeviceCap::ProcessCommands,
+    }
+}
+
 /// Who asks: the app, in the workspace its launcher named.
 fn caller(handoff: &Handoff) -> PortalCaller {
     PortalCaller {
@@ -442,13 +455,14 @@ fn caller(handoff: &Handoff) -> PortalCaller {
 
 impl Prompter for ConsentsPrompter {
     fn granted(&self, handoff: &Handoff, grant: Grant) -> bool {
-        self.consents.allowed(&caller(handoff), grant.name())
+        self.consents.allowed(&caller(handoff), device(grant))
     }
 
     fn ask(&self, handoff: &Handoff, grant: Grant) -> std::sync::mpsc::Receiver<bool> {
         let caller = caller(handoff);
+        let device = device(grant);
         let question = tilo_portal::consent::AccessQuestion {
-            capability: grant.name().to_owned(),
+            capability: device.name().to_owned(),
             reason: None,
             may_remember: true,
             text: None,
@@ -459,7 +473,12 @@ impl Prompter for ConsentsPrompter {
         let (answer, answered) = std::sync::mpsc::channel();
         let consents = self.consents.clone();
         drop(crate::landing::off_loop(async move {
-            let _ = answer.send(consents.decide(&caller, &handle, question).await.is_ok());
+            let _ = answer.send(
+                consents
+                    .decide(&caller, &handle, device, question)
+                    .await
+                    .is_ok(),
+            );
         }));
         answered
     }
