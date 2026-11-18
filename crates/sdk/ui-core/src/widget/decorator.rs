@@ -413,10 +413,6 @@ decorator_trait! {
             Decorator::for_each_layout_child(self, visitor)
         }
 
-        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-            Decorator::html(self, cx);
-        }
-
         fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
             Decorator::provide(self, request);
         }
