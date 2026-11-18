@@ -154,17 +154,16 @@ pub async fn run() {
             )
             .await
             .unwrap();
-        let mut canonical = workspaces
-            .author_application(
-                &workspace.workspace,
-                &host.cert,
-                &crate::common::catalogue(),
-                "so.tilo.chat",
-                "",
-                |doc| Ok(doc.clone()),
-            )
-            .await
-            .unwrap();
+        let mut canonical = Box::pin(workspaces.author_application(
+            &workspace.workspace,
+            &host.cert,
+            &crate::common::catalogue(),
+            "so.tilo.chat",
+            "",
+            |doc| Ok(doc.clone()),
+        ))
+        .await
+        .unwrap();
         Seed::Existing {
             record: ui::resource::DocumentId::package_primary(),
             changes: vec![canonical.save()],

@@ -965,16 +965,17 @@ async fn content_steps_answer_beside_a_request_that_holds_the_workspaces_thread(
     // access from this fixture, which here takes its time.
     membership.hold();
     let mut held = actions.serve(workspace, &editor, listing()).unwrap();
-    let mut slow = membership.slow.lock().unwrap();
-    while !slow.1 {
-        let (guard, waited) = membership.began.wait_timeout(slow, HELD * 2).unwrap();
-        slow = guard;
-        assert!(
-            !waited.timed_out(),
-            "the request holding the workspace's thread began"
-        );
+    {
+        let mut slow = membership.slow.lock().unwrap();
+        while !slow.1 {
+            let (guard, waited) = membership.began.wait_timeout(slow, HELD * 2).unwrap();
+            slow = guard;
+            assert!(
+                !waited.timed_out(),
+                "the request holding the workspace's thread began"
+            );
+        }
     }
-    drop(slow);
 
     // Many steps of the same member, while it is held: they answer, and none of
     // them waits for the thread to be free. The two appends of one upload keep

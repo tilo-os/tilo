@@ -602,9 +602,7 @@ async fn an_imported_tree_sent_as_import_then_move_groups_is_kept_nested() {
     // collection, as the moves named.
     let mut expected = vec![(collection.clone(), None)];
     for (index, page) in docs.iter().enumerate() {
-        let parent = if index == 0 {
-            Some(collection.clone())
-        } else if index % 2 == 0 {
+        let parent = if index % 2 == 0 {
             Some(collection.clone())
         } else if index % 3 == 0 {
             Some(docs[0].clone())
