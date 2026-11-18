@@ -1429,11 +1429,18 @@ fn composed_at<'a>(
     found
 }
 
+/// The widget saying `text`: its own words, or the words part it composes them as.
 fn composed_named<'a>(
     node: &'a crate::composition::Composed,
     text: &str,
 ) -> Option<&'a crate::composition::Composed> {
-    if matches!(&node.own, Some(crate::composition::Own::Text(look)) if look.text == text) {
+    let says = |node: &crate::composition::Composed| matches!(&node.own, Some(crate::composition::Own::Text(look)) if look.text == text);
+    if says(node)
+        || node
+            .children
+            .iter()
+            .any(|part| part.widget == "Text" && says(part))
+    {
         return Some(node);
     }
     node.children
