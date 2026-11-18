@@ -234,8 +234,8 @@ t dispatch publish-host --ref tag:vX.Y.Z --publish
 It builds what it needs and refuses to publish anything else: the server's programs
 (`host-binaries`), their base (`host-base`: the mirrored bootc base, the frozen package set,
 Firecracker and the tools that seal a UKI) and the image above it (`image-host`, carrying the
-generation `generation-host` reads from the server's series), sealed by one install
-(`seal-host`); it proves the image in a container (`test-image-host`) and by installing and
+generation `generation-host` reads from the server's series), its UKI sealed with the composefs
+digest its install computes (`seal-host`); it proves the image in a container (`test-image-host`) and by installing and
 booting it under Secure Boot in a VM (`host-assurance-x86_64`); `sign-host-boot` signs its UKIs
 and PCR 11 prediction with the EFI and PCR keys in KMS and `apply-host-boot` adds them, verified;
 and `sign-host` signs it with the release key in KMS, with a transparency-log entry, and attests
