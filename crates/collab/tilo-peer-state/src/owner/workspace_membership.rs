@@ -21,12 +21,6 @@ impl NativeWorkspaceOwner {
     /// member publishes the changes it made, which every key holder admits
     /// as it admits every member's. Exact retries converge; changed
     /// invocation reuse never changes policy.
-    ///
-    /// A workspace this device hosts itself has no host to publish to: its
-    /// device is its keeper, and holds no link that carries its ownership. What
-    /// the command changed goes to the members linked to this device now
-    /// ([`crate::owner::NativeKeptHereObserver`]), as its record writes do; a
-    /// member that links later reads it in the governance its catch-up brings.
     pub async fn commit_workspace_membership_command(
         &self,
         request: OwnerCommitRequest,
@@ -68,8 +62,7 @@ impl NativeWorkspaceOwner {
                 .peer
                 .signed_by_owner(&candidate.device().device_public_key);
             let previous = candidate.peer.clone();
-            let hosted_here = candidate.record.hosted_here();
-            let ((receipt, changes), record) = candidate.change(|live, record| {
+            let (receipt, record) = candidate.change(|live, record| {
                 let before = live.workspace_heads().unwrap_or_default();
                 live.workspace_mut()
                     .apply_workspace_membership_command(&caller, &command, key, now)?;
@@ -94,9 +87,7 @@ impl NativeWorkspaceOwner {
                     }
                 }
                 // What the command changed in the workspace's governance: what
-                // a member publishes for the workspace's host to admit, and
-                // what a device that hosts the workspace hands the members
-                // linked to it.
+                // a member publishes for the workspace's holders to admit.
                 let changes = live.workspace_changes_since(&before);
                 key.settled()?;
                 record.generation = next_generation;
@@ -122,15 +113,14 @@ impl NativeWorkspaceOwner {
                     crate::owner::publication::add_member_changes(
                         live,
                         record,
-                        changes.clone(),
+                        changes,
                         receipt.binding.clone(),
                         now,
                     )?;
                 }
-                Ok((receipt, changes))
+                Ok(receipt)
             })?;
             self.publish_document(workspace, &candidate, record, None)?;
-            self.0.governance_kept_here(workspace, hosted_here, changes);
             Ok(receipt)
         })
         .await

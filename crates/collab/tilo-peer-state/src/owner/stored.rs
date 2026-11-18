@@ -150,13 +150,6 @@ impl StoredWorkspace {
         };
         access(self).is_some_and(|ours| Some(ours) == access(other))
     }
-
-    /// Whether this device keeps the workspace's records itself: its own host orders the
-    /// workspace's commits. A replica held on a host's answer ([`Self::vouched`]) never does,
-    /// even under the host's own key: the host keeps the records and answers its writes.
-    pub(crate) fn hosted_here(&self) -> bool {
-        self.device == self.workspace_host && self.vouched.is_none()
-    }
 }
 
 /// The receipt of one join admission this device committed, by the digest of

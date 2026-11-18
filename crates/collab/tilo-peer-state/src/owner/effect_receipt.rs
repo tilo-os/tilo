@@ -223,7 +223,6 @@ impl NativeWorkspaceOwner {
             }
             return Ok(fact.receipt);
         }
-        let governs = candidate.hosted_here();
         let (receipt, record) = candidate.change(|live, record| {
             let before = live.workspace_heads().unwrap_or_default();
             // A publication that did not reach disk leaves the replica holding
@@ -239,8 +238,8 @@ impl NativeWorkspaceOwner {
                 .generation
                 .checked_add(1)
                 .ok_or("effect generation exhausted")?;
-            // A governor's checkpoint carries the change; a member sends it to its host.
-            let written = if is_new && !governs {
+            // A member sends the change to the workspace's holders.
+            let written = if is_new {
                 live.workspace_changes_since(&before)
             } else {
                 Vec::new()
@@ -257,14 +256,7 @@ impl NativeWorkspaceOwner {
                     receipt: receipt.clone(),
                 },
             );
-            if governs {
-                crate::owner::publication::replace_governance_checkpoint(
-                    live,
-                    record,
-                    receipt.binding.clone(),
-                    now,
-                )?;
-            } else if !written.is_empty() {
+            if !written.is_empty() {
                 crate::owner::publication::add_member_changes(
                     live,
                     record,

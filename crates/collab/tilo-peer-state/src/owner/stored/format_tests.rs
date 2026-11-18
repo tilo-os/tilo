@@ -46,7 +46,6 @@ tilo_test_env::scenario! {
             |_| {
                 let stored = read();
                 assert_eq!(stored.workspace, founders());
-                assert!(stored.hosted_here());
             },
             || crate::owner::file_store::part_bytes(&read()).unwrap(),
         );

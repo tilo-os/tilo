@@ -1210,28 +1210,7 @@ pub(crate) fn append_local(
     view: &mut stored::StoredWorkspace,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
-    if !view.hosted_here() {
-        return append(view, bytes);
-    }
-    // The workspace's own device is its keeper: what it admits is already
-    // where the workspace's records live, and no one else answers a publish.
-    // Nothing waits here, and what an earlier record kept waiting is released
-    // with this commit, so ownership of a device-hosted workspace stays empty.
-    let publication = view.publication.as_mut().ok_or("publication absent")?;
-    if publication.entries.is_empty()
-        && publication.tail.is_empty()
-        && publication.spilled.is_empty()
-    {
-        return Ok(());
-    }
-    publication.entries.clear();
-    publication.tail.clear();
-    publication.spilled.clear();
-    publication.revision = publication
-        .revision
-        .checked_add(1)
-        .ok_or("native publication revision exhausted")?;
-    Ok(())
+    append(view, bytes)
 }
 pub(crate) fn has_exact(
     view: &stored::StoredWorkspace,
@@ -1717,10 +1696,10 @@ impl NativeWorkspaceOwner {
             if signed.device_public_key() != candidate.device().device_public_key {
                 return Err("native bootstrap signer differs from selected device".into());
             }
-            // A device that does not host the workspace and holds no record in the
-            // clear signs nothing for a catch-up and takes no number: there is
-            // nothing to make durable, and a link costs no write of its record.
-            if !candidate.record.hosted_here() {
+            // A device that holds no record in the clear signs nothing for a catch-up and takes
+            // no number: there is nothing to make durable, and a link costs no write of its
+            // record.
+            {
                 let mut live = candidate.live();
                 if !live.holds_clear_documents() {
                     let mut next = live.clone();
@@ -1737,12 +1716,7 @@ impl NativeWorkspaceOwner {
                     .generation
                     .checked_add(1)
                     .ok_or("native owner generation exhausted")?;
-                let messages = if stored.hosted_here() {
-                    live.publication_mut()
-                        .durable_bootstrap_messages(signed, now, generation)?
-                } else {
-                    live.publication_mut().bootstrap_messages(signed, now)?
-                };
+                let messages = live.publication_mut().bootstrap_messages(signed, now)?;
                 signed.settled()?;
                 stored.generation = generation;
                 Ok(messages)
