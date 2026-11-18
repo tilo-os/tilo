@@ -76,3 +76,78 @@ fn a_case_and_its_value_stay_unread_by_a_viewer_who_may_not_read_the_app() {
     );
     assert!(workspace.invoked().is_empty());
 }
+
+const MUSIC: &str = "so.tilo.music";
+
+/// A library of Music with the albums `albums`, each its key, its title and its year, as a read
+/// answers what Music stores: a map is the object of its entries.
+fn library(albums: &[(&str, &str, i64)]) -> Json {
+    let mut stored = serde_json::Map::new();
+    for (key, title, year) in albums {
+        stored.insert(
+            (*key).to_owned(),
+            json!({ "id": key, "title": title, "artist_id": "ar-1", "year": year }),
+        );
+    }
+    json!({ "albums": stored })
+}
+
+/// Each album of the library by its key: its title, then its year.
+const ALBUMS: &str = "view albums() {\n    for key in music.library.albums.keys() {\n        match music.library.albums.get(key) {\n            .none => text(\"gone\"),\n            .some(album) => {\n                text(album.title)\n                text(\"{album.year}\")\n            }\n        }\n    }\n}";
+
+#[test]
+fn a_map_reaches_a_view_by_its_keys_with_each_value() {
+    let workspace = TestWorkspace::default();
+    workspace.write(
+        MUSIC,
+        library(&[("al-2", "Low Tide", 1971), ("al-1", "High Water", 1976)]),
+    );
+    let (mut surface, state) = shown_reading(ALBUMS, ada(), &["music"], &workspace);
+    assert_eq!(
+        texts(&surface),
+        ["High Water", "1976", "Low Tide", "1971"],
+        "each album by its key, in the keys' order, its title and its year: {:?}",
+        surface.nodes("error")
+    );
+
+    // An album is added and a year is put right: the view follows, key by key.
+    workspace.write(
+        MUSIC,
+        library(&[
+            ("al-2", "Low Tide", 1970),
+            ("al-1", "High Water", 1976),
+            ("al-0", "First Light", 1969),
+        ]),
+    );
+    surface.turn();
+    assert_eq!(
+        texts(&surface),
+        [
+            "First Light",
+            "1969",
+            "High Water",
+            "1976",
+            "Low Tide",
+            "1970"
+        ]
+    );
+
+    assert!(state.refused().is_empty());
+    assert!(workspace.invoked().is_empty(), "reading sends nothing");
+}
+
+#[test]
+fn a_map_stays_unread_by_a_viewer_who_may_not_read_the_app() {
+    let workspace = TestWorkspace::default();
+    workspace.write(MUSIC, library(&[("al-1", "High Water", 1976)]));
+    workspace.refuse(MUSIC);
+    let (mut surface, state) = shown_reading(ALBUMS, ada(), &["music"], &workspace);
+    surface.turn();
+    assert_eq!(state.refused(), ["Music"]);
+    assert!(
+        texts(&surface).is_empty(),
+        "no key and no value of the map is shown: {:?}",
+        texts(&surface)
+    );
+    assert!(workspace.invoked().is_empty());
+}

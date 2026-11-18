@@ -1342,6 +1342,13 @@ impl Core {
         if info.kind != FieldKind::Map {
             return trap(format!("field `{}` is not a map", info.name));
         }
+        // A map of another app's resource is read from its reading: the view that asked it
+        // is drawn again when a newer reading is set, as one that read any other field of
+        // it is. Marked before the read, so a view that asked before the reading came is
+        // drawn again when it comes.
+        if crate::foreign::is_foreign(&res.target) {
+            self.note_reading(crate::foreign::reading_key(&res.target));
+        }
         let author = self.module_of_frame()?;
         let read =
             self.journaled_read(|| Ok(self.read_value(&res.target, &info, Some(&author))?))?;

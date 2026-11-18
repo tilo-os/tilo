@@ -159,8 +159,8 @@ fn words(verb: &str) -> String {
 
 /// `json`, a stored value of the type `ty` of `meta`'s package, as a reading holds it: a
 /// collection as the list of its items in their order, each with its id; an enum as its case's
-/// name, with the values the case carries where it carries any ([`case`]); a record as its
-/// declared fields under their names.
+/// name, with the values the case carries where it carries any ([`case`]); a map as its
+/// entries by key ([`entries`]); a record as its declared fields under their names.
 fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
     let ty = ty.trim();
     if ty == "RichText" {
@@ -184,6 +184,9 @@ fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
             });
             return Json::Array(items.collect());
         }
+    }
+    if let Some(inner) = wrapped(ty, "Map") {
+        return entries(meta, inner, json);
     }
     if let Some(name) = ty.strip_prefix("enum ") {
         return case(meta, name, json);
@@ -242,6 +245,18 @@ fn case(meta: &PackageMeta, name: &str, json: &Json) -> Json {
         }
     }
     Json::Object(spelled)
+}
+
+/// `json`, a stored map of `inner`, as a reading holds it: the object of its entries, each
+/// value as its own type reads. What is no object is handed on as it is.
+fn entries(meta: &PackageMeta, inner: &str, json: &Json) -> Json {
+    let Json::Object(held) = json else {
+        return json.clone();
+    };
+    let read = held
+        .iter()
+        .map(|(key, value)| (key.clone(), normal(meta, inner, value)));
+    Json::Object(read.collect())
 }
 
 /// The type `wrap<...>` wraps.

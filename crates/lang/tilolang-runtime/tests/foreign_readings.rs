@@ -490,6 +490,12 @@ view from(n: Note) {
                 {"id": "Spot", "name": "Spot", "fields": [
                     {"id": "Spot.page", "name": "page", "type": "Int"},
                 ]},
+                {"id": "Shelf", "name": "Shelf", "fields": [
+                    {"id": "Shelf.tags", "name": "tags", "type": "Map<Text>"},
+                    {"id": "Shelf.counts", "name": "counts", "type": "Map<Int>"},
+                    {"id": "Shelf.spots", "name": "spots", "type": "Map<Spot>"},
+                    {"id": "Shelf.drawers", "name": "drawers", "type": "Map<Map<Int>>"},
+                ]},
             ],
             "enums": [
                 {"id": "papers#Author", "name": "Author", "doc": "", "variants": [
@@ -643,5 +649,174 @@ view remarks(p: papers.Paper) {
             why.contains("`value` of `.named` is missing from the reading"),
             "{why}"
         );
+    }
+
+    /// A view over a shelf's maps: each tag by its key, in the keys' order, a count by its key,
+    /// the page of a spot a map holds, and what a map inside a map holds.
+    const SHELF_VIEW: &str = r#"app test.shelf "Shelf"
+
+use papers as papers
+
+view shelf(s: papers.Shelf) {
+  stack {
+    for k in s.tags.keys() {
+      text(k)
+      let tag = match s.tags.get(k) {
+        .some(v) => v,
+        .none => "none",
+      }
+      text(tag)
+    }
+    let b = match s.counts.get("b") {
+      .some(v) => v,
+      .none => 0,
+    }
+    text("{b}")
+    match s.spots.get("first") {
+      .some(spot) => text("page {spot.page}"),
+      .none => text("no spot"),
+    }
+    match s.drawers.get("top") {
+      .none => text("no drawer"),
+      .some(drawer) => {
+        for k in drawer.keys() {
+          text(k)
+        }
+        let pens = match drawer.get("pens") {
+          .some(v) => v,
+          .none => 0,
+        }
+        text("{pens}")
+      }
+    }
+  }
+}
+"#;
+
+    /// The shelf a view of ours names.
+    fn shelf() -> ResourceRef {
+        ResourceRef::parse_id("shelf-1", "papers#Shelf").expect("a resource id")
+    }
+
+    #[test]
+    fn a_map_in_a_reading_reads_by_its_keys_each_value_as_its_type() {
+        // A map as the object of its entries, written in no order.
+        const SHELF: &str = r#"{"tags": {"b": "blue", "a": "amber"}, "counts": {"a": 1, "b": 2},
+            "spots": {"first": {"page": 3}},
+            "drawers": {"top": {"pens": 4, "clips": 1}}}"#;
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        rt.load_foreign(papers()).unwrap();
+        rt.set_reading(&shelf(), SHELF)
+            .expect("a reading of the shelf");
+        let view = App::compile(SHELF_VIEW, std::slice::from_ref(&papers()));
+        view.load(&rt);
+        let mut opened = rt
+            .open_view(&me(), &view.view("shelf"), vec![Value::resource(&shelf())])
+            .unwrap_or_else(|why| panic!("{why}"));
+        assert_eq!(
+            drawn(&opened),
+            [
+                "a", "amber", "b", "blue", "2", "page 3", "clips", "pens", "4"
+            ],
+            "each entry by its key, in the keys' order: {}",
+            dump(opened.tree())
+        );
+
+        // The app writes: a tag more, another count, and two maps emptied. The view that
+        // asked the maps for their keys and their values draws again over the new reading.
+        rt.set_reading(
+            &shelf(),
+            r#"{"tags": {"b": "blue", "a": "amber", "c": "coral"}, "counts": {"b": 5},
+                "spots": {}, "drawers": {}}"#,
+        )
+        .expect("a reading of the shelf");
+        opened.poll_patches().unwrap();
+        assert_eq!(
+            drawn(&opened),
+            [
+                "a",
+                "amber",
+                "b",
+                "blue",
+                "c",
+                "coral",
+                "5",
+                "no spot",
+                "no drawer"
+            ],
+            "the view follows the maps it asked: {}",
+            dump(opened.tree())
+        );
+        rt.set_reading(&shelf(), SHELF)
+            .expect("a reading of the shelf");
+
+        // A field of a map reads as one does here: its entries, each a key and its value.
+        assert_eq!(
+            rt.read(&shelf(), "counts").unwrap(),
+            Value::List(vec![
+                Value::Tuple(vec![Value::text("a"), Value::Int(1)]),
+                Value::Tuple(vec![Value::text("b"), Value::Int(2)]),
+            ])
+        );
+        // What a map holds is of the type the map declares: a resource a view reads the
+        // fields of, and a map inside a map a map a view asks the same way.
+        let Value::List(spots) = rt.read(&shelf(), "spots").unwrap() else {
+            panic!("a map reads as its entries");
+        };
+        let Value::Tuple(first) = &spots[0] else {
+            panic!("an entry is a key and a value: {:?}", spots[0]);
+        };
+        let Value::Ref(spot) = &first[1] else {
+            panic!("what the map holds is a resource: {:?}", first[1]);
+        };
+        assert_eq!(spot.target.ty, "papers#Spot");
+        assert_eq!(rt.read(&spot.target, "page").unwrap(), Value::Int(3));
+        assert_eq!(
+            rt.read(&shelf(), "drawers").unwrap(),
+            Value::List(vec![Value::Tuple(vec![
+                Value::text("top"),
+                Value::Map(vec![
+                    (Value::text("clips"), Value::Int(1)),
+                    (Value::text("pens"), Value::Int(4)),
+                ]),
+            ])])
+        );
+
+        // A value of another type than the map declares, and a field that holds no map, are
+        // faults that say which.
+        rt.set_reading(&shelf(), r#"{"tags": {"a": 7}}"#)
+            .expect("a reading");
+        let why = rt
+            .read(&shelf(), "tags")
+            .expect_err("a number in a map of texts")
+            .to_string();
+        assert!(
+            why.contains("the entry `a`") && why.contains("is not a Text"),
+            "{why}"
+        );
+        rt.set_reading(&shelf(), r#"{"tags": [1]}"#)
+            .expect("a reading");
+        let why = rt
+            .read(&shelf(), "tags")
+            .expect_err("a list where a map stands")
+            .to_string();
+        assert!(why.contains("is not a map"), "{why}");
+    }
+
+    #[test]
+    fn a_map_the_runtime_itself_encoded_reads_as_it_did() {
+        // The entries as a list of pairs in the runtime's own encoding, and none.
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        rt.load_foreign(papers()).unwrap();
+        rt.set_reading(
+            &shelf(),
+            r#"{"counts": {"list": [{"tuple": ["a", 1]}]}, "tags": {"list": []}}"#,
+        )
+        .expect("a reading of the shelf");
+        assert_eq!(
+            rt.read(&shelf(), "counts").unwrap(),
+            Value::List(vec![Value::Tuple(vec![Value::text("a"), Value::Int(1)])])
+        );
+        assert_eq!(rt.read(&shelf(), "tags").unwrap(), Value::List(Vec::new()));
     }
 }
