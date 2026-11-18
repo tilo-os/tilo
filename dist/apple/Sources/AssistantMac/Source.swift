@@ -20,7 +20,12 @@ enum Source {
     static let mainChatKey = "TiloMainChat"
 
     /// What this device is called where its person lets it in and lists their devices.
+    #if os(macOS)
     static var deviceName: String { "Tilo Assistant on \(Host.current().localizedName ?? "a Mac")" }
+    #else
+    // A Mac's program: only build.sh's build of the whole package compiles this file for an iPhone.
+    static var deviceName: String { "Tilo Assistant" }
+    #endif
 
     /// What this build says of being told while the app is closed. Nil in a build without the
     /// push right, which asks Apple's service for nothing and keeps no key.
