@@ -137,12 +137,23 @@ export async function renewDevice(deviceKey, profile, {
   if (renewed.created) keepProfileDevice(profile, renewed.slot ?? 0, forSlot(`${PROFILE_DEVICE}:${hexKey(random(new Uint8Array(16)))}`, renewed.slot ?? 0), namespaces);
   return renewed;
 }
-/** The namespace a profile's slot keeps a host's state in once that host
- * replaced the one it kept state for: named after the host's device key, so
- * it never shares a record with another host's. */
-const hostNamespace = (hostCert, slot) => {
-  const key = hexKey(hostCert?.device_public_key);
-  return /^[0-9a-f]{64}$/.test(key) ? forSlot(`${PROFILE_DEVICE}:${key}`, slot) : undefined;
+/** The namespace a profile keeps a server's state in once that server
+ * replaced the one it kept state for: named after the server's device key, so
+ * it never shares an entry with another server's. When that namespace is
+ * already occupied by another device identity, the device key or a fresh
+ * suffix keeps them apart. */
+const hostNamespace = (serverCert, index, cert = undefined, current = undefined) => {
+  const key = hexKey(serverCert?.device_public_key);
+  if (!/^[0-9a-f]{64}$/.test(key)) return undefined;
+  const pick = prefix => forSlot(prefix, index);
+  const base = pick(`${PROFILE_DEVICE}:${key}`);
+  if (base !== current) return base;
+  const deviceKey = hexKey(cert?.device_public_key);
+  if (/^[0-9a-f]{64}$/.test(deviceKey)) {
+    const byDevice = pick(`${PROFILE_DEVICE}:${key}:${deviceKey}`);
+    if (byDevice !== current) return byDevice;
+  }
+  return pick(`${PROFILE_DEVICE}:${key}:${hexKey(random(new Uint8Array(16)))}`);
 };
 /** The wasm runtime, loaded through the page host. */
 const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loadRuntime?.();
@@ -714,13 +725,13 @@ async function connect({
     await admitted;
   }
 
-  /** Move this peer onto a fresh namespace of its profile for the host
-   * `hostCert`, the one that just admitted this device. What the profile
-   * kept for the previous host (its certificate, record, outbox and
-   * documents) stays in its own namespace, untouched and never opened for
-   * this host. */
-  async function adoptHost(hostCert) {
-    const fresh = hostNamespace(hostCert, slot);
+  /** Move this peer onto a fresh namespace of its profile for the server
+   * `serverCert`, the one that just admitted this device. What the profile
+   * kept for the previous server or device (its certificate, peer entry,
+   * outbox and documents) stays in its own namespace, untouched and never
+   * opened for this session. */
+  async function adoptHost(serverCert, cert = undefined) {
+    const fresh = hostNamespace(serverCert, slot, cert, device);
     if (!ownNamespace || !storage || !fresh || fresh === device) throw new AdmissionError('host-changed', HOST_CHANGED);
     unsubscribeStorage?.();
     const previous = storage;
@@ -740,31 +751,51 @@ async function connect({
     let existing = await store.get(CERTIFICATE);
     if (requireExistingCertificate) {
       if (!existing) throw Error('Sign in on this browser and obtain admission before opening a resource link');
-      return existing; // Host checks expiry/revocation; never renew or pair implicitly.
+      return existing; // Server checks expiry/revocation; never renew or pair implicitly.
     }
     const admitted = deviceCertificate;
     deviceCertificate = undefined;
+    const saved = storage && typeof runtime.savedPeerCertificate === 'function'
+      ? runtime.savedPeerCertificate(profile, device, userPublicKey)
+      : undefined;
+    const serverCert = host.hostCert;
+    const certServer = raw => JSON.parse(raw).hostCert ?? serverCert;
+    const adopt = raw => {
+      const parsed = JSON.parse(raw);
+      return adoptHost(parsed.hostCert ?? serverCert, parsed.cert);
+    };
+    const answering = JSON.stringify(admitted ? certServer(admitted) : serverCert);
     // The one rule every device keeps as it comes back (`reconnectCertificate`
-    // in wasm): what this browser kept is never handed to another host than
-    // the one it was certified by, and only a device that host has just
+    // in wasm): what this browser kept is never handed to another server than
+    // the one it was certified by, and only a device that server has just
     // admitted (an invitation redeemed, its entry, a pairing) goes on there,
-    // in a namespace of its own.
-    switch (reconnecting(existing, admitted, JSON.stringify((admitted && JSON.parse(admitted).hostCert) ?? host.hostCert))) {
-      case 'host-changed': throw new AdmissionError('host-changed', HOST_CHANGED);
-      case 'adopt-host':
-        await adoptHost(JSON.parse(admitted).hostCert);
-        // Falls through: the admitted certificate is kept in the new namespace.
-      case 'admitted':
-        await store.put(CERTIFICATE, admitted);
-        return admitted;
-      case 'kept': return existing;
-      default: break;
+    // in a namespace of its own. The saved peer entry is checked beside the
+    // kept certificate so a stale entry never blocks a newly admitted session.
+    const decision = reconnecting(existing, admitted, answering);
+    const savedDecision = saved ? reconnecting(saved, admitted, answering) : null;
+    if (!admitted && (decision === 'host-changed' || savedDecision === 'host-changed')) {
+      throw new AdmissionError('host-changed', HOST_CHANGED);
+    }
+    if (admitted) {
+      if (decision === 'adopt-host' || savedDecision === 'adopt-host') await adopt(admitted);
+      await store.put(CERTIFICATE, admitted);
+      return admitted;
+    }
+    if (decision === 'kept') {
+      if (saved && reconnecting(saved, existing, answering) === 'adopt-host') {
+        await adopt(existing);
+        await store.put(CERTIFICATE, existing);
+      }
+      return existing;
     }
     const issued = identity
       ? await runtime.certifyWithRoot(post, identity, deviceKeyForWasm, label)
       : await runtime.certifyDevice(userPublicKey, label, null, deviceKeyForWasm, code => onPairingCode?.(code),
         JSON.stringify(host.address));
     if (!identity) hostLabel = JSON.parse(issued).label ?? null;
+    if (saved && reconnecting(saved, issued, JSON.stringify(certServer(issued))) === 'adopt-host') {
+      await adopt(issued);
+    }
     await store.put(CERTIFICATE, issued);
     return issued;
   }

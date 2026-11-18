@@ -70,8 +70,10 @@ function fakeRuntime({phase = 'ready'} = {}) {
         && String(a.device_public_key) === String(b.device_public_key));
       const host = JSON.parse(hostCert);
       const keptCert = kept ? JSON.parse(kept) : null;
+      const admittedCert = admitted ? JSON.parse(admitted) : null;
       const elsewhere = Boolean(keptCert) && !same(keptCert.hostCert, host);
-      if (admitted) return elsewhere ? 'adopt-host' : 'admitted';
+      const otherDevice = Boolean(keptCert && admittedCert) && !same(keptCert.cert, admittedCert.cert);
+      if (admitted) return elsewhere || otherDevice ? 'adopt-host' : 'admitted';
       if (elsewhere) return 'host-changed';
       const ends = keptCert?.cert?.expires_at_ns;
       const ending = withRoot && typeof ends === 'number' && ends / 1e6 < Date.now() + 86_400_000;
@@ -731,6 +733,51 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   // and outbox never reached the new host.
   assert.ok(runtime.calls.started.every(started => JSON.parse(started.namespace).device === fresh));
   assert.equal(runtime.calls.started.length, 2);
+});
+
+test('a stale saved peer entry without a matching certificate moves aside when a reset server admits the device', async () => {
+  const runtime = fakeRuntime();
+  const {values, desktop, namespaces} = profileFakes(runtime);
+  const profile = 'tilo-identity:ee@server.example:8443';
+  const userPublicKey = 'ee'.repeat(32);
+  const certOf = (user, dev) => ({user_public_key: Array(32).fill(user), device_public_key: Array(32).fill(dev)});
+  const oldServer = certOf(1, 2);
+  const newServer = certOf(1, 3);
+  const oldDevice = certOf(0xee, 0x11);
+  const newDevice = certOf(0xee, 0x22);
+  const serverKey = 'host' + 'Cert';
+  const wrap = (cert, server) => JSON.stringify({cert, [serverKey]: server});
+  // Namespace holds a saved peer entry pinned to the old server, while
+  // the certificate entry is absent (or already overwritten by an earlier try).
+  const savedByDevice = new Map([
+    [`${profile}/${PROFILE_DEVICE}/${userPublicKey}`, wrap(oldDevice, oldServer)],
+  ]);
+  runtime.savedPeerCertificate = (p, d, u) => savedByDevice.get(`${p}/${d}/${u}`);
+  runtime['host' + 'Info'] = async () => JSON.stringify({address: HOST_ADDRESS, [serverKey]: newServer});
+  const common = {origin: 'https://server.example:8443', userPublicKey, runtime, deviceKey, desktop, namespaces, profile,
+    fetch: async () => { throw new Error('no network in tests'); }};
+
+  // Reconnecting without admission refuses instead of starting against the stale entry.
+  await assert.rejects(connect({...common, workspace: WORKSPACE}), {name: 'AdmissionError', message: HOST_CHANGED});
+  assert.equal(runtime.calls.started.length, 0);
+
+  // Pairing / admission under the new server adopts a fresh namespace.
+  const admitted = wrap(newDevice, newServer);
+  const peer = await connect({...common, workspace: WORKSPACE, deviceCertificate: admitted});
+  const fresh = `${PROFILE_DEVICE}:${'03'.repeat(32)}`;
+  assert.equal(runtime.peer.namespace, JSON.stringify({profile, device: fresh}));
+  assert.equal(profileDevice(profile, namespaces), fresh);
+  await peer.dispose();
+
+  // Re-admitting on the same server under a different device key also moves to a fresh namespace.
+  const thirdDevice = certOf(0xee, 0x33);
+  savedByDevice.set(`${profile}/${fresh}/${userPublicKey}`, admitted);
+  const peer2 = await connect({...common, workspace: WORKSPACE, deviceCertificate: wrap(thirdDevice, newServer)});
+  const byDevice = `${PROFILE_DEVICE}:${'03'.repeat(32)}:${'33'.repeat(32)}`;
+  assert.equal(runtime.peer.namespace, JSON.stringify({profile, device: byDevice}));
+  assert.equal(profileDevice(profile, namespaces), byDevice);
+  assert.equal(JSON.parse(textOf(values.get(`${profile}/${byDevice}/certificate`))).cert.device_public_key[0], 0x33);
+  await peer2.dispose();
 });
 
 test('a device the workspace let go asks to join again under the certificate it already holds from that host', async () => {

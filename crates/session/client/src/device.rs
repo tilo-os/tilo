@@ -596,7 +596,7 @@ const RENEWING_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
 /// A certificate a device holds from an earlier entry, and the host's own certificate as it was
 /// then: what the page keeps, as `{cert, hostCert}`.
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct Held {
     pub cert: DeviceCert,
     #[serde(rename = "hostCert")]
@@ -653,8 +653,12 @@ pub fn reconnecting(
     let kept_elsewhere = kept
         .and_then(|kept| kept.server_cert.as_ref())
         .is_some_and(|kept| !same_host(kept, answering));
+    let kept_other_device = match (kept, admitted) {
+        (Some(kept), Some(admitted)) => !same_host(&kept.cert, &admitted.cert),
+        _ => false,
+    };
     match (kept, admitted) {
-        (_, Some(_)) if kept_elsewhere => Reconnecting::AdoptHost,
+        (_, Some(_)) if kept_elsewhere || kept_other_device => Reconnecting::AdoptHost,
         (_, Some(_)) => Reconnecting::Admitted,
         (Some(_), None) if kept_elsewhere => Reconnecting::HostChanged,
         (Some(kept), None) if !with_root || lasting(&kept.cert, now_ns) => Reconnecting::Kept,
@@ -1284,6 +1288,12 @@ mod tests {
             assert_eq!(
                 reconnecting(Some(&kept), Some(&admitted), &host, true, now),
                 Reconnecting::Admitted
+            );
+            // Same server, another device identity: move the previous device's state aside.
+            let other_device = held(3, 9, None);
+            assert_eq!(
+                reconnecting(Some(&kept), Some(&other_device), &host, true, now),
+                Reconnecting::AdoptHost
             );
             // A root renews what ends within a day; a paired device goes on until refused.
             let ending = held(2, 9, Some(now + day / 2));
