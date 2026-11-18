@@ -1,8 +1,10 @@
 //! X11 programs of a kept launch: a real X client on the keeper's own display, its server
 //! (xwayland-satellite and Xwayland) a client of the keeper, on a real headless desktop.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
+
+use smithay::xwayland::XWaylandListener;
 
 use tilo_compositor::Selection;
 use x11rb::connection::Connection as _;
@@ -258,6 +260,56 @@ impl X {
             .x11
             .send_event(false, request.requestor, EventMask::NO_EVENT, notify);
         let _ = self.x11.flush();
+    }
+}
+
+/// Kept launches take display numbers machine-wide, each in its own process, and one that was
+/// killed leaves its lock behind. Several taking that number at once: one holds it, with its lock
+/// and socket file in place for as long as it does, and leaves none behind.
+#[test]
+fn a_display_left_by_a_killed_launch_goes_to_one_of_those_taking_it_at_once() {
+    // Far above the displays a desktop on this machine uses.
+    let number = 7000 + std::process::id() % 1000;
+    let lock = std::path::PathBuf::from(format!("/tmp/.X{number}-lock"));
+    let path = std::path::PathBuf::from(format!("/tmp/.X11-unix/X{number}"));
+    let mut gone = std::process::Command::new("true")
+        .spawn()
+        .expect("a process");
+    let dead = gone.id();
+    gone.wait().expect("it ended");
+    let _ = std::fs::create_dir("/tmp/.X11-unix");
+    for round in 0..100 {
+        // As a killed launch leaves its display.
+        std::fs::write(&lock, format!("{dead:>10}\n")).expect("a lock");
+        let barrier = Arc::new(Barrier::new(8));
+        let mut takers = Vec::new();
+        for _ in 0..8 {
+            let barrier = Arc::clone(&barrier);
+            takers.push(std::thread::spawn(move || {
+                barrier.wait();
+                XWaylandListener::prepare(Some(number), true).ok()
+            }));
+        }
+        let mut held = Vec::new();
+        for taker in takers {
+            held.extend(taker.join().expect("taker"));
+        }
+        assert_eq!(held.len(), 1, "round {round}: one taker holds the display");
+        let written = std::fs::read_to_string(&lock);
+        assert_eq!(
+            written.as_deref().map(str::trim).ok(),
+            Some(std::process::id().to_string().as_str()),
+            "round {round}: the holder's lock stays in place"
+        );
+        assert!(
+            std::os::unix::net::UnixStream::connect(&path).is_ok(),
+            "round {round}: its socket file reaches it"
+        );
+        drop(held);
+        assert!(
+            !lock.exists() && !path.exists(),
+            "round {round}: the holder leaves nothing behind"
+        );
     }
 }
 
