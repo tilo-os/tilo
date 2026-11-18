@@ -71,11 +71,9 @@ async fn a_server_holds_and_releases_the_workspaces_its_entry_names() {
     )
     .await
     .unwrap();
-    let applied = applied::reconcile(workspaces).await.unwrap();
-    assert!(
-        applied.held.contains(&workspace.workspace),
-        "the owner's device handed it the workspace: {applied:?}"
-    );
+    // Every holder of the Servers workspace applies its document, so the
+    // owner's device hands it over as the change is written.
+    applied::reconcile(workspaces).await.unwrap();
     tilo_test_env::within("the server to hold the workspace", async {
         while retained().await.is_none() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -107,11 +105,7 @@ async fn a_server_holds_and_releases_the_workspaces_its_entry_names() {
         None,
         "the release took: {nas_entry:?}"
     );
-    let applied = applied::reconcile(workspaces).await.unwrap();
-    assert!(
-        applied.released.contains(&workspace.workspace),
-        "the workspace left its hosts: {applied:?}"
-    );
+    applied::reconcile(workspaces).await.unwrap();
     tilo_test_env::within("the server to let go of the workspace", async {
         while retained().await.is_some() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;

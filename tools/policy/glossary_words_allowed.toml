@@ -16,7 +16,9 @@ words = ["host"]
 identifiers = ["Hosted", "host", "connect_to_pinned_host"]
 paths = [
     "crates/server/tilo-server/tests/servers_operations.rs",
+    "crates/server/tilo-server/tests/machines.rs",
     "crates/server/tilo-workspace-service/src/workspaces/servers.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/servers/attach.rs",
     "crates/server/tilo-workspace-service/src/workspaces/servers/tests.rs",
     "crates/server/tilo-workspace-service/src/workspaces/servers/tests/asked.rs",
 ]
