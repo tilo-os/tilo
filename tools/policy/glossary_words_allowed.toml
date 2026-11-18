@@ -502,3 +502,9 @@ paths = [
     "crates/session/sheets/locales/*",
     "tools/apps/signal_provider_release.py",
 ]
+
+[[allow]]
+reason = "t's own check field, the command a check starts: the name t's config gives it, not a Tilo concept."
+words = ["run"]
+identifiers = ["run"]
+paths = ["t.toml"]
