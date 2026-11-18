@@ -1,6 +1,7 @@
 //! A model call its provider refuses for a moment is asked again, and the turn goes on with
 //! everything it did until then: no tool it carried out is carried out a second time. A
-//! provider that stays down ends the turn with what it had done, not only with the failure. A
+//! provider that stays down is asked for as long as it takes: no count of asks ends the turn,
+//! its reply says each further ask as it happens, and its person stops it when they want. A
 //! refusal that is the key's fault is the turn's answer at once.
 use super::*;
 use std::collections::VecDeque;
@@ -170,11 +171,11 @@ async fn a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice() 
     page.peer.close();
 }
 
-/// The turn sets an event up, and then its provider stays down. The call is asked four times in
-/// all, each time as it was, and the step before it is carried out once. The reply says why the
-/// turn ended, how often it asked, what it had done and that it gave no answer.
+/// The turn sets an event up, and then its provider is down for four asks and answers the
+/// fifth. The turn goes on to its answer: no count of asks ended it. Each ask is the call as it
+/// was, and the step before it is carried out once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done() {
+async fn a_provider_down_for_four_asks_answers_the_fifth() {
     team!(root, browser, actions, workspaces, workspace, page, person);
     let kept = crate::support::scratch_dir();
     let events = PersonEvents::start(workspaces.clone(), kept.path().join("events"), None);
@@ -190,7 +191,7 @@ async fn a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done() {
                 Err(refused()),
                 Err(refused()),
                 Err(refused()),
-                Ok(says("This is never said.")),
+                Ok(says("You will be reminded every morning.")),
             ],
             &asked,
         ),
@@ -210,33 +211,107 @@ async fn a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done() {
     let asked = asked.lock().unwrap().clone();
     assert_eq!(
         asked.len(),
-        5,
-        "the step, then the call after it four times; it said: {}",
+        6,
+        "the step, then the call after it five times; it said: {}",
         reply.text
     );
     for again in &asked[2..] {
         assert_eq!(again, &asked[1], "each further ask is the call as it was");
         assert_eq!(tools_answered(again), 1, "the step was carried out once");
     }
+    assert_eq!(reply.text, "You will be reminded every morning.");
     assert_eq!(
         end_of(&reply),
-        Some(chat::agent_stream::AgentFinish::Failed)
+        Some(chat::agent_stream::AgentFinish::Complete)
     );
-    assert!(
-        reply
-            .text
-            .starts_with("My model did not answer: Provider request failed (asked 4 times over "),
-        "{}",
-        reply.text
+    let _ = person;
+    page.peer.close();
+}
+
+/// The agent's reply to `message` as the workspace keeps it now, if it is there.
+async fn reply_now(
+    workspaces: &Workspaces,
+    workspace: &str,
+    message: &Id,
+) -> Option<chat::chat::Message> {
+    conversation_part(workspaces, workspace)
+        .await
+        .messages
+        .get(&chat::chat::reply_id(message, &MemberId::agent(SCOUT)))
+        .cloned()
+}
+
+/// What `reply`'s work says the turn is doing now, if it says so.
+fn doing(reply: &chat::chat::Message) -> Option<String> {
+    match &reply.work.as_ref()?.state.as_ref()?.state {
+        chat::model::AgentWorkState::Doing { did, .. } => Some(did.clone()),
+        _ => None,
+    }
+}
+
+/// The turn sets an event up, and then its provider stays down. The call is asked a fifth time
+/// and would be asked on: nothing of the server's ends the turn. Its reply says which ask the
+/// call is at and the provider's last word, so its person sees the wait. They stop the turn,
+/// and it ends there, with no ask after the stop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_provider_that_stays_down_is_asked_until_its_person_stops_the_turn() {
+    team!(root, browser, actions, workspaces, workspace, page, person);
+    let me = themselves(&root, &browser, &workspace);
+    let kept = crate::support::scratch_dir();
+    let events = PersonEvents::start(workspaces.clone(), kept.path().join("events"), None);
+    let first = write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), ASK).await;
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let mut answers = vec![Ok(does("call-1", sets_up()))];
+    answers.extend((0..40).map(|_| Err(refused())));
+    let agents =
+        worked(&workspaces, &actions, faltering(answers, &asked)).with_events(Some(events));
+    agents.look(&workspace).await.unwrap();
+
+    // The step, then the call after it: a fifth ask of it, where four used to be all.
+    let deadline = tilo_test_env::hang_deadline();
+    while asked.lock().unwrap().len() < 6 {
+        let reply = reply_now(&workspaces, &workspace, &first).await;
+        assert!(
+            chat::summons::unanswered(reply.as_ref()),
+            "the turn ended by itself after {} asks of its model, and nobody stopped it: {:?}",
+            asked.lock().unwrap().len(),
+            reply.map(|reply| reply.text)
+        );
+        assert!(Instant::now() < deadline, "the call is asked a fifth time");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // While it waits, the reply says so: which ask this is, and the provider's last word.
+    let said = "asking my model again (ask 5): Provider request failed";
+    loop {
+        let reply = reply_now(&workspaces, &workspace, &first).await;
+        let says = reply.as_ref().and_then(doing);
+        if says.as_deref() == Some(said) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the reply never said that its model is asked again; its work says: {says:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    stop_agent(&actions, &workspace, &me, &first)
+        .await
+        .expect("the person stops their agent's work");
+    agents.look(&workspace).await.unwrap();
+    let reply = ended(&workspaces, &workspace, &first).await;
+    assert_eq!(
+        end_of(&reply),
+        Some(chat::agent_stream::AgentFinish::Cancelled),
+        "the stop ended the turn: {:?}",
+        reply.work
     );
-    assert!(
-        reply.text.ends_with(
-            " s). Until then I had carried out: tilo.events/events#set-up. What that changed \
-             stays as it is. I had not finished and gave no answer: ask me to go on."
-        ),
-        "{}",
-        reply.text
-    );
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 6, "no ask follows the stop");
+    for again in &asked[2..] {
+        assert_eq!(again, &asked[1], "each further ask is the call as it was");
+        assert_eq!(tools_answered(again), 1, "the step was carried out once");
+    }
     let _ = person;
     page.peer.close();
 }

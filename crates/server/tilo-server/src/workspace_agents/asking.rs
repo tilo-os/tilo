@@ -8,11 +8,18 @@
 //! [`again`] stands between a turn and its model. A failure the protocol answers with fresh
 //! inference from what is committed ([`Recovery::RetryInference`]: the provider failed or was
 //! unavailable, the connection broke) or with a wait ([`Recovery::WaitAndRetry`]: its rate limit)
-//! is asked again: the same request under the same key, after a wait that grows ([`WAITS`]).
-//! Only the model call is repeated. The request holds what every tool of the turn answered so
-//! far, so no tool is carried out a second time. A failure asking again cannot cure (the key,
-//! the account's credit, the request, the context) is the call's answer at once, and so is a
-//! stop by the turn's person.
+//! is asked again: the same request under the same key, after a pause that grows to a steady
+//! one ([`pause`]), for as long as it takes. No count of asks ends the call: it goes on until
+//! the model answers, a failure comes that asking again cannot cure, or the turn's person
+//! stops the turn. Each ask is given as much time as its caller gave the first. Only the model
+//! call is repeated. The request holds what every tool of the turn answered so far, so no tool
+//! is carried out a second time. A failure asking again cannot cure (the key, the account's
+//! credit, the request, the context) is the call's answer at once, and so is a stop by the
+//! turn's person.
+//!
+//! One kind of call is still counted: one the turn's own clock ended ([`TIMED_OUT_ASKS`]).
+//! Its provider worked on every ask of it and bills what it thought, so asking it without a
+//! count would spend its person's money while nothing arrives. That count goes with the clock.
 //!
 //! What a model writes while it answers is handed on from every ask. Before a further ask
 //! whoever listens hears that the call broke off, so a reply that grows puts what comes then
@@ -21,28 +28,30 @@
 //! [`left_off`] is what a turn says when its model stays unanswered: why, what it had done until
 //! then, and that it gave no answer.
 
-use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tilo_lock::MutexRecover as _;
+
 use super::{Content, Message, ModelError, ModelRequest, ModelResponse, PlanTurns, StreamEvent};
-use crate::workspaces::person_model::protocol::Recovery;
+use crate::workspaces::person_model::protocol::{ErrorKind, Recovery};
 
-/// How long a turn waits before each further ask of a call that failed: three more asks, one,
-/// two and four seconds apart. Short, so a refusal that passes at once costs its person a
-/// second. Growing, so a provider that is overloaded for a moment has seven seconds to come
-/// back. No longer, so a person whose provider is down is told within seconds. Beneath each
-/// ask the model gateway itself asks again what a provider provably did not take, and waits
-/// what the provider's own hint says.
-const WAITS: [Duration; 3] = [
-    Duration::from_secs(1),
-    Duration::from_secs(2),
-    Duration::from_secs(4),
-];
+/// The pause before the first further ask of a call that failed. Short, so a refusal that
+/// passes at once costs its person a second. Every pause after it is twice the one before, up
+/// to [`STEADY`]. Beneath each ask the model gateway itself asks again what a provider provably
+/// did not take, and waits what the provider's own hint says.
+const FIRST_PAUSE: Duration = Duration::from_secs(1);
 
-/// The least of a call's time that must be left after a wait for a further ask to be made.
-const LEFT_TO_ANSWER: Duration = Duration::from_secs(10);
+/// The pause between two asks once it has grown: a provider that stays down is asked twice a
+/// minute. It is a pause between asks and ends nothing.
+const STEADY: Duration = Duration::from_secs(30);
+
+/// How many asks in all a call gets that the turn's own clock ended ([`ErrorKind::TimedOut`]):
+/// what it got before. Its provider worked on each of them, so it is not asked without a count
+/// while that clock stands.
+const TIMED_OUT_ASKS: u32 = 4;
 
 /// How often a stop by the turn's person is looked for during a wait.
 const STOP_LOOK: Duration = Duration::from_millis(50);
@@ -66,31 +75,62 @@ struct Again {
     turns: Box<dyn PlanTurns>,
     /// Set when the turn's person stopped it: nothing is asked after that.
     stop: Arc<AtomicBool>,
-    waits: &'static [Duration],
+    /// The pause before a call's further ask of that number, counted from one.
+    pause: fn(u32) -> Duration,
 }
 
 /// `turns`, each call of which is asked again as this module says while `stop` is not set.
 pub(super) fn again(turns: Box<dyn PlanTurns>, stop: Arc<AtomicBool>) -> Box<dyn PlanTurns> {
-    Box::new(Again {
-        turns,
-        stop,
-        waits: &WAITS,
-    })
+    Box::new(Again { turns, stop, pause })
+}
+
+/// The pause before a call's `nth` further ask, counted from one: [`FIRST_PAUSE`], then twice
+/// the one before, up to [`STEADY`].
+fn pause(nth: u32) -> Duration {
+    let times = 1_u32.checked_shl(nth.saturating_sub(1)).unwrap_or(u32::MAX);
+    FIRST_PAUSE.saturating_mul(times).min(STEADY)
+}
+
+/// What a reply's work says while its turn's model call is asked again: which ask of the call
+/// this is, and why the one before it failed, in the provider's last word.
+pub(super) fn asking_again(asked: u32, why: &str) -> String {
+    format!("asking my model again (ask {asked}): {why}")
+}
+
+/// What a turn's reply is to say of its model's call while the call is under way. The thread
+/// the model is asked on puts each sentence here, and whoever follows the answer takes them
+/// one by one, so nothing waits in silence.
+#[derive(Default)]
+pub(super) struct Said {
+    sentences: Mutex<VecDeque<String>>,
+    more: tokio::sync::Notify,
+}
+
+impl Said {
+    /// The reply is to say `sentence`.
+    pub(super) fn say(&self, sentence: String) {
+        self.sentences.lock_recover().push_back(sentence);
+        self.more.notify_one();
+    }
+
+    /// The next sentence, once there is one.
+    pub(super) async fn next(&self) -> String {
+        loop {
+            let next = self.sentences.lock_recover().pop_front();
+            if let Some(sentence) = next {
+                return sentence;
+            }
+            self.more.notified().await;
+        }
+    }
 }
 
 impl Again {
-    /// Wait `wait` before a further ask. False, at once, when the call's `deadline` leaves no
-    /// time for an answer after it; false as soon as the turn's person stops the turn.
-    fn waited(&self, wait: Duration, deadline: Instant) -> bool {
+    /// Pause for `wait` before a further ask. False as soon as the turn's person stops the turn.
+    fn waited(&self, wait: Duration) -> bool {
         let Some(until) = Instant::now().checked_add(wait) else {
             return false;
         };
-        if until
-            .checked_add(LEFT_TO_ANSWER)
-            .is_none_or(|needed| needed >= deadline)
-        {
-            return false;
-        }
         loop {
             if self.stop.load(Ordering::Relaxed) {
                 return false;
@@ -124,6 +164,8 @@ impl PlanTurns for Again {
         written: &mut (dyn FnMut(StreamEvent) + Send),
     ) -> Result<ModelResponse, ModelError> {
         let began = Instant::now();
+        // The time its caller gives one ask: every further ask is given as much.
+        let given = deadline.saturating_duration_since(began);
         let mut error = match self
             .turns
             .turn_streaming(request, key, deadline, retry, written)
@@ -132,10 +174,11 @@ impl PlanTurns for Again {
             answer => return answer,
         };
         let mut asked = 1_u32;
-        for wait in self.waits {
-            if !self.waited(*wait, deadline) {
+        let mut timed_out = u32::from(error.kind == ErrorKind::TimedOut);
+        while timed_out < TIMED_OUT_ASKS && self.waited((self.pause)(asked)) {
+            let Some(due) = Instant::now().checked_add(given) else {
                 break;
-            }
+            };
             asked = asked.saturating_add(1);
             tracing::info!(kind = ?error.kind, asked, "a turn's model call failed; it is asked again");
             // What the call that broke off wrote stays where it was read: what the next
@@ -143,13 +186,13 @@ impl PlanTurns for Again {
             written(StreamEvent::Failed {
                 error: error.clone(),
             });
-            error = match self
-                .turns
-                .turn_streaming(request, key, deadline, true, written)
-            {
+            error = match self.turns.turn_streaming(request, key, due, true, written) {
                 Err(error) if passing(&error) => error,
                 answer => return answer,
             };
+            if error.kind == ErrorKind::TimedOut {
+                timed_out = timed_out.saturating_add(1);
+            }
         }
         if asked > 1 {
             error.message = format!(
@@ -344,7 +387,7 @@ mod tests {
                 asked: Arc::clone(&asked),
             }),
             stop: Arc::new(AtomicBool::new(stopped)),
-            waits: &[Duration::ZERO, Duration::ZERO, Duration::ZERO],
+            pause: |_| Duration::ZERO,
         };
         let request = ModelRequest {
             messages: Vec::new(),
@@ -386,7 +429,7 @@ mod tests {
                 answers: vec![Err(ModelError::new(ErrorKind::Provider)), Ok(words("done"))].into(),
             }),
             stop: Arc::new(AtomicBool::new(false)),
-            waits: &[Duration::ZERO],
+            pause: |_| Duration::ZERO,
         };
         let request = ModelRequest {
             messages: Vec::new(),
@@ -434,20 +477,108 @@ mod tests {
     }
 
     #[test]
-    fn a_provider_that_stays_down_is_asked_four_times_and_the_failure_says_so() {
-        let down = || Err(ModelError::new(ErrorKind::Provider));
+    fn a_provider_that_stays_down_is_asked_for_as_long_as_it_takes() {
+        let mut answers: Vec<_> = (0..30)
+            .map(|_| Err(ModelError::new(ErrorKind::Provider)))
+            .collect();
+        answers.push(Ok(words("back again")));
+        let (answer, asked) = asked_of(answers, false, MINUTE);
+        assert_eq!(
+            answer,
+            Ok(words("back again")),
+            "no count of asks ends the call"
+        );
+        assert_eq!(asked.len(), 31);
+    }
+
+    #[test]
+    fn a_call_the_turns_own_clock_ended_is_asked_four_times_and_the_failure_says_so() {
+        let late = || Err(ModelError::new(ErrorKind::TimedOut));
         let (answer, asked) = asked_of(
-            vec![down(), down(), down(), down(), Ok(words("too late"))],
+            vec![late(), late(), late(), late(), Ok(words("too late"))],
             false,
             MINUTE,
         );
         let error = answer.unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Provider);
+        assert_eq!(error.kind, ErrorKind::TimedOut);
         assert_eq!(
             error.message,
-            "Provider request failed (asked 4 times over 0 s)"
+            "Model request timed out (asked 4 times over 0 s)"
         );
         assert_eq!(asked, [false, true, true, true]);
+    }
+
+    #[test]
+    fn the_pause_between_asks_grows_to_a_steady_one() {
+        let pauses: Vec<u64> = (1..=8).map(|nth| pause(nth).as_secs()).collect();
+        assert_eq!(pauses, [1, 2, 4, 8, 16, 30, 30, 30]);
+        assert_eq!(pause(u32::MAX), STEADY);
+    }
+
+    /// A model that keeps how much time each ask was given, and takes `takes` over each ask
+    /// that fails.
+    struct Timed {
+        given: Arc<Mutex<Vec<Duration>>>,
+        takes: Duration,
+        fails: u32,
+    }
+
+    impl PlanTurns for Timed {
+        fn turn(
+            &mut self,
+            _: &ModelRequest,
+            _: &str,
+            deadline: Instant,
+            _: bool,
+        ) -> Result<ModelResponse, ModelError> {
+            self.given
+                .lock_recover()
+                .push(deadline.saturating_duration_since(Instant::now()));
+            if self.fails == 0 {
+                return Ok(words("done"));
+            }
+            self.fails = self.fails.saturating_sub(1);
+            std::thread::sleep(self.takes);
+            Err(ModelError::new(ErrorKind::Provider))
+        }
+
+        fn model(&self) -> &'static str {
+            "timed"
+        }
+    }
+
+    #[test]
+    fn every_further_ask_is_given_as_much_time_as_the_first() {
+        let given = Arc::new(Mutex::new(Vec::new()));
+        let mut again = Again {
+            turns: Box::new(Timed {
+                given: Arc::clone(&given),
+                takes: Duration::from_millis(300),
+                fails: 2,
+            }),
+            stop: Arc::new(AtomicBool::new(false)),
+            pause: |_| Duration::ZERO,
+        };
+        let request = ModelRequest {
+            messages: Vec::new(),
+            tools: Vec::new(),
+            tool_choice: ToolChoice::Auto,
+            max_output_tokens: 16,
+        };
+        // Each failing ask takes longer than the whole time the caller gave one ask.
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(200))
+            .unwrap();
+        let answer = again.turn(&request, "key", deadline, false);
+        assert_eq!(answer, Ok(words("done")));
+        let given = given.lock_recover().clone();
+        assert_eq!(given.len(), 3);
+        for (nth, given) in given.iter().enumerate() {
+            assert!(
+                *given > Duration::from_millis(100),
+                "ask {nth} was given {given:?} of the 200 ms an ask is given"
+            );
+        }
     }
 
     #[test]
@@ -466,14 +597,11 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_asked_again_after_a_stop_or_with_too_little_of_the_calls_time_left() {
+    fn nothing_is_asked_again_after_a_stop() {
         let script = || vec![Err(ModelError::new(ErrorKind::Provider)), Ok(words("done"))];
         let (answer, asked) = asked_of(script(), true, MINUTE);
         assert_eq!(answer, Err(ModelError::new(ErrorKind::Provider)));
         assert_eq!(asked, [false], "its person stopped the turn");
-        let (answer, asked) = asked_of(script(), false, Duration::from_secs(5));
-        assert_eq!(answer, Err(ModelError::new(ErrorKind::Provider)));
-        assert_eq!(asked, [false], "five seconds are too little for an answer");
     }
 
     fn called(id: &str, name: &str, input: serde_json::Value) -> Message {

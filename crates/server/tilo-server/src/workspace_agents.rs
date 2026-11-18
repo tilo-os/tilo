@@ -2445,8 +2445,10 @@ async fn ask_model(
     reply: &Reply,
 ) -> Result<ModelResponse, String> {
     let writes = Arc::new(written::Writes::default());
-    let (carrier, wrote) = (Arc::clone(turns), Arc::clone(&writes));
+    let said = Arc::new(asking::Said::default());
+    let (carrier, wrote, says) = (Arc::clone(turns), Arc::clone(&writes), Arc::clone(&said));
     let asked = tokio::task::spawn_blocking(move || {
+        let mut asks = 1_u32;
         carrier.lock_recover().turn_streaming(
             &request,
             &key,
@@ -2455,13 +2457,26 @@ async fn ask_model(
             &mut |event| match event {
                 StreamEvent::ReasoningDelta { text } => wrote.thought(&text),
                 StreamEvent::TextDelta { text } => wrote.push(&text),
-                // The call broke off and may be asked again: what comes then stands below.
-                StreamEvent::Failed { .. } => wrote.broke_off(),
+                // The call broke off and is asked again: what comes then stands below, and
+                // the reply says that its model is asked again, so nothing waits in silence.
+                StreamEvent::Failed { error } => {
+                    wrote.broke_off();
+                    asks = asks.saturating_add(1);
+                    says.say(asking::asking_again(asks, &error.message));
+                }
                 _ => {}
             },
         )
     });
-    match written::follow(reply, asked, &writes, words_of).await {
+    let following = written::follow(reply, asked, &writes, words_of);
+    tokio::pin!(following);
+    let answered = loop {
+        tokio::select! {
+            answered = &mut following => break answered,
+            waits = said.next() => reply.doing(&waits).await,
+        }
+    };
+    match answered {
         Ok(Ok(response)) => Ok(response),
         Ok(Err(error)) => Err(format!("My model did not answer: {}", error.message)),
         Err(error) => Err(error.to_string()),
