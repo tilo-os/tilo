@@ -15,38 +15,37 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use ed25519_dalek::{Signer, Verifier, VerifyingKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use tilo_identity::certification_ceremony::pairing_code;
-use tilo_identity::device_fleet::{DeviceFleet, DeviceFleetStore};
+use tilo_identity::device_fleet::DeviceFleet;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{
-    DeviceCert, IdentityPaths, decode_enrollment_token, verify_device_cert, verify_device_cert_at,
+    DeviceCapabilities, DeviceCert, IdentityPaths, decode_enrollment_token, verify_device_cert_at,
     verify_enrollment_token,
 };
 
 use tilo_enrollment::approval::{
     ApprovalIdentity, ApprovalOptions, PendingApproval, SelectedNearby, accept_request,
     await_approval_ack, commit_approval, expected_pair, load_approval_identity, prepare_approval,
-    received_packet, register_home_peer,
+    received_packet,
 };
 use tilo_enrollment::protocol::{
-    EnrollmentKind, MAX_PACKET, NEARBY_PORT, PAIR_DOMAIN, PAIR_MAGIC, PairCandidate,
-    PairSolicitation, Request, Response, ResponsePayload, decrypt_pair_offer, decrypt_response,
-    encrypt_pair_offer, encrypt_request, make_ack, verify_ack, verify_finalized,
+    EnrollmentKind, MAX_PACKET, NEARBY_PORT, PAIR_MAGIC, PairCandidate, PairSolicitation, Request,
+    ResponsePayload, decrypt_pair_offer, decrypt_response, encrypt_pair_offer, encrypt_request,
+    make_ack, verify_finalized,
 };
-use tilo_enrollment::root::RootSigner;
-use tilo_enrollment::transport::{self, ALPN};
+use tilo_enrollment::root::{RootSigner, load_root};
+use tilo_enrollment::transport;
 use tilo_enrollment::{
-    Console, Decision, Person, WaitingMachine, WindowClosed, bounded_home_peer_registry,
-    deadline_after, fleet_store, hardware_summary, now_ns, public_identity_record,
-    remember_personal_devices, response_preimage, restore_owner_from_parent,
-    share_directory_like_parent, sign_response, sign_root_cert, socket_timeout, valid_solicitation,
-    validity_start_ns, verify_response, verify_signature,
+    WindowClosed, deadline_after, fleet_store, hardware_summary, now_ns, personal_devices_of,
+    public_identity_document, read_bounded_json, remember_personal_devices,
+    restore_owner_from_parent, share_directory_like_parent, sign_root_cert, socket_timeout,
+    valid_solicitation, validity_start_ns, verify_response,
 };
+use tilo_identity::enrollment::NonceStore;
 
 #[path = "enroll_transport.rs"]
 mod join_transport;
@@ -483,7 +482,7 @@ fn checked_personal_projection(
     let user = payload.cert.user_public_key;
     let identity_id = hex::encode(user);
 
-    let fleet = fleet_store(identity_root, identity_dir)
+    let fleet = fleet_store(identity_root, identity_dir, PERSON_UID.get().copied())
         .accept_transferred(&identity_id, fleet, payload.cert.device_public_key)
         .context("approval returned an invalid device fleet")?;
     validate_public_identity(identity, user)?;
@@ -647,7 +646,11 @@ fn install_staged_fleet(
     marker: &PersonalEnrollmentMarker,
     stage_dir: &std::path::Path,
 ) -> anyhow::Result<DeviceFleet> {
-    let store = fleet_store(identity_root, &marker.identity_dir);
+    let store = fleet_store(
+        identity_root,
+        &marker.identity_dir,
+        PERSON_UID.get().copied(),
+    );
     let fleet = store
         .accept_transferred(
             &hex::encode(marker.user_public_key),
@@ -741,7 +744,13 @@ fn commit_staged_personal_enrollment(
     // home peer, reached through that registry, not one of the person's
     // personal devices.
     checkpoint(PersonalCommitCheckpoint::PersonalPeers)?;
-    let personal_devices = personal_devices_of(marker, &fleet, &staged_peers, now_ns()?);
+    let personal_devices = personal_devices_of(
+        marker.device_public_key,
+        marker.user_public_key,
+        &fleet,
+        &staged_peers,
+        now_ns()?,
+    );
     let personal_peers = remember_personal_devices(identity_root, &personal_devices)?;
     // Publish this last: every projection file has been durably installed.
     checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
@@ -1421,18 +1430,6 @@ fn write_pairing_status(path: &std::path::Path, status: &serde_json::Value) -> a
     restore_owner_from_parent(path)
 }
 
-/// An enrollment window ended with no device answering.
-#[derive(Debug)]
-struct WindowClosed(&'static str);
-
-impl std::fmt::Display for WindowClosed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
-    }
-}
-
-impl std::error::Error for WindowClosed {}
-
 /// What made pairing fail, as the status file names it for the first-use UI:
 /// `permission_denied`, `storage_full`, `read_only`, `unreachable`,
 /// `timed_out`, or `unknown` when the error carries no cause the person can
@@ -1665,7 +1662,7 @@ fn out_of_band_payload(
         recipient_device_public_key: cert.device_public_key,
         server_node_id: tilo_server::daemon::server_node_id(device),
         home_peer_toml: None,
-        public_identity_json: Some(public_identity_record(user, "My Tilo identity")?),
+        public_identity_json: Some(public_identity_document(user, "My Tilo identity")?),
         fleet_json: Some(serde_json::to_vec_pretty(&fleet)?),
         home_peers_json: Some(b"[]".to_vec()),
         cert,
@@ -1697,7 +1694,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
             tilo_user_identity::persist::read_owned_signing_key(path)
                 .with_context(|| format!("read {}", path.display()))?,
         ),
-        None => load_approval_root(identity_root, identity_dir)?,
+        None => load_root(identity_root, identity_dir)?,
     };
     let device_public_key: [u8; 32] = hex::decode(device.trim())
         .ok()
@@ -1726,7 +1723,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
     };
     sign_root_cert(&mut cert, root.as_ref())?;
     if let Some(identity_dir) = identity_dir {
-        fleet_store(identity_root, identity_dir)
+        fleet_store(identity_root, identity_dir, PERSON_UID.get().copied())
             .remember_certificate(&hex::encode(cert.user_public_key), cert.clone())?;
     }
     tilo_user_identity::persist::write_device_cert(out, &cert)?;
@@ -1977,6 +1974,7 @@ fn run() -> anyhow::Result<()> {
                 port: NEARBY_PORT,
                 ready: None,
                 approved: None,
+                person_uid: PERSON_UID.get().copied(),
             };
             if iroh || dial.is_some() {
                 let relay = parse_relay_option(relay.as_deref())?;
@@ -2025,6 +2023,7 @@ fn run() -> anyhow::Result<()> {
                     .transpose()
                     .context("read the approved certificate")?
                     .as_ref(),
+                person_uid: PERSON_UID.get().copied(),
             })
         }
         Command::Revoke(options) => revoke(&options),

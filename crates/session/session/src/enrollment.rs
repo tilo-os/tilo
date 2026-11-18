@@ -166,7 +166,7 @@ pub(crate) fn answer(personal: &PersonalSync, ask: &str, approve: bool) -> Resul
     let value = if approve { "approve" } else { "decline" };
     write(personal, |doc| {
         // The ask is answered: it leaves every device's screen at once.
-        let _ = doc.delete(automerge::ROOT, &format!("request:{ask}"));
+        let _ = doc.delete(automerge::ROOT, format!("request:{ask}"));
         put(doc, &format!("answer:{ask}"), value)
     })
 }
@@ -217,7 +217,7 @@ pub(crate) fn serve(
     directory: std::path::PathBuf,
 ) {
     let relays = own_relays();
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("tilo-enrollment-serve".into())
         .spawn(move || {
             let mut asked = Asked { personal };
@@ -253,9 +253,10 @@ pub(crate) fn serve(
                 Ok(()) => {}
                 Err(error) => tracing::info!("{error:#}"),
             }
-        })
-        .map(drop)
-        .unwrap_or_else(|error| tracing::warn!(%error, "this session answers no machines"));
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "this session answers no machines");
+    }
 }
 
 /// Let a machine with no token in, by its own `tilo://enroll?…` line: this
@@ -269,6 +270,7 @@ pub(crate) fn approve_line(
     if !line.trim().starts_with("tilo://enroll?") {
         return Err("paste the machine's link, which starts with tilo://enroll?".into());
     }
+    let line = line.to_owned();
     let relays = own_relays();
     std::thread::Builder::new()
         .name("tilo-enrollment-dial".into())
@@ -292,14 +294,14 @@ pub(crate) fn approve_line(
                     approved: None,
                     person_uid: None,
                 };
-                match tilo_enrollment::transport::approve_line(&options, relays.as_ref(), line) {
+                match tilo_enrollment::transport::approve_line(&options, relays.as_ref(), &line) {
                     Ok(()) => return,
                     Err(error) => tracing::info!("{error:#}"),
                 }
             }
         })
-        .map(|_| ())
-        .map_err(|error| format!("this session cannot approve that machine: {error}"))
+        .map_err(|error| format!("this session cannot approve that machine: {error}"))?;
+    Ok(())
 }
 
 /// The tag the ask about `ask` is told and withdrawn under.

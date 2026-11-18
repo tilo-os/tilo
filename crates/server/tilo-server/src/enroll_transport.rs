@@ -6,19 +6,17 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use iroh::RelayMap;
-use tilo_user_identity::Dial;
+use tilo_user_identity::{Dial, IdentityPaths};
 
 use anyhow::{Context, bail};
 
-use tilo_enrollment::approval::{ApprovalIdentity, ApprovalOptions};
-use tilo_enrollment::protocol::{PAIR_MAGIC, PairSolicitation};
+use tilo_enrollment::protocol::{
+    PAIR_MAGIC, PairSolicitation, decrypt_pair_offer, decrypt_response, verify_finalized,
+};
 use tilo_enrollment::transport::{
-    address_of, dial_of, endpoint_for, parse_relay, receive, runtime, send,
+    ALPN, address_of, dial_of, endpoint_for, parse_relay, receive, runtime, send,
 };
-use tilo_enrollment::{
-    Decision, Person, WaitingMachine, WindowClosed, deadline_after, hardware_summary, now_ns,
-    socket_timeout,
-};
+use tilo_enrollment::{WindowClosed, socket_timeout};
 
 use crate::{
     JoinOptions, PreparedJoin, install_answer, pairing_code, prepare_join, verify_answer,

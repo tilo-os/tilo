@@ -57,6 +57,7 @@ dev-rust-views = ["dep:tube", "chat/samples"]
 lazy-search-feed = []
 
 [dependencies]
+anyhow.workspace = true
 # A branch of a workspace takes an app's own copy of a record into the
 # workspace's, as every incoming change is taken in; a record read again takes
 # in what was appended to it since.
