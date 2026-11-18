@@ -43,6 +43,8 @@ pub use doc_writer::{
     StoredLoad,
 };
 pub use fs_store::{FsStore, Held, INSTANCE_VIEWS_DIR, finish_writes, workspace_index_directory};
+mod save_plan;
+pub use save_plan::{Save, SavePlan};
 
 pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
