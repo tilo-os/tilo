@@ -467,6 +467,103 @@ async fn a_password_her_mail_server_refuses_is_asked_for_again_by_the_server_its
     hosted.page.peer.close();
 }
 
+/// The address of a person whose own mail server answers at ports its domain publishes
+/// nowhere, and that server as she names it: its name, and each port after a colon.
+const OWN_ADDRESS: &str = "ada@nowhere.test";
+const OWN_SERVER: &str = "mail.nowhere.test";
+const OWN_READS: &str = "mail.nowhere.test:1993";
+const OWN_SENDS: &str = "mail.nowhere.test:1587";
+/// Where a sign-in for that server belongs, as her vault names it.
+const OWN_PLACES: [&str; 2] = [
+    "imap://mail.nowhere.test:1993",
+    "smtp://mail.nowhere.test:1587",
+];
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_named_with_its_port_is_signed_in_to_at_that_port() {
+    let (mut hosted, signed_in) = started().await;
+    // Her own server answers under no name of the network: the operator's one leave, as above.
+    hosted.workspaces.call_private_model_addresses(true);
+
+    // Nothing is found for her address, so her assistant passes on the two servers as she said
+    // them, each with its port. One question asks her for the password, for a login at exactly
+    // those two places.
+    hosted
+        .turn(
+            "Log in my mail account ada@nowhere.test. Its mail is read at mail.nowhere.test:1993 \
+             and sent through mail.nowhere.test:1587.",
+            vec![
+                does(
+                    "call-1",
+                    CONNECT,
+                    &serde_json::json!({
+                        "address": OWN_ADDRESS,
+                        "incomingServer": OWN_READS,
+                        "outgoingServer": OWN_SENDS,
+                    }),
+                ),
+                Reply::text("I asked you for its password. Type it into the field in our chat."),
+            ],
+        )
+        .await;
+    let told = hosted.last_tool_result();
+    let asked = hosted.questions(chat::question::SECRET).await;
+    assert_eq!(
+        asked.len(),
+        1,
+        "a server named with its port is taken, and its person asked once: {told}"
+    );
+    assert!(told.contains(OWN_SERVER), "{told}");
+    let (question, held) = asked.into_iter().next().expect("the one question");
+    assert_eq!(
+        held.question.as_ref().unwrap().kept(),
+        Some(serde_json::json!({
+            "kind": "login", "belongsTo": OWN_PLACES, "username": OWN_ADDRESS,
+        })),
+        "the field is for a login at her server's two ports"
+    );
+
+    // She types. Her server signs in and keeps the account at the ports she named.
+    let kept = hosted
+        .on_device(
+            (
+                person_vault::PROVIDER,
+                person_vault::RESOURCE,
+                person_vault::ADD,
+            ),
+            serde_json::json!({
+                "kind": "login", "belongsTo": OWN_PLACES, "username": OWN_ADDRESS, "secret": TYPED,
+            }),
+        )
+        .await;
+    let reference = kept["reference"].as_str().expect("a reference").to_owned();
+    hosted
+        .answers(
+            &question,
+            chat::question::FILLED,
+            serde_json::json!({"reference": reference}),
+        )
+        .await;
+    hosted.agents.look(&hosted.workspace).await.unwrap();
+    let (came, said) = what_came_of(&hosted, 0).await;
+    assert_eq!(came, chat::question::DONE, "{said}");
+    assert_eq!(
+        signed_in.lock().unwrap().clone(),
+        vec![OWN_ADDRESS.to_owned()]
+    );
+    let accounts = her_mail(&mut hosted).await;
+    assert_eq!(accounts.len(), 1, "{accounts:?}");
+    let account = &accounts[0];
+    let listed = account.to_string();
+    assert!(
+        listed.contains(OWN_SERVER),
+        "the account is kept at the server she named: {listed}"
+    );
+    assert_eq!(account["incomingPort"], 1993, "{account}");
+    assert_eq!(account["outgoingPort"], 1587, "{account}");
+    hosted.page.peer.close();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_a_telling_is_refused_for_asks_nobody_for_a_password() {
     let (mut hosted, signed_in) = started().await;
@@ -490,6 +587,15 @@ async fn what_a_telling_is_refused_for_asks_nobody_for_a_password() {
                 "outgoingServer": "localhost",
             }),
             "public internet",
+        ),
+        (
+            "a server named with what is no port",
+            serde_json::json!({
+                "address": "ada@nowhere.test",
+                "incomingServer": "mail.nowhere.test:imap",
+                "outgoingServer": "mail.nowhere.test",
+            }),
+            "after a colon",
         ),
         (
             "a password in the call",
