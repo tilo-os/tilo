@@ -1,0 +1,53 @@
+[package]
+name = "tilo-models-wasm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Every app's model linked into one WebAssembly module, which wasm-split cuts into the model runtime the apps share and one small module per app."
+
+# Built only for wasm32, by tools/ci/app-models.sh, in the release profile a
+# model module is sized with (opt-level z, no unwinding), with the symbol table
+# and the linker's relocations kept: wasm-split reads its call graph from them
+# and drops both from what it writes.
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+# Every app that keeps a model, one guest crate each (`apps/<app>-model-wasm`).
+# tools/ci/app-models.sh fails when an app's guest crate is missing here; it
+# says why Remote's is.
+[dependencies]
+activity-model-wasm = { path = "../../../apps/activity-model-wasm" }
+api-tester-model-wasm = { path = "../../../apps/api-tester-model-wasm" }
+assistant-model-wasm = { path = "../../../apps/assistant-model-wasm" }
+backups-model-wasm = { path = "../../../apps/backups-model-wasm" }
+browser-model-wasm = { path = "../../../apps/browser-model-wasm" }
+calculator-model-wasm = { path = "../../../apps/calculator-model-wasm" }
+calendar-model-wasm = { path = "../../../apps/calendar-model-wasm" }
+camera-model-wasm = { path = "../../../apps/camera-model-wasm" }
+clocks-model-wasm = { path = "../../../apps/clocks-model-wasm" }
+console-model-wasm = { path = "../../../apps/console-model-wasm" }
+contacts-model-wasm = { path = "../../../apps/contacts-model-wasm" }
+containers-model-wasm = { path = "../../../apps/containers-model-wasm" }
+db-client-model-wasm = { path = "../../../apps/db-client-model-wasm" }
+diffmerge-model-wasm = { path = "../../../apps/diffmerge-model-wasm" }
+disk-usage-model-wasm = { path = "../../../apps/disk-usage-model-wasm" }
+disks-model-wasm = { path = "../../../apps/disks-model-wasm" }
+file-explorer-model-wasm = { path = "../../../apps/file-explorer-model-wasm" }
+firewall-model-wasm = { path = "../../../apps/firewall-model-wasm" }
+git-client-model-wasm = { path = "../../../apps/git-client-model-wasm" }
+hex-editor-model-wasm = { path = "../../../apps/hex-editor-model-wasm" }
+logs-model-wasm = { path = "../../../apps/logs-model-wasm" }
+maps-model-wasm = { path = "../../../apps/maps-model-wasm" }
+monitor-model-wasm = { path = "../../../apps/monitor-model-wasm" }
+passwords-model-wasm = { path = "../../../apps/passwords-model-wasm" }
+poker-model-wasm = { path = "../../../apps/poker-model-wasm" }
+print-centre-model-wasm = { path = "../../../apps/print-centre-model-wasm" }
+publisher-model-wasm = { path = "../../../apps/publisher-model-wasm" }
+scratchpad-model-wasm = { path = "../../../apps/scratchpad-model-wasm" }
+tasks-model-wasm = { path = "../../../apps/tasks-model-wasm" }
+tube-model-wasm = { path = "../../../apps/tube-model-wasm" }
+
+[lints]
+workspace = true
