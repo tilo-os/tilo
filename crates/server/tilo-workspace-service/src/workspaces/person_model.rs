@@ -38,8 +38,9 @@ use tilo_lock::RwLockRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
 use super::Workspaces;
-use super::person_settings::{credentials, key_id, provider_config};
+use super::person_settings::provider_config;
 
+mod kept;
 #[cfg(feature = "agents")]
 mod live;
 #[cfg(any(test, feature = "test-support"))]
@@ -441,14 +442,15 @@ impl Workspaces {
     /// the one entry everything this host runs for a person asks a model
     /// through.
     ///
-    /// The handle reads the person's choice and key anew for every call, so
-    /// it may be kept: a model they change in Settings answers the next
-    /// call.
+    /// The handle reads the person's choice anew for every call, and their
+    /// key again whenever their vault was written since, so it may be kept:
+    /// a model they change in Settings answers the next call.
     #[must_use]
     pub fn person_model(&self, person: [u8; 32], kind: Interaction) -> PersonModel {
         PersonModel {
             models: Arc::clone(&self.inner.models),
             root: self.person_settings_root(&person),
+            kept: Arc::default(),
             kind,
             named: None,
             workspace: None,
@@ -527,6 +529,8 @@ pub struct PersonModel {
     models: Arc<Models>,
     /// The person's own store on this host.
     root: PathBuf,
+    /// The key this work last took from the person's vault (`person_model/kept.rs`).
+    kept: Arc<kept::Key>,
     kind: Interaction,
     /// The model its caller names in place of the person's choice for the
     /// kind, as provider/model ([`Self::naming`]).
@@ -741,6 +745,7 @@ impl PersonModel {
     fn resolve(&self) -> Result<Resolved, ModelRefusal> {
         resolve(
             &self.root,
+            &self.kept,
             (self.kind, self.named.as_deref()),
             self.models.private_addresses.load(Ordering::Acquire),
             &*self.provider(),
@@ -830,6 +835,7 @@ fn named_selection<'a>(
 /// default provider's default model.
 fn resolve(
     root: &Path,
+    kept: &kept::Key,
     (kind, named): (Interaction, Option<&str>),
     private_addresses: bool,
     provider: &dyn ModelProvider,
@@ -876,13 +882,7 @@ fn resolve(
     if profile.sign_in.is_some() {
         return Err(ModelRefusal::NoKey { provider: named() });
     }
-    let vault = credentials(root).map_err(|error| {
-        tracing::warn!(%error, "a person's vault was not opened for their model");
-        ModelRefusal::SettingsUnreadable
-    })?;
-    let key = vault
-        .get(&key_id(&profile.id))
-        .filter(|secret| !secret.password.is_empty());
+    let key = kept.of(root, &profile.id)?;
     // Only a server on the operator's own network may take no key.
     if key.is_none() && public {
         return Err(ModelRefusal::NoKey { provider: named() });
