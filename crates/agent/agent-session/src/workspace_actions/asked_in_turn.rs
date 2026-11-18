@@ -80,13 +80,21 @@ fn failed(invocation: InvocationId, message: String) -> InvocationUpdate {
 
 /// How `invocation` ends once the question about it was put to its person in the
 /// conversation, or could not be (`put`): nothing ran either way, and it is told which.
+/// The end of a question that was put says so typed as well: its person is asked and their
+/// answer does it, which whoever words this end tells from one where nobody was asked.
 fn ended(invocation: InvocationId, put: Option<&Result<(), String>>) -> InvocationUpdate {
     let message = match put {
         Some(Ok(())) => ASKED_IN_CONVERSATION.to_owned(),
         Some(Err(why)) => format!("{NOT_ASKED} ({why}), so nothing ran."),
         None => format!("{NOT_ASKED}, so nothing ran."),
     };
-    failed(invocation, message)
+    let mut update = failed(invocation, message);
+    if matches!(put, Some(Ok(())))
+        && let InvocationUpdate::Failed { error, .. } = &mut update
+    {
+        error.details = Some(tilo_actions::remote::person_asking::asked_detail());
+    }
+    update
 }
 
 /// Whether `outcome` is an invocation that waits for its person's answer.

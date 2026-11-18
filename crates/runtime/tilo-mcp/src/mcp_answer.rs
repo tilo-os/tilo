@@ -197,7 +197,7 @@ pub(super) fn answer_of(value: &Value) -> Value {
                 }
             }
         }
-        "failed" => {
+        "failed" if !says_put(value) => {
             answer.insert("status".into(), "failed".into());
             let code = value
                 .pointer("/update/error/code")
@@ -235,9 +235,11 @@ pub(super) fn answer_of(value: &Value) -> Value {
             // Still running: the invocation id follows it, and the same call
             // with the same id asks again where it went.
             answer.insert("status".into(), "pending".into());
-            // What it waits on, when the host says: the person's answer, say.
+            // What it waits on, when the host says: the person's answer, say, also where
+            // the call ended as it asked them.
             if let Some(message) = value
                 .pointer("/update/message")
+                .or_else(|| value.pointer("/update/error/message"))
                 .and_then(Value::as_str)
                 .filter(|message| !message.trim().is_empty())
             {
@@ -310,17 +312,38 @@ const PERSON_ASKED: &str = "Its person is asked to allow this. Nothing happened 
 const ASKED_MEANWHILE: &str = "Go on with what does not need it, tell them it waits for their \
      answer, and do not make this call again.";
 
+/// What whoever made a call does meanwhile whose provider ended it where it asked.
+const ASKED_GO_ON: &str = "Go on with what does not need it.";
+
 /// Whether the answer `value` says that its invocation's person is asked to allow it: a
-/// progress whose phase is the protocol's own word for a confirmation that is required.
+/// progress whose phase is the protocol's own word for a confirmation that is required, or
+/// an end with nothing done that says a question was put to them ([`says_put`]).
 fn says_asked(value: &Value) -> bool {
-    value.pointer("/update/state").and_then(Value::as_str) == Some("progress")
+    (value.pointer("/update/state").and_then(Value::as_str) == Some("progress")
         && value.pointer("/update/phase").and_then(Value::as_str)
-            == Some(tilo_actions::remote::CONFIRMATION_REQUIRED_CODE)
+            == Some(tilo_actions::remote::CONFIRMATION_REQUIRED_CODE))
+        || says_put(value)
+}
+
+/// Whether the answer `value` is an invocation that ended with nothing done because its
+/// person is asked about it first and answers in their own time (in the conversation, say):
+/// its failure carries the detail for that, whatever its code.
+fn says_put(value: &Value) -> bool {
+    value.pointer("/update/state").and_then(Value::as_str) == Some("failed")
+        && tilo_actions::remote::person_asking::says_asked(value.pointer("/update/error/details"))
 }
 
 /// What an agent reads of an invocation whose person is asked to allow it: where they are
 /// asked, what to do meanwhile, and the id that says how it went.
 fn asked_words(value: &Value) -> String {
+    // Ended where it asked: its provider's own sentence says where its person is asked and
+    // what follows their answer, and nothing of it is under way to ask after.
+    if let Some(said) = value
+        .pointer("/update/error/message")
+        .and_then(Value::as_str)
+    {
+        return format!("asked: {} {ASKED_GO_ON}", said.trim());
+    }
     let id = value
         .get("invocation_id")
         .and_then(Value::as_str)
@@ -373,6 +396,8 @@ pub(super) fn outcome(value: &Value) -> Reply {
             }
             text
         }
+        // Its person is asked to allow it, which is no failure and nothing to wait for.
+        "progress" | "failed" if asked => asked_words(value),
         "failed" => {
             let code = value
                 .pointer("/update/error/code")
@@ -385,8 +410,6 @@ pub(super) fn outcome(value: &Value) -> Reply {
             format!("failed: {code}: {message}")
         }
         "cancelled" => "cancelled".to_owned(),
-        // Its person is asked to allow it, which is no failure and nothing to wait for.
-        "progress" if asked => asked_words(value),
         "item" | "progress" => {
             let id = value
                 .get("invocation_id")
