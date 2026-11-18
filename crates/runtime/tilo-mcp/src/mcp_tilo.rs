@@ -922,7 +922,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         *self
             .agent_session
             .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(group);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(crate::Session::Given(group));
         self
     }
 }
@@ -1350,8 +1351,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
              tilo_read; `undo task` and `history task` are still taken here",
         )?;
         let task = self
-            .agent_session()
-            .map(|run| run.id)
+            .session_id()
             .ok_or("this API's agent works in no run, which a task's programs are")?;
         let workspace = self.workspace.clone();
         let fd = tokio::task::spawn_blocking(move || hosts.start(&workspace, &task))

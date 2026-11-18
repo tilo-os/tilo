@@ -435,13 +435,28 @@ impl Caller {
         tilo_action_policy::roles::agent_bound(agent, person, bound)
     }
 
+    /// The group a session named `id` is, as this caller's provider admitted
+    /// it: called by what the session was asked ([`Self::asked`]), else by the
+    /// name the provider knows the agent by ([`Self::named`]). History groups
+    /// its changes, Activity lists it and undo takes it back whole.
+    #[must_use]
+    pub fn session_group(&self, id: impl Into<String>) -> crate::WorkGroup {
+        crate::WorkGroup {
+            id: id.into(),
+            label: self
+                .asked
+                .clone()
+                .or_else(|| self.agent_name().map(str::to_owned)),
+            kind: crate::context::AGENT_SESSION_GROUP.to_owned(),
+            declared_id: None,
+        }
+    }
+
     /// The session this caller's actions are part of, as the provider that
     /// admitted it says: an agent (or a key it holds) in an execution the
-    /// provider minted for its connection works in one session, named by what
-    /// it was asked ([`Self::asked`]), else by the name the provider knows it
-    /// by ([`Self::named`]). History groups the session's changes, Activity
-    /// lists it and undo takes it back whole, whatever the client says of
-    /// itself. `None` for anyone else.
+    /// provider minted for its connection works in one session
+    /// ([`Self::session_group`]), whatever the client says of itself. `None`
+    /// for anyone else.
     #[must_use]
     pub fn agent_session(&self) -> Option<crate::WorkGroup> {
         self.acting.agent_id()?;
@@ -453,15 +468,7 @@ impl Caller {
                 self.execution_id()?
             ),
         };
-        Some(crate::WorkGroup {
-            id,
-            label: self
-                .asked
-                .clone()
-                .or_else(|| self.agent_name().map(str::to_owned)),
-            kind: crate::context::AGENT_SESSION_GROUP.to_owned(),
-            declared_id: None,
-        })
+        Some(self.session_group(id))
     }
 
     /// Confine the caller to one workspace: the connection was admitted to that

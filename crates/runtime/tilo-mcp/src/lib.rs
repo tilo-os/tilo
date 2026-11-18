@@ -70,6 +70,24 @@ pub type Observation = std::sync::Arc<
 /// a place offering no read of its own.
 type SweptRead = Option<(String, tilo_actions::ActionDescriptor)>;
 
+/// What a connection's invocations are attributed to.
+enum Session {
+    /// A session this connection named, labelled as the caller the provider
+    /// admitted it as says ([`Caller::session_group`]).
+    Named(String),
+    /// A group a host gave the connection, kept as it gave it.
+    Given(tilo_actions::WorkGroup),
+}
+
+impl Session {
+    fn group(&self, caller: &Caller) -> tilo_actions::WorkGroup {
+        match self {
+            Self::Named(id) => caller.session_group(id.clone()),
+            Self::Given(group) => group.clone(),
+        }
+    }
+}
+
 /// One MCP session. Its requests are answered through `&self`, so a client
 /// may overlap them: a `tilo_status`, reading or cancelling, answers while a
 /// `tilo_do` of the same session waits for its action.
@@ -84,8 +102,8 @@ pub struct McpServer<H> {
     actor: String,
     /// One transport-issued execution scope, independent of history labels.
     caller: Caller,
-    /// The agent's group every invocation of this connection is attributed to.
-    agent_session: std::sync::Mutex<Option<tilo_actions::WorkGroup>>,
+    /// The session every invocation of this connection is attributed to.
+    agent_session: std::sync::Mutex<Option<Session>>,
     /// The page a listing answers when a call names no `detail`; a client
     /// that parses v1 rows pins `full` for its session at `initialize`.
     detail: std::sync::Mutex<Detail>,
@@ -1219,24 +1237,37 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
     /// Attribute every invocation of this connection to one agent session, so
     /// history, undo and activity tell concurrent agents apart. Provenance
-    /// only: authority stays the profile actor's. A connection is asked
-    /// nothing, so the session has no label of its own.
+    /// only: authority stays the profile actor's.
     #[must_use]
     pub fn with_agent_session(mut self, id: impl Into<String>) -> Self {
         *self
             .agent_session
             .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tilo_actions::WorkGroup {
-            id: id.into(),
-            label: None,
-            kind: "agent-session".into(),
-            declared_id: None,
-        });
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Session::Named(id.into()));
         self
     }
-    /// The agent run this session's invocations are attributed to now.
-    fn agent_session(&self) -> Option<tilo_actions::WorkGroup> {
-        self.agent_session.lock_recover().clone()
+    /// This connection's session, as it stands now, named as its caller is.
+    fn group(&self) -> Option<tilo_actions::WorkGroup> {
+        self.agent_session
+            .lock_recover()
+            .as_ref()
+            .map(|session| session.group(&self.caller))
+    }
+    /// The id this connection's session goes by, once it names one.
+    fn session_id(&self) -> Option<String> {
+        self.group().map(|group| group.id)
+    }
+    /// The group this connection's invocations are attributed to: its session,
+    /// as the invocation a call declares itself a step of names it.
+    fn agent_session(
+        &self,
+        declared: Option<&DeclaredInvocation>,
+    ) -> Option<tilo_actions::WorkGroup> {
+        let mut group = self.group()?;
+        if let Some(declared) = declared {
+            declared.onto(&mut group);
+        }
+        Some(group)
     }
     /// The page detail this session answers with when a call names none.
     fn detail(&self) -> Detail {
@@ -1429,20 +1460,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             None | Some(Value::Null) => None,
             Some(session) => Some(continued_session(session)?),
         };
-        // A connection is asked nothing when it opens: its session has no label of its own.
-        let run = {
-            let mut run = self.agent_session.lock_recover();
-            if run.is_none() || continued.is_some() {
-                let label = run.take().and_then(|run| run.label);
-                *run = Some(tilo_actions::WorkGroup {
-                    id: continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4())),
-                    label,
-                    kind: "agent-session".into(),
-                    declared_id: None,
-                });
+        {
+            let mut session = self.agent_session.lock_recover();
+            if session.is_none() || continued.is_some() {
+                let id = continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4()));
+                *session = Some(Session::Named(id));
             }
-            run.as_ref().map(|run| run.id.clone())
-        };
+        }
+        let session = self.session_id();
         let mut server = json!({"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")});
         // The agent this session is (a server connection's task agent), so it
         // can tell the person which agent to give access to.
@@ -1451,7 +1476,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         {
             fields.insert("agent".into(), json!(agent));
         }
-        let mut answer = json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"session":run,"execution_id":self.caller.execution_id()}}},"serverInfo":server});
+        let mut answer = json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"session":session,"execution_id":self.caller.execution_id()}}},"serverInfo":server});
         if let Some(fields) = answer.as_object_mut() {
             fields.insert("instructions".into(), json!(AGENT_INSTRUCTIONS));
         }
@@ -2626,24 +2651,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// actor, and the undo step of the tool call they are made in
     /// ([`STEP`]).
     fn context(&self) -> Option<tilo_actions::ActionContext> {
-        self.agent_session().map(|mut run| {
-            // A call naming the invocation it is a step of (`_meta` invocation) is
-            // attributed to that run's title, which is what people read in
-            // history and see in presence, not the connection's own label,
-            // and names the run's id, which tells the agent's runs apart
-            // there. It says both as its own: a host that names the run
-            // itself still keeps what the agent declared.
-            if let Some(declared) = DeclaredInvocation::current() {
-                declared.onto(&mut run);
-            }
-            tilo_actions::ActionContext {
-                group: Some(run),
-                // Who acts is the caller the session was admitted as: an agent for its person,
-                // or the person themselves. Its actor names an agent `agent:<id>`, never a person.
-                invoker: Some(tilo_actions::ActionInvoker::admitted(self.caller.acting())),
-                gesture: STEP.try_with(|step| *step).ok(),
-                ..tilo_actions::ActionContext::default()
-            }
+        // A call naming the invocation it is a step of (`_meta` invocation) is
+        // attributed to the title the client gave it, which is what people read
+        // in history and see in presence, and names the invocation's id, which
+        // tells the agent's calls apart there.
+        let group = self.agent_session(DeclaredInvocation::current().as_ref())?;
+        Some(tilo_actions::ActionContext {
+            group: Some(group),
+            // Who acts is the caller the session was admitted as: an agent for its person,
+            // or the person themselves. Its actor names an agent `agent:<id>`, never a person.
+            invoker: Some(tilo_actions::ActionInvoker::admitted(self.caller.acting())),
+            gesture: STEP.try_with(|step| *step).ok(),
+            ..tilo_actions::ActionContext::default()
         })
     }
     /// The fixed profile actor, confined to the profile's workspace.

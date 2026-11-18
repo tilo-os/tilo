@@ -548,7 +548,7 @@ async fn a_persons_own_agent_lists_a_stopped_app_into_running_writes_and_reads_a
                     .all(|group| group.as_ref().is_some_and(|group| {
                         group.kind == "agent-session"
                             && group.id.starts_with("agent-session:")
-                            && group.label.is_none()
+                            && group.label.as_deref() == Some("Claude Code")
                     })),
                 "every change the agent made is its run: {groups:?}"
             );

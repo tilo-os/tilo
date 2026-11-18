@@ -1717,7 +1717,7 @@ tilo_test_env::scenario! {
     {
         let host = Notes::new(true);
         run(async {
-            let server = agent(&host);
+            let server = agent(&host).agent_named("Claude Code");
             let (start, failed) = answer(&server, "tilo_watch", json!({"wait_ms": 50})).await;
             assert!(!failed, "{start}");
             assert_eq!(
@@ -1776,7 +1776,10 @@ tilo_test_env::scenario! {
             assert_eq!(told["invocation_id"], ran["invocation_id"]);
             assert_eq!(told["path"], "notes/Todo/body#append-paragraph");
             assert_eq!(told["phase"], "succeeded");
-            assert_eq!(told["title"], "", "a connection is asked nothing");
+            assert_eq!(
+                told["title"], "Claude Code",
+                "a step asked nothing is named by the agent"
+            );
             let here = events
                 .iter()
                 .find(|event| event["kind"] == "presence")
