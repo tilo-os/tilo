@@ -463,7 +463,10 @@ impl Unlock {
         let siblings = fleet
             .personal_devices(&cert.user_public_key, now)
             .into_iter()
-            .filter(|key| key != &self.local && key != &enrollee)
+            // Every one of the person's devices but the one being enrolled: this
+            // device among them, which is the one asking them and holds the half
+            // like any other, so a person with two devices has one to ask at boot.
+            .filter(|key| key != &enrollee)
             .map(|key| SiblingContact {
                 device_public_key: key,
                 label: labels.get(&hex::encode(key)).cloned().unwrap_or_default(),
