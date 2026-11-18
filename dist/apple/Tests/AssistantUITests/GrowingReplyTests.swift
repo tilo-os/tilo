@@ -120,5 +120,158 @@ final class GrowingReplyTests: XCTestCase {
         XCTAssertEqual(place(scroll).above, again.above, accuracy: 0.5, "a piece that came pulled the view to the end")
         XCTAssertTrue(drive.has(AssistantWords.moreBelow.said), "nothing said that a piece came below")
     }
+
+    // MARK: Where a conversation rests
+
+    /// A conversation where it is shown, drawn by this Mac on no screen.
+    private struct Shown {
+        let window: HeldWindow
+        let drive: Drive
+        let source: MemorySource
+        let model: AssistantModel
+        let size: CGSize
+        /// How much of the window's height a keyboard takes: an iPhone's, and what the Mac's smallest window leaves.
+        let keyboard: CGFloat
+        let end: () -> Void
+    }
+
+    /// The newest piece of every conversation here is the assistant's: nothing the person sent
+    /// brings the end into view.
+    private var settled: MemorySource.Content {
+        var content = long
+        content.main.append(Item(id: "newest", at: Drawing.now, .message(Message(.assistant, "The newest piece of all."))))
+        return content
+    }
+
+    /// The Mac's window as its program makes it, or the phone's conversation over its field at
+    /// an iPhone's size.
+    private func shown(_ layout: String, _ content: MemorySource.Content) async throws -> Shown {
+        if layout == "mac" {
+            let app = try await Started.app(content)
+            return Shown(window: app.window, drive: app.drive, source: app.source.inner, model: app.model, size: CGSize(width: 1280, height: 820), keyboard: 240) { app.end() }
+        }
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        let source = MemorySource(content, now: { Drawing.now })
+        let model = AssistantModel(source: source)
+        model.start()
+        let size = CGSize(width: 402, height: 874)
+        let window = HeldWindow.make(NSRect(origin: .zero, size: size), [.borderless])
+        window.contentView = NSHostingView(rootView: AssistantRoot(model: model) {
+            VStack(spacing: 0) {
+                ConversationView(chat: .main)
+                Composer(chat: .main).layoutPriority(1)
+            }
+            .background(Token.content)
+        })
+        let drive = Drive(window)
+        await drive.until("the source's first word", { model.session != nil && model.conversation(.main).isLoaded })
+        await drive.settle(300)
+        return Shown(window: window, drive: drive, source: source, model: model, size: size, keyboard: 294) {
+            window.contentView = nil
+            window.close()
+        }
+    }
+
+    private func drawn(_ held: Shown) async {
+        for _ in 0..<2 {
+            await held.drive.settle(150)
+            if let view = held.window.contentView, let picture = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: picture)
+            }
+            await held.drive.settle(60)
+        }
+    }
+
+    /// The window's height: a keyboard that comes takes the lower part of it and gives it back.
+    private func make(_ held: Shown, shorter: Bool) async {
+        held.window.setContentSize(NSSize(width: held.size.width, height: held.size.height - (shorter ? held.keyboard : 0)))
+        await drawn(held)
+    }
+
+    func testAConversationOpensOnItsNewestPiece() async throws {
+        for layout in ["mac", "phone"] {
+            let held = try await shown(layout, settled)
+            defer { held.end() }
+            await drawn(held)
+            let scroll = try conversationScroll(held.window)
+            XCTAssertGreaterThan(place(scroll).above, 100, "\(layout): the conversation is no taller than its window: this shows nothing")
+            XCTAssertEqual(place(scroll).below, 0, accuracy: 1, "\(layout): the conversation opened away from its newest piece")
+        }
+    }
+
+    /// Its pieces may come after its window opened, as they do on a device that has just got in.
+    func testAConversationWhosePiecesComeAfterItOpenedRestsOnItsNewestPiece() async throws {
+        for layout in ["mac", "phone"] {
+            var empty = settled
+            let pieces = empty.main
+            empty.main = []
+            let held = try await shown(layout, empty)
+            defer { held.end() }
+            await drawn(held)
+            for piece in pieces { held.source.post(piece) }
+            await drawn(held)
+            await drawn(held)
+            let scroll = try conversationScroll(held.window)
+            XCTAssertGreaterThan(place(scroll).above, 100, "\(layout): the conversation is no taller than its window: this shows nothing")
+            XCTAssertEqual(place(scroll).below, 0, accuracy: 1, "\(layout): the pieces came and the conversation rests away from its newest")
+        }
+    }
+
+    /// An iPhone's keyboard takes the lower part of the window and gives it back; a Mac's window
+    /// is made shorter and taller. The newest piece stays in sight through both.
+    func testTheNewestPieceStaysInSightWhenTheWindowGrowsShorterAndTallerAgain() async throws {
+        for layout in ["mac", "phone"] {
+            let held = try await shown(layout, settled)
+            defer { held.end() }
+            await drawn(held)
+            let tall = try conversationScroll(held.window).documentVisibleRect.height
+            XCTAssertEqual(place(try conversationScroll(held.window)).below, 0, accuracy: 1, "\(layout): before the window changed")
+            for round in 1...2 {
+                await make(held, shorter: true)
+                let short = try conversationScroll(held.window)
+                XCTAssertLessThan(short.documentVisibleRect.height, tall - 200, "\(layout): the window did not grow shorter: this shows nothing")
+                XCTAssertEqual(place(short).below, 0, accuracy: 1, "\(layout), time \(round): with the window shorter the newest piece went out of sight")
+                await make(held, shorter: false)
+                XCTAssertEqual(place(try conversationScroll(held.window)).below, 0, accuracy: 1, "\(layout), time \(round): with the window tall again the conversation rests away from its newest piece")
+            }
+        }
+    }
+
+    /// Scrolled up, a person stays where they put the conversation when the window changes: its
+    /// upper edge does not move, and nothing pulls them to the end.
+    func testScrolledUpTheViewStaysPutWhenTheWindowGrowsShorterAndTallerAgain() async throws {
+        for layout in ["mac", "phone"] {
+            let held = try await shown(layout, settled)
+            defer { held.end() }
+            await drawn(held)
+            try wheelUp(try conversationScroll(held.window), by: 300)
+            await drawn(held)
+            let up = place(try conversationScroll(held.window))
+            XCTAssertEqual(up.below, 300, accuracy: 2, "\(layout): the wheel did not scroll the conversation")
+            await make(held, shorter: true)
+            XCTAssertEqual(place(try conversationScroll(held.window)).above, up.above, accuracy: 1, "\(layout): with the window shorter the view left where the person put it")
+            await make(held, shorter: false)
+            XCTAssertEqual(place(try conversationScroll(held.window)).above, up.above, accuracy: 1, "\(layout): with the window tall again the view left where the person put it")
+        }
+    }
+
+    /// In the Mac's window one view shows whichever conversation is chosen. Coming back to one
+    /// that was left scrolled up, it shows its newest piece.
+    func testAConversationThatIsOpenedAgainShowsItsNewestPiece() async throws {
+        let held = try await shown("mac", settled)
+        defer { held.end() }
+        await drawn(held)
+        try wheelUp(try conversationScroll(held.window), by: 300)
+        await drawn(held)
+        XCTAssertEqual(place(try conversationScroll(held.window)).below, 300, accuracy: 2, "the wheel did not scroll the conversation")
+        let other = try XCTUnwrap(settled.subAgents.first?.id, "the drawing has no sub-agent to go to")
+        held.model.place = .chat(.subAgent(other))
+        await drawn(held)
+        held.model.place = .chat(.main)
+        await drawn(held)
+        let back = try conversationScroll(held.window)
+        XCTAssertGreaterThan(place(back).above, 100, "the conversation is no taller than its window: this shows nothing")
+        XCTAssertEqual(place(back).below, 0, accuracy: 1, "opened again, the conversation rests away from its newest piece")
+    }
 }
 #endif
