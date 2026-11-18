@@ -642,6 +642,14 @@ impl DeviceLists {
     ) -> Result<Started, ApiError> {
         let engine = self.engine()?;
         let workspace_id = self.workspace_id(workspace)?;
+        // A workspace held here whose governance does not let this person invite is refused for
+        // that reason, before it reaches anywhere: what an app shares is what its person may hand
+        // out, and a member who may not invite learns which part of the ask they lack.
+        if engine.holds(workspace_id) && !engine.may_invite(&workspace_id.to_string()) {
+            return Err(ApiError::Failed(
+                "the person's part in this workspace may not invite".to_owned(),
+            ));
+        }
         let (role, makes_administrator) = match role {
             None => (Role::Editor, false),
             // An administrator joins as an Editor and is made one by the
