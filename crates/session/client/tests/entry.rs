@@ -349,7 +349,19 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
         device.clone(),
     );
     probe.send(Cmd::Join(lounge.workspace_id)).unwrap();
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Wait for the server to turn the attempt away rather than for a while:
+    // the session reports a lost connection once its attempt has ended.
+    crate::support::wait_for("the server to turn the stranger's join away", || async {
+        matches!(
+            probe.status().phase,
+            TransportPhase::Reconnecting
+                | TransportPhase::Offline
+                | TransportPhase::Failed
+                | TransportPhase::Closed
+        )
+        .then_some(())
+    })
+    .await;
     let status = probe.status();
     assert_ne!(
         status.workspaces.get(&lounge.workspace_id),
