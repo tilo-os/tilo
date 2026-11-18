@@ -82,6 +82,8 @@ paths = [
     "crates/browser/tilo-web-desktop/scripts/agent-shell.mjs",
     "crates/dev/test-server/Cargo.toml",
     "crates/dev/test-server/src/lib.rs",
+    "crates/server/tilo-server-protocol/src/config.rs",
+    "crates/runtime/tilo-identity/src/enrollment/mod.rs",
     "crates/server/tilo-server/src/agents.rs",
     "crates/server/tilo-server/src/daemon.rs",
     "crates/server/tilo-server/src/servers/device.rs",

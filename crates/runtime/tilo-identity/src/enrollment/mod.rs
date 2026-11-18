@@ -114,6 +114,44 @@ pub fn mint_token(
     encode_enrollment_token(&token).map_err(|error| io::Error::other(error.to_string()))
 }
 
+/// Mint a token for a machine that will enroll over the internet: it names,
+/// under its signature, where this device is reached — its own endpoint id and
+/// `relay_url` — so the machine finds it from any network rather than only the
+/// one they share.
+///
+/// The machine's name is its own: a token admits a device of the person, it
+/// does not name it.
+///
+/// # Errors
+///
+/// This device is not a certified device of `user_public_key` at
+/// `issued_at_ns`, it may not admit devices, or the token cannot be signed.
+pub fn mint_for_machine(
+    paths: &IdentityPaths,
+    user_public_key: [u8; 32],
+    capabilities: DeviceCapabilities,
+    issued_at_ns: u64,
+    expires_at_ns: u64,
+    relay_url: &str,
+) -> io::Result<String> {
+    let (device, cert) = device_for(paths, user_public_key, issued_at_ns)?;
+    if !cert.capabilities.can_admit_devices {
+        return Err(refused("this device may not admit another device"));
+    }
+    let dial = Dial {
+        endpoint: device.verifying_key().to_bytes(),
+        relay_url: relay_url.to_owned(),
+    };
+    mint_token(
+        user_public_key,
+        capabilities,
+        issued_at_ns,
+        expires_at_ns,
+        std::slice::from_ref(&dial),
+        &device,
+    )
+}
+
 /// Check that `issuer` may have minted `token`: it belongs to the token's
 /// identity, is the device that signed the token, was valid when the token
 /// was minted and is valid now, and is not revoked. When it `admits` the
@@ -372,6 +410,7 @@ mod tests {
     struct Fixture {
         _root: tempfile::TempDir,
         store: DeviceFleetStore,
+        paths: IdentityPaths,
         identity_id: String,
         issued_at_ns: u64,
     }
@@ -391,11 +430,12 @@ mod tests {
             .expect("registry")
             .default_identity
             .expect("default identity");
-        let store = DeviceFleetStore::at(&identity_dir, paths);
+        let store = DeviceFleetStore::at(&identity_dir, paths.clone());
         let issued_at_ns = store.load(&identity_id).expect("fleet").certificates[0].issued_at_ns;
         Fixture {
             _root: root,
             store,
+            paths,
             identity_id,
             issued_at_ns,
         }
@@ -797,6 +837,37 @@ mod tests {
                     .kind(),
                 io::ErrorKind::PermissionDenied
             );
+        }
+
+        phase a_machines_token_names_where_this_device_is_reached;
+        // A token minted for a machine that enrolls from anywhere names, under
+        // its signature, this device's own endpoint and the relay that reaches
+        // it, and admits the machine.
+        {
+            let fixture = fixture();
+            let store = &fixture.store;
+            let now = fixture.issued_at_ns;
+            let (_, profile) = store.identity(&fixture.identity_id).expect("root");
+            let encoded = mint_for_machine(
+                &fixture.paths,
+                profile.user_public_key,
+                DeviceCapabilities::member(),
+                now,
+                now + 5_000,
+                "https://relay.example/",
+            )
+            .expect("token");
+            let token = tilo_user_identity::decode_enrollment_token(&encoded).expect("decode");
+            verify_enrollment_token(&token, now).expect("the dial info is signed");
+            let (issuer, _) =
+                device_for(&fixture.paths, token.user_public_key, now).expect("device");
+            assert_eq!(token.dial.len(), 1, "one place to dial: this device");
+            assert_eq!(token.dial[0].endpoint, issuer.verifying_key().to_bytes());
+            assert_eq!(token.dial[0].relay_url, "https://relay.example/");
+            let cert = store
+                .complete_enrollment(&fixture.identity_id, &encoded, device(111), "New machine", now)
+                .expect("the machine joins");
+            assert_eq!(cert.device_public_key, device(111));
         }
 
         phase nonce_markers_spend_once_and_record_idempotently;
