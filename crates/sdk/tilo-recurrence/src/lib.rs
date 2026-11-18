@@ -41,7 +41,11 @@ use std::ops::ControlFlow;
 
 use jiff::Timestamp;
 use jiff::civil::{Date, DateTime, Weekday};
+// The expansion, from its engine library in a release build: that is what
+// carries the zone database a stored rule is expanded through.
 use rrule::RRuleSet;
+#[cfg(feature = "runtime-engine")]
+use tilo_recurrence_engine::rrule;
 
 pub use zone::{Resolution, canonical_zone, normalize_wall, wall_instant, wall_to_utc};
 

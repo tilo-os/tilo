@@ -33,20 +33,16 @@ required-features = ["thin"]
 thin = [
     "dep:runtime-dylib",
     "dep:jiff-tzdb",
-    "dep:chrono-tz",
     "dep:jiff",
     "dep:workspace-hack",
 ]
 
 [dependencies]
 runtime-dylib = { path = "../../runtime-dylib", optional = true }
-# The features Calendar and Clocks build it with: one jiff-tzdb and one
-# chrono-tz in the thin graph, or the apps' symbols would name a crate hash
-# this library does not export.
+# The features Calendar and Clocks build it with: one jiff-tzdb in the thin
+# graph, or the apps' symbols would name a crate hash this library does not
+# export.
 jiff-tzdb = { workspace = true, optional = true }
-# The recurrence expansion reads its zones from this database, so it lives
-# here rather than in every app that expands a rule.
-chrono-tz = { workspace = true, optional = true }
 # The runtime's: the type a zone is read as.
 jiff = { workspace = true, optional = true }
 # Optional like everything else: an empty build must not link the hack's whole

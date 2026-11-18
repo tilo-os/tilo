@@ -21108,8 +21108,18 @@ dependencies = [
  "jiff",
  "jiff-tzdb",
  "rrule",
+ "tilo-recurrence-engine",
  "tilo-resource",
  "tilo-timezone-engine",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-recurrence-engine"
+version = "0.1.0"
+dependencies = [
+ "rrule",
+ "runtime-dylib",
  "workspace-hack",
 ]
 
@@ -22498,7 +22508,6 @@ dependencies = [
 name = "tilo-timezone-engine"
 version = "0.1.0"
 dependencies = [
- "chrono-tz",
  "jiff",
  "jiff-tzdb",
  "runtime-dylib",
