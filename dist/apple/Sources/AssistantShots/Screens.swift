@@ -91,6 +91,13 @@ enum Screens {
         var reset = MemorySource.Content()
         reset.session = .reset
         await add("phone-way-in-reset", reset)
+        // A pairing that stopped on Tilo's page: its sentence, and under it the technical details
+        // that sentence points to, folded as they are on the page.
+        var halted = MemorySource.Content()
+        halted.session = .signedOut
+        halted.pairingEnded = "Couldn’t open Tilo. It stopped while joining. Try again. If it stops again, copy the technical details below."
+        halted.pairingEndedDetails = "Cause: loading\nStopped at: join\nError: The page could not join.\nPage build: 0.1.13"
+        await add("phone-way-in-stopped", halted)
         await add("phone-empty", empty)
         // The start, from the app's opening until the main chat stands: one sentence over the field.
         var starting = empty
@@ -140,6 +147,13 @@ enum Screens {
         var reset = MemorySource.Content()
         reset.session = .reset
         screens.append(Screen(name: "way-in-reset", size: window, view: rooted(await model(reset), scheme) { MacWindow() }))
+        // A pairing that stopped on Tilo's page: its sentence, and under it the technical details
+        // that sentence points to, folded as they are on the page.
+        var halted = MemorySource.Content()
+        halted.session = .signedOut
+        halted.pairingEnded = "Couldn’t open Tilo. It stopped while joining. Try again. If it stops again, copy the technical details below."
+        halted.pairingEndedDetails = "Cause: loading\nStopped at: join\nError: The page could not join.\nPage build: 0.1.13"
+        screens.append(Screen(name: "way-in-stopped", size: window, view: rooted(await model(halted), scheme) { MacWindow() }))
         // The first run: what Tilo asks before it pairs, and the provider step in the main chat.
         var asked = MemorySource.Content()
         asked.session = .asked(Drawing.pairingAsk)

@@ -139,6 +139,20 @@ public final class TiloEngine: NSObject {
     /// Why the page last stopped on its way in and was loaded again: the page's own sentence,
     /// or the system's. Nil while it never did.
     public private(set) var lastStop: String?
+    /// The technical details the page showed last under a failure's sentence (its
+    /// `#arrival-failure-text`), and the sentence they stood under.
+    private var detailsSaid: (under: String, text: String)?
+    /// What the page offers to read or copy under the sentence the last try ended with: what it
+    /// makes of the stop, the server, the step, the error and its build. Its sentence may say
+    /// "copy the technical details below": these are what it points to. Empty where the try
+    /// ended with another sentence than the one the page showed them under, and while none ended.
+    public var stopDetails: String {
+        guard let detailsSaid else { return "" }
+        switch state {
+        case .refused(let why), .failed(let why), .gone(let why): return detailsSaid.under == why ? detailsSaid.text : ""
+        default: return ""
+        }
+    }
     /// How long a page that was loaded again after it stopped may say nothing before its stop
     /// is said. A page takes seconds to load, and a minute on a machine that is busy.
     var stopPatience: Duration = .seconds(60)
@@ -590,12 +604,19 @@ public final class TiloEngine: NSObject {
             let size = CGSize(width: min(width, 4096), height: min(height, 4096))
             for listener in sizeListeners.values { listener.yield((id, size)) }
         case "state":
+            let details = said["details"] as? String ?? ""
+            let under = said["status"] as? String ?? ""
+            let came = !details.isEmpty && (detailsSaid?.under != under || detailsSaid?.text != details)
+            if came { detailsSaid = (under: under, text: details) }
             stand(entry: said["entry"] as? String ?? "", arrival: said["arrival"] as? String ?? "",
                   code: said["code"] as? String ?? "", status: said["status"] as? String ?? "",
                   failure: said["failure"] as? String ?? "", refusal: said["refusal"] as? String ?? "",
                   connection: said["connection"] as? String ?? "",
                   route: said["route"] as? String ?? "", mounted: said["mounted"] as? Bool ?? false,
                   ask: PairingAsk(said["ask"]))
+            // A page may say its sentence first and show the details under it a moment later:
+            // whoever was told how the try ended hears that there is more to it.
+            if came { for listener in endListeners.values { listener.yield() } }
         default:
             break
         }

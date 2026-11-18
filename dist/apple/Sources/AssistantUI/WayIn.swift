@@ -67,6 +67,8 @@ public struct WayIn: View {
             if let problem = model.problem {
                 Text(problem).font(.small125).foregroundStyle(Token.you).multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
+                // Tilo's sentence may say "copy the technical details below": here they are.
+                if let details = model.problemDetails { ProblemDetails(details: details) }
             }
             if !comparing {
                 Text(help.said).font(.small125).foregroundStyle(Token.ink3)
@@ -271,3 +273,39 @@ private final class Running: @unchecked Sendable {
     }
 }
 #endif
+
+/// The technical details Tilo's page offers under the sentence a pairing ended with, folded as
+/// they are on the page: a press lays them open, with Copy details under them. So a sentence
+/// that says "copy the technical details below" has them below it.
+private struct ProblemDetails: View {
+    @Environment(AssistantModel.self) private var model
+    let details: String
+    @State private var isOpen = false
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Button(AssistantWords.technicalDetails.said) { isOpen.toggle() }
+                .buttonStyle(.plain).font(.small125).foregroundStyle(Token.ink2).underline()
+            if isOpen {
+                Text(details).font(.tiloMono(12)).foregroundStyle(Token.ink2).textSelection(.enabled)
+                    .multilineTextAlignment(.leading).frame(maxWidth: 420, alignment: .leading)
+                    .padding(12)
+                    .background(Token.raised, in: RoundedRectangle(cornerRadius: Measure.cardRadius))
+                Button(AssistantWords.copyDetails.said) { model.copyProblemDetails() }.buttonStyle(WayButton())
+            }
+        }
+    }
+}
+
+extension AssistantModel {
+    /// The details under the way in's sentence go to the pasteboard, for the person to send on.
+    func copyProblemDetails() {
+        guard let details = problemDetails else { return }
+        #if os(macOS)
+        pasteboard.clearContents()
+        pasteboard.setString(details, forType: .string)
+        #else
+        UIPasteboard.general.string = details
+        #endif
+    }
+}

@@ -174,6 +174,8 @@ public final class TiloSource: AssistantSource {
     private let reaches = Told<Reach>(.unknown)
     /// Why the last pairing ended without letting this device in, in the page's own sentence.
     private let endings = Told<String?>(nil)
+    /// The technical details the page offers under that sentence, where it shows them.
+    private let endingDetails = Told<String?>(nil)
     /// Whether a link was taken here and the device has not got in since.
     private var pairsNow = false
     /// Whether the page just got in and who the main chat is with is still being found.
@@ -241,7 +243,7 @@ public final class TiloSource: AssistantSource {
             },
             Task { [weak self] in
                 // A try that ends in the sentence of the one before changes no state.
-                for await _ in engine.triesEnded() { self?.sayReach() }
+                for await _ in engine.triesEnded() { self?.sayReach(); self?.sayEndingDetails() }
             },
             Task { [weak self] in
                 for await _ in engine.changes() {
@@ -269,6 +271,7 @@ public final class TiloSource: AssistantSource {
     public nonisolated func session() -> AsyncStream<Session> { sessions.stream() }
     public nonisolated func reach() -> AsyncStream<Reach> { reaches.stream() }
     public nonisolated func pairingEnded() -> AsyncStream<String?> { endings.stream() }
+    public nonisolated func pairingEndedDetails() -> AsyncStream<String?> { endingDetails.stream() }
 
     public func pair(with link: PairingLink) async throws {
         // A sign-in begins. Whatever key this device still keeps is not the next person's: a
@@ -276,6 +279,7 @@ public final class TiloSource: AssistantSource {
         forgetClosedKey()
         // Another link is taken: what the last pairing ended with is said no more.
         endings.set(nil)
+        endingDetails.set(nil)
         do {
             soughtOwn = false
             try engine.pair(with: link.url)
@@ -335,6 +339,7 @@ public final class TiloSource: AssistantSource {
     private func forget() {
         pairsNow = false
         endings.set(nil)
+        endingDetails.set(nil)
         address = nil
         handing.settle()
         forgetClosedKey()
@@ -463,11 +468,23 @@ public final class TiloSource: AssistantSource {
         case .open:
             pairsNow = false
             endings.set(nil)
+            endingDetails.set(nil)
         case .refused(let why), .failed(let why):
             guard pairsNow, person == nil else { return }
+            endingDetails.set(why.isEmpty || engine.stopDetails.isEmpty ? nil : engine.stopDetails)
             endings.set(why.isEmpty ? nil : why)
         case .away, .arriving, .asking, .pairing, .gone:
             break
+        }
+    }
+
+    /// A page may say its sentence first and show the details under it a moment later: they
+    /// are said when they come, while the way in still says that sentence.
+    private func sayEndingDetails() {
+        guard pairsNow, person == nil else { return }
+        switch engine.state {
+        case .refused, .failed: endingDetails.set(engine.stopDetails.isEmpty ? nil : engine.stopDetails)
+        default: break
         }
     }
 

@@ -156,6 +156,12 @@ public enum EngineScript {
           // A page that cannot draw empties its status line and says why in a card.
           status: ((document.getElementById('status')?.textContent ?? '')
             || (data.entry === 'unsupported' ? document.querySelector('.tilo-entry-card[data-card="renderer"] p')?.textContent ?? '' : '')).slice(0, 400),
+          // What the page's failure screen offers to read or copy under its sentence
+          // (`#arrival-failure-text`, web/failure-screen.mjs): what the page makes of the stop,
+          // the server, the step, the error and the page's build, never a token, key or
+          // certificate. Said only while the page shows them.
+          details: (data.failure && !document.getElementById('arrival-failure-details')?.hidden
+            ? document.getElementById('arrival-failure-text')?.textContent ?? '' : '').slice(0, 2000),
           route: location.pathname + location.hash.split('?')[0], mounted: Boolean(mount), ask: asking(),
         };
         const text = JSON.stringify(now);
