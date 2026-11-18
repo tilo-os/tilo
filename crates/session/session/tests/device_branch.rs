@@ -416,10 +416,12 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
     assert!(logins(&laptop).contains(&LOGIN.to_owned()));
     laptop.open(MODEL_PROVIDERS);
     laptop.wait_for_window(MODEL_PROVIDERS);
-    let presets = laptop.app_act(MODEL_PROVIDERS, "list-presets", &serde_json::json!({}));
+    // Model Providers on a device whose providers no server keeps shows the person's own models
+    // and answers a read of them; adding a provider is the panel a server's gateway answers.
+    let providers = laptop.app_act(MODEL_PROVIDERS, "read-providers", &serde_json::json!({}));
     assert!(
-        presets["answer"]["receipt"]["update"]["state"].is_string(),
-        "the laptop's Model Providers ran its action: {presets}"
+        providers["answer"]["receipt"]["update"]["state"].is_string(),
+        "the laptop's Model Providers ran its action: {providers}"
     );
 
     laptop.stop();
@@ -437,10 +439,10 @@ fn a_copy_lists_the_logins_its_source_saved_and_runs_its_providers_actions() {
     );
     copy.open(MODEL_PROVIDERS);
     copy.wait_for_window(MODEL_PROVIDERS);
-    let presets = copy.app_act(MODEL_PROVIDERS, "list-presets", &serde_json::json!({}));
+    let providers = copy.app_act(MODEL_PROVIDERS, "read-providers", &serde_json::json!({}));
     assert!(
-        presets["answer"]["receipt"]["update"]["state"].is_string(),
-        "the copy's Model Providers ran its action: {presets}\n{}",
+        providers["answer"]["receipt"]["update"]["state"].is_string(),
+        "the copy's Model Providers ran its action: {providers}\n{}",
         copy.warnings()
     );
 }
