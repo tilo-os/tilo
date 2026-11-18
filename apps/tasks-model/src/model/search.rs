@@ -41,10 +41,11 @@ pub fn reference(number: u64) -> String {
 }
 
 /// The number a reference as it reads (`#12`) names, the inverse of
-/// [`reference()`].
+/// [`reference()`]: and the number itself, as a listing or a field shows it
+/// (`12`), which names the same issue.
 #[must_use]
 pub fn number(reference: &str) -> Option<u64> {
-    reference.trim().strip_prefix('#')?.parse().ok()
+    reference.trim().trim_start_matches('#').parse().ok()
 }
 
 fn status_name(status: crate::model::Status) -> &'static str {

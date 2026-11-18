@@ -199,6 +199,24 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
             arguments.insert(param.name.to_string(), Value::Object(reference));
         }
+        // What a parameter takes as text is sent as text: a number a person or a model writes
+        // for one (`{"issue": 1}`) is the text the app reads.
+        for param in &descriptor.params {
+            if param.ty == tilo_actions::ParamType::Text
+                && let Some(number) = arguments
+                    .get(param.name.as_ref())
+                    .filter(|value| value.is_number())
+                    .cloned()
+            {
+                arguments.insert(
+                    param.name.to_string(),
+                    Value::String(match &number {
+                        Value::Number(number) => number.to_string(),
+                        _ => String::new(),
+                    }),
+                );
+            }
+        }
         bind_choices(descriptor, &mut arguments);
         Ok(arguments)
     }

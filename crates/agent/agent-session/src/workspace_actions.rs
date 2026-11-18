@@ -30,7 +30,7 @@
 //! Document invocations serve the host user's own devices as theirs. Anyone
 //! else the workspace admits, and an agent a person's own device handed its
 //! session to (the host's own person's included), is served within bounds
-//! ([`bounded`]): in a replica of their own on their current access, an
+//! ([`bounded`]): in a replica of their own on their current access, a
 //! agent's bounded as every agent's is; what that replica offers is both
 //! what their listing shows and all the host runs for them; an action that
 //! asks first is put to the person; and nothing is saved that their access
@@ -202,7 +202,7 @@ pub struct WorkspaceActions {
 
 impl WorkspaceActions {
     /// A service mounting apps from `catalogue`; it answers once
-    /// [`Self::attach`] gives it the host's records.
+    /// [`Self::attach`] gives it the host's documents.
     #[must_use]
     pub fn new(catalogue: CatalogueFactory) -> Self {
         Self {
@@ -2050,6 +2050,17 @@ impl Worker {
                 self.catalogue
                     .get(&route.app_id)
                     .is_some_and(|app| opens_as_its_own(app, &route.document))
+            })
+            // What this service holds as a document: one another device made and this one
+            // keeps only as retained changes (a window's own document, a sealed one it cannot
+            // open) is no data of the app here, and is neither listed nor offered.
+            .filter(|route| {
+                state
+                    .engine
+                    .record(cluster_id, &route.app_id, &route.document)
+                    .ok()
+                    .flatten()
+                    .is_some()
             })
             .collect()
     }

@@ -2189,7 +2189,39 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         else {
             return None;
         };
-        Some((app_id, provider, pinned))
+        if pinned {
+            return Some((app_id, provider, pinned));
+        }
+        // What the kind names, never one of the app's other documents that happens to be first:
+        // a kind's directory lists a resource of it (`tasks.issues` is the issues' chain, and
+        // `tasks.tracker` the tracker's own document). The app's documents are asked in turn,
+        // newest first, and the first that lists the kind answers.
+        let kind = name
+            .strip_prefix(app)
+            .and_then(|rest| rest.strip_prefix('.'))?
+            .to_owned();
+        let naming = |node: &Node| node.kind == kind || node.kind.starts_with(&format!("{kind}."));
+        let mut candidates = vec![provider.clone()];
+        if let Ok((_, running)) = self.providers().await {
+            candidates.extend(
+                running
+                    .iter()
+                    .rev()
+                    .filter(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
+                    .map(|(provider, _)| provider.clone()),
+            );
+        }
+        candidates.dedup();
+        for provider in candidates {
+            let mut levels = Levels::new();
+            let Ok(level) = self.level(&provider, "", &mut levels).await else {
+                continue;
+            };
+            if level.children.iter().any(naming) {
+                return Some((app_id, provider, false));
+            }
+        }
+        Some((app_id, provider, false))
     }
 
     /// The app `parsed` names and the provider its `action` runs in, and
