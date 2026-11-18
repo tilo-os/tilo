@@ -11,6 +11,8 @@ exclude = [
     "fuzz",
     # A wasm32 library `tilolang bench --library` runs; built by its own build.sh.
     "crates/platform/tilolang-tilo/bench/imagefilter",
+    # An app's model as the WebAssembly module its package carries, and the
+    # guest side of the host's ABI it needs; built for wasm32 by build.sh.
     # The empty workspace-hack of the greeter's initramfs build (os/image/compile.sh).
     "os/initrd/workspace-hack",
     "vendor/vello",
@@ -256,6 +258,7 @@ members = [
 
     # Language
     "crates/lang/tilolang-runtime",
+    "crates/lang/tilo-model-engine",
 
     # Hosting
     "crates/server/tilo-delivery-protocol",

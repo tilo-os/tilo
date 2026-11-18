@@ -669,3 +669,26 @@ paths = [
     "tools/ci/publish/host-build.sh",
     "tools/signing/release_trust.py",
 ]
+
+[[allow]]
+reason = "The wasm engine's names for what answers a module's imports (`Host`) and what one of them answers (`HostFail`): an ABI the engine crate fixes, not Tilo's concept."
+words = ["host"]
+identifiers = ["Host", "HostFail"]
+
+[[allow]]
+reason = "The workspace service's own names for this device's identity (`inner.host`) and the state each governed workspace keeps (`governed.record`), which every writer of the service reads."
+words = ["host", "record"]
+identifiers = ["host", "record"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/packaged_model.rs"]
+
+[[allow]]
+reason = "The service's test fixture starts a certified device (`test_host`), a name its other tests share."
+words = ["host"]
+identifiers = ["test_host"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs"]
+
+[[allow]]
+reason = "The domain bytes a genesis change is hashed under, fixed before the word was retired; a different domain forks every resource created since."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/sdk/tilo-resource/src/genesis.rs"]

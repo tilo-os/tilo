@@ -42,6 +42,7 @@ mod creating;
 mod delete;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
+mod genesis;
 mod machines;
 pub use machines::WorkspaceMachines;
 mod surfaces;
@@ -80,6 +81,12 @@ pub(crate) use clock::system_time;
 mod listing;
 mod memberships;
 mod own;
+#[cfg(not(target_arch = "wasm32"))]
+mod packaged_model;
+#[cfg(not(target_arch = "wasm32"))]
+pub use packaged_model::PackagedAction;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod packaged_model_tests;
 mod pages;
 mod peer_parts;
 // The person's mail accounts and model providers, kept where their

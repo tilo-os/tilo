@@ -2072,16 +2072,9 @@ pub fn children_resource_id(parent: &DocumentId, kind: &str) -> String {
 
 /// The actor [`genesis`] makes record `id` of `workspace` under.
 fn genesis_actor_of(id: &DocumentId, kind: &ResourceType, workspace: &str) -> automerge::ActorId {
-    use sha2::Digest as _;
-    let digest = sha2::Sha256::new()
-        .chain_update(b"tilo.record.genesis\0")
-        .chain_update(id.as_str().as_bytes())
-        .chain_update(b"\0")
-        .chain_update(kind.as_str().as_bytes())
-        .chain_update(b"\0")
-        .chain_update(workspace.as_bytes())
-        .finalize();
-    automerge::ActorId::from(digest.get(..16).unwrap_or_default())
+    // One derivation of a genesis actor for every writer of it: the store
+    // here and the model modules a device executes.
+    tilo_resource::genesis::actor(id.as_str(), kind.as_str(), workspace)
 }
 
 /// The actor `author`'s mount edits a record as, when the record's writer is `resource_writer` and

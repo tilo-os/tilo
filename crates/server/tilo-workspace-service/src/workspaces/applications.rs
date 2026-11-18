@@ -7,6 +7,7 @@
 //! window of the app opens.
 
 use super::authority::WorkspaceOp;
+use super::genesis::publish_genesis;
 use super::{CollaborationError, Workspaces, system_time};
 use crate::service_authority::ServiceOperation;
 use tilo_agent_session::{AppCatalogue, ConfinedReplica, Seed};
@@ -453,36 +454,4 @@ impl Workspaces {
         self.settle(&mut governed).await?;
         Ok(true)
     }
-}
-
-/// Publish an app's `genesis` of a new `record` into `candidate` as the
-/// workspace's host: sealed under `keys` where the record's channel has them, so
-/// nothing it holds is ever written in the clear.
-fn publish_genesis(
-    candidate: &mut tilo_peer_state::StatePeer,
-    keys: Option<&super::sealed_documents::DocumentKeys>,
-    (app, record): (&str, &str),
-    genesis: Vec<u8>,
-    (key, now): (&ed25519_dalek::SigningKey, std::time::SystemTime),
-) -> Result<(), CollaborationError> {
-    if let Some(keys) = keys {
-        let changes = automerge::AutoCommit::load(&genesis)
-            .map_err(|error| CollaborationError::new(error.to_string()))?
-            .save_after(&[]);
-        super::sealed_documents::start_sealed(candidate, keys, (app, record), changes, key, now)?;
-    } else {
-        // Establish the record's ownership first, then merge the standard
-        // factory onto it: two writes of the same device, in order.
-        candidate.publication_mut().publish_document(
-            app,
-            record,
-            automerge::AutoCommit::new().save(),
-            key,
-            now,
-        )?;
-        candidate
-            .publication_mut()
-            .publish_document(app, record, genesis, key, now)?;
-    }
-    Ok(())
 }

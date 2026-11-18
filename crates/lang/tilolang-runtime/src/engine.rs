@@ -72,7 +72,7 @@ pub trait Host {
     /// Run the import a module of another ABI calls, by its module and name. `memory` is the
     /// caller's exported memory, as [`Self::import`] is given it.
     ///
-    /// The document host runs an app's model as a module of its own (`tilo_model_host`), whose
+    /// A device runs an app's model as a module of its own (`tilo-model-engine`), whose
     /// imports are the record's, not the `tl` table's. A host that answers for such an ABI
     /// names it with [`Self::guest_abi`]; that ABI's imports are linked, and each is answered
     /// here.
@@ -433,8 +433,9 @@ pub(crate) fn guest_answer(answer: GuestAnswer) -> (Option<Wasm>, Option<(u32, V
 }
 
 /// The `tl` import table, one runtime's imports: what a [`Backend::Linker`] links for a host
-/// that runs packages.
-pub(crate) type Imports = (&'static str, &'static str, &'static str, &'static str);
+/// that executes packages, and beside them the imports of an ABI another device's modules
+/// use ([`Engine::link`]).
+pub type Imports = (&'static str, &'static str, &'static str, &'static str);
 
 /// The imports [`Backend::linker`] links when no host named an ABI of its own: the `tl` table.
 fn package_imports() -> Vec<Imports> {

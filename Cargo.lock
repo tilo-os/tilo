@@ -20172,6 +20172,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-model-engine"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilolang-runtime",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-model-gateway"
 version = "0.1.0"
 dependencies = [
@@ -21174,6 +21186,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "tilo-action-policy",
  "tilo-actions",
@@ -22223,33 +22236,6 @@ dependencies = [
  "tracing",
  "url",
  "workspace-hack",
-]
-
-[[package]]
-name = "tilo-sibling-unlock"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "clap",
- "ed25519-dalek 3.0.0",
- "futures",
- "hex",
- "iroh",
- "iroh-base",
- "postcard",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-ask-password",
- "tilo-files",
- "tilo-nm",
- "tilo-seal",
- "tilo-test-env",
- "tilo-unlock-protocol",
- "tokio",
- "workspace-hack",
- "zeroize",
 ]
 
 [[package]]
@@ -23334,6 +23320,7 @@ dependencies = [
  "accounts",
  "agent-provider-config",
  "app-cli",
+ "base64 0.22.1",
  "blake3",
  "calendar",
  "chat",
@@ -23369,6 +23356,7 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "store",
+ "tasks-model",
  "tempfile",
  "test-http",
  "thiserror 2.0.21",
@@ -23398,6 +23386,7 @@ dependencies = [
  "tilo-identity-client",
  "tilo-lock",
  "tilo-mail-session",
+ "tilo-model-engine",
  "tilo-model-gateway",
  "tilo-net",
  "tilo-paths",
@@ -23424,6 +23413,7 @@ dependencies = [
  "word-processor",
  "workspace-hack",
  "zeroize",
+ "zstd",
 ]
 
 [[package]]
@@ -29167,7 +29157,6 @@ dependencies = [
  "tilo-settings-service",
  "tilo-sheets",
  "tilo-shell-surface",
- "tilo-sibling-unlock",
  "tilo-sort",
  "tilo-speaker-service",
  "tilo-spellcheck",

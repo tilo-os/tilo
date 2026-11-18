@@ -10,6 +10,12 @@ use crate::manifest::{ContinuityFacet, DEFAULT_PLATFORMS, EntrypointType, Manife
 /// when loading it.
 pub const FORMAT_PROVIDER_MODULE: &str = "provider.wasm";
 
+/// The payload file carrying an app's model: the WebAssembly module that
+/// applies the app's actions to its resources, one per app version and the
+/// same bytes on every device (`docs/architecture/apps.md` §1). A package
+/// without one is an app whose resources no key holder can apply.
+pub const MODEL_MODULE: &str = "model.wasm";
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ManifestError {
     #[error("package.version {0:?} is not valid semver: {1}")]
