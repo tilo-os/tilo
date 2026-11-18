@@ -146,6 +146,17 @@
 "workspaces" = "Workspaces";
 "works-in-this" = "Your assistant works in this workspace.";
 "own-workspace" = "Your own workspace";
+"place-server" = "Your Tilo server";
+"place-always" = "always";
+"place-always-with-one" = "always, with 1 sub-agent at work";
+"place-always-with-many" = "always, with {count} sub-agents at work";
+"place-sub-agent-one" = "1 sub-agent at work";
+"place-sub-agent-many" = "{count} sub-agents at work";
+"place-own-devices" = "Your own devices";
+"place-while-open" = "only while Tilo is open on one";
+"place-machine" = "The workspace's machine";
+"coder-in" = "{name} in {folder}";
+"coding-agent" = "A coding agent";
 "none" = "Nothing yet";
 "forget" = "Forget";
 "sign-out" = "Sign out of this device";

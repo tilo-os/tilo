@@ -579,7 +579,7 @@ public final class TiloSource: AssistantSource {
 
     /// Chat's own name for the mark that the workspace's server answers for an agent, and for
     /// the action that sets it.
-    private static let answeredByServer = "on_host"
+    static let answeredByServer = "on_host"
     private static let answersFor = "set-agent-on-host"
 
     /// Have the workspace's server answer for an agent. Where the ask goes unanswered it is
@@ -1738,6 +1738,7 @@ public final class TiloSource: AssistantSource {
             if let record = all.first(where: { $0["id"]?.string == assistant }) {
                 seen.usage = assistantDay.usage(of: record, before: seen.usage)
                 seen.isOn = TiloSource.variant(record["state"]) == "active"
+                seen.places = AssistantPlaces.places(among: all, assistant: assistant, keptBy: me)
                 // A day turns with nothing written anywhere: what was counted is read again then.
                 assistantDay.atNextDay { [weak self] in await self?.survey(.records) }
             }

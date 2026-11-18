@@ -71,3 +71,69 @@ final class AssistantDay {
         return Int(exactly: number.rounded())
     }
 }
+
+/// Where the assistant and its sub-agents work, as the assistant view says it, read from the
+/// workspace's agents as Chat keeps them. A place is named only where an agent's own item puts
+/// that agent: nothing is assumed of a place no item says.
+///
+/// An agent's item says whether the workspace's server works it, around the clock and with
+/// every device of its person off, or its keeper's own devices do. A sub-agent is worked by
+/// the server's own loop, unless its item holds what a coding agent's holds (`sub.coding`):
+/// then a coding harness works it in the workspace's machine, and the item says the harness's
+/// name and the folder it was started in.
+@MainActor
+enum AssistantPlaces {
+    /// The places, the assistant's own first. A sub-agent counts while it is at work: one that
+    /// is done, failed or stopped works nowhere.
+    static func places(among all: [JSON], assistant: String?, keptBy person: String) -> [Supervision.Place] {
+        // An agent that is no longer active works nowhere, and neither does what it started.
+        guard let assistant, let own = all.first(where: { $0["id"]?.string == assistant }), variant(own["state"]) == "active"
+        else { return [] }
+        var onServer = 0
+        var coders: [String] = []
+        for agent in all {
+            guard let sub = agent["sub"], !sub.isNull, ChatMember(agent["keeper"])?.id == person, variant(agent["state"]) == "active",
+                  ["working", "needs_person"].contains(variant(sub["stands"]) ?? "working")
+            else { continue }
+            if let coding = sub["coding"], !coding.isNull {
+                coders.append(coder(coding))
+            } else {
+                onServer += 1
+            }
+        }
+        typealias W = AssistantWords
+        var places: [Supervision.Place] = []
+        if own[TiloSource.answeredByServer]?.bool == true {
+            let detail = onServer == 0 ? W.placeAlways.said : W.counted(onServer, one: .placeAlwaysWithOne, many: .placeAlwaysWithMany)
+            places.append(.init(name: server, detail: detail))
+        } else {
+            places.append(.init(name: W.placeOwnDevices.said, detail: W.placeWhileOpen.said))
+            if onServer > 0 {
+                places.append(.init(name: server, detail: W.counted(onServer, one: .placeSubAgentOne, many: .placeSubAgentMany)))
+            }
+        }
+        if !coders.isEmpty {
+            var said = Array(coders.prefix(2))
+            if coders.count > 2 { said.append(W.moreCount.said(["count": String(coders.count - 2)])) }
+            places.append(.init(name: machine, detail: said.joined(separator: " · ")))
+        }
+        return places
+    }
+
+    /// The two places by name, as a line begins with them.
+    private static var server: String { AssistantWords.placeServer.said }
+    private static var machine: String { AssistantWords.placeMachine.said }
+
+    /// A coding agent as a person reads one: its harness by the name its item says, and the
+    /// folder it was started in.
+    private static func coder(_ coding: JSON) -> String {
+        let name = coding["harness_name"]?.string.flatMap { $0.isEmpty ? nil : $0 } ?? AssistantWords.codingAgent.said
+        let folder = [coding["repository"]?.string, coding["directory"]?.string].compactMap { $0 }.first { !$0.isEmpty }
+        return folder.map { AssistantWords.coderIn.said(["name": name, "folder": $0]) } ?? name
+    }
+
+    /// An enum's case, however the read spells it: the bare word, or `{"$variant": word}`.
+    private static func variant(_ value: JSON?) -> String? {
+        value?.string ?? value?["$variant"]?.string
+    }
+}
