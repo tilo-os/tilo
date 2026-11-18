@@ -11,3 +11,5 @@ mod blob_reference;
 mod concurrent_block_text;
 #[path = "independent_documents.rs"]
 mod independent_documents;
+#[path = "read_in_order.rs"]
+mod read_in_order;

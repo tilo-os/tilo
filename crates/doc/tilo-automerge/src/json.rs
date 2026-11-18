@@ -12,7 +12,12 @@
 //! already holds makes no operation. [`read_at`] reads a subtree as it was at
 //! given heads, bounded by a limit, for a reader outside the app that cannot
 //! run the app's own model beside its keys.
+//!
+//! [`read_document`] reads a whole document for such a reader, and says a rich
+//! text's paragraphs as lists in their order ([`crate::rich_text`]): their
+//! places are keys of bytes, which JSON does not hold.
 
+use crate::rich_text;
 use automerge::transaction::Transactable;
 use automerge::{AutomergeError, ChangeHash, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value};
 use serde_json::{Map, Number};
@@ -120,11 +125,49 @@ pub fn scalar_json(scalar: &ScalarValue) -> Result<serde_json::Value, JsonError>
 
 type Heads<'a> = Option<&'a [ChangeHash]>;
 
-/// How a read goes: how many values it may still produce, and whether bytes read as their count
-/// rather than as an error.
+/// How a read goes: how many values it may still produce, whether bytes read as their count
+/// rather than as an error, and, for a read that says a rich text's paragraphs as lists, where
+/// in one it is.
 struct Budget {
     left: Option<usize>,
     bytes_counted: bool,
+    /// `None` for a read that leaves a rich text as it is kept.
+    rich_text: Option<Within>,
+}
+
+/// Where a read that says a rich text's paragraphs as lists is ([`crate::rich_text`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Within {
+    /// Outside any rich text, where a map may be one.
+    Plain,
+    /// At a rich text's own map.
+    RichText,
+    /// At a map of paragraphs by id, which reads as their list.
+    Paragraphs,
+    /// At one paragraph, which may hold paragraphs.
+    Paragraph,
+    /// At a rich text's notes or its comments, by id.
+    Entities,
+    /// At one note or one comment, whose lines are paragraphs.
+    Entity,
+    /// Elsewhere in a rich text: its styles, a paragraph's attributes.
+    Aside,
+}
+
+impl Within {
+    /// Where the value under `key` of a map that is here is.
+    fn below(self, key: &str) -> Self {
+        use rich_text::{BLOCKS, CHILDREN, COMMENTS, FOOTER, HEADER, NOTES};
+        match (self, key) {
+            (Self::Plain, _) => Self::Plain,
+            (Self::RichText, BLOCKS | HEADER | FOOTER)
+            | (Self::Entity, BLOCKS)
+            | (Self::Paragraph, CHILDREN) => Self::Paragraphs,
+            (Self::RichText, NOTES | COMMENTS) => Self::Entities,
+            (Self::Entities, _) => Self::Entity,
+            _ => Self::Aside,
+        }
+    }
 }
 
 fn spend(budget: &mut Budget) -> bool {
@@ -206,18 +249,32 @@ fn object_of<D: ReadDoc + ?Sized>(
     Ok(match kind {
         ObjType::Text => serde_json::Value::String(text(doc, id, heads)?),
         ObjType::Map | ObjType::Table => {
+            let names = keys(doc, id, heads);
+            let entered = budget.rich_text;
+            let here = if entered == Some(Within::Plain) && is_rich_text(doc, id, &names, heads)? {
+                Some(Within::RichText)
+            } else {
+                entered
+            };
             let mut fields = Map::new();
-            for key in keys(doc, id, heads) {
+            for key in names {
                 if !spend(budget) {
                     break;
                 }
                 let Some((value, inner)) = get(doc, id, key.as_str(), heads)? else {
                     continue;
                 };
-                let read =
-                    value_of(doc, &value, &inner, heads, budget).map_err(|error| error.at(&key))?;
+                budget.rich_text = here.map(|here| here.below(&key));
+                let read = match (&value, budget.rich_text) {
+                    (Value::Object(ObjType::Map), Some(Within::Paragraphs)) => {
+                        paragraphs_of(doc, &inner, heads, budget)
+                    }
+                    _ => value_of(doc, &value, &inner, heads, budget),
+                }
+                .map_err(|error| error.at(&key))?;
                 fields.insert(key, read);
             }
+            budget.rich_text = entered;
             serde_json::Value::Object(fields)
         }
         ObjType::List => {
@@ -238,6 +295,66 @@ fn object_of<D: ReadDoc + ?Sized>(
     })
 }
 
+/// Whether the map `id`, whose keys are `names`, is a rich text: it names its layout as one.
+fn is_rich_text<D: ReadDoc + ?Sized>(
+    doc: &D,
+    id: &ObjId,
+    names: &[String],
+    heads: Heads<'_>,
+) -> Result<bool, AutomergeError> {
+    if !names.iter().any(|name| name == rich_text::SCHEMA_KEY) {
+        return Ok(false);
+    }
+    Ok(match get(doc, id, rich_text::SCHEMA_KEY, heads)? {
+        Some((Value::Scalar(layout), _)) => {
+            matches!(layout.as_ref(), ScalarValue::Str(layout) if layout.as_str() == rich_text::SCHEMA_ID)
+        }
+        _ => false,
+    })
+}
+
+/// The paragraphs the map `id` keeps by id, as their list in their order
+/// ([`rich_text::paragraph_cmp`]): each as it is kept, with its id beside its fields and
+/// without its place, which the list's order says. What the map holds that is no paragraph
+/// (the mark of one taken out, a map with no place) is left out, as the document's own model
+/// leaves it out.
+fn paragraphs_of<D: ReadDoc + ?Sized>(
+    doc: &D,
+    id: &ObjId,
+    heads: Heads<'_>,
+    budget: &mut Budget,
+) -> Result<serde_json::Value, JsonError> {
+    let mut placed: Vec<(Vec<u8>, String, ObjId)> = Vec::new();
+    for key in keys(doc, id, heads) {
+        let Some((Value::Object(ObjType::Map), paragraph)) = get(doc, id, key.as_str(), heads)?
+        else {
+            continue;
+        };
+        let Some((Value::Scalar(place), _)) = get(doc, &paragraph, rich_text::ORDER, heads)? else {
+            continue;
+        };
+        if let ScalarValue::Bytes(place) = place.as_ref() {
+            placed.push((place.clone(), key, paragraph));
+        }
+    }
+    placed.sort_by(|a, b| rich_text::paragraph_cmp((&a.0, &a.1), (&b.0, &b.1)));
+    let mut paragraphs = Vec::with_capacity(placed.len());
+    for (_, key, paragraph) in placed {
+        if !spend(budget) {
+            break;
+        }
+        budget.rich_text = Some(Within::Paragraph);
+        let mut read = object_of(doc, &paragraph, ObjType::Map, heads, budget)
+            .map_err(|error| error.at(&key))?;
+        if let serde_json::Value::Object(fields) = &mut read {
+            fields.remove(rich_text::ORDER);
+            fields.insert(rich_text::ID.to_owned(), serde_json::Value::String(key));
+        }
+        paragraphs.push(read);
+    }
+    Ok(serde_json::Value::Array(paragraphs))
+}
+
 pub fn read_value<D: ReadDoc + ?Sized>(
     doc: &D,
     value: &Value<'_>,
@@ -251,16 +368,19 @@ pub fn read_value<D: ReadDoc + ?Sized>(
         &mut Budget {
             left: None,
             bytes_counted: false,
+            rich_text: None,
         },
     )
 }
 
 /// The JSON value of the whole document as it is now: its maps, lists, text
-/// as strings and scalars, bytes as their count.
+/// as strings and scalars, bytes as their count, and the paragraphs of a rich
+/// text as lists in their order, each with its id ([`crate::rich_text`]).
 pub fn read_document<D: ReadDoc + ?Sized>(doc: &D) -> Result<serde_json::Value, JsonError> {
     let mut budget = Budget {
         left: None,
         bytes_counted: true,
+        rich_text: Some(Within::Plain),
     };
     object_of(doc, &automerge::ROOT, ObjType::Map, None, &mut budget)
 }
@@ -275,6 +395,7 @@ pub fn read_at<D: ReadDoc + ?Sized>(
     let mut budget = Budget {
         left: limit,
         bytes_counted: false,
+        rich_text: None,
     };
     object_of(doc, id, kind, Some(heads), &mut budget)
 }
@@ -626,5 +747,91 @@ mod tests {
             eprintln!("case: {case}");
             run();
         }
+    }
+
+    /// One paragraph kept under `id` in the map `paragraphs`, at `place`.
+    fn paragraph(
+        doc: &mut AutoCommit,
+        paragraphs: &ObjId,
+        id: &str,
+        place: &[u8],
+        (kind, words): (&str, &str),
+    ) -> ObjId {
+        let block = doc.put_object(paragraphs, id, ObjType::Map).unwrap();
+        doc.put(&block, "order", place.to_vec()).unwrap();
+        doc.put(&block, "kind", kind).unwrap();
+        let text = doc.put_object(&block, "text", ObjType::Text).unwrap();
+        doc.splice_text(&text, 0, 0, words).unwrap();
+        block
+    }
+
+    #[test]
+    fn a_rich_texts_paragraphs_read_as_lists_in_their_order() {
+        let mut doc = AutoCommit::new();
+        // Outside a rich text a map keeps its keys, whatever it is called.
+        let plain = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
+        paragraph(&mut doc, &plain, "z", &[1], ("paragraph", "no rich text's"));
+        let body = doc.put_object(ROOT, "body", ObjType::Map).unwrap();
+        doc.put(&body, "schema", "tilo.richtext").unwrap();
+        let blocks = doc.put_object(&body, "blocks", ObjType::Map).unwrap();
+        // Written c, a, b. A key is a fraction, so a shorter one is not a smaller one, and
+        // two paragraphs given one key read by their ids.
+        let table = paragraph(&mut doc, &blocks, "c", &[128, 1], ("table", ""));
+        paragraph(&mut doc, &blocks, "a", &[128], ("heading", "First"));
+        paragraph(&mut doc, &blocks, "b", &[128, 0], ("paragraph", "Second"));
+        // What is no paragraph is left out, as the model leaves it out: the mark of one
+        // taken out, and a map that has no place.
+        doc.put(&blocks, "~deleted:d", true).unwrap();
+        let placeless = doc.put_object(&blocks, "e", ObjType::Map).unwrap();
+        doc.put(&placeless, "kind", "paragraph").unwrap();
+        // The paragraphs a paragraph holds.
+        let cells = doc.put_object(&table, "children", ObjType::Map).unwrap();
+        paragraph(&mut doc, &cells, "y", &[200], ("cell", "right"));
+        paragraph(&mut doc, &cells, "x", &[100], ("cell", "left"));
+        // A header nothing was written into is a list of none, and a style that happens to
+        // be called as the header is keeps its keys.
+        doc.put_object(&body, "header", ObjType::Map).unwrap();
+        let styles = doc.put_object(&body, "styles", ObjType::Map).unwrap();
+        let style = doc.put_object(&styles, "header", ObjType::Map).unwrap();
+        doc.put(&style, "name", "Header").unwrap();
+        // A note's own paragraphs.
+        let notes = doc.put_object(&body, "notes", ObjType::Map).unwrap();
+        let note = doc.put_object(&notes, "n1", ObjType::Map).unwrap();
+        doc.put(&note, "kind", "footnote").unwrap();
+        let lines = doc.put_object(&note, "blocks", ObjType::Map).unwrap();
+        paragraph(&mut doc, &lines, "k", &[9], ("paragraph", "then this"));
+        paragraph(&mut doc, &lines, "m", &[3], ("paragraph", "see this"));
+        doc.commit();
+
+        assert_eq!(
+            read_document(&doc).unwrap(),
+            serde_json::json!({
+                "blocks": {"z": {
+                    "order": {"bytes": 1}, "kind": "paragraph", "text": "no rich text's",
+                }},
+                "body": {
+                    "schema": "tilo.richtext",
+                    "blocks": [
+                        {"id": "a", "kind": "heading", "text": "First"},
+                        {"id": "b", "kind": "paragraph", "text": "Second"},
+                        {"id": "c", "kind": "table", "text": "", "children": [
+                            {"id": "x", "kind": "cell", "text": "left"},
+                            {"id": "y", "kind": "cell", "text": "right"},
+                        ]},
+                    ],
+                    "header": [],
+                    "styles": {"header": {"name": "Header"}},
+                    "notes": {"n1": {"kind": "footnote", "blocks": [
+                        {"id": "m", "kind": "paragraph", "text": "see this"},
+                        {"id": "k", "kind": "paragraph", "text": "then this"},
+                    ]}},
+                },
+            })
+        );
+        // A part of a document read as it was at given heads is read as before: bytes have
+        // no JSON value there, a paragraph's place among them.
+        let heads = doc.get_heads();
+        let error = read_at(&doc, &body, &heads, None).unwrap_err();
+        assert_eq!(error.to_string(), "blocks.a.order: expected a JSON value");
     }
 }

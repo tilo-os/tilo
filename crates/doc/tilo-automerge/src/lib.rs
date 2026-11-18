@@ -15,6 +15,7 @@ pub mod heap;
 pub mod items;
 pub mod json;
 pub mod read;
+pub mod rich_text;
 pub mod shared;
 pub mod whole;
 mod write;

@@ -117,7 +117,7 @@ struct OrderKey {
 
 impl Ord for OrderKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        tilo_resource::order::bytes::cmp(&self.key, &other.key).then_with(|| self.id.cmp(&other.id))
+        tilo_automerge::rich_text::paragraph_cmp((&*self.key, &*self.id), (&*other.key, &*other.id))
     }
 }
 impl PartialOrd for OrderKey {
@@ -1256,7 +1256,10 @@ fn ordered_blocks(doc: &AutoCommit, container: &ObjId) -> Vec<OrderedBlock> {
         })
         .collect();
     v.compact_sort_by(|a, b| {
-        tilo_resource::order::bytes::cmp(&a.order, &b.order).then_with(|| a.id.cmp(&b.id))
+        tilo_automerge::rich_text::paragraph_cmp(
+            (a.order.as_slice(), a.id.as_str()),
+            (b.order.as_slice(), b.id.as_str()),
+        )
     });
     v
 }
