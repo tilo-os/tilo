@@ -78,6 +78,12 @@ for module in 91tilo-rollback 92tilo-sibling-unlock; do
 done
 [[ -d $root/usr/share/tilo/pcr-predictions ]] \
   || die 'no /usr/share/tilo/pcr-predictions, where a signed PCR prediction is read from'
+# The installed machine boots the initramfs this image carries: without one built
+# with the unlock module, the kernel sees a LUKS device it cannot open.
+initrd=$(echo "$root"/usr/lib/modules/*/initramfs.img)
+[[ -s $initrd ]] || die 'the image carries no initramfs, so its root cannot be opened at boot'
+grep -qx tilo-rollback "$root/usr/lib/tilo/initramfs-modules.txt" \
+  || die 'the initramfs was not built with the unlock module (91tilo-rollback)'
 for t in cryptsetup tpm2_createprimary; do
   inside sh -c "command -v $t" >/dev/null || die "no $t, which the early-boot unlock runs"
 done
