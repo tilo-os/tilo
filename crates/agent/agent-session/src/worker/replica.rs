@@ -7,7 +7,7 @@ use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_actions::ActionOutput;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
-use tilo_automerge_isolate::{Applied, Dependencies};
+use tilo_automerge_isolate::{Applied, Deferred, Dependencies};
 use tilo_content::ContentStore;
 use tilo_server_protocol::live::LiveAnchor;
 use ui::resource::DocumentId;
@@ -80,8 +80,11 @@ struct Inner {
     /// the next take returns them first.
     kept: Vec<u8>,
     /// The records the app keeps beside this one that are held with it
-    /// (the parts of its chain), each mirrored as this one is.
-    beside: BTreeMap<DocumentId, AutoCommit>,
+    /// (the parts of its chain), each mirrored as this one is. What the
+    /// worker writes to them is admitted as it is taken and applied here
+    /// only once the mirror is read: an action that writes a part is
+    /// followed by the next one, rarely by a read of the part here.
+    beside: BTreeMap<DocumentId, Deferred>,
     /// An operation ran since the last take of the records beside.
     beside_dirty: bool,
     /// Content the worker holds, put again into a worker that replaces it.
@@ -396,11 +399,15 @@ impl ConfinedReplica {
                 // The records held beside it go back to the new worker as
                 // the mirrors hold them.
                 for (record, mirror) in &mut inner.beside {
+                    let bytes = mirror
+                        .settled()
+                        .map_err(|error| AppError::Merge(error.to_string()))?
+                        .save();
                     match process
                         .call(&Request::ApplyDocument {
                             record: record.as_str().to_owned(),
                             snapshot: true,
-                            bytes: mirror.save(),
+                            bytes,
                         })
                         .map_err(worker)?
                     {
@@ -581,47 +588,35 @@ impl ConfinedReplica {
     }
 
     /// The keys `mutation`, changes this replica took from its worker and
-    /// admitted into `record`, writes there: read from the changes' own
-    /// operations where the record holds them, so the admission that checked
+    /// admitted into the document `id`, writes there: read from the changes' own
+    /// operations where it holds them, so the admission that checked
     /// them names what they touched and no worker is asked. `None` for changes
-    /// the record does not hold.
+    /// it does not hold.
     pub fn written_keys(
         &self,
-        record: &DocumentId,
+        id: &DocumentId,
         mutation: &DocumentMutation,
     ) -> Option<Vec<Vec<String>>> {
         let mut inner = self.lock();
-        let doc = if record == &self.record {
-            &mut inner.mirror
+        let written = if id == &self.record {
+            own_keys_written(&mut inner.mirror, mutation)
         } else {
-            inner.beside.get_mut(record)?
+            beside_keys_written(inner.beside.get_mut(id)?, mutation)
         };
-        let changes: Vec<automerge::Change> = match mutation {
-            // The changes as they came, each one the document holds.
-            DocumentMutation::Incremental(bytes) => {
-                let changes = tilo_automerge_isolate::changes(bytes)?;
-                let held = doc.committed_document();
-                changes
-                    .iter()
-                    .all(|change| held.get_change_meta_by_hash(&change.hash()).is_some())
-                    .then_some(changes)?
-            }
-            // A record it started whole is every change it holds.
-            DocumentMutation::Snapshot(_) => doc.get_changes(&[]),
-        };
-        ui::framework::keys_written(doc, &changes)
+        drop(inner);
+        written
     }
 
-    /// The heads `record` stands at here, sorted: this one, or one held
+    /// The heads the document `id` stands at here, sorted: this one, or one held
     /// beside it. What a merge that follows it takes only the changes after.
-    pub fn heads_of(&self, record: &DocumentId) -> Option<Vec<[u8; 32]>> {
+    pub fn heads_of(&self, id: &DocumentId) -> Option<Vec<[u8; 32]>> {
         let mut inner = self.lock();
-        let doc = if record == &self.record {
-            &mut inner.mirror
+        let heads = if id == &self.record {
+            inner.mirror.get_heads()
         } else {
-            inner.beside.get_mut(record)?
+            inner.beside.get_mut(id)?.heads()
         };
-        let mut heads: Vec<[u8; 32]> = doc.get_heads().into_iter().map(|head| head.0).collect();
+        let mut heads: Vec<[u8; 32]> = heads.into_iter().map(|head| head.0).collect();
         heads.sort_unstable();
         Some(heads)
     }
@@ -1217,20 +1212,22 @@ impl ConfinedReplica {
             Some(mirror) if !snapshot => {
                 // What the part holds already (this replica's own write
                 // coming back from the workspace) is no change to it.
-                if holds_all(mirror, bytes) {
+                if tilo_automerge_isolate::change_hashes(bytes)
+                    .is_some_and(|carried| carried.iter().all(|hash| mirror.holds(hash)))
+                {
                     return Ok(());
                 }
-                admit_incoming(mirror, bytes)?;
+                admit_beside_incoming(mirror, bytes)?;
                 None
             }
             Some(mirror) => {
                 let mut candidate = mirror.clone();
-                admit_incoming(&mut candidate, bytes)?;
+                admit_beside_incoming(&mut candidate, bytes)?;
                 Some(candidate)
             }
             None if snapshot => {
-                let mut candidate = AutoCommit::new();
-                admit_incoming(&mut candidate, bytes)?;
+                let mut candidate = Deferred::default();
+                admit_beside_incoming(&mut candidate, bytes)?;
                 Some(candidate)
             }
             None => return Ok(()),
@@ -1310,7 +1307,7 @@ impl ConfinedReplica {
     /// on top of it.
     fn admit_beside(
         &self,
-        beside: &mut BTreeMap<DocumentId, AutoCommit>,
+        beside: &mut BTreeMap<DocumentId, Deferred>,
         record: &str,
         snapshot: bool,
         bytes: Vec<u8>,
@@ -1325,18 +1322,16 @@ impl ConfinedReplica {
             (true, None) => {
                 let mirror = tilo_automerge_isolate::load(&bytes)
                     .map_err(|error| AppError::Merge(error.to_string()))?;
-                beside.insert(record.clone(), mirror);
+                beside.insert(record.clone(), Deferred::from(mirror));
                 Ok((record, DocumentMutation::Snapshot(bytes)))
             }
-            (false, Some(mirror)) => {
-                match tilo_automerge_isolate::apply(mirror, &bytes, Dependencies::RequireComplete) {
-                    Ok(Applied::Changed(_)) => Ok((record, DocumentMutation::Incremental(bytes))),
-                    Ok(Applied::MissingDependencies) => Err(AppError::Merge(
-                        "the worker's change builds on nothing the part holds".into(),
-                    )),
-                    Err(error) => Err(AppError::Merge(error.to_string())),
-                }
-            }
+            (false, Some(mirror)) => match mirror.admit(&bytes, Dependencies::RequireComplete) {
+                Ok(Applied::Changed(_)) => Ok((record, DocumentMutation::Incremental(bytes))),
+                Ok(Applied::MissingDependencies) => Err(AppError::Merge(
+                    "the worker's change builds on nothing the part holds".into(),
+                )),
+                Err(error) => Err(AppError::Merge(error.to_string())),
+            },
             _ => Err(worker_error(
                 "the worker replaced a part it did not start, or changed one it does not hold",
             )),
@@ -1356,34 +1351,82 @@ impl ConfinedReplica {
         self.lock().beside.keys().cloned().collect()
     }
 
-    /// Read `record` as the supervisor holds it: this one, or one held
-    /// beside it. `None` for a record not held here.
+    /// Read the document `id` as the supervisor holds it: this one, or one held
+    /// beside it. `None` for one not held here.
     pub fn read_resource<R>(
         &self,
-        record: &DocumentId,
+        id: &DocumentId,
         read: impl FnOnce(&AutoCommit) -> R,
     ) -> Option<R> {
-        let inner = self.lock();
-        if record == &self.record {
-            return Some(read(&inner.mirror));
-        }
-        inner.beside.get(record).map(read)
+        let mut inner = self.lock();
+        let read = if id == &self.record {
+            Some(read(&inner.mirror))
+        } else {
+            let mirror = inner.beside.get_mut(id)?.settled().ok()?;
+            Some(read(mirror))
+        };
+        drop(inner);
+        read
     }
 
-    /// [`Self::read_resource`] through the record's history.
+    /// [`Self::read_resource`] through the document's history.
     pub fn read_document_history<R>(
         &self,
-        record: &DocumentId,
+        id: &DocumentId,
         read: impl FnOnce(&automerge::Automerge) -> R,
     ) -> Option<R> {
         let mut inner = self.lock();
-        if record == &self.record {
-            return Some(read(inner.mirror.document()));
+        let read = if id == &self.record {
+            Some(read(inner.mirror.document()))
+        } else {
+            let mirror = inner.beside.get_mut(id)?.settled().ok()?;
+            Some(read(mirror.document()))
+        };
+        drop(inner);
+        read
+    }
+}
+
+/// [`ConfinedReplica::written_keys`] of the held document's own `mirror`.
+fn own_keys_written(doc: &mut AutoCommit, mutation: &DocumentMutation) -> Option<Vec<Vec<String>>> {
+    let changes: Vec<automerge::Change> = match mutation {
+        // The changes as they came, each one the document holds.
+        DocumentMutation::Incremental(bytes) => {
+            let changes = tilo_automerge_isolate::changes(bytes)?;
+            let held = doc.committed_document();
+            changes
+                .iter()
+                .all(|change| held.get_change_meta_by_hash(&change.hash()).is_some())
+                .then_some(changes)?
         }
-        inner
-            .beside
-            .get_mut(record)
-            .map(|mirror| read(mirror.document()))
+        // A record it started whole is every change it holds.
+        DocumentMutation::Snapshot(_) => doc.get_changes(&[]),
+    };
+    ui::framework::keys_written(doc, &changes)
+}
+
+/// [`ConfinedReplica::written_keys`] of a part's `mirror`: read against what
+/// the changes build on, so what waits to be applied is applied only for a
+/// change that writes to what another waiting change made.
+fn beside_keys_written(
+    mirror: &mut Deferred,
+    mutation: &DocumentMutation,
+) -> Option<Vec<Vec<String>>> {
+    match mutation {
+        DocumentMutation::Incremental(bytes) => {
+            let changes = tilo_automerge_isolate::changes(bytes)?;
+            if !changes.iter().all(|change| mirror.holds(&change.hash())) {
+                return None;
+            }
+            ui::framework::keys_written(mirror.unsettled().0, &changes)
+                .or_else(|| ui::framework::keys_written(mirror.settled().ok()?, &changes))
+        }
+        // A part it started whole is every change it holds.
+        DocumentMutation::Snapshot(_) => {
+            let doc = mirror.settled().ok()?;
+            let changes = doc.get_changes(&[]);
+            ui::framework::keys_written(doc, &changes)
+        }
     }
 }
 
@@ -1395,6 +1438,18 @@ fn admit_incoming(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), AppError> {
         return Ok(());
     }
     tilo_automerge_isolate::apply(doc, bytes, Dependencies::RetainOrphans)
+        .map(|_| ())
+        .map_err(|error| AppError::Merge(error.to_string()))
+}
+
+/// [`admit_incoming`] to a part's mirror, where changes it can wait for
+/// until the mirror is read wait.
+fn admit_beside_incoming(mirror: &mut Deferred, bytes: &[u8]) -> Result<(), AppError> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    mirror
+        .admit(bytes, Dependencies::RetainOrphans)
         .map(|_| ())
         .map_err(|error| AppError::Merge(error.to_string()))
 }

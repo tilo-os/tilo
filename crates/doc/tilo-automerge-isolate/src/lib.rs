@@ -27,6 +27,7 @@
 //! page, to a copy that replaces the document on success.
 
 pub mod away;
+mod deferred;
 mod engine;
 #[cfg(target_os = "linux")]
 mod pool;
@@ -41,6 +42,8 @@ mod worker;
 use std::time::Duration;
 
 use automerge::AutoCommit;
+
+pub use deferred::Deferred;
 
 #[derive(Clone, Debug)]
 pub struct Limits {
