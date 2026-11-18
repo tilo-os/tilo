@@ -93,8 +93,16 @@ rollback_system_is_healthy() {
       return 1
       ;;
   esac
-  if ! systemctl is-active --quiet greetd.service; then
-    warn "greetd is not active — the session never came up, so this generation is not confirmed"
+  # The unit whose being in service says this machine does its job is the one
+  # its boot is judged by: greetd on a desktop, the server's probe on a server,
+  # an always-on board's own session. tilo-boot-health names it in its
+  # configuration, so this reads it from there rather than knowing each image.
+  local unit
+  unit="$(systemctl show -p Environment --value tilo-boot-health.service 2>/dev/null \
+          | tr ' ' '\n' | sed -n 's/^TILO_BOOT_HEALTH_UNIT=//p' | tail -1)"
+  unit="${unit:-greetd.service}"
+  if ! systemctl is-active --quiet "$unit"; then
+    warn "$unit is not active — this machine never came up doing its job, so this generation is not confirmed"
     return 1
   fi
   return 0

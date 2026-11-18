@@ -1,31 +1,37 @@
 #!/usr/bin/env bash
-# The server image proves itself by booting, in a VM: the machine comes up
-# serving (the hosted-VM service binds its socket, the boot judges itself, an
-# update stages through the verified path), and an update that breaks the server
-# rolls itself back without anyone at the machine.
+# The server image proves itself by booting, in a VM: the machine boots its
+# signed UKI under Secure Boot and refuses one whose command line was edited or
+# that nobody signed, comes up serving (the hosted-VM service binds its socket,
+# the boot judges itself, an update stages through the verified path), an
+# update that breaks the server rolls itself back without anyone at the machine,
+# and an update from a registry is verified before it stages.
 #
-# The disk is the image the check image-host built, installed the way the
-# desktop's dev disk is (os/dev/build-image.sh, bootc install to-filesystem) and
-# onto a LUKS2 root with a LUKS2 store, the layout the installer makes
-# (TILO_ENCRYPT_INSTALL=1). That install opens the volume through device-mapper,
-# which this check's micro-VM has not, so it runs in a guest of its own, booted
-# by the same VM harness with a software TPM; the machine under test then boots
-# that disk with the same TPM, and the recovery key the install handed over is
-# what opens it until the image carries a signed boot chain for a TPM keyslot.
-# The update staged on it is the same image with one more layer, so bootc sees a
-# different deployment; os/tests/boot_assessment_rollback.sh then stages it,
-# breaks only it and reboots until the boot loader has spent its tries and gone
-# back, answering each boot's unlock prompt. The server image runs no sshd, so
-# every step is driven at the serial console, which is also how a person reaches
-# it (os/tests/serial_runner.sh).
+# The disk is the image seal-host sealed, its boot chain signed as a release
+# signs it (os-release.sh sign-boot, host-seal.sh apply) with throwaway EFI and
+# PCR keys, installed the way the desktop's dev disk is (os/dev/build-image.sh,
+# bootc install to-filesystem) onto a LUKS2 root with a LUKS2 store, the layout
+# the installer makes (TILO_ENCRYPT_INSTALL=1). That install opens the volume
+# through device-mapper, which this check's micro-VM has not, so it runs in a
+# guest of its own, booted by the same VM harness with a software TPM; the
+# machine under test then boots that disk with the same TPM, under firmware that
+# enforces Secure Boot with the throwaway EFI certificate as its only key, and
+# the recovery key the install handed over is what opens it.
+# The update staged on it is the same image with one more layer, sealed and
+# signed the same way, so bootc sees a different deployment the firmware still
+# accepts; os/tests/boot_assessment_rollback.sh then stages it, breaks only it
+# and reboots until the boot loader has spent its tries and gone back, answering
+# each boot's unlock prompt. The server image runs no sshd, so every step is
+# driven at the serial console, which is also how a person reaches it
+# (os/tests/serial_runner.sh).
 #
 # The record of every boot lands in /target/host-assurance.
 set -euo pipefail
+. tools/ci/publish/lib.sh
 
 arch=x86_64
 work=/var/tmp/host-assurance
 out=${CARGO_TARGET_DIR:-/target}/host-assurance
-pub=/target/publish/host
+sealed=/target/publish/host-sealed
 update_ref=localhost/tilo-host:assurance-update
 
 # Where the disk's account comes from, and what the console runner signs in as
@@ -66,8 +72,8 @@ python3 os/dev/probe-kvm.py "$arch" || {
 rm -rf "$work" "$out"
 mkdir -p "$work" "$out"
 target=$(git rev-parse HEAD)
-[[ -s $pub/image.oci.tar && -s $pub/digest ]] \
-  || die "no server image in $pub: the check needs image-host"
+[[ -s $sealed/image.oci.tar && -s $sealed/digest && -s $sealed/boot/message.bin ]] \
+  || die "no sealed server image in $sealed: the check needs seal-host"
 
 modprobe fuse 2>/dev/null || true
 modprobe loop 2>/dev/null || true
@@ -78,7 +84,7 @@ losetup --find >/dev/null
 say 'install the server image'
 # What this step is given and what it has to put it in, so a failure here says
 # which of the two ran out rather than only that the step died.
-printf 'image archive: %s bytes\n' "$(stat -c %s "$pub/image.oci.tar")" >&2
+printf 'sealed image archive: %s bytes\n' "$(stat -c %s "$sealed/image.oci.tar")" >&2
 df -h /var /tmp /target 2>&1 >&2 || true
 free -m >&2 || true
 # A command whose failure must be readable: its stderr goes to the console as
@@ -93,6 +99,22 @@ loud() {
 # sandbox last pointed TMPDIR.
 export TMPDIR=$work/tmp
 loud mkdir -p "$TMPDIR" || die "cannot make $TMPDIR"
+scratch=$TMPDIR
+
+# The boot chain signed as a release signs it (os-release.sh sign-boot, host-seal.sh apply), with
+# throwaway EFI and PCR keys made here: the firmware below trusts those keys and nothing else.
+export TILO_BOOT_SIGNER_DRY_RUN=$work/boot-keys TILO_BOOT_SIGNING_DRY_RUN=1
+signed_image() {  # SEALED OUT: SEALED's boot chain signed, the image into OUT
+  bash tools/ci/publish/os-release.sh sign-boot "$1" "$work/boot-signed" 2> >(tee /dev/console >&2) \
+    || die "could not sign the boot chain of $1"
+  bash tools/ci/publish/host-seal.sh apply "$1" "$work/boot-signed" "$2" 2> >(tee /dev/console >&2) \
+    || die "could not add the signed boot chain to $1"
+  rm -rf "$work/boot-signed"
+}
+say 'sign the sealed server image'
+signed_image "$sealed" "$work/signed"
+pub=$work/signed
+
 # The image as an unpacked OCI layout, the way the desktop disk checks load
 # theirs: a transport that reads the archive file itself holds every layer it
 # unpacks in the step's memory, which is what ended this step on its 1.16 GB
@@ -234,12 +256,65 @@ TILO_UNLOCK_SECRET=$(cat "$work/install/qcow2/recovery-key.txt")
 [[ -n $TILO_UNLOCK_SECRET ]] || die "the install's recovery key file is empty"
 export TILO_UNLOCK_SECRET
 
-# The update: the same image and one more layer, a different deployment, carried
-# to the guest on a small disk of its own (there is no sshd to copy it with).
-say 'build the update the machine will stage'
+raw=$work/disk.raw
+qemu-img convert -f qcow2 -O raw "$disk" "$raw"
+# The boot loader the install put on the ESP is the base's systemd-boot, which no
+# release signs yet: the throwaway EFI key signs it here, beside the UKIs the
+# release chain signed, so the firmware's verdict below is about the UKIs.
+esp_offset=$(sfdisk -J "$raw" | python3 -c 'import json, sys
+table = json.load(sys.stdin)["partitiontable"]
+esp = [p for p in table["partitions"] if p["type"].upper() == "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"]
+assert len(esp) == 1, esp
+print(esp[0]["start"] * table.get("sectorsize", 512), esp[0]["size"] * table.get("sectorsize", 512))') \
+  || die "cannot find the ESP on $raw"
+read -r esp_start esp_size <<<"$esp_offset"
+mkdir -p "$work/esp"
+mount -o "loop,offset=$esp_start,sizelimit=$esp_size" "$raw" "$work/esp" || die 'cannot mount the ESP'
+use_signing_tools
+loaders=0
+for loader in "$work"/esp/EFI/BOOT/BOOT*.EFI "$work"/esp/EFI/systemd/systemd-boot*.efi; do
+  [[ -f $loader ]] || continue
+  bash tools/signing/boot-signer.sh sign-efi "$loader" "$work/loader.efi" || die "cannot sign $loader"
+  cp "$work/loader.efi" "$loader"
+  loaders=$((loaders + 1))
+done
+ls -R "$work/esp" > "$out/esp.txt" 2>&1 || true
+umount "$work/esp"
+(( loaders > 0 )) || die 'the install put no systemd-boot on the ESP'
+qemu-img convert -f raw -O qcow2 "$raw" "$disk"
+rm -f "$raw"
+
+# The firmware's variable store with Secure Boot on and the throwaway EFI
+# certificate as its only key (os/dev/prepare-release-secureboot-vars.sh, as a
+# release machine enrols the release certificate): anything that certificate did
+# not sign is refused. The store's certificate check runs the image's own
+# tilo-crypto, as the signing steps do.
+rpm -q python3-virt-firmware openssl >/dev/null 2>&1 \
+  || dnf install -y --setopt=install_weak_deps=False python3-virt-firmware openssl >/dev/null
+mkdir -p "$work/bin"
+cat > "$work/bin/tilo-crypto" <<'EOF'
+#!/bin/sh
+exec podman run --rm --network=none -v "$(dirname "$2"):/in:ro,Z" \
+  --entrypoint /usr/libexec/tilo/tilo-crypto localhost/tilo-host:ci "$1" "/in/$(basename "$2")"
+EOF
+chmod 0755 "$work/bin/tilo-crypto"
+bash tools/signing/boot-signer.sh export-efi-cert "$work/efi.crt"
+efi_cert_sha256=$(openssl x509 -in "$work/efi.crt" -outform DER | sha256sum | cut -d' ' -f1)
+vars_template=$(realpath -e "$(TILO_DISTROBOX="" TILO_RUN=$work/firmware ./os/dev/vm.sh firmware --tpm | awk '$1 == "vars" { print $2 }')")
+[[ -f $vars_template ]] || die "no OVMF variable store template: '$vars_template'"
+PATH=$work/bin:$PATH bash os/dev/prepare-release-secureboot-vars.sh "$vars_template" "$work/secureboot-vars.qcow2" \
+  "$repo_root/tools/signing/boot-signer.sh" "$efi_cert_sha256" || die 'cannot enrol the throwaway EFI certificate'
+
+# The update: the same image and one more layer, a different deployment, sealed
+# and signed the way the image itself was (host-seal.sh seal, then the signing
+# above), so it boots under the same firmware. It reaches the guest on a small
+# disk of its own (there is no sshd to copy it with), beside the sealed image's
+# UKI before anything signed it, which the firmware must refuse.
+say 'build, seal and sign the update the machine will stage'
+load_archive "$sealed" localhost/tilo-host:sealed
 mkdir -p "$work/update"
 {
-  printf 'FROM localhost/tilo-host:ci\n'
+  printf 'FROM localhost/tilo-host:sealed\n'
   printf 'RUN echo %s > /usr/lib/tilo/host-assurance-update\n' "$target"
   # The update whose server cannot serve: the probe the boot judges itself by
   # fails on this image and nowhere else. It is part of the image rather than
@@ -251,23 +326,64 @@ mkdir -p "$work/update"
     '      > /usr/lib/systemd/system/tilo-server-health.service.d/90-boot-assessment-fault.conf'
 } > "$work/update/Containerfile"
 podman build -q -t "$update_ref" -f "$work/update/Containerfile" "$work/update" >/dev/null
-podman save --format oci-archive -o "$work/update.tar" "$update_ref"
+mkdir -p "$work/update-built"
+save_archive "$update_ref" "$work/update-built"
+cp "$sealed/rpms-source" "$work/update-built/rpms-source"
+bash tools/ci/publish/host-seal.sh seal "$work/update-built" "$work/update-sealed" 2> >(tee /dev/console >&2) \
+  || die 'could not seal the update'
+signed_image "$work/update-sealed" "$work/update-signed"
+rm -rf "$work/update-built" "$work/update-sealed"
+podman create --name host-assurance-unsigned localhost/tilo-host:sealed >/dev/null
+podman cp host-assurance-unsigned:/boot/EFI/Linux/. "$work/unsigned"
+podman rm host-assurance-unsigned >/dev/null
 rm -f "$work/update.raw"
 # The disk holds what the machine stages: the whole archive, and the layout
 # skopeo unpacks it into beside the archive. Size it from the archive rather
 # than a fixed number, which fails as a full filesystem on whichever image grew
 # past it and names nothing that said why.
-archive_mib=$(( ($(stat -c %s "$work/update.tar") + 1048575) / 1048576 ))
-truncate -s "$(( 2 * archive_mib + 256 ))M" "$work/update.raw"
+archive_mib=$(( ($(stat -c %s "$work/update-signed/image.oci.tar") + 1048575) / 1048576 ))
+truncate -s "$(( 2 * archive_mib + 512 ))M" "$work/update.raw"
 mkfs.ext4 -q -F -L tiloupdate "$work/update.raw"
 mkdir -p "$work/mnt"
 mount -o loop "$work/update.raw" "$work/mnt"
-cp "$work/update.tar" "$work/mnt/update.oci.tar"
+cp "$work/update-signed/image.oci.tar" "$work/mnt/update.oci.tar"
+cp "$work"/unsigned/*.efi "$work/mnt/unsigned.efi"
+
+# The same update served by a registry on this machine, which the guest reaches
+# as 10.0.2.2 and is told is a mirror of registry.tilo.so/tilo/tilo-host: under
+# the tag the server was installed to follow, signed with a key made here for
+# the repository's name, and beside it an image of the repository nobody signed
+# (os/tests/registry_update_check.sh says what the guest does with them).
+podman run -d --name host-assurance-registry -p 127.0.0.1:5050:5000 docker.io/library/registry:2 >/dev/null \
+  || die 'cannot start the update registry'
+for _ in $(seq 30); do curl -fs http://127.0.0.1:5050/v2/ >/dev/null && break; sleep 1; done
+printf 'host-assurance\n' > "$work/sigstore.pass"
+skopeo generate-sigstore-key --output-prefix "$work/sigstore" --passphrase-file "$work/sigstore.pass" >/dev/null \
+  || die 'cannot make the signing key the registry update is signed with'
+follows="main-${target:0:7}-ci"
+# Signatures go beside the image as sigstore attachments, as the release
+# registry keeps them (os/etc/containers/registries.d).
+mkdir -p "$work/registries.d"
+printf 'docker:\n  127.0.0.1:5050:\n    use-sigstore-attachments: true\n' > "$work/registries.d/update.yaml"
+skopeo --registries.d "$work/registries.d" copy -q --preserve-digests --dest-tls-verify=false \
+  --sign-by-sigstore-private-key "$work/sigstore.private" --sign-passphrase-file "$work/sigstore.pass" \
+  --sign-identity "registry.tilo.so/tilo/tilo-host:$follows" \
+  "oci-archive:$work/update-signed/image.oci.tar" "docker://127.0.0.1:5050/tilo/tilo-host:$follows" \
+  || die 'cannot publish the signed update to the registry'
+staged_digest=$(cat "$work/update-signed/digest")
+mkdir -p "$work/unsigned-image"
+printf 'an image nobody signed\n' > "$work/unsigned-image/note"
+printf 'FROM scratch\nCOPY note /note\n' > "$work/unsigned-image/Containerfile"
+podman build -q -t localhost/host-assurance-unsigned -f "$work/unsigned-image/Containerfile" "$work/unsigned-image" >/dev/null
+skopeo copy -q --dest-tls-verify=false containers-storage:localhost/host-assurance-unsigned \
+  docker://127.0.0.1:5050/tilo/tilo-host:unsigned || die 'cannot publish the unsigned image to the registry'
+cp "$work/sigstore.pub" "$work/mnt/registry-update.pub"
+cp os/tests/registry_update_check.sh "$work/mnt/registry_update_check.sh"
 umount "$work/mnt"
-rm -f "$work/update.tar"
+rm -rf "$work/update-signed" "$work/unsigned" "$work/unsigned-image"
 qemu-img convert -f raw -O qcow2 "$work/update.raw" "$work/update.qcow2"
 rm -f "$work/update.raw"
-podman rmi -f "$update_ref" "$image" >/dev/null 2>&1 || true
+podman rmi -f "$update_ref" localhost/tilo-host:sealed localhost/tilo-host:ci localhost/tilo-host:seal >/dev/null 2>&1 || true
 
 export TILO_RUN=$work/run TILO_DISK=$disk
 export TILO_SERIAL_SOCKET=$work/run/serial.sock
@@ -281,7 +397,9 @@ export TILO_CONSOLE_DEADLINE=1800
 export TILO_UNLOCK_DELAY=5
 mkdir -p "$TILO_RUN"
 # The machine under test boots with the TPM the install guest had: a keyslot the
-# image carries a signed boot chain for is sealed to this one device.
+# image carries a signed boot chain for is sealed to this one device. Its firmware
+# enforces Secure Boot with the throwaway EFI certificate as its only key.
+export TILO_SECBOOT_KEYS=$work/secureboot-vars.qcow2
 boot_vm() {
   ./os/dev/vm.sh boot --2d --tpm --disk "$disk" --attach "$work/update.qcow2"
 }
@@ -289,6 +407,7 @@ finish() {
   report_exit
   ./os/dev/vm.sh serial > "$out/serial.log" 2>&1 || true
   ./os/dev/vm.sh stop >/dev/null 2>&1 || true
+  podman rm -f host-assurance-registry >/dev/null 2>&1 || true
 }
 trap finish EXIT
 console() { ./os/tests/serial_runner.sh "$1"; }
@@ -509,6 +628,70 @@ grep -q 'tilo-server-health.service is active' "$out/boot-health.txt" \
 ok 'tilo-boot-health judges the server by tilo-server-health'
 as_root 'systemctl reset-failed host-assurance-boot-health.service' >/dev/null 2>&1 || true
 
+say 'the boot is verified and measured'
+# The firmware enforces Secure Boot with the throwaway EFI certificate as its
+# only key, and booted this machine: through systemd-stub, from the signed UKI
+# whose command line carries the generation the image does, measured into PCR 11.
+refuse 'the firmware enforced Secure Boot and booted the signed UKI' '
+set -eu
+var() { od -An -t u1 -j4 -N1 "/sys/firmware/efi/efivars/$1" | tr -d " "; }
+[ "$(var SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c)" = 1 ] || { echo "Secure Boot is off"; exit 1; }
+[ "$(var SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c)" = 0 ] || { echo "the firmware is in setup mode"; exit 1; }
+ls /sys/firmware/efi/efivars/StubPcrKernelImage-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f >/dev/null \
+  || { echo "systemd-stub did not start this kernel"; exit 1; }
+generation=$(cat /usr/lib/tilo/generation)
+grep -qw "tilo.generation=$generation" /proc/cmdline || { echo "no tilo.generation=$generation in: $(cat /proc/cmdline)"; exit 1; }
+pcr=$(tpm2_pcrread sha256:11 | sed -n "s/^ *11 *: *0x//p")
+case "$pcr" in ""|*[!0-9A-Fa-f]*|0000000000000000000000000000000000000000000000000000000000000000) tpm2_pcrread sha256:7,11; exit 1 ;; esac
+echo "generation $generation, PCR 11 $pcr"
+'
+
+# A boot the firmware must refuse. What breaks it is done as root on the
+# running machine, as anyone who can write the ESP could, in a mount namespace
+# of its own where the ESP's read-only bind is made writable, as the services
+# that write it do. The machine is then started again and must not come up, and
+# the boot loader must say the firmware refused the image; the disk then goes
+# back to how it was before.
+as_root 'sync' >/dev/null 2>&1 || true
+./os/dev/vm.sh stop >/dev/null 2>&1 || true
+qemu-img snapshot -c signed "$disk" || die 'cannot keep the signed disk to go back to'
+refused_boot() {  # WHAT FILE ROOT-SCRIPT
+  local what=$1 file=$2 script=$3
+  boot_vm
+  unlock_until_console || die "the signed disk never answered at its console before: $what"
+  as_root "dmesg -n 1; unshare -m sh -euc $(printf '%q' "mount -o remount,bind,rw /boot; $script; sync")" \
+    > "$out/$file-broken.txt" 2>&1 || { tail -40 "$out/$file-broken.txt" >&2; die "could not break the boot entry: $what"; }
+  ./os/dev/vm.sh stop >/dev/null 2>&1 || true
+  boot_vm
+  # Its unlock prompt comes before any getty: a minute and a half with neither on
+  # the console is a machine that did not start.
+  if TILO_CONSOLE_PROMPT_TIMEOUT=90 console 'true' >/dev/null 2>&1; then
+    ./os/dev/vm.sh serial > "$out/$file-serial.log" 2>&1 || true
+    die "FAIL $what: the machine booted"
+  fi
+  ./os/dev/vm.sh serial > "$out/$file-serial.log" 2>&1 || true
+  ./os/dev/vm.sh stop >/dev/null 2>&1 || true
+  grep -aiqE 'security violation|access denied' "$out/$file-serial.log" \
+    || { tail -40 "$out/$file-serial.log" >&2; die "FAIL $what: nothing on the console says the firmware refused it"; }
+  qemu-img snapshot -a signed "$disk" || die 'cannot put the signed disk back'
+  ok "$what"
+}
+uki='uki=$(ls /boot/EFI/Linux/bootc/*.efi); [ "$(printf "%s\n" $uki | wc -l)" = 1 ]'
+refused_boot 'a UKI whose command line was edited is refused' edited-cmdline \
+  "$uki; /usr/libexec/tilo-uki-cmdline set tilo.mode=repair \$uki; /usr/libexec/tilo-uki-cmdline show \$uki | grep -qw tilo.mode=repair"
+refused_boot 'a UKI nobody signed is refused' unsigned-uki \
+  "$uki; mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update; cp /mnt/update/unsigned.efi \$uki"
+qemu-img snapshot -d signed "$disk" || true
+
+boot_vm
+unlock_until_console || die 'the signed disk never answered at its console again'
+as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
+for _ in $(seq 1 90); do
+  as_root 'systemctl is-active --quiet multi-user.target' && break
+  sleep 5
+done
+refuse 'the signed disk boots again as it was' 'systemctl is-active --quiet multi-user.target'
+
 say 'stage the update and break it on the staged deployment only'
 as_root 'mkdir -p /mnt/update && mount /dev/vdb /mnt/update && skopeo copy --quiet \
   oci-archive:/mnt/update/update.oci.tar oci:/mnt/update/image:tilo-host' > "$out/stage-transfer.txt" 2>&1 \
@@ -537,4 +720,12 @@ fi
 say 'the machine serves again, on the deployment that came back'
 refuse 'multi-user.target is active' 'systemctl is-active --quiet multi-user.target'
 refuse 'the server probe still judges it good' 'systemctl start tilo-server-health.service'
-printf '\nPASS: the server image installs onto an encrypted disk, boots serving on it, and an update that breaks it rolled back by itself (evidence in %s)\n' "$out"
+say 'a registry update is verified and staged'
+refuse 'a registry update is verified and staged, and an unsigned image refused' "
+set -eu
+mkdir -p /mnt/update
+mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+bash /mnt/update/registry_update_check.sh 10.0.2.2:5050/tilo/tilo-host /mnt/update/registry-update.pub unsigned '$staged_digest'
+"
+printf '\nPASS: the server image installs onto an encrypted disk, boots its signed UKI under Secure Boot and refuses an edited or unsigned one, serves, rolls back an update that breaks it, and verifies and stages a registry update (evidence in %s)\n' "$out"
+
