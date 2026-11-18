@@ -128,9 +128,9 @@ fn the_readout_names_its_device_and_the_level_is_the_bar() {
         played.accessible_labels()
     );
 
-    // On a 1280 by 800 output the pill rests one step of sixty-four above the screen's foot (the
-    // line the old shell's pill sat on), centred, two rows of a device name and value above the
-    // bar: nothing of the shell lights up outside it, so it takes no more room than what it reads.
+    // On a 1280 by 800 output the pill rests one step of sixty-four above the screen's foot,
+    // centred, two rows of a device name and value above the bar: nothing of the shell lights up
+    // outside it, so it takes no more room than what it reads.
     let (left, top, right, bottom) =
         lit_bounds(&before.rgba, &after.rgba, (after.width, after.height))
             .expect("the readout paints something");
