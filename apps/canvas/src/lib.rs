@@ -694,4 +694,7 @@ fn fold(cx: &ViewCx<Artwork>, open: &LocalState<bool>) -> Element {
 
 ui::dev_reload_entry!(App);
 
-ui::reach_tests!(App);
+// Each capture scenario publishes its own set of actions, and driving every
+// one through the window takes a while: four tests ask a quarter of the
+// scenarios each, running beside one another.
+ui::reach_tests!(App, shares: [share_0, share_1, share_2, share_3]);
