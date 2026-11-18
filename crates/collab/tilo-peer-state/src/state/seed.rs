@@ -77,14 +77,15 @@ pub fn seed_workspace(
         hex::encode(authority.device_public_key).as_str(),
     )
     .map_err(err)?;
-    doc.put_object(ROOT, "invitation_receipts_v1", ObjType::Map)
+    doc.put_object(ROOT, super::invitation_receipts::RECEIPTS_KEY, ObjType::Map)
         .map_err(err)?;
     // Maps of rows each device writes for itself exist from the founding, so
     // no device's first row makes a map another device's would replace.
     for rows in super::device_rows::FOUNDED {
         doc.put_object(ROOT, rows, ObjType::Map).map_err(err)?;
     }
-    // So are the maps of governance rows each governor adds to.
+    // So are the maps of governance rows each governor adds to, and of rows
+    // each device keeps for itself in its person's name.
     for rows in [
         collab_types::workspace_grant::WORKSPACE_GRANTS_KEY,
         super::keeping_devices::WORKSPACE_KEEPING_DEVICES_KEY,
@@ -92,6 +93,16 @@ pub fn seed_workspace(
         super::bot_members::PROGRAMS,
         super::bot_members::REQUESTS,
         tilo_desktop_model::projection::WORKSPACE_AUTOMATIONS_KEY,
+        tilo_desktop_model::projection::WORKSPACE_PRESETS_KEY,
+        tilo_desktop_model::projection::WORKSPACE_SANDBOX_KEY,
+        tilo_desktop_model::projection::WORKSPACE_EFFECT_RECEIPTS_KEY,
+        tilo_desktop_model::projection::WORKSPACE_EFFECT_HISTORY_KEY,
+        tilo_desktop_model::projection::WORKSPACE_WRITE_REFUSALS_KEY,
+        super::invitation_receipts::PARTS_KEY,
+        crate::document_import::WORKSPACE_KEY,
+        crate::removals::FIELD_V1,
+        crate::coverage::FIELD_V2,
+        crate::durability::FIELD_V2,
     ] {
         doc.put_object(ROOT, rows, ObjType::Map).map_err(err)?;
     }

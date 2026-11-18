@@ -45,6 +45,28 @@ fn empty_workspace(workspace_id: WorkspaceId, name: &str, strips: Vec<Strip>) ->
     workspace
 }
 
+/// A workspace document as its founding leaves it: the maps devices and
+/// governors write their own rows into exist before any of them writes.
+fn founded_governance() -> AutoCommit {
+    use automerge::{ObjType, ROOT, transaction::Transactable as _};
+    use tilo_desktop_model::projection::{
+        WORKSPACE_AUTOMATIONS_KEY, WORKSPACE_EFFECT_HISTORY_KEY, WORKSPACE_EFFECT_RECEIPTS_KEY,
+        WORKSPACE_PRESETS_KEY, WORKSPACE_SANDBOX_KEY, WORKSPACE_WRITE_REFUSALS_KEY,
+    };
+    let mut doc = AutoCommit::new();
+    for key in [
+        WORKSPACE_AUTOMATIONS_KEY,
+        WORKSPACE_PRESETS_KEY,
+        WORKSPACE_SANDBOX_KEY,
+        WORKSPACE_EFFECT_RECEIPTS_KEY,
+        WORKSPACE_EFFECT_HISTORY_KEY,
+        WORKSPACE_WRITE_REFUSALS_KEY,
+    ] {
+        let _ = doc.put_object(ROOT, key, ObjType::Map);
+    }
+    doc
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct TestTree {
     pub desktop: Layout,
@@ -194,7 +216,10 @@ impl TestTree {
         else {
             return false;
         };
-        let doc = self.governance.entry(workspace_id).or_default();
+        let doc = self
+            .governance
+            .entry(workspace_id)
+            .or_insert_with(founded_governance);
         let text = |doc: &AutoCommit, key: &str| {
             doc.get(automerge::ROOT, key)
                 .ok()
@@ -225,13 +250,18 @@ impl TestTree {
     }
 
     pub fn commit_governance_change(&mut self, workspace_id: WorkspaceId) {
-        let doc = self.governance.entry(workspace_id).or_default();
+        let doc = self
+            .governance
+            .entry(workspace_id)
+            .or_insert_with(founded_governance);
         let _ = tilo_resource::history::commit_stamped(doc);
     }
 
     /// `workspace_id` 's own document, for a test that reads or stamps it itself.
     pub fn governance_of(&mut self, workspace_id: WorkspaceId) -> &mut AutoCommit {
-        self.governance.entry(workspace_id).or_default()
+        self.governance
+            .entry(workspace_id)
+            .or_insert_with(founded_governance)
     }
 
     /// Show the layout the record holds, as the pane's next read of it does.

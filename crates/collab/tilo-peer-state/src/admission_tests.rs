@@ -1735,30 +1735,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         InviteGrant, JoinChallenge, Role, decode_and_verify_invitation, issue_invitation,
         sign_join_proof, verify_join_proof,
     };
-    let (mut base, authority_key, delegate_key, _, now) = seeded();
-    let NeighbourMsg::SyncResp { changes, workspace } = base.workspace_message() else {
-        panic!("unexpected fixture shape")
-    };
-    let mut legacy = crate::workspace::candidate(None, &changes).unwrap();
-    let before = legacy.get_heads();
-    legacy.set_actor(automerge::ActorId::from(
-        authority_key.verifying_key().to_bytes().to_vec(),
-    ));
-    legacy.delete(ROOT, "invitation_receipts_v1").unwrap();
-    legacy.commit_edit("fixture", "invitation_receipts_v1");
-    base.receive_from(
-        TransportOrigin::ServerDelta(authority_key.verifying_key().to_bytes()),
-        NeighbourMsg::SyncResp {
-            changes: legacy
-                .get_changes(&before)
-                .into_iter()
-                .map(|change| change.raw_bytes().to_vec())
-                .collect(),
-            workspace,
-        },
-        now,
-    )
-    .unwrap();
+    let (base, authority_key, delegate_key, _, now) = seeded();
     let now_ns: u64 = now
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()

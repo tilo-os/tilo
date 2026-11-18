@@ -146,11 +146,26 @@ fn shortcut(id: &str, name: &str) -> tilo_automation::SavedShortcut {
     )
 }
 
+/// A workspace document as its founding leaves it: the shortcuts map every
+/// device's shortcuts sit in exists before any device writes one.
+fn founded() -> AutoCommit {
+    use automerge::{ROOT, transaction::Transactable as _};
+    let mut doc = AutoCommit::new();
+    doc.put_object(
+        ROOT,
+        tilo_desktop_model::projection::WORKSPACE_AUTOMATIONS_KEY,
+        automerge::ObjType::Map,
+    )
+    .unwrap();
+    doc.commit();
+    doc
+}
+
 /// Two members saving different shortcuts at once both keep theirs,
 /// and a deletion reaches the peer that already held the shortcut.
 #[test]
 fn shortcuts_merge_by_id_and_deletions_replicate() {
-    let mut alice = AutoCommit::new();
+    let mut alice = founded();
     project_workspace_shortcuts(&mut alice, &[shortcut("tidy", "Tidy")]).unwrap();
     let mut bob = alice.fork();
     project_workspace_shortcuts(&mut alice, &[shortcut("tidy", "Tidy"), shortcut("a", "A")])

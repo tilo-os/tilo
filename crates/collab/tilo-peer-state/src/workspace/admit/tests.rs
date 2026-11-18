@@ -3,7 +3,7 @@
 use super::*;
 use crate::workspace::GovernanceRow;
 use automerge::transaction::Transactable;
-use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
+use automerge::{ROOT, ReadDoc, ScalarValue};
 use std::collections::BTreeMap;
 use tilo_action_policy::Change;
 use tilo_action_policy::{Grantee, Role, roles};
@@ -70,12 +70,35 @@ fn put_role(
     crate::members::op::tests_support::set_member(doc, by, &person_id(person), role);
 }
 
+/// The maps a founded workspace holds, which its devices and governors write
+/// their own rows into before any of them writes.
+fn founded_maps(doc: &mut AutoCommit) {
+    use automerge::ObjType;
+    for key in [
+        crate::coverage::FIELD_V2,
+        crate::durability::FIELD_V2,
+        crate::removals::FIELD_V1,
+        crate::document_import::WORKSPACE_KEY,
+        crate::state::invitation_receipts::RECEIPTS_KEY,
+        crate::state::invitation_receipts::PARTS_KEY,
+        tilo_desktop_model::projection::WORKSPACE_AUTOMATIONS_KEY,
+        tilo_desktop_model::projection::WORKSPACE_PRESETS_KEY,
+        tilo_desktop_model::projection::WORKSPACE_SANDBOX_KEY,
+        tilo_desktop_model::projection::WORKSPACE_EFFECT_RECEIPTS_KEY,
+        tilo_desktop_model::projection::WORKSPACE_EFFECT_HISTORY_KEY,
+        tilo_desktop_model::projection::WORKSPACE_WRITE_REFUSALS_KEY,
+    ] {
+        doc.put_object(ROOT, key, ObjType::Map).unwrap();
+    }
+}
+
 /// A workspace the owner governs, with an editor and a viewer.
 fn governed() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "workspace", WORKSPACE).unwrap();
     doc.put(ROOT, "name", "Workspace").unwrap();
     doc.put(ROOT, "owner", person_id(owner_root())).unwrap();
+    founded_maps(&mut doc);
     sign(
         &mut doc,
         &owner_device(),
@@ -377,7 +400,7 @@ tilo_test_env::scenario! {
             crate::durability::put(
                 doc,
                 BTreeMap::from([(
-                    crate::coverage::route_key("app", "record"),
+                    crate::coverage::route_key("app", "note"),
                     durable_receipt(1),
                 )]),
             )
@@ -501,13 +524,16 @@ tilo_test_env::scenario! {
         let anchor = |person: [u8; 32]| {
             changes_after(&before, |doc| {
                 let history = doc
-                    .put_object(ROOT, "effect_history_root_v1", ObjType::Map)
-                    .unwrap();
-                let slice = doc
-                    .put_object(&history, person_id(person), ObjType::Map)
-                    .unwrap();
-                doc.put(&slice, key(0x02), ScalarValue::Bytes(vec![7; 32]))
-                    .unwrap();
+                    .get(ROOT, "effect_history_root_v1")
+                    .unwrap()
+                    .unwrap()
+                    .1;
+                doc.put(
+                    &history,
+                    format!("{}/{}", person_id(person), key(0x02)),
+                    ScalarValue::Bytes(vec![7; 32]),
+                )
+                .unwrap();
             })
         };
         assert!(
@@ -806,7 +832,7 @@ fn coverage(sequence: u64) -> crate::coverage::Coverage {
     crate::coverage::Coverage {
         workspace: WORKSPACE.into(),
         app: "app".into(),
-        record: "record".into(),
+        record: "note".into(),
         payload_hash: [3; 32],
         heads: vec!["head".into()],
         author: [1; 32],
@@ -830,7 +856,7 @@ fn a_forbidden_change_is_refused_even_from_the_governor() {
         crate::coverage::put(doc, coverage(4)).unwrap();
     });
 
-    let route = crate::coverage::route_key("app", "record");
+    let route = crate::coverage::route_key("app", "note");
     let mut durable = governed();
     crate::durability::put(
         &mut durable,
@@ -1299,6 +1325,7 @@ fn started() -> Started {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "workspace", WORKSPACE).unwrap();
     doc.put(ROOT, "owner", person_of(&owner)).unwrap();
+    founded_maps(&mut doc);
     let mut changes: Vec<Change> = [
         (&admin, Role::Moderator),
         (&editor, Role::Editor),
@@ -1356,4 +1383,64 @@ fn name_of(doc: &AutoCommit) -> Option<String> {
         },
         _ => None,
     }
+}
+
+/// A workspace document as the seed every device starts from founds it.
+fn founded_by_seed() -> AutoCommit {
+    let (_, cert) = owner_device();
+    let seed = crate::seed_workspace(WORKSPACE, &cert, std::slice::from_ref(&cert)).unwrap();
+    crate::workspace::candidate(None, &seed).unwrap()
+}
+
+/// Two devices writing their first checkpoint coverage without seeing each
+/// other keep both routes after a merge: they write into the map the workspace
+/// is founded with.
+#[test]
+fn two_devices_first_checkpoint_coverage_both_survive_a_merge() {
+    let mut first = coverage(1);
+    first.app = "first.app".into();
+    let mut second = coverage(1);
+    second.app = "second.app".into();
+    let mut a = founded_by_seed();
+    a.set_actor(automerge::ActorId::from(vec![0x51; 32]));
+    let mut b = founded_by_seed();
+    b.set_actor(automerge::ActorId::from(vec![0x52; 32]));
+    crate::coverage::put(&mut a, first).unwrap();
+    crate::coverage::put(&mut b, second).unwrap();
+    a.commit();
+    b.commit();
+    tilo_automerge::ApplyIncoming::merge_incoming(&mut a, &mut b).unwrap();
+    let held = crate::coverage::entries(&a).unwrap();
+    assert_eq!(held.len(), 2, "both routes' coverage keeps: {held:?}");
+}
+
+/// Two devices writing their first durability receipts without seeing each
+/// other keep both routes after a merge.
+#[test]
+fn two_devices_first_durability_receipts_both_survive_a_merge() {
+    let mut first = coverage(1);
+    first.app = "first.app".into();
+    let mut second = coverage(1);
+    second.app = "second.app".into();
+    let first = crate::durability::DurableReceipt::new(first, 2).unwrap();
+    let second = crate::durability::DurableReceipt::new(second, 2).unwrap();
+    let mut a = founded_by_seed();
+    a.set_actor(automerge::ActorId::from(vec![0x51; 32]));
+    let mut b = founded_by_seed();
+    b.set_actor(automerge::ActorId::from(vec![0x52; 32]));
+    crate::durability::put(
+        &mut a,
+        BTreeMap::from([(crate::coverage::route_key("first.app", "note"), first)]),
+    )
+    .unwrap();
+    crate::durability::put(
+        &mut b,
+        BTreeMap::from([(crate::coverage::route_key("second.app", "note"), second)]),
+    )
+    .unwrap();
+    a.commit();
+    b.commit();
+    tilo_automerge::ApplyIncoming::merge_incoming(&mut a, &mut b).unwrap();
+    let held = crate::durability::entries(&a).unwrap();
+    assert_eq!(held.len(), 2, "both routes' receipts keep: {held:?}");
 }

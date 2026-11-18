@@ -104,13 +104,7 @@ pub fn entries(doc: &AutoCommit) -> BTreeMap<String, ImportEntry> {
 
 /// Write `entry` into the workspace's governed map; the authority's own change.
 pub fn put_entry(doc: &mut AutoCommit, entry: &ImportEntry) -> Result<(), String> {
-    let object = match doc.get(ROOT, WORKSPACE_KEY).map_err(|e| e.to_string())? {
-        Some((Value::Object(ObjType::Map), object)) => object,
-        Some(_) => return Err("governed import map is not a map".into()),
-        None => doc
-            .put_object(ROOT, WORKSPACE_KEY, ObjType::Map)
-            .map_err(|e| e.to_string())?,
-    };
+    let object = crate::state::governed_map(doc, WORKSPACE_KEY)?;
     let key = key(&entry.proposal.proposal_id);
     if doc.get(&object, &key).map_err(|e| e.to_string())?.is_none()
         && doc.length(&object) >= MAX_WORKSPACE_IMPORTS
@@ -229,6 +223,14 @@ impl ImportAction {
 mod tests {
     use super::*;
 
+    /// A workspace document as its founding leaves it: the proposals' map
+    /// exists before anyone proposes.
+    fn founded() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        doc.put_object(ROOT, WORKSPACE_KEY, ObjType::Map).unwrap();
+        doc
+    }
+
     fn entry(id: u8, expires_unix: u64) -> ImportEntry {
         let key = ed25519_dalek::SigningKey::from_bytes(&[id; 32]);
         ImportEntry {
@@ -255,7 +257,7 @@ mod tests {
 
         phase the_workspace_keeps_proposals_by_id_and_prunes_settled_ones;
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = founded();
             put_entry(&mut doc, &entry(1, 100)).unwrap();
             put_entry(&mut doc, &entry(2, 1_000)).unwrap();
             let kept = entries(&doc);
@@ -268,7 +270,7 @@ mod tests {
 
         phase import_proposals_are_governance;
         {
-            let before = AutoCommit::new();
+            let before = founded();
             let mut after = before.clone();
             put_entry(&mut after, &entry(4, 100)).unwrap();
             // So only an operation that names it may write one
