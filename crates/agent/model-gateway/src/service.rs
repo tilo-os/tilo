@@ -24,6 +24,8 @@ pub mod host_backend;
 mod profile_cache;
 #[path = "rig_adapter.rs"]
 mod rig_adapter;
+#[path = "road.rs"]
+mod road;
 use profile_cache::{PLAN_PROFILES, PROFILE_REUSE, ProfileSources};
 
 use crate::{
@@ -1582,13 +1584,30 @@ fn model_output_limit(
     Ok(requested_limit.map(|limit| (capped_field, limit)))
 }
 
+/// The request sent to `profile`'s provider: [`plain_body`], and beside it
+/// what that provider is asked of its own ([`road`]): the fastest road to
+/// the same model, and its cache.
+fn outbound_body(
+    profile: &ProviderProfile,
+    model_id: &str,
+    body: serde_json::Value,
+    streaming: bool,
+    responses: bool,
+) -> Result<serde_json::Value, String> {
+    let mut body = plain_body(profile, model_id, body, streaming, responses)?;
+    if let Some(object) = body.as_object_mut() {
+        road::beside(profile, model_id, object);
+    }
+    Ok(body)
+}
+
 /// The request actually sent. The gateway owns it: the checked `model_id`
 /// replaces whatever model the caller named (the allowlist cannot be
 /// bypassed through the body), and for OpenAI-compatible profiles the
 /// profile's configured reasoning setting and token-limit field name are
 /// applied here, so the model is configured in exactly one place (the
 /// profile). Nothing here depends on the endpoint's host.
-fn outbound_body(
+fn plain_body(
     profile: &ProviderProfile,
     model_id: &str,
     body: serde_json::Value,
@@ -3957,6 +3976,10 @@ mod service_error_tests;
 #[cfg(test)]
 #[path = "cache_tests.rs"]
 mod cache_tests;
+
+#[cfg(test)]
+#[path = "road_tests.rs"]
+mod road_tests;
 
 #[cfg(test)]
 #[path = "plan_tests.rs"]

@@ -1,12 +1,16 @@
 //! The canonical rich-text automerge layout (schema v1). Public ABI: codecs and the
 //! snapshot depend on these field names.
+//!
+//! The names a reader outside the app finds a rich text's paragraphs by are kept below this
+//! crate ([`tilo_automerge::rich_text`]), where the reader of a whole document as JSON, which
+//! cannot link this crate, goes by them too; they are named from there here.
 
-pub const SCHEMA_ID: &str = "tilo.richtext";
+pub const SCHEMA_ID: &str = tilo_automerge::rich_text::SCHEMA_ID;
 pub const SCHEMA_VERSION: u64 = 1;
 
-pub const KEY_SCHEMA: &str = "schema";
+pub const KEY_SCHEMA: &str = tilo_automerge::rich_text::SCHEMA_KEY;
 pub const KEY_SCHEMA_VERSION: &str = tilo_resource::evolution::VERSION_KEY;
-pub const KEY_BLOCKS: &str = "blocks"; // Map<block_id, block>
+pub const KEY_BLOCKS: &str = tilo_automerge::rich_text::BLOCKS; // Map<block_id, block>
 pub const BLOCK_TOMBSTONE_PREFIX: &str = "~deleted:";
 pub const KEY_STYLES: &str = "styles"; // Map<style_id, style def>
 /// Prefix for grow-only named-style deletion markers stored beside style maps, which gives
@@ -39,15 +43,15 @@ pub const ATTR_BLOB_W: &str = "blob_w";
 pub const ATTR_BLOB_H: &str = "blob_h";
 // Page header and footer regions, each a `Map<block_id, block>` shaped like `blocks`. Created
 // lazily; older documents open with none.
-pub const KEY_HEADER: &str = "header"; // Map<block_id, block>
-pub const KEY_FOOTER: &str = "footer"; // Map<block_id, block>
+pub const KEY_HEADER: &str = tilo_automerge::rich_text::HEADER; // Map<block_id, block>
+pub const KEY_FOOTER: &str = tilo_automerge::rich_text::FOOTER; // Map<block_id, block>
 
 // Footnotes and endnotes: a `notes` map of `Map<note_id, note>` with `kind` and a `blocks` child
 // map. Referenced from body text by a `note-ref` mark over a placeholder character (U+FFFC), valued
 // with the note id.
-pub const KEY_NOTES: &str = "notes"; // Map<note_id, note>
+pub const KEY_NOTES: &str = tilo_automerge::rich_text::NOTES; // Map<note_id, note>
 pub const NOTE_KIND: &str = "kind"; // Str ("footnote"|"endnote")
-pub const NOTE_BLOCKS: &str = "blocks"; // Map<block_id, block> (the note body)
+pub const NOTE_BLOCKS: &str = tilo_automerge::rich_text::BLOCKS; // Map<block_id, block> (the note body)
 pub const NOTE_KIND_FOOTNOTE: &str = "footnote";
 pub const NOTE_KIND_ENDNOTE: &str = "endnote";
 pub const MARK_NOTE_REF: &str = "note-ref"; // Str — the referenced note id
@@ -57,14 +61,14 @@ pub const MARK_NOTE_REF: &str = "note-ref"; // Str — the referenced note id
 // two peers can add their first reply to an older comment concurrently without racing to create a
 // nested map. Anchored by a `comment` mark over `[start, end)`. Created eagerly so concurrent adds
 // converge on one container.
-pub const KEY_COMMENTS: &str = "comments"; // Map<comment_id, comment>
+pub const KEY_COMMENTS: &str = tilo_automerge::rich_text::COMMENTS; // Map<comment_id, comment>
 pub const COMMENT_AUTHOR: &str = "author"; // Str — the comment author's display name
 pub const COMMENT_DATE: &str = "date"; // Str — the comment timestamp (ISO-8601)
-pub const COMMENT_BLOCKS: &str = "blocks"; // Map<block_id, block> (the comment body)
+pub const COMMENT_BLOCKS: &str = tilo_automerge::rich_text::BLOCKS; // Map<block_id, block> (the comment body)
 pub const COMMENT_REPLY_PARENT: &str = "parent";
 pub const COMMENT_REPLY_AUTHOR: &str = "author"; // Str — reply author's display name
 pub const COMMENT_REPLY_DATE: &str = "date"; // Str — reply timestamp (ISO-8601)
-pub const COMMENT_REPLY_BLOCKS: &str = "blocks"; // Map<block_id, block> (reply body)
+pub const COMMENT_REPLY_BLOCKS: &str = tilo_automerge::rich_text::BLOCKS; // Map<block_id, block> (reply body)
 /// Prefix for grow-only comment-resolution tombstones stored as boolean values in the comments map:
 /// keeping them beside the entities makes resolve win over a reply authored on a divergent replica,
 /// without changing the schema genesis.
@@ -152,11 +156,11 @@ pub const MARK_DOCX_XML: &str = "docx-xml"; // Str — a WordprocessingML paragr
 pub const MARK_ODT_XML: &str = "odt-xml"; // Str — an ODF paragraph-content element
 pub const KEPT_INLINE_MARKS: [&str; 2] = [MARK_DOCX_XML, MARK_ODT_XML];
 
-pub const BLOCK_ORDER: &str = "order"; // Bytes (fractional key)
+pub const BLOCK_ORDER: &str = tilo_automerge::rich_text::ORDER; // Bytes (fractional key)
 pub const BLOCK_KIND: &str = "kind"; // Str ("paragraph"|"heading"|"list_item"|"table"|"cell"|"image"|"fidelity")
 pub const BLOCK_TEXT: &str = "text"; // Text (present for text blocks)
 pub const BLOCK_ATTRS: &str = "attrs"; // Map (style_id, level, ...)
-pub const BLOCK_CHILDREN: &str = "children"; // Map<block_id, block> (containers)
+pub const BLOCK_CHILDREN: &str = tilo_automerge::rich_text::CHILDREN; // Map<block_id, block> (containers)
 
 // Style fields: each style under `styles.<id>` is a sub-map of these scalar properties, field-level
 // mergeable. Shared contract with the editor's `StyleProps`; maps onto ODF `style:style`.
