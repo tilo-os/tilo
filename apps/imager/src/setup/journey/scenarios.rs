@@ -19,6 +19,7 @@ pub const SCENARIOS: &[&str] = &[
     "installer-storage",
     "installer-disk",
     "installer-method",
+    "installer-machine",
     "installer-plan-os",
     "installer-plan-waiting",
     "installer-plan-review",
@@ -65,6 +66,13 @@ pub(super) fn page(journey: &mut Journey, scenario: &str) -> Page {
             journey.plan.hosting = Some(machine::Hosting::HoldsNone);
             Page::Method
         }
+        "installer-machine" => {
+            journey.destination = Some(Destination::Another);
+            journey.plan.os = Some(machine::Os::TiloServer);
+            journey.plan.hosting = Some(machine::Hosting::HoldsNone);
+            journey.device_name = "cupboard".into();
+            Page::Machine
+        }
         "installer-plan-os" => {
             journey.destination = Some(Destination::Another);
             Page::Destination
@@ -77,6 +85,10 @@ pub(super) fn page(journey: &mut Journey, scenario: &str) -> Page {
             journey.plan.name_open = true;
             journey.device_name = "cupboard".into();
             journey.plan.disk = None;
+            // A server takes files from this desktop, never its apps or
+            // sign-ins.
+            journey.migrate = Some(true);
+            journey.categories = [true, false, false];
             Page::Review
         }
         "installer-plan-ready" => {

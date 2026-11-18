@@ -6,6 +6,7 @@
 //! for the person; and an action that asks first goes to the person.
 use super::*;
 use serde_json::{Value, json};
+use tilo_agent_session::ModelChoice;
 use tilo_mcp::McpServer;
 use tilo_session_actions::SessionActions;
 use tilo_session_client::Outbox;

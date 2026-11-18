@@ -15,6 +15,10 @@ pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>>,
     Arc<std::sync::Mutex<Option<DocumentOwners>>>,
     Arc<Progress>,
+    /// Why each route whose document has not reached this device waits:
+    /// its read waits for the document to arrive, which may take as long as
+    /// the device that holds it stays away.
+    Arc<std::sync::Mutex<BTreeMap<String, &'static str>>>,
 );
 /// The App's live document owner routes and the document generation they
 /// belong to. Reopening or replacing the document starts a new generation.
@@ -244,6 +248,43 @@ impl Reads {
                 RouteState::Legacy => true,
                 RouteState::Required(ready, _) => ready.load(Ordering::Acquire),
             })
+    }
+    /// Why `key`'s document is not here to read, while its read waits for
+    /// it to arrive ([`Self::arriving`]).
+    pub(super) fn not_here(&self, key: &str) -> Option<&'static str> {
+        self.6.lock_recover().get(key).copied()
+    }
+    /// Whether `key`'s read now waits for its document to arrive (`why`), or
+    /// no longer does (`None`). Whatever waits on the route hears it.
+    fn arriving(&self, key: &str, why: Option<&'static str>) {
+        let mut rows = self.6.lock_recover();
+        let changed = match why {
+            Some(why) => rows.insert(key.into(), why) != Some(why),
+            None => rows.remove(key).is_some(),
+        };
+        drop(rows);
+        if changed {
+            self.progressed();
+        }
+    }
+    /// The route `ready` names, as the test's [`Self::close_for_test`] left it.
+    #[cfg(test)]
+    fn key_for_test(&self, ready: &Arc<AtomicBool>) -> String {
+        let rows = self.0.lock_recover();
+        let found = rows.iter().find(|(_, route_state)| {
+            matches!(route_state, RouteState::Required(current, _) if Arc::ptr_eq(current, ready))
+        });
+        found.map(|(key, _)| key.clone()).unwrap_or_default()
+    }
+    /// The read of the route `ready` names waits for its document to arrive.
+    #[cfg(test)]
+    pub(crate) fn not_here_for_test(&self, ready: &Arc<AtomicBool>) {
+        self.arriving(&self.key_for_test(ready), Some(ABSENT));
+    }
+    /// The read of the route `ready` names failed with `error`.
+    #[cfg(test)]
+    pub(crate) fn fail_for_test(&self, ready: &Arc<AtomicBool>, error: &str) {
+        self.join_failed(&self.key_for_test(ready), error.into());
     }
     pub(super) fn required(&self, key: &str) -> bool {
         self.0
@@ -1764,13 +1805,20 @@ pub(super) async fn install(
             }
             Err(error) => return Err(error.to_string()),
         },
-        Reply::Unavailable => (None, None),
+        Reply::Unavailable => {
+            inbound
+                .state
+                .document_reads
+                .arriving(&key, Some(UNAVAILABLE));
+            (None, None)
+        }
         Reply::Busy => {
             waiting = Some(Waiting::Turn);
             (None, None)
         }
         Reply::Absent => {
             absent = true;
+            inbound.state.document_reads.arriving(&key, Some(ABSENT));
             if !inbound
                 .send_durable(CollabEvent::ResourceUnavailable {
                     route: spec.clone(),
@@ -1908,6 +1956,16 @@ pub(super) async fn install(
                     .await
             };
             queued = matches!(result, Ok(Ok(Reply::Busy)) | Err(_));
+            if let Ok(Ok(reply)) = &result {
+                inbound.state.document_reads.arriving(
+                    &key,
+                    match reply {
+                        Reply::Unavailable => Some(UNAVAILABLE),
+                        Reply::Absent => Some(ABSENT),
+                        _ => None,
+                    },
+                );
+            }
             let renew = match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
                     set_read_ready(&inbound, &ready, true);
@@ -2072,6 +2130,7 @@ pub(super) async fn install(
             }
         }
         set_read_ready(&inbound, &ready, false);
+        inbound.state.document_reads.arriving(&key, None);
         if inbound.state.document_reads.current(&key, &ready) {
             inbound.state.document_reads.discard_stage(&key);
         }
@@ -2081,6 +2140,13 @@ pub(super) async fn install(
     });
     Ok(true)
 }
+
+/// Why a route waits for its document: the workspace knows it, and it has
+/// not reached this device yet.
+const UNAVAILABLE: &str = "the document has not reached this device yet";
+/// Why a route waits for its document: no device of the workspace that is
+/// here holds it.
+const ABSENT: &str = "no device of the workspace that is here holds the document";
 
 /// What a reader waits for before it Opens again, when its read could not
 /// be taken yet. Neither is a refusal.

@@ -6,8 +6,8 @@ use super::{
     BridgeState, DocumentRoute, InboundBridge, KeySignal, RouteLabel, RouteSpec, SdkCommand,
     SdkJoinContext, SdkRoute, broker_member_kind, change_waits, committed_document,
     follow_channel_keys, native_media, spawn_action_catalogue_stream, spawn_content_stream,
-    spawn_context_stream, spawn_invocation_stream, spawn_op_stream, spawn_presence_stream,
-    spawn_realtime_stream, tokio_mpsc,
+    spawn_context_stream, spawn_op_stream, spawn_presence_stream, spawn_realtime_stream,
+    take_invocations_once_current, tokio_mpsc,
 };
 use crate::time::Duration;
 use tilo_lock::MutexRecover as _;
@@ -294,7 +294,7 @@ pub(super) async fn join_route(
     change_waits::follow(&spec.app_id, &channel, inbound_tx);
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
-    let ((), (), (), (), (), presence) = tokio::join!(
+    let ((), (), (), (), presence) = tokio::join!(
         async {
             if !committed && !cluster_route {
                 spawn_op_stream(
@@ -308,12 +308,12 @@ pub(super) async fn join_route(
             }
         },
         spawn_context_stream(&channel, spec.clone(), inbound_tx),
-        spawn_invocation_stream(&channel, spec, inbound_tx),
         spawn_realtime_stream(&channel, inbound_tx),
         spawn_content_stream(&channel, spec.clone(), inbound_tx),
         spawn_presence_stream(&channel, inbound_tx),
     );
     tilo_startup_metrics::startup_mark("collab-join-streams");
+    take_invocations_once_current(channel.clone(), spec.clone(), inbound_tx.clone());
     // Subscriptions are installed first so an existing holder's response
     // cannot race ahead of our document stream.
     if !committed

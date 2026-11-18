@@ -21,6 +21,7 @@
 
 use super::*;
 use serde_json::{Value, json};
+use tilo_agent_session::ModelChoice;
 use tilo_desktop_search::Source as _;
 use tilo_mcp::McpServer;
 use tilo_session_actions::SessionActions;

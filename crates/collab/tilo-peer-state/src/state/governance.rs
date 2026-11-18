@@ -354,7 +354,9 @@ impl PeerGovernance<'_> {
     /// devices of theirs it lists now: every person its policy gives a role,
     /// its owner among them, by their root, whether or not a device of theirs
     /// has joined; and whoever it removed, kept so a change of theirs still
-    /// reads as theirs. It is the workspace's member set, named.
+    /// reads as theirs. A device the workspace names among its keepers is
+    /// listed as its person's too, though its access comes from the keepers.
+    /// It is the workspace's member set, named.
     pub fn governed_members(self, now: SystemTime) -> Result<MemberList, String> {
         let doc = self
             .peer
@@ -363,6 +365,19 @@ impl PeerGovernance<'_> {
             .as_ref()
             .ok_or("workspace governance missing")?;
         let people = self.governed_set(now)?;
+        // A device the workspace names among its keepers holds it by that
+        // name and is no member's device for its access ([`Self::governed_set`]).
+        // A page still shows it as the device of the person who keeps it
+        // there, so a window it serves or what it narrates reads as theirs.
+        let keeping: Vec<([u8; 32], [u8; 32])> = self
+            .keeping_devices()
+            .into_iter()
+            .filter(|hint| {
+                tilo_user_identity::verify_device_cert_at(&hint.host, now_ns(now)).is_ok()
+                    && !self.peer.core.revocations.refuses(&hint.host)
+            })
+            .map(|hint| (hint.host.user_public_key, hint.host.device_public_key))
+            .collect();
         // Read once per document state ([`crate::cached_document`]), so
         // listing the people costs no decoding or signature check for a row
         // a change left as it was.
@@ -403,6 +418,18 @@ impl PeerGovernance<'_> {
                 devices.insert(row.id.clone(), held.devices);
             }
             members.push(row);
+        }
+        for (root, device) in keeping {
+            let Some(member) = members
+                .iter()
+                .find(|member| member.root() == Some(root) && !member.removed)
+            else {
+                continue;
+            };
+            let devices = devices.entry(member.id.clone()).or_default();
+            if !devices.contains(&device) {
+                devices.push(device);
+            }
         }
         Ok(MemberList { members, devices })
     }

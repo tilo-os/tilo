@@ -4,6 +4,7 @@
 //! session as one of the person's devices.
 use super::*;
 use serde_json::{Value, json};
+use tilo_agent_session::ModelChoice;
 use tilo_mcp::McpServer;
 use tilo_session_actions::SessionActions;
 use tilo_session_client::Outbox;

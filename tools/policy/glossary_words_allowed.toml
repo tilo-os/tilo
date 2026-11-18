@@ -1077,3 +1077,9 @@ paths = [
     "apps/containers-model/locales/en-US.ftl",
     "apps/containers-model/locales/de-DE.ftl",
 ]
+
+[[allow]]
+reason = "A holder's signed address names the device it holds a workspace from in the address type's own `host` field, beside its service key and signature."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/collab/tilo-peer-state/src/state/governance.rs"]

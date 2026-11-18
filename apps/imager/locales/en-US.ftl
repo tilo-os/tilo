@@ -495,11 +495,13 @@ installer-preview-target-incomplete-detail = A manufacturer and model, plus a va
 
 installer-preview-target-blocking = A component needed for the desktop is unsupported on that computer. Resolve it there, import a new report, or name the model and continue without checked hardware.
 
-installer-preview-target-unidentified = Other computer not identified
+installer-preview-target-review-named = { $model }. Its drives, startup and protection are checked when it installs, before anything changes.
 
-installer-preview-target-review-declared = Model named; its hardware has not been checked.
+installer-preview-target-review-nameless = Not named. Its drives, startup and protection are checked when it installs, before anything changes.
 
-installer-preview-target-review-imported = Hardware report from that computer: { $supported } supported, { $limited } limited, { $unsupported } unsupported, { $unverified } not verified.
+installer-preview-target-review-imported = { $model }: { $supported } supported, { $limited } limited, { $unsupported } unsupported, { $unverified } not verified.
+
+installer-preview-target-review-imported-unnamed = Hardware report from that computer: { $supported } supported, { $limited } limited, { $unsupported } unsupported, { $unverified } not verified.
 
 installer-preview-target-review-blocking = A component needed for the desktop is unsupported on that computer.
 
@@ -729,6 +731,14 @@ installer-preview-migration-intro = First we’ll set up your name and identity.
 
 installer-preview-migrate-portable-body = Bring selected files, supported apps and accounts to the other computer. Your originals stay here. For large files, you may need to restart this computer from the USB drive to copy them before taking it away.
 
+installer-preview-migration-server-intro = The server becomes one of your devices either way. Nothing is installed at this step.
+
+installer-preview-migrate-server-title = Copy files from this computer
+
+installer-preview-migrate-server-body = Choose folders to copy, such as a photo library. Your originals stay here.
+
+installer-preview-fresh-server-body = Start without copying anything. You can send files from any of your devices later.
+
 installer-preview-migrate-title = Migrate from this computer
 
 installer-preview-migrate-body = Make your documents, supported apps and accounts accessible in Tilo. Your originals stay unchanged.
@@ -787,6 +797,10 @@ installer-preview-devices-intro = This name identifies this computer on your oth
 installer-preview-device-name-label = Computer name
 
 installer-preview-device-default = My computer
+
+installer-preview-devices-another-heading = Name that computer
+
+installer-preview-devices-another-intro = This name identifies that computer on your Tilo devices.
 
 installer-preview-existing-avatar = Your existing Tilo identity
 
@@ -989,6 +1003,10 @@ installer-preview-files-title = Files and settings
 
 installer-preview-files-body = Your entire home folder, including hidden files, browser profiles, saved credentials, Flatpak apps and settings.
 
+installer-preview-files-server-title = Files and folders
+
+installer-preview-files-server-body = Your home folder: documents, photos and other files. Apps and settings stay on this computer.
+
 installer-preview-accounts-title = Connect services in Tilo
 
 installer-preview-accounts-body = Choose saved connections or sign in on the next step.
@@ -1047,6 +1065,10 @@ installer-preview-method-heading = How does the plan reach it?
 
 installer-preview-method-intro = The medium and the commands carry the plan and one single-use code. The code expires after 24 hours; the plan can change afterwards.
 
+installer-preview-machine-heading = Name and settings
+
+installer-preview-machine-intro = Leave a choice open and answer it on that computer or on your devices.
+
 installer-preview-delivery-heading = Where it goes
 
 installer-preview-usb-title = A USB drive
@@ -1060,10 +1082,6 @@ installer-preview-netboot-body = Give it one command once it is running; it inst
 installer-preview-alongside-title = Alongside its Linux
 
 installer-preview-alongside-body = Give the Linux already on it one command. That system stays and starts first.
-
-installer-preview-name-heading = Its name
-
-installer-preview-name-use-body = The name you entered on the setup pages.
 
 installer-preview-name-open-title = Ask when it installs
 
@@ -1211,6 +1229,9 @@ installer-preview-password-invalid = Choose a different password.
 installer-preview-password-mismatch = The passwords don't match.
 
 installer-preview-deferred-handoff = Your identity, sign-ins and files finish on the destination after its first-boot login password is set.
+
+installer-preview-deferred-handoff-server = Your identity and sign-ins finish on the server after it installs. A server has no login password.
+
 installer-source-handoff-waiting = Keep this computer on. It will send your data to the other computer after you approve that computer here.
 installer-source-handoff-requested = { $name } asks for your data. Compare the code { $code } shown on that computer, then approve it.
 installer-source-handoff-join-requested = { $name } is new and asks to join your identity before receiving your data. Compare the code { $code } shown on that computer, then approve it.

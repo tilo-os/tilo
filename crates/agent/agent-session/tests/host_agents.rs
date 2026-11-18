@@ -34,9 +34,6 @@ use ed25519_dalek::SigningKey;
 use tilo_actions::remote::InvokeArgument;
 use tilo_agent_session::model::PlanTurns;
 use tilo_agent_session::{ApiKey, ModelChoice, Replica, ReplicaActor, Seed};
-use tilo_model_gateway::host_backend::protocol::{
-    Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, ToolCall, Usage,
-};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::certify::PendingConfirmation;
 use tilo_server::certify::{ApproverReply, ConfirmationAnswer};
@@ -52,6 +49,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::harness::hosted::{Hosted, Laptop, Options, Unlisted};
 use crate::harness::page::Page as Browser;
+use crate::harness::written_out::{WrittenOut, call, doing, doing_args, task};
 use crate::support::{Device, WORKSPACE, enrol, workspace};
 use tilo_actions::MemberId;
 
@@ -59,93 +57,6 @@ const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
 const EBOOK: &str = "so.tilo.ebook";
 const CHAT: &str = "so.tilo.chat";
-
-/// A model that does what its request writes out: a request that is a JSON
-/// list of tool calls (`[{"name": "tilo_do", "input": {…}}]`) is called one
-/// call a round, and once every call was made it answers with what the last
-/// one said, so the task's answer is the tools' own.
-struct WrittenOut;
-
-impl PlanTurns for WrittenOut {
-    fn turn(
-        &mut self,
-        request: &ModelRequest,
-        _: &str,
-        _: Instant,
-        _: bool,
-    ) -> Result<ModelResponse, ModelError> {
-        let words = |message: &Message| {
-            message
-                .content
-                .iter()
-                .filter_map(|content| match content {
-                    Content::Text { text } => Some(text.clone()),
-                    Content::ToolResult(result) => Some(result.content.clone()),
-                    _ => None,
-                })
-                .collect::<String>()
-        };
-        let asked = request
-            .messages
-            .iter()
-            .find(|message| matches!(message.role, Role::User))
-            .map(words)
-            .unwrap_or_default();
-        let calls: Vec<serde_json::Value> = serde_json::from_str(&asked).unwrap_or_default();
-        let answered: Vec<&Message> = request
-            .messages
-            .iter()
-            .filter(|message| matches!(message.role, Role::Tool))
-            .collect();
-        let (content, stop_reason) = match calls.get(answered.len()) {
-            Some(call) => (
-                vec![Content::ToolCall(ToolCall {
-                    id: format!("call-{}", answered.len()),
-                    name: call["name"].as_str().unwrap_or_default().to_owned(),
-                    input: call["input"].clone(),
-                    extra_content: None,
-                })],
-                StopReason::ToolCalls,
-            ),
-            None => (
-                vec![Content::Text {
-                    text: answered
-                        .last()
-                        .map_or_else(|| "Nothing to do.".to_owned(), |last| words(last)),
-                }],
-                StopReason::EndTurn,
-            ),
-        };
-        Ok(ModelResponse {
-            message: Message {
-                role: Role::Assistant,
-                content,
-            },
-            stop_reason,
-            usage: Usage::default(),
-            cost_micros: 0,
-        })
-    }
-
-    fn model(&self) -> &'static str {
-        "written-out"
-    }
-}
-
-/// One tool call, as [`WrittenOut`] makes it.
-fn call(name: &str, input: serde_json::Value) -> serde_json::Value {
-    serde_json::json!({"name": name, "input": input})
-}
-
-/// A `tilo_do` call: do the action `path` names with `args`.
-fn doing(path: &str, args: serde_json::Value) -> serde_json::Value {
-    call("tilo_do", serde_json::json!({"path": path, "args": args}))
-}
-
-/// [`doing`] with the arguments an action's own names made.
-fn doing_args(path: &str, args: serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
-    doing(path, serde_json::Value::Object(args))
-}
 
 /// An action's arguments by the names it gives them.
 fn arguments(fields: &[(&str, serde_json::Value)]) -> serde_json::Map<String, serde_json::Value> {
@@ -162,11 +73,6 @@ const CONVERSATION_ARGUMENT: &str = "channel";
 /// The argument the library's `shelve` names the topic a book is filed under
 /// by: a book's subject, as catalogues say.
 const TOPIC_ARGUMENT: &str = "subject";
-
-/// The task asking for `calls`, in order.
-fn task(calls: &[serde_json::Value]) -> String {
-    serde_json::Value::Array(calls.to_vec()).to_string()
-}
 
 /// A task making a note titled `title` through the agent tools.
 fn new_note(title: &str) -> String {

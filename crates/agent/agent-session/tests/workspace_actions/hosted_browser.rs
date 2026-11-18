@@ -11,6 +11,7 @@ use serde_json::json;
 use std::sync::Mutex;
 use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{CataloguePage, CatalogueQuery};
+use tilo_agent_session::ModelChoice;
 use tilo_mcp::McpServer;
 use tilo_server::hosted_browser::{
     APP, BrowserMeter, BrowserSessions, HostedBrowsers, TITLE, Window,
