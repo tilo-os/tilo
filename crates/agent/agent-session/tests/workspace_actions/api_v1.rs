@@ -928,10 +928,8 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
     );
     assert_eq!(questions(), 2);
 
-    // Allowed in the workspace's settings, under Agents, it goes unasked. The
-    // workspace is Ada's own, so its grants are hers to write: her computer's
-    // device writes the answer into the workspace's governance, and every
-    // holder of it admits it as hers.
+    // Allowed in the workspace's settings, under Agents, it goes unasked: the answer Ada gave,
+    // kept by her workspace's server.
     let scope = AnswerScope::action(
         WORKSPACE_GOVERNANCE_PROVIDER,
         WORKSPACE_GOVERNANCE_KIND,
@@ -946,36 +944,10 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(ada_key.clone()),
     );
-    let granted = grant.id.clone();
-    tilo_session_client::membership::Membership::of(
-        holder.device.session().engine(),
-        holder.device.workspace_id(),
-    )
-    .commit(&tilo_action_policy::Change::Grant(grant))
-    .await
-    .unwrap();
-    // Her device writes the answer into the workspace, and its holders admit
-    // it as hers: the agent asks the workspace that read it, so wait for it
-    // before the agent invites.
-    let held = workspaces
-        .state(&workspace)
+    workspaces
+        .put_workspace_grants(&workspace, &on_server.host.cert, [7; 32], vec![grant])
         .await
-        .expect("the server holds the workspace");
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        if held
-            .governance()
-            .governed_policy()
-            .is_ok_and(|policy| policy.grants.iter().any(|kept| kept.id == granted))
-        {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the workspace never read her answer"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+        .unwrap();
     holder
         .command()
         .post(&invitations, &invite)
