@@ -176,8 +176,14 @@ tilo_test_env::scenario! {
                 invoke: true
             }
         );
-        assert_eq!(resolver("so.tilo.tool"), AppActionAccess::default());
-        assert_eq!(resolver("so.tilo.unknown"), AppActionAccess::default());
+        // An app that declares nothing, and one that is not installed, may
+        // neither read the catalogue nor invoke anything.
+        let nothing = AppActionAccess {
+            query: false,
+            invoke: false,
+        };
+        assert_eq!(resolver("so.tilo.tool"), nothing);
+        assert_eq!(resolver("so.tilo.unknown"), nothing);
         assert_eq!(apps.display_name("so.tilo.unknown-app"), "Unknown App");
 
         let err = apps
