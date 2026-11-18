@@ -431,6 +431,11 @@ public struct EventCard: Equatable, Sendable {
     public var choices: [Choice]
     public var answer: Choice.ID?
 
+    /// What the event keeps for its answers, once the person asked to see it: Markdown.
+    public var shown: String?
+    /// Where the card stands once something the person pressed was carried out.
+    public var settled: Settled?
+
     public init(text: String, automation: Automation, question: Question.ID, choices: [Choice],
                 answer: Choice.ID? = nil) {
         self.text = text
@@ -438,6 +443,13 @@ public struct EventCard: Equatable, Sendable {
         self.question = question
         self.choices = choices
         self.answer = answer
+    }
+
+    public enum Settled: Equatable, Sendable {
+        /// Its person took back that it may act alone: it asks them each time.
+        case asksEachTime
+        /// Its person undid it: it is removed.
+        case undone
     }
 }
 
