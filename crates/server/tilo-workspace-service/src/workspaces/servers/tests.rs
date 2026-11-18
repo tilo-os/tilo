@@ -114,6 +114,64 @@ fn a_servers_configuration_is_typed_actions_with_history() {
     );
 }
 
+/// Every device founds the document with the same change, so two of the
+/// person's devices that each write a server into it before they see one
+/// another write one document holding both, not two competing roots.
+#[test]
+fn two_devices_that_each_write_the_document_first_merge_into_one() {
+    let mut left = Replica::<Servers>::from_doc(genesis(WORKSPACE).unwrap());
+    let mut right = Replica::<Servers>::from_doc(genesis(WORKSPACE).unwrap());
+    assert_eq!(
+        left.doc().clone().get_heads(),
+        right.doc().clone().get_heads(),
+        "the genesis is one change, identical on every device"
+    );
+
+    // Each device writes under its own actor, as the document's author does
+    // when the workspace hands it a copy.
+    left.doc_mut()
+        .set_actor(automerge::ActorId::from([1; 32].to_vec()));
+    left.apply(Servers::ENROLL_SERVER.with((
+        device_id(&[7; 32]).as_str().to_owned(),
+        "Attic".into(),
+        endpoint(),
+    )))
+    .unwrap();
+    right
+        .doc_mut()
+        .set_actor(automerge::ActorId::from([2; 32].to_vec()));
+    right
+        .apply(Servers::ENROLL_SERVER.with((
+            device_id(&[9; 32]).as_str().to_owned(),
+            "Cellar".into(),
+            endpoint(),
+        )))
+        .unwrap();
+
+    // What the workspace hands one device's copy once the two meet: the
+    // other's whole document, merged in.
+    let mut merged = Replica::<Servers>::load(&left.save()).unwrap();
+    tilo_automerge::ApplyIncoming::load_incoming(merged.doc_mut(), &right.save())
+        .expect("the other device's copy merges");
+    let state = merged.state().unwrap();
+    assert_eq!(state.servers.len(), 2, "both servers are in one document");
+    assert_eq!(state.active(&[7; 32]).unwrap().label, "Attic");
+    assert_eq!(state.active(&[9; 32]).unwrap().label, "Cellar");
+}
+
+/// The genesis is derived from the document's identity alone: another workspace
+/// has another genesis, and no plan or server is in it.
+#[test]
+fn the_genesis_is_empty_and_named_by_its_workspace() {
+    let mut one = genesis(WORKSPACE).unwrap();
+    let mut same = genesis(WORKSPACE).unwrap();
+    assert_eq!(one.get_heads(), same.get_heads());
+    let mut other = genesis("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a22").unwrap();
+    assert_ne!(one.get_heads(), other.get_heads());
+    let replica = Replica::<Servers>::load(&one.save()).unwrap();
+    assert!(replica.state().unwrap().servers.is_empty());
+}
+
 #[test]
 fn a_change_the_document_cannot_mean_is_refused() {
     let mut replica = enrolled();

@@ -209,21 +209,18 @@ async fn person_with_a_server() -> Fixture {
         None,
         state.path().to_path_buf(),
     )];
-    servers::found(server.host.workspaces(), &server.host.node_addr())
-        .await
-        .unwrap();
-    // The laptop holds the Servers workspace like any other workspace of the
-    // person's: a server that holds it is asked to take it in, and it never
-    // makes one itself.
-    servers::take_in(
-        server.host.workspaces(),
-        &laptop.cert,
-        &desktop.host.node_addr(),
+    // The person's own device makes the Servers workspace when it is first
+    // needed; the server is taken in among their servers from there.
+    servers::founded(desktop.host.workspaces()).await.unwrap();
+    servers::admit(
+        desktop.host.workspaces(),
+        &nas.cert,
+        &server.host.node_addr(),
     )
     .await
     .unwrap();
-    tilo_test_env::within("the laptop to hold the Servers workspace", async {
-        while !servers::holds_admin(desktop.host.workspaces()).await {
+    tilo_test_env::within("the server to hold the Servers workspace", async {
+        while !servers::holds_admin(server.host.workspaces()).await {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })

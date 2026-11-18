@@ -1217,7 +1217,7 @@ impl InstallerPreview {
                         .push(Box::new(
                             Text::new(command).with_id("installer.plan.command"),
                         ));
-                    let questions = machine::questions(&created.plan, None);
+                    let questions = machine::questions(&created.plan, &[]);
                     if !questions.is_empty() {
                         plan = plan.push(Box::new(
                             Text::new(&t("installer-plan-open-heading"))

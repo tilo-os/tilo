@@ -1510,7 +1510,7 @@ impl Workspaces {
                 .server_operation_invoke(workspace_id, caller, certificate, verb, request)
                 .await;
         }
-        let check = check_of(&address.action).ok_or(ActionCallError::UnknownAction)?;
+        let check = server::check_of(&address.action).ok_or(ActionCallError::UnknownAction)?;
         // A key's own record is read by the key itself, whatever its grant may
         // govern: the workspace lists the grants of its person's, and only the
         // key or the key that minted it revokes one.
@@ -1641,6 +1641,7 @@ impl Workspaces {
             SERVERS | ADD_SERVER | REMOVE_SERVER | MOVE_SERVER | SET_COPIES => {
                 self.governance_hosts(action, call).await
             }
+            server::MACHINE_ADMIT => Box::pin(self.machine_admit(call)).await,
             WAIT_LIST | UNLIST | MAIL_INVITATION => self.governance_wait_list(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,

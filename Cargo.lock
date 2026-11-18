@@ -21736,6 +21736,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "install-plan",
  "install-profile-model",
  "iroh",
  "iroh-base",
