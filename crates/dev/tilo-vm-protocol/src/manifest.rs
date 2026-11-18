@@ -387,55 +387,36 @@ mod tests {
         assert!(decoded.frame_cpu_trace);
     }
 
+    /// A dev swap builds every package and every binary the image's session component names, in a
+    /// development profile with the session's dev overrides. The component's own list says what
+    /// those are; the swap must follow it, so nothing here repeats it.
     #[test]
     fn a_dev_swap_builds_the_component_that_installs_the_session() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/components.toml");
         let manifest = Manifest::load(&path).unwrap().unwrap();
-        let session = manifest
-            .get("tilo-session")
-            .unwrap()
-            .clone()
-            .with_profile(Some("dev"));
-        assert_eq!(
-            session.bins,
-            [
-                "tilo-session",
-                "tilo-window-menu",
-                "tilo-lock-screen",
-                "tilo-quick-settings",
-                "osk"
-            ]
+        let component = manifest.get("tilo-session").unwrap().clone();
+        assert!(
+            component.bins.iter().any(|bin| bin == "tilo-session"),
+            "the session component installs the session itself: {:?}",
+            component.bins
         );
-        assert_eq!(
-            session.cargo_args(&[]),
-            [
-                "build",
-                "--locked",
-                "--profile",
-                "dev",
-                "-p",
-                "tilo-session",
-                "-p",
-                "tilo-window-menu",
-                "-p",
-                "tilo-lock-screen",
-                "-p",
-                "tilo-quick-settings",
-                "-p",
-                "osk",
-                "--bin",
-                "tilo-session",
-                "--bin",
-                "tilo-window-menu",
-                "--bin",
-                "tilo-lock-screen",
-                "--bin",
-                "tilo-quick-settings",
-                "--bin",
-                "osk",
-                "--features",
-                "tilo-session/dev-overrides"
-            ]
+        let session = component.clone().with_profile(Some("dev"));
+        let args = session.cargo_args(&[]);
+        assert_eq!(&args[..4], ["build", "--locked", "--profile", "dev"]);
+        let count = |flag: &str| args.windows(2).filter(|pair| pair[0] == flag).count();
+        assert_eq!(count("-p"), component.packages.len(), "{args:?}");
+        assert_eq!(count("--bin"), component.bins.len(), "{args:?}");
+        for bin in &component.bins {
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair[0] == "--bin" && pair[1] == *bin),
+                "{bin} is built: {args:?}"
+            );
+        }
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--features", "tilo-session/dev-overrides"]),
+            "{args:?}"
         );
         let manifest = Manifest::parse(
             "[[component]]\nname = \"pair\"\npackages = [\"a\", \"b\"]\nbins = [\"a-cli\", \"b-cli\"]\n",
