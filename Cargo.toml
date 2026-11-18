@@ -122,6 +122,7 @@ members = [
     "apps/discord/worker",
     "apps/messages",
     "apps/clocks",
+    "apps/clocks-model",
     "apps/code-editor",
     "apps/chip-design",
     "apps/contacts",
