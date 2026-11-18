@@ -141,9 +141,11 @@ rustix = { workspace = true, features = ["process"], optional = true }
 # A dispatcher that answers as an app's own host: what a device's action service asks
 # through, and what a workspace's host answers beside it.
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
-# The app whose model module the packaged-model test installs: its own code,
-# built natively, reads the record the module wrote.
+# The apps whose model modules the packaged-model tests install: their own
+# code, built natively, reads the records the modules wrote. Tube's module
+# serves two resources, so one module answering both is what its test reads.
 tasks-model = { path = "../../../apps/tasks-model" }
+tube-model = { path = "../../../apps/tube-model" }
 # A direct link a test makes a reader fall behind, with the frames it hears
 # bounded by the test rather than by what a live link holds.
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }

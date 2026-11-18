@@ -194,6 +194,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "activity-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "activity-model",
+ "tilo-model-guest",
+]
+
+[[package]]
 name = "acto"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -614,6 +622,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "api-tester-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "api-tester-model",
+ "tilo-model-guest",
+]
+
+[[package]]
 name = "app-catalogue"
 version = "0.1.0"
 dependencies = [
@@ -882,6 +898,14 @@ dependencies = [
  "serde_json",
  "tilo-resource",
  "workspace-hack",
+]
+
+[[package]]
+name = "assistant-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "assistant-model",
+ "tilo-model-guest",
 ]
 
 [[package]]
@@ -1201,6 +1225,14 @@ dependencies = [
  "tilo-paths",
  "tilo-resource",
  "workspace-hack",
+]
+
+[[package]]
+name = "backups-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "backups-model",
+ "tilo-model-guest",
 ]
 
 [[package]]
@@ -1862,6 +1894,14 @@ dependencies = [
  "serde_json",
  "tilo-resource",
  "workspace-hack",
+]
+
+[[package]]
+name = "calculator-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "calculator-model",
+ "tilo-model-guest",
 ]
 
 [[package]]
@@ -2909,6 +2949,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "console-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "console-model",
+ "tilo-model-guest",
+]
+
+[[package]]
 name = "console_error_panic_hook"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3766,6 +3814,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "db-client-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "db-client-model",
+ "tilo-model-guest",
+]
+
+[[package]]
 name = "defmt"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4008,6 +4064,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "diffmerge-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "diffmerge-model",
+ "tilo-model-guest",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4156,6 +4220,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "disk-usage-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "disk-usage-model",
+ "tilo-model-guest",
+]
+
+[[package]]
 name = "disks"
 version = "0.1.0"
 dependencies = [
@@ -4178,6 +4250,14 @@ dependencies = [
  "serde_json",
  "tilo-resource",
  "workspace-hack",
+]
+
+[[package]]
+name = "disks-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "disks-model",
+ "tilo-model-guest",
 ]
 
 [[package]]
@@ -5200,6 +5280,14 @@ dependencies = [
  "tilo-test-env",
  "uuid",
  "workspace-hack",
+]
+
+[[package]]
+name = "firewall-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "firewall-model",
+ "tilo-model-guest",
 ]
 
 [[package]]
@@ -6787,6 +6875,14 @@ dependencies = [
  "tilo-resource",
  "tilo-test-env",
  "workspace-hack",
+]
+
+[[package]]
+name = "hex-editor-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "hex-editor-model",
+ "tilo-model-guest",
 ]
 
 [[package]]
@@ -9663,6 +9759,14 @@ dependencies = [
  "serde_json",
  "tilo-resource",
  "workspace-hack",
+]
+
+[[package]]
+name = "logs-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "logs-model",
+ "tilo-model-guest",
 ]
 
 [[package]]
@@ -17132,6 +17236,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tasks-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "tasks-model",
+ "tilo-model-guest",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20399,6 +20511,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-model-guest"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "getrandom 0.4.3",
+ "serde",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-resource",
+ "uuid",
+]
+
+[[package]]
 name = "tilo-moderation"
 version = "0.1.0"
 dependencies = [
@@ -23585,6 +23713,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "tube-model",
  "uuid",
  "web-time",
  "wire-frame",
@@ -24551,6 +24680,14 @@ dependencies = [
  "tilo-actions",
  "tilo-resource",
  "workspace-hack",
+]
+
+[[package]]
+name = "tube-model-wasm"
+version = "0.1.0"
+dependencies = [
+ "tilo-model-guest",
+ "tube-model",
 ]
 
 [[package]]

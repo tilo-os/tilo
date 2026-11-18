@@ -29,11 +29,19 @@ the moment the app is installed, with no build of its own.
 
 An app's model is one crate, `apps/<app>-model`, and the module is one guest
 crate beside it, `apps/<app>-model-wasm`, whose whole content is the app's
-resource served through `tilo-model-guest`. One mechanism builds every app's
-module: `tilo-app model` builds that guest crate for `wasm32-unknown-unknown`,
-with the crate's own `.cargo` config saying what makes it a module rather than
-a page (no JavaScript glue, no browser clocks), and packaging writes the result
-into the payload as `model.wasm`. So building an app's package builds its
+resources served through `tilo-model-guest`. A module is one per app, whatever
+number of resource kinds the app declares (Tube serves `tube.library` and
+`tube.watch-history` alike): each request names the resource kind it is for,
+and the module routes it to that resource's verbs. One mechanism builds every
+app's module: `tilo-app model` builds that guest crate in the workspace's
+release profile with the size settings a module is built for (opt-level `z`,
+no unwinding, no debug info or symbols) for `wasm32-unknown-unknown`, then
+optimizes it with `wasm-opt`. The crate's own `.cargo` config says what makes
+a module rather than a page (no JavaScript glue, no browser clocks), and
+packaging writes the result into the payload as `model.wasm`. The guest crates are workspace members, so
+every app's module shares one lockfile and one wasm32 target directory: what
+they have in common compiles once, and the module is built for size, since it
+is the same bytes on every device. So building an app's package builds its
 model, and a tree keeps none: `t test app-models` builds them all, and the
 checks that read one declare it.
 
