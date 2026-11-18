@@ -214,17 +214,18 @@ if [[ $installer_status != 0 ]]; then
   # A failed install keeps its own log in its own guest: bring the reason out
   # while the guest is still up, then stop it.
   as_guest_root "tail -n 200 $guest_work/install/qcow2/.install.log 2>/dev/null" >&2 || true
+  stop_installer
+  die "the disk install failed in its guest (exit $installer_status)"
 fi
-stop_installer
-[[ $installer_status = 0 ]] || die "the disk install failed in its guest (exit $installer_status)"
-# The disk and the one recovery key the install made, out of the guest. The key
-# is this check's way into the machine at every boot until the image carries a
-# signed boot chain for a TPM keyslot, which this one does not yet.
+# The disk and the one recovery key the install made, out of the guest while it
+# is still up. The key is this check's way into the machine at every boot until
+# the image carries a signed boot chain for a TPM keyslot, which this one does
+# not yet.
 mkdir -p "$work/install"
-ssh_guest "tar -C $guest_work/install -cf - qcow2/disk.qcow2 qcow2/recovery-key.txt" > "$work/install.tar" \
-  || die 'could not take the installed disk out of the guest'
-tar -C "$work/install" -xf "$work/install.tar" || die 'the guest sent an unreadable archive'
-rm -f "$work/install.tar"
+ssh_guest "tar -C $guest_work/install -cf - qcow2/disk.qcow2 qcow2/recovery-key.txt" \
+  | tar -C "$work/install" -xf - \
+  || { stop_installer; die 'could not take the installed disk out of the guest'; }
+stop_installer
 disk=$work/disk.qcow2
 mv "$work/install/qcow2/disk.qcow2" "$disk"
 [[ -s $work/install/qcow2/recovery-key.txt ]] \
