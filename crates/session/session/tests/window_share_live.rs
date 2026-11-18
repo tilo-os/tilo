@@ -1331,7 +1331,10 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
     later.label = format!("{} made later", later.label);
     share_the_fleet(&ada, &[&desktop, &copy, &later]);
     later.start();
-    std::thread::sleep(Duration::from_secs(8));
+    // The copy is up and holds the workspace before the machine it was copied from comes back: two
+    // copies of one machine on the network at once, and the desktop finds a device that already
+    // took its place in the workspace.
+    later.wait_holding(&workspace);
     desktop.start();
     desktop.wait_holding(&workspace);
     // Both start their sessions again on the network they now share.

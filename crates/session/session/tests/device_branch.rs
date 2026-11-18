@@ -485,7 +485,7 @@ fn wait_admitted(device: &Device, site: &Site) {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
@@ -639,7 +639,7 @@ fn start_both(laptop: &mut Device, copy: &mut Device, hosted: &str) {
             copy.label,
             syncing(copy),
         );
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
