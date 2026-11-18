@@ -178,10 +178,10 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
     use super::api_on_server::{accept_invitation, api_on_server, approved_key, headers, json_of};
     let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let page = enrol(&root, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_server, &root, &page, "backend").await;
-    let bearer = format!("Bearer {key}");
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let owner_page = enrol(&owner, "Ada's browser", DeviceCapabilities::member());
+    let owner_key = approved_key(&on_server, &owner, &owner_page, "backend").await;
+    let bearer = format!("Bearer {owner_key}");
     let pairs = [
         ("authorization", bearer.as_str()),
         ("content-type", "application/json"),
@@ -225,7 +225,7 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
     let mut owner = Mcp {
         api: &api,
         path: format!("/w/{workspace}/mcp"),
-        token: key,
+        token: owner_key,
         session: None,
     };
     owner.initialize().await;
@@ -238,8 +238,8 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
     };
     mcp.initialize().await;
     // Both writes of the grouped call are theirs, and the workspace offers a
-    // person who only reads it none of them: the first step is refused and the
-    // whole call is answered so.
+    // person who only reads it none of them: the first step is refused, for
+    // their role, and the whole call is answered so.
     let many = mcp
         .tilo_do(json!({"calls": [
             {"path": "tasks#create", "args": {"title": "Second"}},
@@ -252,7 +252,7 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
         "a refused group is never done: {many}"
     );
     assert!(
-        many.to_string().contains("no action create"),
+        many.to_string().contains("not_permitted"),
         "the refusal says why: {many}"
     );
     // Nothing of theirs reached the tracker, while the same writes the person
@@ -345,4 +345,115 @@ async fn each_caller_hears_only_its_own_refusal() {
         refusal.contains("not granted"),
         "the refusal says why: {refusal}"
     );
+}
+
+/// A member's key takes exactly what their role lets them, in a workspace
+/// someone else owns: a Viewer reads the issues and writes nothing, a
+/// Commenter comments on one and creates none. What the role refuses is
+/// answered refused for it, never as no such action.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_members_key_takes_what_its_role_lets_it() {
+    use super::api::{ISSUER, Mcp};
+    use super::api_on_server::{api_on_server, approved_key, headers, json_of};
+    let on_server = Box::pin(api_on_server(ISSUER)).await;
+    let api = Arc::clone(&on_server.api);
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let owner_page = enrol(&owner, "Ada's browser", DeviceCapabilities::member());
+    let owner_key = approved_key(&on_server, &owner, &owner_page, "backend").await;
+    let bearer = format!("Bearer {owner_key}");
+    let pairs = [
+        ("authorization", bearer.as_str()),
+        ("content-type", "application/json"),
+    ];
+    let (status, made) = json_of(
+        api.dispatch(
+            &hyper::Method::POST,
+            "/v1/workspaces",
+            "",
+            &headers(&pairs),
+            json!({"name": "Shared"}).to_string().as_bytes(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, 201, "{made}");
+    let workspace = made["id"].as_str().unwrap().to_owned();
+    let mut owner_mcp = Mcp {
+        api: &api,
+        path: format!("/w/{workspace}/mcp"),
+        token: owner_key,
+        session: None,
+    };
+    owner_mcp.initialize().await;
+    let first = ended(&mut owner_mcp, "tasks#create", json!({"title": "First"})).await;
+    assert_eq!(
+        first["result"]["structuredContent"]["status"], "ok",
+        "{first}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let issue = loop {
+        if let Some(issue) = super::key_writes::issues_kept(&on_server, &workspace)
+            .await
+            .pop()
+        {
+            break issue;
+        }
+        assert!(Instant::now() < deadline, "the server never kept the issue");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    let refused = |answer: &Value| {
+        answer["result"]["structuredContent"]["status"] != "ok"
+            && answer.to_string().contains("not_permitted")
+    };
+    for (role, name, comments) in [(Role::Viewer, "Vic", false), (Role::Commenter, "Cyd", true)] {
+        let (person, _) = tilo_user_identity::UserIdentity::generate(name, 1);
+        let page = enrol(
+            &person,
+            &format!("{name}'s browser"),
+            DeviceCapabilities::member(),
+        );
+        admit_person(&on_server.hosted, &on_server.host, &workspace, &page, role).await;
+        let key = approved_key(&on_server, &person, &page, "backend").await;
+        let mut mcp = Mcp {
+            api: &api,
+            path: format!("/w/{workspace}/mcp"),
+            token: key,
+            session: None,
+        };
+        mcp.initialize().await;
+
+        let read = ended(&mut mcp, "tasks#read", json!({})).await;
+        assert_eq!(
+            read["result"]["structuredContent"]["status"], "ok",
+            "{name} reads the issues: {read}"
+        );
+        assert!(read.to_string().contains("First"), "{name}: {read}");
+
+        let created = ended(&mut mcp, "tasks#create", json!({"title": "Not theirs"})).await;
+        assert!(refused(&created), "{name} creates no issue: {created}");
+        // A name the app has no action by is told so, and where they are listed.
+        let typo = ended(&mut mcp, "tasks#reed", json!({})).await;
+        assert!(
+            !refused(&typo)
+                && typo.to_string().contains("has no action reed")
+                && typo.to_string().contains("tilo_ls tasks lists them"),
+            "{name} hears that tasks has no such action: {typo}"
+        );
+
+        let said = ended(
+            &mut mcp,
+            "tasks#comment",
+            json!({"issue": issue, "text": format!("Seen by {name}")}),
+        )
+        .await;
+        if comments {
+            assert_eq!(
+                said["result"]["structuredContent"]["status"], "ok",
+                "{name} comments: {said}"
+            );
+        } else {
+            assert!(refused(&said), "{name} comments on nothing: {said}");
+        }
+    }
 }

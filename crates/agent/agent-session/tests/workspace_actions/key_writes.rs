@@ -521,7 +521,7 @@ async fn issue_parts(on_server: &OnServer, workspace: &str) -> Vec<tasks::issue_
 }
 
 /// The ids of the issues of `workspace` its server keeps.
-async fn issues_kept(on_server: &OnServer, workspace: &str) -> Vec<String> {
+pub(super) async fn issues_kept(on_server: &OnServer, workspace: &str) -> Vec<String> {
     issue_parts(on_server, workspace)
         .await
         .iter()

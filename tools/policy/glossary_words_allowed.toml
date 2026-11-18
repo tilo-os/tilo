@@ -25,6 +25,10 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces/servers.rs",
     "crates/server/tilo-workspace-service/src/workspaces/servers/tests.rs",
     "crates/server/tilo-workspace-service/src/workspaces/servers/tests/asked.rs",
+    # The API-on-a-server fixture's own `host` field, the server device a
+    # test admits people with: the same fixture field, in a test of who may
+    # write what.
+    "crates/agent/agent-session/tests/workspace_actions/device_writes.rs",
 ]
 
 [[allow]]
