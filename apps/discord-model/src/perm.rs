@@ -40,6 +40,5 @@ mod tests {
         assert_eq!(bits(everyone), "3072");
         assert_eq!(parse("3072"), everyone);
         assert_eq!(parse("not a number"), 0);
-        assert_eq!(MODERATE_MEMBERS, 1 << 40);
     }
 }

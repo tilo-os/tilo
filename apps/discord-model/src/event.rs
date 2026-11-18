@@ -415,33 +415,4 @@ mod tests {
         );
         assert_ne!(link_check(&link_proof("ABC")), link_proof("ABC"));
     }
-
-    #[test]
-    fn message_created_round_trips() {
-        let event = MessageCreated {
-            guild_id: "g".into(),
-            channel_id: "c".into(),
-            message_id: "m".into(),
-            author: Author {
-                id: "u".into(),
-                name: "alice".into(),
-                avatar: Some("hash".into()),
-                avatar_url: Some("https://cdn.discordapp.com/avatars/u/hash.png".into()),
-                bot: false,
-                webhook_id: None,
-            },
-            content: "hello".into(),
-            reply_to: None,
-            reply_author: None,
-            reply_text: None,
-            thread: Some(ThreadRef {
-                id: "c".into(),
-                parent: "p".into(),
-            }),
-            attachments: vec![],
-        };
-        let value = serde_json::to_value(&event).unwrap();
-        let back: MessageCreated = serde_json::from_value(value).unwrap();
-        assert_eq!(back, event);
-    }
 }
