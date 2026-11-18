@@ -644,7 +644,7 @@ mod tests {
 // The scenarios show a sample table, which no signal reaches; the app someone
 // opens lists this machine's processes, and walking its Kill would signal every
 // one of them, the test's own among them.
-ui::reach_tests!(MonitorShell);
+ui::reach_tests!(MonitorShell, shares: [share_0, share_1]);
 
 /// German copy comes from `locales/de-DE.ftl`, not the English catalogue.
 #[cfg(test)]

@@ -474,4 +474,4 @@ mod tests {
     }
 }
 
-ui::reach_tests!(MapsShell);
+ui::reach_tests!(MapsShell, shares: [share_0, share_1, share_2]);
