@@ -155,6 +155,9 @@ impl App {
     fn admit_close(&mut self) -> bool {
         #[cfg(feature = "native")]
         let _close = super::slow_event::phase("close");
+        // What closes with the window lets go of its stores without waiting on their commits:
+        // the process waits for those as it ends.
+        let _started_only = durable_store::waiting::forbid_on_this_thread();
         self.close_admission.admitted = true;
         // No document mutation/event may run between checkpoint and finalization.
         // Existing teardown may cancel jobs through its immutable-document poll.
