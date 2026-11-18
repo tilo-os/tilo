@@ -80,8 +80,9 @@ const MAX_CALENDAR_CHARS: usize = 80;
 const MAX_CALENDARS: usize = 40;
 
 /// What a telling's arguments are, as a refusal of them says it.
-const WHAT: &str = "a calendar to connect, which names its server's https address, the user name \
-                    there and a name for the account and nothing else,";
+const WHAT: &str = "a calendar to connect, which names its server (its https address, its bare \
+                    name, or its person's mail address there), the user name there and a name \
+                    for the account and nothing else,";
 const NOT_AN_ADDRESS: &str = "That is not the address of a calendar server";
 const NOT_HTTPS: &str = "A calendar is connected only at an https address";
 const CARRIES_SIGN_IN: &str = "The server's address must not carry a sign-in: its person types \
@@ -234,6 +235,35 @@ fn literal(url: &Url) -> Option<IpAddr> {
     )
 }
 
+/// `said` as an address written whole. What a person says is taken as they
+/// say it: an address with its scheme stands as it is; a server's bare name,
+/// with the port and the path said with it, is that name's https address; a
+/// mail address is the https address of the name it ends in, where a
+/// calendar is looked for first. Nothing else is an address.
+fn written_whole(said: &str) -> Option<String> {
+    if said.contains("://") {
+        return Some(said.to_owned());
+    }
+    if said.is_empty()
+        || said
+            .chars()
+            .any(|sign| sign.is_whitespace() || sign.is_control())
+    {
+        return None;
+    }
+    let name = match said.split_once('@') {
+        None => said,
+        Some((who, name)) => {
+            let named = !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.');
+            (named && !who.is_empty() && !who.contains(['@', ':', '/'])).then_some(name)?
+        }
+    };
+    Some(format!("https://{name}"))
+}
+
 /// The address a turn named, when a calendar is connected there by a server
 /// that reaches `reach` and looks a name up with `lookup`: https, carrying
 /// no sign-in, and on the public internet as the address says it and as
@@ -241,7 +271,8 @@ fn literal(url: &Url) -> Option<IpAddr> {
 /// address inside is taken too, and plain http to a literal one there: a
 /// development server on this machine.
 async fn bounded(address: &str, reach: Destinations, lookup: &Lookup) -> Result<Url, &'static str> {
-    let url = Url::parse(address.trim()).map_err(|_| NOT_AN_ADDRESS)?;
+    let written = written_whole(address.trim()).ok_or(NOT_AN_ADDRESS)?;
+    let url = Url::parse(&written).map_err(|_| NOT_AN_ADDRESS)?;
     if !url.username().is_empty() || url.password().is_some() {
         return Err(CARRIES_SIGN_IN);
     }
@@ -811,7 +842,6 @@ mod tests {
             ("https://[::1]/dav/", NOT_PUBLIC),
             ("https://[fd00::8]/dav/", NOT_PUBLIC),
             ("http://127.0.0.1:8080/dav/", NOT_HTTPS),
-            ("calendar.example.test", NOT_AN_ADDRESS),
             ("", NOT_AN_ADDRESS),
         ] {
             assert_eq!(
