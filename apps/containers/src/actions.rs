@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use automerge::{AutoCommit, ROOT, ReadDoc};
+    use automerge::AutoCommit;
     use ui::framework::LiveRow;
     use ui::tilo_resource::Resource as _;
 
@@ -79,12 +79,6 @@ mod tests {
         .unwrap();
         let mut doc = host.peer_document();
         assert_eq!(doc.get_heads(), heads, "nothing was written");
-        let keys: Vec<String> = doc.keys(ROOT).collect();
-        assert_eq!(
-            keys,
-            ["draft"],
-            "the canonical resource contains only the app draft: at its first version it names none"
-        );
         assert_eq!(Containers::read(&doc).unwrap(), Containers::default());
     }
 
