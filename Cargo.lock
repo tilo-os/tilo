@@ -23335,6 +23335,7 @@ dependencies = [
  "serde_json",
  "tilo-action-policy",
  "tilo-clock",
+ "tilo-component-scan",
  "tilo-paths",
  "tilo-test-env",
  "tilo-ui-graph",

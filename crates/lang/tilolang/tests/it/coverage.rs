@@ -3,7 +3,7 @@
 //! toolkit does not describe yet says why, in a list that only shrinks
 //! (`crates/sdk/ui-core/src/component/not_yet_described.txt`).
 //!
-//! The widget list is read from the toolkit's own sources (`component_scan.rs`, the same reading
+//! The widget list is read from the toolkit's own sources (`tilo-component-scan`, the same reading
 //! that generates the component registry), never hand-kept: a widget the toolkit gains, or a
 //! component it describes that tilolang does not reach, fails here. Plumbing is out by rule, not
 //! by name: a widget counts only when it is public through the toolkit's widget tree (`widget`,
@@ -17,12 +17,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-#[path = "../../../../sdk/ui-core/component_scan.rs"]
-#[allow(
-    dead_code,
-    reason = "the build script reads the parts of the scan this check does not"
-)]
-mod component_scan;
+use tilo_component_scan as component_scan;
 
 fn toolkit_src() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/src")
