@@ -1044,7 +1044,7 @@ mod tests {
         let keeper = |seconds: &str| {
             let child = std::process::Command::new("sleep")
                 .arg(seconds)
-                .spawn()
+                .spawn_locked()
                 .unwrap();
             std::fs::write(&lock, format!("{:>10}\n", child.id())).unwrap();
             std::fs::write(&socket, "").unwrap();
