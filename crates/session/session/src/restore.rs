@@ -339,8 +339,9 @@ impl Restore {
     /// its keeper was last told it stood in: the tab waits for exactly that window, which comes
     /// once the app is shown again, and the app is not started a second time. The keepers to show
     /// now, by process: an app is shown once the layout holding every tab its keeper named is laid
-    /// out, or every workspace's layout was read and some of them are gone, or after
-    /// [`KEPT_WAIT`]; shown before, its windows would take new tabs. A kept window
+    /// out, or every workspace's layout was read (and some of them are gone, or none laid out a
+    /// window at all: no layout this device could write holds them), or after [`KEPT_WAIT`];
+    /// shown before, its windows would take new tabs. A kept window
     /// whose tab is gone (the layout changed on another device meanwhile), or that opened while
     /// the desktop was away, opens as a new window does. A saved tab of a kept app that none of
     /// its windows claims is one the app closed while the desktop was away: it closes too, which
@@ -356,7 +357,7 @@ impl Restore {
         let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.kept)
             .into_iter()
             .partition(|kept| {
-                waited || (self.seeded && (self.read || tabs_laid_out(kept, &self.waiting)))
+                waited || self.read || (self.seeded && tabs_laid_out(kept, &self.waiting))
             });
         self.kept = waiting;
         let mut shown = Vec::new();
@@ -367,6 +368,8 @@ impl Restore {
             }
             let as_found = if self.seeded {
                 "in its saved tabs"
+            } else if self.read {
+                "as new windows, no saved layout holds its tabs"
             } else {
                 "as new windows, its saved layout not read"
             };
@@ -1084,8 +1087,8 @@ mod tests {
     /// A layout that is laid out before it, but holds only some of a kept app's tabs (the other
     /// workspace's is still being read), keeps the app waiting; a layout that never brings them
     /// shows it after the wait, as new windows, and the saved tabs of it that come later close
-    /// rather than start the app a second time. A session that reads no layout at all shows a
-    /// kept app at once.
+    /// rather than start the app a second time. A session that reads no layout at all, or read
+    /// every layout and found none of its tabs, shows a kept app at once.
     #[test]
     #[cfg(target_os = "linux")]
     fn kept_windows_stop_waiting_for_a_layout_that_does_not_come() {
@@ -1118,6 +1121,19 @@ mod tests {
             saved,
             [43],
             "its saved tabs close: its windows are shown already"
+        );
+
+        // Every layout was read and none laid a window out (none this device could write holds
+        // them): there is nothing to wait for.
+        let mut unsaved = Restore::default();
+        unsaved.begin();
+        unsaved.layouts_read();
+        unsaved.kept = vec![kept(&[("w1", Some("41"))])];
+        unsaved.kept_since = Some(std::time::Instant::now());
+        assert_eq!(
+            unsaved.claim_kept(&desktop),
+            [50],
+            "no saved tab of it to wait for"
         );
 
         let mut alone = Restore::default();
