@@ -1416,7 +1416,7 @@ fn set_aside_failed(record: &ui_core::resource::DocumentId, error: &str) -> Stri
     )
 }
 
-/// The storage keys `changes` write, each top down to what it put or
+/// The storage keys `changes` write, each once and top down to what it put or
 /// deleted, read from their operations: an object they make is placed where
 /// they make it, any other where `doc` holds it. Nothing of `doc` is copied
 /// or applied to, so the answer costs the changes, not the document: the
@@ -1427,45 +1427,51 @@ pub fn keys_written<'a>(
     doc: &ui_core::automerge::AutoCommit,
     changes: impl IntoIterator<Item = &'a ui_core::automerge::Change>,
 ) -> Option<Vec<Vec<String>>> {
-    use std::collections::HashMap;
-    use ui_core::automerge::legacy::{Key, ObjectId, OpType};
+    use std::collections::{HashMap, HashSet};
+    use ui_core::automerge::legacy::{Key, ObjectId, OpId, OpType};
     use ui_core::automerge::{Prop, ReadDoc};
-    let map_key = |key: &Key| match key {
-        Key::Map(key) => Some(key.to_string()),
-        Key::Seq(_) => None,
-    };
     // Each object the changes make, by its id: where it is made.
-    let mut made: HashMap<String, (ObjectId, Option<String>)> = HashMap::new();
-    let mut ops = Vec::new();
+    let mut made: HashMap<ObjectId, (ObjectId, Option<String>)> = HashMap::new();
+    // What the operations touch, each once: a map's key, or a list or text as
+    // a whole (a text's characters are an operation each, on one object).
+    let mut touched: Vec<(ObjectId, Option<String>)> = Vec::new();
+    let mut seen: HashSet<(ObjectId, Option<String>)> = HashSet::new();
     for change in changes {
-        let actor = change.actor_id().to_hex_string();
+        let actor = change.actor_id().clone();
         let start = change.start_op().get();
         for (offset, op) in change.decode().operations.into_iter().enumerate() {
+            let key = match op.key {
+                Key::Map(key) => Some(key.to_string()),
+                Key::Seq(_) => None,
+            };
             if matches!(op.action, OpType::Make(_)) {
                 let counter = start.saturating_add(u64::try_from(offset).ok()?);
                 made.insert(
-                    format!("{counter}@{actor}"),
-                    (op.obj.clone(), map_key(&op.key)),
+                    ObjectId::Id(OpId::new(counter, &actor)),
+                    (op.obj.clone(), key.clone()),
                 );
             }
-            ops.push(op);
+            let at = (op.obj, key);
+            if !seen.contains(&at) {
+                seen.insert(at.clone());
+                touched.push(at);
+            }
         }
     }
-    let mut paths: HashMap<String, Vec<String>> = HashMap::new();
+    let mut paths: HashMap<ObjectId, Vec<String>> = HashMap::new();
     let mut path_of = |obj: &ObjectId| -> Option<Vec<String>> {
         // Up through what the changes make, to the root or an object `doc`
         // holds, whose path `doc` names.
         let mut above: Vec<Option<String>> = Vec::new();
         let mut at = obj.clone();
         let base = loop {
-            let ObjectId::Id(id) = &at else {
+            if at == ObjectId::Root {
                 break Vec::new();
-            };
-            let name = id.to_string();
-            if let Some(known) = paths.get(&name) {
+            }
+            if let Some(known) = paths.get(&at) {
                 break known.clone();
             }
-            if let Some((parent, key)) = made.get(&name) {
+            if let Some((parent, key)) = made.get(&at) {
                 above.push(key.clone());
                 at = parent.clone();
                 if above.len() > made.len() {
@@ -1473,7 +1479,7 @@ pub fn keys_written<'a>(
                 }
                 continue;
             }
-            let (held, _) = doc.import(&name).ok()?;
+            let (held, _) = doc.import(&at.to_string()).ok()?;
             let mut keys: Vec<String> = doc
                 .parents(&held)
                 .ok()?
@@ -1483,23 +1489,25 @@ pub fn keys_written<'a>(
                 })
                 .collect();
             keys.reverse();
-            paths.insert(name, keys.clone());
+            paths.insert(at, keys.clone());
             break keys;
         };
         let mut path = base;
         path.extend(above.into_iter().rev().flatten());
-        if let ObjectId::Id(id) = obj {
-            paths.insert(id.to_string(), path.clone());
-        }
+        paths.insert(obj.clone(), path.clone());
         Some(path)
     };
-    ops.iter()
-        .map(|op| {
-            let mut path = path_of(&op.obj)?;
-            path.extend(map_key(&op.key));
-            Some(path)
-        })
-        .collect()
+    let mut written: Vec<Vec<String>> = Vec::with_capacity(touched.len());
+    let mut kept: HashSet<Vec<String>> = HashSet::with_capacity(touched.len());
+    for (obj, key) in touched {
+        let mut path = path_of(&obj)?;
+        path.extend(key);
+        if !kept.contains(&path) {
+            kept.insert(path.clone());
+            written.push(path);
+        }
+    }
+    Some(written)
 }
 
 /// The member `invoker` is: an automation opens no view of its own.
