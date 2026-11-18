@@ -57,7 +57,7 @@
 "view-not-offered" = "This Tilo cannot show views in messages yet";
 "live-not-shown" = "Tilo could not show this";
 "stop-sharing" = "Stop sharing";
-"finding-assistant" = "Setting up your assistant";
+"making-assistant" = "Setting up your assistant";
 "making-workspace" = "Tilo is making your workspace. The first time, this can take a few minutes.";
 "needs-provider" = "No model provider is linked yet, so your assistant cannot answer. Choose a provider and type your own key for it below.";
 "provider-key" = "Your key for {name}";

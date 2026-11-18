@@ -368,21 +368,23 @@ final class SetupTests: XCTestCase {
         await drive.until("the chosen model to answer") { run.model.setup == .ready && run.model.supervision.model == Drawing.models[1].name }
     }
 
-    func testWhileTheirServerMakesTheirWorkspaceTheMainChatSaysSoUnderTheLineOfTheSettingUp() async throws {
+    func testWhileTheirServerMakesTheirWorkspaceTheMainChatSaysSoAndTheWindowGoesOnWaiting() async throws {
         var content = MemorySource.Content()
         content.session = .signedIn(Drawing.person)
         content.setup = .makingWorkspace
         let started = try await Started.app(content)
         defer { started.end() }
         let drive = started.drive
-        await drive.until("the main chat to say that the assistant is being set up") { drive.shows(AssistantWords.findingAssistant.said) }
-        XCTAssertTrue(drive.shows(AssistantWords.makingWorkspace.said), drive.said())
+        await drive.until("the main chat to say that their server is making their workspace") { drive.shows(AssistantWords.makingWorkspace.said) }
+        XCTAssertTrue(drive.shows(AssistantWords.pairing.said), "the window no longer says that it waits:\n\(drive.said())")
+        XCTAssertFalse(drive.shows(AssistantWords.makingAssistant.said), "an assistant was said to be set up while none was being made")
         XCTAssertFalse(drive.shows(AssistantWords.nothingYet.said), "a chat that says what it waits for is not empty")
-        // Their server answered: the line of the setting up stands alone again.
+        // Their server answered: the sentence is gone, and the window goes on waiting for the rest.
         started.source.inner.set(.findingAssistant)
         await drive.until("the model to hold the step that follows") { started.model.setup == .findingAssistant }
         await drive.until("the sentence to be gone") { !drive.shows(AssistantWords.makingWorkspace.said) }
-        XCTAssertTrue(drive.shows(AssistantWords.findingAssistant.said), drive.said())
+        XCTAssertTrue(drive.shows(AssistantWords.pairing.said), drive.said())
+        XCTAssertFalse(drive.shows(AssistantWords.makingAssistant.said))
     }
 }
 #endif

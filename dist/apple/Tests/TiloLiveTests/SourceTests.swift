@@ -1025,6 +1025,34 @@ final class TiloSourceTests: XCTestCase {
         JSON(text: try await page("return JSON.stringify(window.heard.filter(h => h.action === 'send').map(h => h.args.to[0]))"))
     }
 
+    /// A start that finds its assistant: from the moment the page is in until the main chat
+    /// stands the source says one thing, that it looks, and never that anything is being made.
+    func testAStartThatFindsItsAssistantSaysOneThingUntilTheMainChatStands() async throws {
+        try await start(.assistant)
+        try await enter(device: true, "window.byKind = true; window.agents = [kept('reed', {name: 'Reed'})]")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertEqual(Array(setups.drop { $0 == .unknown }), [.findingAssistant, .ready],
+                       "between the look for her assistant and the main chat that stands something else was said")
+        let made = try await page("return String(window.asks.filter(what => what === 'chat create-agent').length)")
+        XCTAssertEqual(made, "0")
+    }
+
+    /// A first start, where the person keeps no assistant and one is made: only then is it said
+    /// that an assistant is being made, between the look and the main chat that stands.
+    func testOnlyAStartThatMakesAnAssistantSaysThatOneIsBeingMade() async throws {
+        try await start(.assistant)
+        try await enter(device: true, "window.byKind = true; window.agents = []")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let said = Array(setups.drop { $0 == .unknown })
+        XCTAssertEqual(said.count, 3, "\(said)")
+        XCTAssertEqual(said.first, .findingAssistant)
+        XCTAssertEqual(said.last, .ready)
+        XCTAssertFalse([.unknown, .findingAssistant].contains(said.dropFirst().first), "nothing said that her assistant was being made: \(said)")
+        XCTAssertEqual(said, [.findingAssistant, .makingAssistant, .ready])
+        let made = try await page("return String(window.asks.filter(what => what === 'chat create-agent').length)")
+        XCTAssertEqual(made, "1")
+    }
+
     func testWhereThePersonKeepsNoAssistantTheAppMakesItOnTheirServersWordAndWritesToIt() async throws {
         try await start(.assistant)
         // The workspace keeps agents, and none of them is hers to write to: another person's,

@@ -77,6 +77,12 @@ public final class AssistantModel {
     private var mended: Set<Item.ID> = []
     /// What stands between the person and their assistant's first answer.
     public private(set) var setup = Setup.unknown
+    /// From the app's opening until the main chat stands: its page, its session, the look for
+    /// the assistant and the reading of what answers for it. The window says one sentence
+    /// through all of it and names no step.
+    public var isStarting: Bool {
+        reach == .unknown || setup == .findingAssistant || setup == .makingWorkspace
+    }
     /// What Tilo said before it asked whether to pair this device, kept while its code is compared.
     public private(set) var pairingSaid: [String] = []
     /// A pairing link handed to the app from outside before it was known whether this device
