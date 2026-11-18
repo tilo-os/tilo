@@ -5,7 +5,7 @@
 
 use tilo_actions::remote::{
     ActionCallError, Caller, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
-    MAX_CONTENT_FRAME_BYTES, MAX_HAVE_HASHES, MAX_PUT_MANY_BYTES,
+    MAX_CONTENT_FRAME_BYTES, MAX_HAVE_HASHES, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES,
 };
 
 use super::SessionActions;
@@ -25,12 +25,14 @@ impl ContentPuts for SessionPuts {
         let mut contents = Vec::with_capacity(files.len());
         let mut group: Vec<String> = Vec::new();
         let mut bytes_in_group = 0_usize;
+        let mut files_in_group = 0_usize;
         for bytes in files {
             // One file too large for a step goes the three steps it takes.
             if bytes.len() > MAX_PUT_MANY_BYTES {
                 if !group.is_empty() {
                     send_group(self, &mut group, &mut contents)?;
                     bytes_in_group = 0;
+                    files_in_group = 0;
                 }
                 let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
                 let mut put = self.begin(caller, size)?;

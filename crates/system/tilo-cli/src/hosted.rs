@@ -1163,9 +1163,9 @@ fn files_under(path: &Path) -> Result<Vec<Uploading>> {
 /// How many files go up at once.
 const UPLOADS_AT_ONCE: usize = 32;
 /// How many files one action puts into the workspace's tree: a folder larger
-/// than this goes in a few runs, each answered well within the bound a
-/// workspace answers an action in.
-const TREE_BATCH_FILES: usize = 10_000;
+/// than this goes in more runs, each answered within the peer's half minute,
+/// whatever a loaded disk makes a node cost.
+const TREE_BATCH_FILES: usize = 2_000;
 /// How many bytes of file entries one change carries: under the 64 MiB one
 /// upload carries, so a large folder goes in a few changes rather than one
 /// no request carries.
@@ -1174,8 +1174,9 @@ const TREE_BATCH_BYTES: usize = 32 * 1024 * 1024;
 /// The most raw bytes one many-files call carries: under the 1 MiB request
 /// and session frame bounds once base64 and hex grow them.
 const MANY_BYTES: usize = 512 * 1024;
-/// How many content hashes one call asks the workspace about.
-const HAVE_HASHES: usize = 6_000;
+/// How many content hashes one call asks the workspace about: a small body,
+/// and the session asks the store in [`MAX_HAVE_HASHES`]-sized steps.
+const HAVE_HASHES: usize = 2_000;
 
 /// `file`'s length, as the disk says it.
 fn file_size(file: &Uploading) -> u64 {

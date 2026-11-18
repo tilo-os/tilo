@@ -481,10 +481,6 @@ impl ContentStore {
         }
     }
 
-    pub const fn seals(&self) -> bool {
-        self.seals
-    }
-
     pub fn memory() -> Self {
         Self::new(MemoryBackend::default())
     }
@@ -555,6 +551,12 @@ impl ContentStore {
             )),
             _ => Self::new(MemoryBackend::new(limits)),
         }
+    }
+
+    /// Whether this store seals what it keeps, so its writes go one at a time.
+    #[must_use]
+    pub const fn seals(&self) -> bool {
+        self.seals
     }
 
     /// Store `bytes`, returning the reference to keep: sealed when this store seals. The media

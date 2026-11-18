@@ -26,7 +26,7 @@ const MAX_CHUNK_TEXT: usize = MAX_CONTENT_PUT_CHUNK.div_ceil(3) * 4;
 const MAX_MANY_BYTES: usize = MAX_PUT_MANY_BYTES * 2;
 
 /// The most hashes one call asks about.
-const MAX_HASHES: usize = MAX_HAVE_HASHES * 4;
+const MAX_HASHES: usize = MAX_HAVE_HASHES * 8;
 
 /// The put tools' names.
 const BEGIN: &str = "tilo_put_begin";
