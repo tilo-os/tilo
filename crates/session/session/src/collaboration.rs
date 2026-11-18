@@ -126,9 +126,10 @@ impl Session {
         sync.set_where(pointer, shell);
     }
 
-    /// Speak for the agent sessions the person admitted at this device, each in the workspace it
-    /// works in: one presence per session, listed beside everyone else for everyone there, in its
-    /// agent's colour, saying what it is doing and the window of the app it does it in.
+    /// Speak for the agent sessions the person admitted at this device and the workspace agents it
+    /// started, each in the workspace it works in: one presence per session, listed beside everyone
+    /// else for everyone there, in its agent's colour, saying what it is doing while it works and
+    /// the window of the app it does it in.
     fn say_agents_here(&self, sync: &crate::sync::Client) {
         use ui::step::lines;
         let present = self.shared.agent_sessions.here();
@@ -149,9 +150,19 @@ impl Session {
                                 window.as_ref().map(|(_, title)| title.as_str()),
                             )
                             .in_app(doing.app.as_deref());
-                            (lines::step(&step), window.map(|(record, _)| record))
+                            (Some(lines::step(&step)), window.map(|(record, _)| record))
                         }
-                        None => (lines::waiting(), None),
+                        // At work on a turn before its first step; idle, it says nothing, and its
+                        // face shows it is here and not at work.
+                        None => (
+                            present.working.then(|| {
+                                lines::step(&tilo_actions::Step::new(
+                                    tilo_actions::StepKind::Work,
+                                    None,
+                                ))
+                            }),
+                            None,
+                        ),
                     };
                     // The colour the agent wears wherever it shows: its member's, the same for each
                     // of its sessions — the one rule and the one key every surface asks.
@@ -163,7 +174,7 @@ impl Session {
                         ui::time::unix_now_ms(),
                         &present.name,
                         [r, g, b],
-                        Some(line),
+                        line,
                         focus.as_ref(),
                         None,
                     );

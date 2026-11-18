@@ -473,9 +473,8 @@ impl Conversations {
         }
     }
 
-    /// The turns `workspace` 's conversations give, read at the revisions its records are at now,
-    /// each with what its agent is called.
-    fn turns(&self, workspace: &WorkspaceFacts, person: &str) -> Vec<(AgentTurn, String)> {
+    /// The turns `workspace` 's conversations give, read at the revisions its records are at now.
+    fn turns(&self, workspace: &WorkspaceFacts, person: &str) -> Vec<AgentTurn> {
         match self.opened(workspace, person) {
             Some((chat, part)) => {
                 let instructions = self
@@ -1118,7 +1117,7 @@ fn summons_item(id: &Id) -> tilo_actions::ResourceSpec {
 }
 
 /// The turns `chat` 's conversations in `workspace` give, read from `part` 's messages
-/// ([`chat::summons::summonses`]), each with what its agent is called.
+/// ([`chat::summons::summonses`]).
 fn turns(
     workspace: &str,
     chat: &chat::Chat,
@@ -1127,7 +1126,7 @@ fn turns(
     members: &chat::projection::PeopleNames,
     agent_instructions: &std::collections::HashMap<String, String>,
     learned: Option<&tilo_app::tilo_workspace_agent::learned::Learned>,
-) -> Vec<(AgentTurn, String)> {
+) -> Vec<AgentTurn> {
     chat::summons::summonses(chat, part)
         .into_iter()
         .filter_map(|summons| {
@@ -1151,37 +1150,30 @@ fn turns(
             let instruction = told.instruction;
             let fold = told.fold;
             let agent_instruction = agent_instructions.get(&summons.agent).cloned();
-            let name = members
-                .get(&MemberId::agent(&summons.agent))
-                .cloned()
-                .unwrap_or_else(|| summons.agent.clone());
-            Some((
-                AgentTurn {
-                    session: session_of(workspace, &address, &summons.agent),
-                    agent: summons.agent.clone(),
-                    author: summons.person.clone(),
-                    turn: Turn::new(address.clone(), summons.message.to_string()),
-                    // A person's Retry asks again for the same message, and that is a turn of its
-                    // own: the one they gave up on reads as replaced, and the broker hands the agent
-                    // the new one.
-                    attempt: summons.attempt,
-                    request: runtime_collab::TurnRequest {
-                        message: format!("{address}/messages/{}", summons.message),
-                        title: chat.display_names(
-                            &summons.conversation,
-                            Some(&MemberId::person(person)),
-                            members,
-                        ),
-                        instruction,
-                        agent_instruction,
-                        fold,
-                        subject,
-                        spend: None,
-                    },
-                    asked: chat::summons::asked_words(message),
+            Some(AgentTurn {
+                session: session_of(workspace, &address, &summons.agent),
+                agent: summons.agent.clone(),
+                author: summons.person.clone(),
+                turn: Turn::new(address.clone(), summons.message.to_string()),
+                // A person's Retry asks again for the same message, and that is a turn of its
+                // own: the one they gave up on reads as replaced, and the broker hands the agent
+                // the new one.
+                attempt: summons.attempt,
+                request: runtime_collab::TurnRequest {
+                    message: format!("{address}/messages/{}", summons.message),
+                    title: chat.display_names(
+                        &summons.conversation,
+                        Some(&MemberId::person(person)),
+                        members,
+                    ),
+                    instruction,
+                    agent_instruction,
+                    fold,
+                    subject,
+                    spend: None,
                 },
-                name,
-            ))
+                asked: chat::summons::asked_words(message),
+            })
         })
         .collect()
 }
@@ -1274,7 +1266,7 @@ mod tests {
             &told,
             Some(&known),
         );
-        let [(turn, _)] = read.as_slice() else {
+        let [turn] = read.as_slice() else {
             panic!("one turn, not {} of them", read.len());
         };
         let request = &turn.request;
@@ -1312,7 +1304,7 @@ mod tests {
             &std::collections::HashMap::new(),
             None,
         );
-        let request = &plain[0].0.request;
+        let request = &plain[0].request;
         assert!(
             !request
                 .instruction
@@ -1351,7 +1343,7 @@ mod tests {
                 &std::collections::HashMap::new(),
                 Some(&known),
             );
-            let [(turn, _)] = read.as_slice() else {
+            let [turn] = read.as_slice() else {
                 panic!("one turn, not {} of them", read.len());
             };
             turn.request.instruction.clone()
@@ -1414,9 +1406,6 @@ mod tests {
             &std::collections::HashMap::new(),
             None,
         )
-        .into_iter()
-        .map(|(turn, _)| turn)
-        .collect()
     }
 
     tilo_test_env::scenario! {
@@ -1762,12 +1751,7 @@ mod tests {
             );
             // And the pass reads that as a change to deliver, exactly as it does a new turn.
             let sessions = crate::agent_sessions::AgentSessions::new();
-            let named = |turns: Vec<AgentTurn>| {
-                vec![(
-                    "w1".to_owned(),
-                    turns.into_iter().map(|turn| (turn, AGENT.to_owned())).collect(),
-                )]
-            };
+            let named = |turns: Vec<AgentTurn>| vec![("w1".to_owned(), turns)];
             assert!(sessions.asked(named(first)));
             assert!(
                 sessions.asked(named(again)),
@@ -1796,7 +1780,7 @@ mod tests {
             None,
         );
         let sessions = crate::agent_sessions::AgentSessions::new();
-        let held = |turns: Vec<(AgentTurn, String)>| vec![("w1".to_owned(), turns)];
+        let held = |turns: Vec<AgentTurn>| vec![("w1".to_owned(), turns)];
         assert!(
             sessions.asked(held(read.clone())),
             "a turn that was not there is a change to deliver"

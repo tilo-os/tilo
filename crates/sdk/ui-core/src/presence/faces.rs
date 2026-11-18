@@ -20,8 +20,8 @@ pub struct Face<'a> {
     pub colour: Color,
     /// Idle or away: the face dims.
     pub dimmed: bool,
-    /// In a voice channel: a soft ring breathes around the face, at this
-    /// level (`ui::motion::Breathe`); `None` when not in a call.
+    /// In a voice channel, or an agent at work: a soft ring breathes around
+    /// the face, at this level (`ui::motion::Breathe`); `None` otherwise.
     pub in_call: Option<f32>,
     /// A wave's bounce, as a scale (1 at rest; `ui::motion::Attention`).
     pub scale: f64,

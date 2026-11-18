@@ -1594,6 +1594,18 @@ impl Apps {
         Ok(planned)
     }
 
+    /// The agents whose processes this session started and that have not ended, each as its
+    /// workspace, its id and its name.
+    pub(crate) fn agent_processes(&self) -> Vec<(String, String, String)> {
+        let state = self.state.borrow();
+        let live = state
+            .agents
+            .iter()
+            .filter(|(_, agent)| agent.launch.is_some());
+        live.map(|((workspace, id), agent)| (workspace.clone(), id.clone(), agent.wanted.0.clone()))
+            .collect()
+    }
+
     /// The agent whose launch `id` was, marked as ended. A process that ended is not started again
     /// by the next pass, so an agent that cannot stay up is not restarted in a loop.
     fn agent_ended(&self, id: u64) -> Option<(String, String)> {

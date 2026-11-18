@@ -1,5 +1,6 @@
 //! The agent sessions served here: one per connection the person admitted at the session's MCP
-//! server, each its own presence, history and Stop, and one per conversation an agent is asked a
+//! server, each its own presence, history and Stop; one per workspace agent whose process this
+//! device started, for as long as that process lives; and one per conversation an agent is asked a
 //! turn in, for as long as that turn goes.
 
 use std::collections::BTreeMap;
@@ -40,14 +41,13 @@ struct Inner {
 struct Answering {
     workspace: String,
     agent: String,
-    /// What the agent is called, as the workspace's record of its agents names it.
-    name: String,
     /// What the person allowed it for every later step like one it asked about.
     answers: Vec<tilo_action_policy::Grant>,
     /// The total the turn last reported spending, so a report charges only what it added.
     reported: u64,
 }
 
+#[derive(Default)]
 struct Connection {
     /// The agent member it is a session of: empty until the person admits it.
     agent: String,
@@ -75,6 +75,10 @@ struct Connection {
     changed: Vec<(String, String)>,
     /// The connection itself, shut when the person stops the session.
     stream: Option<UnixStream>,
+    /// A workspace's agent whose process this device started, rather than a connection: here
+    /// while that process lives and at work while it answers a turn. Taking it out of the
+    /// workspace stops it, not Stop.
+    process: bool,
 }
 
 impl AgentSessions {
@@ -90,16 +94,16 @@ impl AgentSessions {
         let _ = self.wake.set(wake);
     }
 
-    /// The turns the conversations of each workspace held here give now, each with what its agent
-    /// is called. Whether they differ from the ones read before: a session whose turns all ended
-    /// is gone, with what the person allowed it.
-    pub(crate) fn asked(&self, workspaces: Vec<(String, Vec<(AgentTurn, String)>)>) -> bool {
+    /// The turns the conversations of each workspace held here give now. Whether they differ from
+    /// the ones read before: a session whose turns all ended is gone, with what the person allowed
+    /// it.
+    pub(crate) fn asked(&self, workspaces: Vec<(String, Vec<AgentTurn>)>) -> bool {
         let mut inner = self.inner.lock_recover();
         let mut turns = BTreeMap::new();
         let mut answering = BTreeMap::new();
         for (workspace, read) in workspaces {
             let mut held = Vec::with_capacity(read.len());
-            for (turn, name) in read {
+            for turn in read {
                 if !answering.contains_key(&turn.session) {
                     let kept = inner.answering.remove(&turn.session);
                     let (answers, reported) = kept
@@ -110,7 +114,6 @@ impl AgentSessions {
                         Answering {
                             workspace: workspace.clone(),
                             agent: turn.agent.clone(),
-                            name,
                             answers,
                             reported,
                         },
@@ -158,29 +161,52 @@ impl AgentSessions {
         environment: Option<Entered>,
         origin: Option<tilo_actions::InvokerDevice>,
     ) -> AgentSessionId {
-        let session = AgentSessionId::new(format!(
-            "{}{}",
-            tilo_broker_core::services::AGENT_SESSION_PREFIX,
-            uuid::Uuid::new_v4().simple()
-        ));
+        let session = new_session();
         self.inner.lock_recover().sessions.insert(
             session.clone(),
             Connection {
-                agent: String::new(),
-                program: String::new(),
-                name: String::new(),
-                workspace_name: String::new(),
-                workspace: String::new(),
-                doing: None,
                 environment,
                 origin,
-                answers: Vec::new(),
-                certified: false,
-                changed: Vec::new(),
-                stream: None,
+                ..Connection::default()
             },
         );
         session
+    }
+
+    /// The workspace agents whose processes this device keeps now, each as its workspace, its
+    /// member and its name: each is here in its workspace from the moment its process starts until
+    /// it ends.
+    pub(crate) fn processes(&self, agents: &[(String, String, String)]) {
+        let mut inner = self.inner.lock_recover();
+        let before = inner.sessions.len();
+        inner.sessions.retain(|_, held| {
+            !held.process
+                || agents.iter().any(|(workspace, agent, name)| {
+                    (&held.workspace, &held.agent, &held.name) == (workspace, agent, name)
+                })
+        });
+        let mut changed = inner.sessions.len() != before;
+        for (workspace, agent, name) in agents {
+            if inner
+                .sessions
+                .values()
+                .any(|held| held.process && (&held.workspace, &held.agent) == (workspace, agent))
+            {
+                continue;
+            }
+            let started = Connection {
+                agent: agent.clone(),
+                name: name.clone(),
+                workspace: workspace.clone(),
+                process: true,
+                ..Connection::default()
+            };
+            inner.sessions.insert(new_session(), started);
+            changed = true;
+        }
+        if changed {
+            inner.revision = inner.revision.wrapping_add(1);
+        }
     }
 
     /// The person's answer for `session`: admitted, it is a session of the agent member `consent`
@@ -229,10 +255,11 @@ impl AgentSessions {
         true
     }
 
-    /// The admitted sessions, each once.
+    /// The admitted sessions and the workspace agents running here, each once: a workspace's
+    /// agent is at work while a turn of it goes.
     pub(crate) fn here(&self) -> Vec<Present> {
         let inner = self.inner.lock_recover();
-        let admitted = inner
+        let here = inner
             .sessions
             .iter()
             .filter(|(_, connection)| !connection.agent.is_empty())
@@ -243,21 +270,17 @@ impl AgentSessions {
                 workspace: connection.workspace.clone(),
                 workspace_name: connection.workspace_name.clone(),
                 doing: connection.doing.clone(),
+                working: connection.doing.is_some()
+                    || (connection.process
+                        && inner.answering.values().any(|answering| {
+                            answering.workspace == connection.workspace
+                                && answering.agent == connection.agent
+                        })),
                 origin: connection.origin.clone(),
                 environment: connection.environment.clone(),
-            });
-        // A workspace's agent answering a turn is there too, for as long as the turn goes.
-        let answering = inner.answering.iter().map(|(session, answering)| Present {
-            session: AgentSessionId::new(session.clone()),
-            agent: answering.agent.clone(),
-            name: answering.name.clone(),
-            workspace: answering.workspace.clone(),
-            workspace_name: String::new(),
-            doing: None,
-            origin: None,
-            environment: None,
-        });
-        let here = admitted.chain(answering).collect();
+                stoppable: !connection.process,
+            })
+            .collect();
         drop(inner);
         here
     }
@@ -304,12 +327,14 @@ impl AgentSessions {
         }
     }
 
-    /// What `session` works in. `None` for a session not served here.
+    /// What `session` works in. `None` for a session not served here, and for a workspace's
+    /// agent, which no card stops or takes back.
     pub(crate) fn working(&self, session: &AgentSessionId) -> Option<Working> {
         self.inner
             .lock_recover()
             .sessions
             .get(session)
+            .filter(|connection| !connection.process)
             .map(|connection| Working {
                 workspace: connection.workspace.clone(),
                 program: connection.program.clone(),
@@ -322,19 +347,13 @@ impl AgentSessions {
             })
     }
 
-    /// What the shell calls `session`, once admitted, or the agent answering a turn in it.
+    /// What the shell calls `session`, once admitted.
     pub(crate) fn name(&self, session: &AgentSessionId) -> Option<String> {
-        let inner = self.inner.lock_recover();
-        inner
+        self.inner
+            .lock_recover()
             .sessions
             .get(session)
             .map(|connection| connection.name.clone())
-            .or_else(|| {
-                inner
-                    .answering
-                    .get(session.as_str())
-                    .map(|answering| answering.name.clone())
-            })
             .filter(|name| !name.is_empty())
     }
 
@@ -391,7 +410,7 @@ impl AgentSessions {
             let picked: Vec<AgentSessionId> = inner
                 .sessions
                 .iter()
-                .filter(|(id, connection)| ending(id, connection))
+                .filter(|(id, connection)| !connection.process && ending(id, connection))
                 .map(|(id, _)| id.clone())
                 .collect();
             if picked.is_empty() {
@@ -434,7 +453,7 @@ impl AgentSessions {
                     doing: present.workspace_name,
                     mark: String::new(),
                     unseen: 0,
-                    stoppable: true,
+                    stoppable: present.stoppable,
                     device,
                     device_name,
                     environment,
@@ -557,6 +576,15 @@ impl tilo_broker_core::services::AgentSessions for AgentSessions {
     }
 }
 
+/// A session id of its own.
+fn new_session() -> AgentSessionId {
+    AgentSessionId::new(format!(
+        "{}{}",
+        tilo_broker_core::services::AGENT_SESSION_PREFIX,
+        uuid::Uuid::new_v4().simple()
+    ))
+}
+
 /// The environment's server a connection came in by.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Entered {
@@ -580,10 +608,14 @@ pub(crate) struct Present {
     pub(crate) workspace: String,
     pub(crate) workspace_name: String,
     pub(crate) doing: Option<Doing>,
+    /// It is at work: it took a step, or a turn of it goes.
+    pub(crate) working: bool,
     /// The other device of the person's it works from: none for a program of this login.
     pub(crate) origin: Option<tilo_actions::InvokerDevice>,
     /// The environment whose server it came in by: none for the session's own.
     pub(crate) environment: Option<Entered>,
+    /// Whether the person's Stop ends it: a workspace's agent ends when it leaves the workspace.
+    pub(crate) stoppable: bool,
 }
 
 /// A step of an agent session, as its workspace says it beside its face.
@@ -870,16 +902,13 @@ mod tests {
         }
     }
 
-    /// A turn's session goes while the turn does, in the workspace it was asked in, where its
-    /// agent is here as long, and keeps what the person allowed it until its turns end.
+    /// A turn's session goes while the turn does, in the workspace it was asked in, and keeps
+    /// what the person allowed it until its turns end.
     #[test]
     fn a_turns_session_goes_while_its_turn_does() {
         use tilo_broker_core::services::AgentSessions as _;
         let sessions = AgentSessions::new();
-        let held = vec![(
-            "w1".to_owned(),
-            vec![(asked("agent-session:t1", "scribe"), "Scribe".to_owned())],
-        )];
+        let held = vec![("w1".to_owned(), vec![asked("agent-session:t1", "scribe")])];
         assert!(sessions.asked(held.clone()));
         assert!(
             sessions.confines("w1"),
@@ -891,20 +920,6 @@ mod tests {
         assert!(sessions.going("w1", "scribe", "agent-session:t1").is_some());
         assert!(sessions.going("w1", "other", "agent-session:t1").is_none());
         assert!(sessions.going("w2", "scribe", "agent-session:t1").is_none());
-        let here = sessions.here();
-        assert_eq!(
-            here.iter()
-                .map(|present| (present.workspace.as_str(), present.agent.as_str()))
-                .collect::<Vec<_>>(),
-            [("w1", "scribe")],
-            "the agent answering is here in its workspace"
-        );
-        assert_eq!(
-            sessions
-                .name(&AgentSessionId::new("agent-session:t1"))
-                .as_deref(),
-            Some("Scribe")
-        );
         let grant = tilo_action_policy::Grant::new(
             "session-answer:agent-session:t1",
             tilo_action_policy::Grantee::person("me"),
@@ -924,7 +939,38 @@ mod tests {
         );
         assert!(sessions.asked(vec![("w1".to_owned(), Vec::new())]));
         assert!(sessions.going("w1", "scribe", "agent-session:t1").is_none());
-        assert!(sessions.here().is_empty(), "its turn over, it left");
+    }
+
+    /// A workspace's agent is here for as long as its process lives, at work while a turn of it
+    /// goes and still here after, and gone once its process ended.
+    #[test]
+    fn a_workspace_agent_is_here_while_its_process_lives_and_at_work_while_it_answers() {
+        let sessions = AgentSessions::new();
+        let working = |sessions: &AgentSessions| -> Vec<(String, bool)> {
+            let here = sessions.here().into_iter();
+            here.map(|present| (present.agent, present.working))
+                .collect()
+        };
+        let started = [("w1".to_owned(), "scribe".to_owned(), "Scribe".to_owned())];
+        sessions.processes(&started);
+        sessions.processes(&started);
+        let scribe = |working| vec![("scribe".to_owned(), working)];
+        assert_eq!(
+            working(&sessions),
+            scribe(false),
+            "here as its process starts"
+        );
+        let session = sessions.here()[0].session.clone();
+        let turn = vec![asked("agent-session:t1", "scribe")];
+        sessions.asked(vec![("w1".to_owned(), turn)]);
+        assert_eq!(working(&sessions), scribe(true), "at work while it answers");
+        sessions.asked(vec![("w1".to_owned(), Vec::new())]);
+        assert_eq!(working(&sessions), scribe(false), "its turn over, it stays");
+        assert_eq!(sessions.here()[0].session, session, "as the same presence");
+        assert!(!sessions.stop(&session), "Stop does not end it");
+        assert!(!sessions.readings()[0].stoppable);
+        sessions.processes(&[]);
+        assert!(sessions.here().is_empty(), "its process ended, it left");
     }
 
     /// What a turn reports it spent is charged to its agent for what each report added.
@@ -934,7 +980,7 @@ mod tests {
         let sessions = AgentSessions::new();
         sessions.asked(vec![(
             "w1".to_owned(),
-            vec![(asked("agent-session:t1", "scribe"), "Scribe".to_owned())],
+            vec![asked("agent-session:t1", "scribe")],
         )]);
         sessions.spent("agent-session:t1", 420_000);
         assert_eq!(
@@ -969,10 +1015,7 @@ mod tests {
         use tilo_broker_core::services::AgentSessions as _;
         let sessions = AgentSessions::new();
         let turn = asked("agent-session:t1", "scribe");
-        sessions.asked(vec![(
-            "w1".to_owned(),
-            vec![(turn.clone(), "Scribe".to_owned())],
-        )]);
+        sessions.asked(vec![("w1".to_owned(), vec![turn.clone()])]);
         sessions.turn_failed(&turn.session, &turn.turn, turn.attempt, "it stopped");
         assert_eq!(
             sessions.take_failed(),
