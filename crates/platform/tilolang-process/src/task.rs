@@ -1494,8 +1494,8 @@ mod tests {
             assert_eq!(
                 answer["history"],
                 json!([
-                    {"app": "so.tilo.chat", "resource": "chat.workspace", "published": false},
-                    {"app": "so.tilo.tasks", "resource": "tasks.tracker", "published": false},
+                    {"app": "so.tilo.chat", "resource": "chat.workspace", "published": false, "invocation": null},
+                    {"app": "so.tilo.tasks", "resource": "tasks.tracker", "published": false, "invocation": null},
                 ])
             );
         }
@@ -1528,7 +1528,7 @@ mod tests {
             assert_eq!(invoked[0]["action"], "create", "{calls:#?}");
             assert_eq!(
                 answer["history"],
-                json!([{"app": "so.tilo.tasks", "resource": "tasks.tracker", "published": false}]),
+                json!([{"app": "so.tilo.tasks", "resource": "chain:issues", "published": false, "invocation": null}]),
                 "{answer:#}"
             );
         }

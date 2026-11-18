@@ -1667,7 +1667,12 @@ mod tests {
         assert_eq!(steps.done, 1);
         assert_eq!(
             steps.history,
-            [json!({"app": "so.tilo.chat", "resource": "chat.workspace", "published": false})],
+            [json!({
+                "app": "so.tilo.chat",
+                "resource": "chat.workspace",
+                "published": false,
+                "invocation": null,
+            })],
             "the step is taken back on the document the app keeps it in"
         );
     }
