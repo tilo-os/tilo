@@ -1092,14 +1092,24 @@ pub(super) async fn ask_own(
 ) -> Result<Value, ActionCallError> {
     let mut request = request("", "", argument);
     request.target = tilo_actions::remote::person_models::target(verb);
-    let receipt = settled(
-        host.in_workspace_as(workspace_id, device)
-            .invoke(&caller(device), request),
-    )
-    .await?;
+    let provider = host.in_workspace_as(workspace_id, device);
+    let asking = caller(device);
+    let invocation = request.invocation;
+    let mut receipt = settled(provider.invoke(&asking, request)).await?;
+    // An ask of the person's model is accepted, then followed until it ends.
+    if matches!(receipt.status, ReceiptStatus::Accepted) {
+        let now = tilo_clock::now();
+        let until = now.checked_add(tilo_test_env::hang_bound()).unwrap_or(now);
+        receipt = settled(tilo_actions::remote::settle_with(
+            &provider, &asking, invocation, None, until,
+        ))
+        .await
+        .expect("the ask is the caller's to follow")
+        .receipt();
+    }
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
-        other => panic!("a person's own settings answer at once: {other:?}"),
+        other => panic!("a person's own settings answer: {other:?}"),
     }
 }
 

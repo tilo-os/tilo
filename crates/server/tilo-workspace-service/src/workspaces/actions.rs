@@ -81,6 +81,8 @@ pub(super) mod host;
 #[cfg(not(target_arch = "wasm32"))]
 mod mail;
 #[cfg(not(target_arch = "wasm32"))]
+mod model_asks;
+#[cfg(not(target_arch = "wasm32"))]
 mod telling;
 
 use super::authority::WorkspaceOp;
@@ -2165,6 +2167,9 @@ struct Shared {
     /// reads, each with the person whose accounts it reads, moved on whenever
     /// those settings change.
     account_follows: Mutex<std::collections::HashMap<InvocationId, [u8; 32]>>,
+    /// The running asks of people's models, each with the signal that moves
+    /// whenever it wrote more or ended.
+    model_asks: Mutex<std::collections::HashMap<InvocationId, tokio::sync::watch::Receiver<u64>>>,
 }
 
 impl HostWorkspaceActions {
@@ -2179,6 +2184,7 @@ impl HostWorkspaceActions {
                 log: Mutex::new(InvocationLog::default()),
                 mcp_follows: Mutex::default(),
                 account_follows: Mutex::default(),
+                model_asks: Mutex::default(),
             }),
         }
     }
@@ -2196,7 +2202,7 @@ impl HostWorkspaceActions {
         workspace_id: WorkspaceId,
     ) -> impl ActionProvider + Clone + Send + 'static {
         InWorkspace {
-            host: self.clone(),
+            server: self.clone(),
             workspace_id: Some(workspace_id),
             certificate: None,
         }
@@ -2212,7 +2218,7 @@ impl HostWorkspaceActions {
         certificate: &DeviceCert,
     ) -> impl ActionProvider + Clone + Send + 'static {
         InWorkspace {
-            host: self.clone(),
+            server: self.clone(),
             workspace_id: Some(workspace_id),
             certificate: Some(certificate.clone()),
         }
@@ -2226,7 +2232,7 @@ impl HostWorkspaceActions {
         certificate: &DeviceCert,
     ) -> impl ActionProvider + Clone + Send + 'static {
         InWorkspace {
-            host: self.clone(),
+            server: self.clone(),
             workspace_id: None,
             certificate: Some(certificate.clone()),
         }
@@ -2509,7 +2515,7 @@ fn failed(invocation: InvocationId, message: &str) -> InvocationState {
 /// workspace) for the host's own operations asked of it directly.
 #[derive(Clone)]
 struct InWorkspace {
-    host: HostWorkspaceActions,
+    server: HostWorkspaceActions,
     workspace_id: Option<WorkspaceId>,
     /// The caller's device certificate, as the transport verified it.
     certificate: Option<DeviceCert>,
@@ -2522,13 +2528,13 @@ impl ActionProvider for InWorkspace {
     /// run for its types to be readable.
     fn installed_surface(&self, app: &str) -> tilo_actions::remote::Pending<Option<Vec<u8>>> {
         let (Some(workspaces), Some(workspace_id)) = (
-            self.host.shared.workspaces.get().cloned(),
+            self.server.shared.workspaces.get().cloned(),
             self.workspace_id,
         ) else {
             return Pending::ready(None);
         };
         let app = app.to_owned();
-        self.host.spawn(async move {
+        self.server.spawn(async move {
             let workspace = workspace_id.as_uuid().to_string();
             let installed = workspaces
                 .app_versions(&workspace)
@@ -2559,12 +2565,12 @@ impl ActionProvider for InWorkspace {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        let Some(workspaces) = self.host.shared.workspaces.get().cloned() else {
+        let Some(workspaces) = self.server.shared.workspaces.get().cloned() else {
             return Pending::ready(Ok(CataloguePage::from_rows("0".into(), Vec::new(), &query)));
         };
         let (caller, workspace_id, certificate) =
             (caller.clone(), self.workspace_id, self.certificate.clone());
-        self.host.spawn(async move {
+        self.server.spawn(async move {
             Ok(workspaces
                 .catalogue(workspace_id, &caller, certificate.as_ref(), &query)
                 .await)
@@ -2579,11 +2585,11 @@ impl ActionProvider for InWorkspace {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
         }
-        let Some(workspaces) = self.host.shared.workspaces.get().cloned() else {
+        let Some(workspaces) = self.server.shared.workspaces.get().cloned() else {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         };
         if request.target == mcp_server::target(mcp_server::SERVER) {
-            return Pending::ready(self.host.follow_mcp(
+            return Pending::ready(self.server.follow_mcp(
                 &workspaces,
                 caller,
                 self.certificate.as_ref(),
@@ -2591,7 +2597,17 @@ impl ActionProvider for InWorkspace {
             ));
         }
         if request.target == person_accounts::target(person_accounts::WATCH) {
-            return Pending::ready(self.host.follow_accounts(
+            return Pending::ready(self.server.follow_accounts(
+                &workspaces,
+                caller,
+                self.certificate.as_ref(),
+                self.workspace_id,
+                &request,
+            ));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if model_asks::is_model_ask(&request) {
+            return Pending::ready(self.server.ask_model(
                 &workspaces,
                 caller,
                 self.certificate.as_ref(),
@@ -2602,12 +2618,12 @@ impl ActionProvider for InWorkspace {
         let invocation = request.invocation;
         // The log's guard must not outlive the reservation: a retry reads
         // it again below.
-        let reservation = self.host.log().reserve(caller, &request);
+        let reservation = self.server.log().reserve(caller, &request);
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
             Ok(tilo_actions::remote::Reservation::Admitted) => {
                 return Pending::ready(
-                    self.host
+                    self.server
                         .log()
                         .get(caller, &invocation)
                         .map(InvocationState::receipt)
@@ -2617,7 +2633,7 @@ impl ActionProvider for InWorkspace {
             Ok(tilo_actions::remote::Reservation::Reserved) => {}
         }
         let (host, caller, workspace_id, certificate) = (
-            self.host.clone(),
+            self.server.clone(),
             caller.clone(),
             self.workspace_id,
             self.certificate.clone(),
@@ -2634,8 +2650,8 @@ impl ActionProvider for InWorkspace {
                     .min(tilo_actions::remote::MAX_REMOTE_WAIT)
             })
             .or_else(|| super::unattended::asks_first(&request));
-        let runtime = self.host.shared.runtime.clone();
-        self.host.spawn(async move {
+        let runtime = self.server.shared.runtime.clone();
+        self.server.spawn(async move {
             // An invocation that puts a question to its person answers its caller at once that
             // it waits for their approval, rather than at the end of the wait.
             let asking = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -2682,44 +2698,48 @@ impl ActionProvider for InWorkspace {
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         // A follow reads the MCP server as it is now.
-        if self.host.follows_mcp(caller, id)
-            && let Some(workspaces) = self.host.shared.workspaces.get()
+        if self.server.follows_mcp(caller, id)
+            && let Some(workspaces) = self.server.shared.workspaces.get()
         {
-            self.host.mcp_moved(workspaces, caller, id);
+            self.server.mcp_moved(workspaces, caller, id);
         }
         // As does a follow of the person's accounts.
-        if self.host.follows_accounts(caller, id)
-            && let Some(workspaces) = self.host.shared.workspaces.get()
+        if self.server.follows_accounts(caller, id)
+            && let Some(workspaces) = self.server.shared.workspaces.get()
         {
-            self.host.accounts_moved(workspaces, caller, id);
+            self.server.accounts_moved(workspaces, caller, id);
         }
-        self.host.log().get(caller, id).cloned()
+        self.server.log().get(caller, id).cloned()
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        if self.host.follows_accounts(caller, id) {
-            let workspaces = self.host.shared.workspaces.get()?.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(moved) = self.server.next_ask_change(caller, id) {
+            return Some(moved);
+        }
+        if self.server.follows_accounts(caller, id) {
+            let workspaces = self.server.shared.workspaces.get()?.clone();
             let mut changes = workspaces.person_settings_changes();
-            if self.host.accounts_moved(&workspaces, caller, id) {
+            if self.server.accounts_moved(&workspaces, caller, id) {
                 return Some(Pending::ready(()));
             }
-            let (host, caller, id) = (self.host.clone(), caller.clone(), *id);
-            return Some(self.host.spawn(async move {
+            let (host, caller, id) = (self.server.clone(), caller.clone(), *id);
+            return Some(self.server.spawn(async move {
                 // Bounded, as a waiter's deadline is only checked when woken.
                 let _ = tokio::time::timeout(FOLLOW_WAKE, changes.changed()).await;
                 host.accounts_moved(&workspaces, &caller, &id);
             }));
         }
-        if !self.host.follows_mcp(caller, id) {
+        if !self.server.follows_mcp(caller, id) {
             return None;
         }
-        let workspaces = self.host.shared.workspaces.get()?.clone();
+        let workspaces = self.server.shared.workspaces.get()?.clone();
         let mut changes = workspaces.inner.mcp_server.changes();
-        if self.host.mcp_moved(&workspaces, caller, id) {
+        if self.server.mcp_moved(&workspaces, caller, id) {
             return Some(Pending::ready(()));
         }
-        let (host, caller, id) = (self.host.clone(), caller.clone(), *id);
-        Some(self.host.spawn(async move {
+        let (host, caller, id) = (self.server.clone(), caller.clone(), *id);
+        Some(self.server.spawn(async move {
             // Bounded, as a waiter's deadline is only checked when woken.
             let _ = tokio::time::timeout(FOLLOW_WAKE, changes.changed()).await;
             host.mcp_moved(&workspaces, &caller, &id);
@@ -2731,9 +2751,9 @@ impl ActionProvider for InWorkspace {
         caller: &Caller,
         id: &InvocationId,
     ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
-        if self.host.follows_mcp(caller, id) {
-            self.host.shared.mcp_follows.lock_recover().remove(id);
-            self.host.log().complete(
+        if self.server.follows_mcp(caller, id) {
+            self.server.shared.mcp_follows.lock_recover().remove(id);
+            self.server.log().complete(
                 id,
                 InvocationState::new(
                     *id,
@@ -2745,9 +2765,9 @@ impl ActionProvider for InWorkspace {
             );
             return Pending::ready(Ok(()));
         }
-        if self.host.follows_accounts(caller, id) {
-            self.host.shared.account_follows.lock_recover().remove(id);
-            self.host.log().complete(
+        if self.server.follows_accounts(caller, id) {
+            self.server.shared.account_follows.lock_recover().remove(id);
+            self.server.log().complete(
                 id,
                 InvocationState::new(
                     *id,
@@ -2759,7 +2779,7 @@ impl ActionProvider for InWorkspace {
             );
             return Pending::ready(Ok(()));
         }
-        tilo_actions::remote::Pending::ready(if self.host.admitted(caller, id) {
+        tilo_actions::remote::Pending::ready(if self.server.admitted(caller, id) {
             Err(ActionCallError::NotCancellable {
                 reason: "workspace governance completes at once".into(),
             })
