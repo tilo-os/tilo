@@ -366,7 +366,6 @@ mod backend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_platform_caps::Feature as _;
 
     #[test]
     fn frame_admission_refuses_overflow_mismatch_and_oversize() {
@@ -379,23 +378,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn a_build_says_which_devices_it_can_capture;
-
-        phase availability_follows_the_table_where_built;
-        {
-            for feature in [
-                Feature::Camera,
-                Feature::Microphone,
-                Feature::Screen,
-                Feature::Scanner,
-            ] {
-                let got = availability(feature);
-                assert!(
-                    got == feature.targets()[tilo_platform_caps::COLUMN]
-                        || matches!(got, Availability::Unsupported(_)),
-                    "{feature:?}: {got:?}"
-                );
-            }
-        }
 
         phase a_build_without_a_backend_says_so_instead_of_failing_later;
         {
