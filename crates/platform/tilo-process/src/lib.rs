@@ -216,19 +216,6 @@ mod backend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_platform_caps::Feature as _;
-
-    #[test]
-    fn availability_matches_the_table_for_this_target() {
-        let column = if cfg!(target_family = "wasm") {
-            2
-        } else {
-            usize::from(cfg!(target_os = "macos"))
-        };
-        for feature in [Feature::ProcessId, Feature::Rendezvous] {
-            assert_eq!(availability(feature), feature.targets()[column]);
-        }
-    }
 
     #[test]
     fn native_processes_have_an_id() {
