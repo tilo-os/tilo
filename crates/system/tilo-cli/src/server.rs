@@ -350,29 +350,6 @@ fn key_of(hex_key: &str) -> Option<[u8; 32]> {
     bytes.try_into().ok()
 }
 
-/// The person's devices this computer knows, as an enrollment token names
-/// them: where each is reached over the network, so a machine handed only a
-/// token can dial the devices that admit it from anywhere.
-pub(crate) fn dial_peers(dir: &std::path::Path, user: [u8; 32]) -> Vec<tilo_user_identity::Dial> {
-    let Ok(peers) = peers_in(dir) else {
-        return Vec::new();
-    };
-    peers
-        .into_iter()
-        .filter(|peer| peer.user_public_key == hex::encode(user))
-        .filter_map(|peer| peer.server_endpoint)
-        .filter(|endpoint| !endpoint.is_empty())
-        .map(|endpoint| tilo_user_identity::Dial {
-            endpoint: *endpoint.id.as_bytes(),
-            relay_url: endpoint
-                .relay_urls()
-                .next()
-                .map(ToString::to_string)
-                .unwrap_or_default(),
-        })
-        .collect()
-}
-
 fn iroh_addr(key: [u8; 32]) -> Option<iroh_base::EndpointAddr> {
     iroh_base::PublicKey::from_bytes(&key)
         .ok()

@@ -7578,6 +7578,7 @@ dependencies = [
  "fs-native",
  "hex",
  "imager-backend",
+ "install-plan",
  "install-profile-model",
  "launcher",
  "libc",
@@ -7865,6 +7866,22 @@ dependencies = [
  "tilo-test-env",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
+]
+
+[[package]]
+name = "install-plan"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "install-profile-model",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-clock",
+ "tilo-server-protocol",
+ "tilo-user-identity",
 ]
 
 [[package]]
@@ -18467,6 +18484,7 @@ dependencies = [
  "futures-util",
  "hex",
  "http-body-util",
+ "install-plan",
  "install-profile-model",
  "iroh",
  "iroh-base",

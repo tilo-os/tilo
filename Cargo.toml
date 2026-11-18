@@ -461,6 +461,7 @@ members = [
     "crates/session/greetd-client",
     "crates/session/greeter",
     "crates/platform/imager-backend",
+    "crates/session/install-plan",
     "crates/session/install-profile-model",
     "crates/session/liveness",
     "crates/session/native-media",

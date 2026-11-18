@@ -210,7 +210,8 @@ pub struct Holding {
 }
 
 /// A drive the destination really has.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Drive {
     /// The drive's model, for the person to recognise it by.
     pub model: String,

@@ -89,6 +89,7 @@ paths = [
     "crates/server/tilo-server/src/daemon.rs",
     "crates/server/tilo-server/src/servers/device.rs",
     "crates/server/tilo-server/src/web/mod.rs",
+    "crates/session/install-plan/src/lib.rs",
     "crates/server/tilo-workspace-service/Cargo.toml",
     "crates/platform/tilo-net-p2p/src/lib.rs",
     "crates/session/client/src/session.rs",
