@@ -16,7 +16,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::ActionProvider as _;
 use tilo_app::linked_accounts::ActionAnswer;
 use tilo_desktop_model::{IdMinter, Layout, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Application;
