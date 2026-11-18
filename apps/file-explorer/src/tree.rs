@@ -850,16 +850,23 @@ mod window_tests {
 
     const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000f1";
 
-    /// Apply `action` to `doc` as the executor does for an agent session working for the
-    /// person at `[7; 32]`: one change, naming the agent.
-    fn apply_as_agent(doc: &mut AutoCommit, action: &FileAction) {
-        let invoker = ui::tilo_actions::ActionInvoker::admitted(
+    /// An agent session working for the person at `[7; 32]`.
+    fn agent() -> ui::tilo_actions::ActionInvoker {
+        ui::tilo_actions::ActionInvoker::admitted(
             &ui::tilo_actions::Acting::agent("claude").in_session("abc"),
         )
         .named(Some("Claude Code".into()))
-        .acting_for(hex::encode([7_u8; 32]));
-        let context =
-            fs_protocol::file_action::change_context("tree", action.described(), Some(invoker));
+        .acting_for(hex::encode([7_u8; 32]))
+    }
+
+    /// Apply `action` to `doc` as the executor does: one change, naming `invoker`, else the
+    /// person at the device.
+    fn apply(
+        doc: &mut AutoCommit,
+        action: &FileAction,
+        invoker: Option<ui::tilo_actions::ActionInvoker>,
+    ) {
+        let context = fs_protocol::file_action::change_context("tree", action.described(), invoker);
         let encoded = ui::tilo_actions::EncodedAction {
             type_id: fs_protocol::file_action::FILE_ACTION_TYPE.to_owned(),
             payload: serde_json::to_vec(action).unwrap(),
@@ -868,7 +875,7 @@ mod window_tests {
     }
 
     /// A device's writes into chunk 1's document `doc`: `terms.txt` at the root, written by an
-    /// agent, and `legal/nda.txt`, whose folder the agent renamed.
+    /// agent, and `legal/nda.txt`, whose folder the person renamed.
     fn write_terms_and_legal(doc: &mut AutoCommit) {
         let mut held = Tree::default();
         let placed = fs_protocol::tree::place(
@@ -884,7 +891,7 @@ mod window_tests {
         )
         .unwrap();
         doc.commit();
-        apply_as_agent(
+        apply(
             doc,
             &FileAction::Write {
                 node: placed.id,
@@ -895,6 +902,7 @@ mod window_tests {
                 revision: None,
                 keep_preview: false,
             },
+            Some(agent()),
         );
         let folder = fs_protocol::tree::place(
             (&mut *doc, 1),
@@ -918,7 +926,7 @@ mod window_tests {
         )
         .unwrap();
         doc.commit();
-        apply_as_agent(
+        apply(
             doc,
             &FileAction::Move {
                 node: folder.id.clone(),
@@ -926,6 +934,7 @@ mod window_tests {
                 name: "legal".into(),
                 mtime: 3_000,
             },
+            None,
         );
     }
 
@@ -981,9 +990,7 @@ mod window_tests {
             .filter_map(|(_, node)| node.label().map(str::to_owned))
             .collect();
         assert!(
-            labels
-                .iter()
-                .any(|label| label.ends_with("Edited terms.txt")),
+            labels.iter().any(|label| label.ends_with(": terms.txt")),
             "History lists the file's change by its path: {labels:?}"
         );
         // Choosing the folder's change opens the folder in the window.

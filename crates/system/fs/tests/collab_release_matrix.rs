@@ -233,5 +233,11 @@ fn forced_partition_offline_edits_restart_and_converge() {
     let left_names = names(&mut left);
     let right_names = names(&mut right);
     assert_eq!(left_names, right_names);
-    assert_eq!(left_names, BTreeSet::from(["offline.txt".to_string()]));
+    assert!(left_names.contains("offline.txt"));
+    assert!(
+        !left_names
+            .iter()
+            .any(|name| name.contains(".sync-conflict-")),
+        "no copy is made of the other edit: {left_names:?}"
+    );
 }

@@ -126,3 +126,5 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 mod action_icons_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod action_keywords_tests;
+#[cfg(all(test, unix))]
+mod folder_history_tests;

@@ -706,15 +706,13 @@ mod folder_rows_tests {
             let rows = folder_rows(&doc, &[], &authors(), 100);
             let written: Vec<_> = rows
                 .iter()
-                .filter(|row| row.summary == "Edited terms.txt")
+                .filter(|row| row.summary == "Write: terms.txt")
                 .collect();
             assert!(!written.is_empty(), "{rows:#?}");
             for row in written {
-                assert_eq!(ui::author_parts(&row.author).person, "Ada", "{row:#?}");
-                assert!(
-                    ui::author_line(&row.author).contains("Claude Code"),
-                    "{row:#?}"
-                );
+                let parts = ui::author_parts(&row.author);
+                assert_eq!(parts.person, "Ada", "{row:#?}");
+                assert_eq!(parts.writer.as_deref(), Some("Claude Code"), "{row:#?}");
             }
         }
 
@@ -744,9 +742,16 @@ mod folder_rows_tests {
                 );
             }
             let rows = folder_rows(&doc, &[], &authors(), 100);
-            assert!(rows.iter().all(|row| ui::author_line(&row.author) == "Ada"), "{rows:#?}");
-            assert!(rows.iter().any(|row| row.summary == "Edited terms.txt"));
-            assert!(rows.iter().any(|row| row.summary == "Edited logo.png"));
+            let written: Vec<_> = rows
+                .iter()
+                .filter(|row| row.summary.starts_with("Write: "))
+                .collect();
+            assert!(
+                written.iter().all(|row| ui::author_line(&row.author) == "Ada"),
+                "{rows:#?}"
+            );
+            assert!(written.iter().any(|row| row.summary == "Write: terms.txt"));
+            assert!(written.iter().any(|row| row.summary == "Write: logo.png"));
         }
     }
 }

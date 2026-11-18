@@ -48,6 +48,9 @@ struct Naming {
     count: u32,
     /// Every distinct verb among them.
     distinct: Vec<Did>,
+    /// Whether every action named the first one's node: a file made and written, say, which
+    /// that file's History lists.
+    one_node: bool,
     /// Who they were done by and in which call: `None` for the person at this device.
     ambient: Option<ActionContext>,
 }
@@ -56,13 +59,18 @@ impl Naming {
     fn context(&self) -> Option<ActionContext> {
         let ((first, item), rest) = self.first.split_first()?;
         let described = if rest.is_empty() && self.count == 1 {
-            Described::new(first.clone()).on(item.clone(), item.clone())
+            Described::new(first.clone())
         } else {
             Described::new(Did::Group(GroupOf {
                 members: self.first.iter().map(|(did, _)| did.clone()).collect(),
                 count: self.count,
                 distinct: self.distinct.clone(),
             }))
+        };
+        let described = if self.one_node {
+            described.on(item.clone(), item.clone())
+        } else {
+            described
         };
         let context = fs_protocol::file_action::change_context(&self.document, described, None);
         Some(match &self.ambient {
@@ -124,9 +132,14 @@ impl ChangeTrackedDoc {
         let naming = self.naming.get_or_insert_with(|| Naming {
             document: document.to_owned(),
             ambient: ambient.cloned(),
+            one_node: true,
             ..Naming::default()
         });
         let verb = action.described().what;
+        naming.one_node &= naming
+            .first
+            .first()
+            .is_none_or(|(_, node)| node == action.node());
         if naming.first.len() < tilo_actions::entry::MAX_GROUP_MEMBERS {
             naming.first.push((verb.clone(), action.node().to_owned()));
         }

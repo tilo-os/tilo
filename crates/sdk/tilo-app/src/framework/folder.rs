@@ -20,7 +20,7 @@ use fs_protocol::tree::{
 };
 use ui_core::automerge::AutoCommit;
 use ui_core::history_mode::folder::{FolderHistorySource, FolderVersions};
-use ui_core::history_source::folder::{FolderChange, FolderRecords};
+use ui_core::history_source::folder::{FolderChange, FolderChunks};
 use ui_core::history_source::verbs::HistoryEdit;
 
 use super::People;
@@ -90,7 +90,7 @@ impl FolderVersions for WorkspaceFolder {
     }
 }
 
-impl FolderRecords for WorkspaceFolder {
+impl FolderChunks for WorkspaceFolder {
     fn tree(&self) -> Option<Tree> {
         let mut chunks = TreeChunks::default();
         self.tree.read(|doc| chunks.read_index(doc))?;
