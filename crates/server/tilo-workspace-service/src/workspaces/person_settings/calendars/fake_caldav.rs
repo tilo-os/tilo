@@ -33,6 +33,12 @@
 //! as another event: the one it held is removed and the one it holds now is
 //! new, each by its table.
 //!
+//! An entry's version is written the same in a listing and in a read (RFC
+//! 4791, 5.3.4). A server may be told to write it another way in one of the
+//! two ([`Server::lists_versions_weak`], [`Server::lists_versions_bare`],
+//! [`Server::reads_versions_weak`]). A write is taken only over the strong
+//! tag of what the server holds, whatever it was told (RFC 7232, 3.1).
+//!
 //! A test changes a calendar as another client would ([`Server::put`],
 //! [`Server::remove`]), and reads what a client left on it
 //! ([`Server::held`]) and everything it was asked ([`Server::requests`]).
@@ -75,6 +81,10 @@ struct State {
     /// Whether an entry is written over by one under another `UID`: a server
     /// that keeps RFC 4791's `no-uid-conflict` says no.
     any_uid: bool,
+    /// How a listing writes an entry's version.
+    listed: Written,
+    /// How a read writes an entry's version.
+    read: Written,
 }
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -93,6 +103,25 @@ fn sync_token(token: u64) -> String {
 
 fn etag(version: u64) -> String {
     format!("\"{version}\"")
+}
+
+/// How a server writes an entry's version in a listing or in a read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Written {
+    /// As a strong entity-tag, `"3"`: what a write's answer says too.
+    Strong,
+    /// Marked weak, `W/"3"` (RFC 7232, 2.3).
+    Weak,
+    /// Without its quotes, `3`: no entity-tag by the grammar.
+    Bare,
+}
+
+fn etag_as(version: u64, written: Written) -> String {
+    match written {
+        Written::Strong => etag(version),
+        Written::Weak => format!("W/{}", etag(version)),
+        Written::Bare => version.to_string(),
+    }
 }
 
 /// Standard base64 with padding, as Basic credentials are written.
@@ -315,7 +344,9 @@ fn by_the_table(original: Option<Writes>, modified: Option<Writes>) -> Option<&'
 /// Where somebody else organises and leaves answering to the server, the
 /// organiser is told when the person's own answer changes or they leave an
 /// occurrence out (3.2.2.3), and when the entry goes (3.2.2.4), unless the
-/// request said not to answer (`reply`, section 8.1).
+/// request said not to answer (`reply`, section 8.1). The entry has gone too
+/// where it is stored again as one the server no longer schedules (3.2.3.1):
+/// it no longer says who organises it, or no longer invites the person.
 fn sent(account: Option<&str>, old: Option<&str>, new: Option<&str>, reply: bool) -> Vec<String> {
     let Some(account) = account else {
         return Vec::new();
@@ -367,8 +398,15 @@ fn sent(account: Option<&str>, old: Option<&str>, new: Option<&str>, reply: bool
     let (Some(organizer), Some(came)) = (answered(&was), own(&was)) else {
         return sent;
     };
+    // RFC 6638, 3.1: it is an invitation the server schedules while it says
+    // who organises it and invites the person.
+    let still_invited = now.organizer.is_some() && own(&now).is_some();
     let answers = match new {
         None => reply,
+        // 3.2.3.1: stored as an entry the server no longer schedules, the
+        // invitation was removed (3.2.2.4). A PUT cannot say that nobody is
+        // to be answered: 8.1 is for a DELETE.
+        Some(_) if !still_invited => true,
         Some(_) => {
             answered(&now).is_some()
                 && (own(&now).is_some_and(|comes| comes != came) || now.left_out > was.left_out)
@@ -392,6 +430,8 @@ impl State {
             syncs: true,
             mailed: Vec::new(),
             any_uid: false,
+            listed: Written::Strong,
+            read: Written::Strong,
         }
     }
 
@@ -488,12 +528,12 @@ impl State {
         Reply::status(404)
     }
 
-    fn entry_response(href: &str, kept: &Kept) -> String {
+    fn entry_response(href: &str, kept: &Kept, listed: Written) -> String {
         found(
             href,
             &format!(
                 "<d:getetag>{}</d:getetag><c:calendar-data>{}</c:calendar-data>",
-                escaped(&etag(kept.etag)),
+                escaped(&etag_as(kept.etag, listed)),
                 escaped(&kept.ics)
             ),
         )
@@ -512,7 +552,9 @@ impl State {
             calendar
                 .entries
                 .iter()
-                .map(|(name, kept)| Self::entry_response(&format!("{collection}{name}"), kept))
+                .map(|(name, kept)| {
+                    Self::entry_response(&format!("{collection}{name}"), kept, self.listed)
+                })
                 .collect::<String>()
         };
         if body.contains("calendar-query") {
@@ -552,10 +594,10 @@ impl State {
             .into_iter()
             .map(|name| {
                 let href = format!("{collection}{name}");
-                calendar
-                    .entries
-                    .get(name)
-                    .map_or_else(|| gone(&href), |kept| Self::entry_response(&href, kept))
+                calendar.entries.get(name).map_or_else(
+                    || gone(&href),
+                    |kept| Self::entry_response(&href, kept, self.listed),
+                )
             })
             .collect();
         multistatus(&responses, Some(self.token))
@@ -662,7 +704,7 @@ impl State {
                 |kept| {
                     Reply::status(200)
                         .header("Content-Type", "text/calendar; charset=utf-8")
-                        .header("ETag", &etag(kept.etag))
+                        .header("ETag", &etag_as(kept.etag, self.read))
                         .body(kept.ics.clone())
                 },
             )
@@ -762,6 +804,24 @@ impl Server {
         lock(&self.state).any_uid = true;
     }
 
+    /// Write an entry's version in a listing as a weak tag from now on:
+    /// `W/"3"` where a read says `"3"`.
+    pub fn lists_versions_weak(&self) {
+        lock(&self.state).listed = Written::Weak;
+    }
+
+    /// Write an entry's version in a listing without its quotes from now
+    /// on: `3` where a read says `"3"`.
+    pub fn lists_versions_bare(&self) {
+        lock(&self.state).listed = Written::Bare;
+    }
+
+    /// Answer a read with the entry's version as a weak tag from now on, as
+    /// a proxy does that changes what it passes on (RFC 7232, 2.1).
+    pub fn reads_versions_weak(&self) {
+        lock(&self.state).read = Written::Weak;
+    }
+
     /// Put `ics` into `slug` as the entry `name`, as another client would.
     pub fn put(&self, slug: &str, name: &str, ics: &str) {
         let mut state = lock(&self.state);
@@ -825,7 +885,7 @@ impl Server {
 mod tests {
     use test_http::Request;
 
-    use super::{Calendar, Server, State, base64, lock};
+    use super::{Calendar, Server, State, Written, base64, etag, etag_as, lock};
 
     const ADA: &str = "ada@example.test";
     const BO: &str = "bo@example.test";
@@ -1248,5 +1308,83 @@ mod tests {
         let mut state = server();
         asked(&mut state, "PUT", &[], &repeating(""));
         assert_eq!(state.mailed, NOBODY, "stored where nothing was");
+    }
+
+    /// RFC 6638, 3.2.3.1, for somebody invited: an invitation stored again as
+    /// an entry the server no longer schedules, because it no longer says
+    /// who organises it or no longer invites her, was removed (3.2.2.4), and
+    /// its organiser is answered. A PUT cannot say otherwise: 8.1 is for a
+    /// DELETE.
+    #[test]
+    fn an_invitation_stored_as_no_invitation_was_removed_and_its_organiser_is_answered() {
+        let invitation =
+            format!("ORGANIZER:mailto:{BO}\r\nATTENDEE;PARTSTAT=ACCEPTED:mailto:{ADA}\r\n");
+        for (now, why) in [
+            (String::new(), "it names nobody"),
+            (
+                format!("ORGANIZER:mailto:{BO}\r\n"),
+                "she is no longer invited",
+            ),
+        ] {
+            let mut state = server();
+            asked(&mut state, "PUT", &[], &entry(&invitation));
+            assert_eq!(state.mailed, NOBODY, "an invitation stored");
+            asked(&mut state, "PUT", &[("Schedule-Reply", "F")], &entry(&now));
+            assert!(holds(&state), "the server took the entry");
+            assert_eq!(state.mailed, [format!("REPLY to {BO}")], "{why}");
+        }
+    }
+
+    /// RFC 7232, 3.1: a write names the version it goes over by a strong
+    /// tag. One that names it by a weak tag, or without its quotes, is
+    /// refused, also by a server told to write its versions so elsewhere.
+    #[test]
+    fn a_write_is_taken_only_over_the_strong_tag_of_what_is_held() {
+        let mut state = server();
+        state.listed = Written::Weak;
+        state.read = Written::Weak;
+        asked(&mut state, "PUT", &[], &entry(""));
+        let held = text_it_keeps(&state);
+        let version = state
+            .calendars
+            .get("work")
+            .and_then(|calendar| calendar.entries.get("a.ics"))
+            .map_or(0, |kept| kept.etag);
+        let changed = entry("SUMMARY:Changed\r\n");
+        for refused in [
+            etag_as(version, Written::Weak),
+            etag_as(version, Written::Bare),
+        ] {
+            asked(
+                &mut state,
+                "PUT",
+                &[("If-Match", refused.as_str())],
+                &changed,
+            );
+            assert_eq!(text_it_keeps(&state), held, "taken over {refused}");
+        }
+        asked(
+            &mut state,
+            "PUT",
+            &[("If-Match", etag(version).as_str())],
+            &changed,
+        );
+        assert_eq!(text_it_keeps(&state), changed);
+        assert_eq!(etag_as(7, Written::Strong), "\"7\"");
+        assert_eq!(etag_as(7, Written::Weak), "W/\"7\"");
+        assert_eq!(etag_as(7, Written::Bare), "7");
+
+        // A server writes a version as a write's answer does until a test
+        // tells it otherwise, for a listing or for a read.
+        let told = Server::start(ADA, PASSWORD);
+        assert_eq!(lock(&told.state).listed, Written::Strong);
+        assert_eq!(lock(&told.state).read, Written::Strong);
+        told.lists_versions_weak();
+        assert_eq!(lock(&told.state).listed, Written::Weak);
+        told.lists_versions_bare();
+        assert_eq!(lock(&told.state).listed, Written::Bare);
+        assert_eq!(lock(&told.state).read, Written::Strong);
+        told.reads_versions_weak();
+        assert_eq!(lock(&told.state).read, Written::Weak);
     }
 }

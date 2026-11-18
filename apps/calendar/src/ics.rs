@@ -723,6 +723,32 @@ pub fn leaves_writing_to_its_server(text: &str) -> bool {
         })
 }
 
+/// Whether writing `text` where its server holds `held` ends what that
+/// server schedules of the entry. `held` says who organises it and leaves
+/// writing to somebody it names to the server, and `text` no longer says of
+/// each of its events and occurrences that they organise it (RFC 6638, 3.1).
+/// A server takes such an entry for one that was removed (3.2.3.1): where
+/// its person organises it, everybody the server wrote to is told the event
+/// is off (3.2.1.3), and where they are invited, its organiser is told that
+/// they decline (3.2.2.4).
+#[must_use]
+pub fn ends_what_its_server_schedules(text: &str, held: &str) -> bool {
+    let organised_by = named(held).organizers;
+    if organised_by.is_empty() || !leaves_writing_to_its_server(held) {
+        return false;
+    }
+    let lines = pim_lines::unfold(text);
+    let parsed: Vec<Option<ContentLine>> =
+        lines.iter().map(|line| ContentLine::parse(line)).collect();
+    let parts = event_parts(&lines, &parsed);
+    parts.is_empty()
+        || !parts.iter().all(|part| {
+            part.naming.iter().any(|(line, _)| {
+                line.name == "ORGANIZER" && organised_by.contains(&address_of(line))
+            })
+        })
+}
+
 /// Append `line`, which names somebody, so that the server it is stored on
 /// writes to nobody about it: `SCHEDULE-AGENT=CLIENT` (RFC 6638) tells a
 /// server that schedules by itself that the calendar's own client does. What
@@ -2897,6 +2923,67 @@ mod tests {
             ]],
             "{kept}"
         );
+    }
+
+    /// Writing an entry ends what its server schedules of it where the
+    /// server holds who organises it and writes to somebody it names, and
+    /// what is written no longer says who organises it, on the event or on
+    /// one of its occurrences (RFC 6638, 3.1 and 3.2.3.1). An entry its
+    /// server writes to nobody for, and one nobody organises, has nothing to
+    /// end.
+    #[test]
+    fn what_no_longer_says_who_organises_it_ends_what_its_server_schedules() {
+        let entry = |parts: &[&str]| {
+            let mut text = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n");
+            for (place, people) in parts.iter().enumerate() {
+                text.push_str("BEGIN:VEVENT\r\nUID:lunch-4@example.org\r\n");
+                if place > 0 {
+                    text.push_str("RECURRENCE-ID:20261125T120000Z\r\n");
+                }
+                text.push_str("DTSTART:20261118T120000Z\r\n");
+                text.push_str(people);
+                text.push_str("END:VEVENT\r\n");
+            }
+            text.push_str("END:VCALENDAR\r\n");
+            text
+        };
+        let hers = "ORGANIZER:mailto:ada@example.test\r\nATTENDEE:mailto:bo@example.test\r\n";
+        let hers_alone = "ORGANIZER:MAILTO:Ada@Example.test\r\n";
+        let held = entry(&[hers]);
+        assert!(ends_what_its_server_schedules(&entry(&[""]), &held));
+        assert!(!ends_what_its_server_schedules(&entry(&[hers]), &held));
+        // Her guests taken out is her change to an entry she still organises.
+        assert!(!ends_what_its_server_schedules(
+            &entry(&[hers_alone]),
+            &held
+        ));
+        // Every part says it, or the entry is none its server schedules.
+        assert!(ends_what_its_server_schedules(&entry(&[hers, ""]), &held));
+        assert!(!ends_what_its_server_schedules(
+            &entry(&[hers, hers_alone]),
+            &held
+        ));
+        // Somebody else organises it and she is invited: the same.
+        let invited =
+            entry(&["ORGANIZER:mailto:eve@elsewhere.test\r\nATTENDEE:mailto:ada@example.test\r\n"]);
+        assert!(ends_what_its_server_schedules(&entry(&[""]), &invited));
+        assert!(ends_what_its_server_schedules(
+            &entry(&[hers_alone]),
+            &invited
+        ));
+        // Nothing to end: the client writes to everybody it names, nobody
+        // organises it, or it names nobody.
+        let clients = entry(&[
+            "ORGANIZER;SCHEDULE-AGENT=CLIENT:mailto:ada@example.test\r\n\
+             ATTENDEE;SCHEDULE-AGENT=CLIENT:mailto:bo@example.test\r\n",
+        ]);
+        assert!(!ends_what_its_server_schedules(&entry(&[""]), &clients));
+        let unorganised = entry(&["ATTENDEE:mailto:bo@example.test\r\n"]);
+        assert!(!ends_what_its_server_schedules(&entry(&[""]), &unorganised));
+        assert!(!ends_what_its_server_schedules(
+            &entry(&[""]),
+            &entry(&[""])
+        ));
     }
 
     fn outlook_zone(tzid: &str) -> String {
