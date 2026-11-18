@@ -423,6 +423,13 @@ mod window_motion;
 mod window_move;
 #[cfg(target_os = "linux")]
 mod window_share;
+/// The periods a window share is renewed in: how often a viewer asks the device sharing a window
+/// again for what it shows (`TILO_WINDOW_SHARE_VIEW_AGAIN_MS`), and how long an ask keeps that
+/// device's streams up (`TILO_WINDOW_SHARE_VIEW_EXPIRY_MS`). Production's own unless the
+/// environment names them; a test that proves a share is renewed past those periods sets them.
+pub const VIEW_AGAIN_ENV: &str = "TILO_WINDOW_SHARE_VIEW_AGAIN_MS";
+/// [`VIEW_AGAIN_ENV`]'s partner: how long a viewer's ask keeps the sharing device's streams up.
+pub const VIEW_EXPIRY_ENV: &str = "TILO_WINDOW_SHARE_VIEW_EXPIRY_MS";
 #[cfg(target_os = "linux")]
 mod window_transfer;
 #[cfg(target_os = "linux")]

@@ -53,7 +53,20 @@ const IN_ORDER: usize = 60;
 /// ended is settled again at once, and one its relay refuses is never let in by waiting.
 const NOT_OPEN: Duration = Duration::from_secs(12);
 /// How often a shared window is painted anew while a step watches its share.
-const REPAINT: Duration = Duration::from_secs(2);
+const REPAINT: Duration = Duration::from_millis(200);
+
+/// The share is renewed in a fraction of a second rather than at the production periods: what a
+/// step that watches it "stay live" proves is that the device sharing it kept streaming past the
+/// expiry of the viewer's last ask, and that the viewer asked again before that — which a short
+/// period shows in a second as well as production's seconds do. The periods reach the sessions
+/// the way production sets them (`TILO_WINDOW_SHARE_VIEW_AGAIN_MS`,
+/// `TILO_WINDOW_SHARE_VIEW_EXPIRY_MS`).
+fn short_view() {
+    crate::common::people::share_view_periods(
+        Duration::from_millis(250),
+        Duration::from_millis(1000),
+    );
+}
 /// How often the keys of a workspace three devices of one person came into may have moved by the
 /// end of a test: once for each device, with room for a commit that lost a race and was made
 /// again. A device that asks for the workspace's keys under two member keys has the workspace's
@@ -721,6 +734,7 @@ fn the_share_arrives(
 /// network failed in.
 #[test]
 fn a_window_the_persons_other_device_shares_is_pictured_on_the_hosting_device() {
+    short_view();
     log_sessions_at(LOGGED);
     let (_site, _ada, laptop, phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
@@ -732,6 +746,7 @@ fn a_window_the_persons_other_device_shares_is_pictured_on_the_hosting_device() 
 /// pictures.
 #[test]
 fn a_window_shared_after_both_devices_came_back_the_host_first_is_pictured() {
+    short_view();
     log_sessions_at(LOGGED);
     let (_site, _ada, mut laptop, mut phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
@@ -749,6 +764,7 @@ fn a_window_shared_after_both_devices_came_back_the_host_first_is_pictured() {
 /// that device is back, and what it shares the hosting device pictures.
 #[test]
 fn a_window_shared_after_the_host_came_back_last_is_pictured() {
+    short_view();
     log_sessions_at(LOGGED);
     let (_site, _ada, mut laptop, mut phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
@@ -807,6 +823,7 @@ fn a_desktop_and_its_copy() -> (Person, Device, Device, String) {
 /// of it that its person certified, and the copy shares a window.
 #[test]
 fn a_window_a_copied_machine_shares_is_pictured_on_the_device_it_was_copied_from() {
+    short_view();
     log_sessions_at(LOGGED);
     let (_ada, desktop, copy, workspace) = a_desktop_and_its_copy();
     the_shared_window_arrives(&workspace, &copy, &desktop, "Shared by the copy");
@@ -926,7 +943,7 @@ fn the_live_sessions_stay_open(
                 report(workspace, devices)
             );
         }
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -967,7 +984,7 @@ fn the_share_stays_live(
         if heard.len() == 1 && began.elapsed() >= during / 2 {
             heard.push(heard_by(share.viewer, share.workspace));
         }
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(100));
     }
     heard.push(heard_by(share.viewer, share.workspace));
     let sharing = row_of(&shares(share.sharer), "sharing", share.tab);
@@ -1061,6 +1078,7 @@ fn the_shared_windows_tab_is_gone_from(share: &Running<'_>, viewer: &Device, pla
 /// the sharing one from the workspace's live session for good.
 #[test]
 fn a_shared_window_stays_live_through_its_end_and_a_second_share() {
+    short_view();
     log_sessions_at(LOGGED);
     let (_site, _ada, laptop, phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
@@ -1073,7 +1091,7 @@ fn a_shared_window_stays_live_through_its_end_and_a_second_share() {
     };
     the_share_stays_live(
         "the window was received",
-        Duration::from_secs(45),
+        Duration::from_secs(3),
         &share,
         &mut window,
         &[],
@@ -1081,7 +1099,7 @@ fn a_shared_window_stays_live_through_its_end_and_a_second_share() {
     the_share_stops(&share);
     the_live_sessions_stay_open(
         "the share was stopped",
-        Duration::from_secs(10),
+        Duration::from_secs(1),
         &made,
         &[&laptop, &phone],
     );
@@ -1096,7 +1114,7 @@ fn a_shared_window_stays_live_through_its_end_and_a_second_share() {
     );
     the_share_stays_live(
         "the window was shared a second time",
-        Duration::from_secs(30),
+        Duration::from_secs(2),
         &share,
         &mut window,
         &[],
@@ -1125,6 +1143,7 @@ fn three_devices_of_one_person() -> (Site, Person, Device, Device, Device) {
 /// stays live through both.
 #[test]
 fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes() {
+    short_view();
     log_sessions_at(LOGGED);
     let (site, ada, laptop, phone, mut tablet) = three_devices_of_one_person();
     let made = made_on(&phone, &laptop);
@@ -1137,7 +1156,7 @@ fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes(
     };
     the_share_stays_live(
         "the window was received",
-        Duration::from_secs(10),
+        Duration::from_secs(1),
         &share,
         &mut window,
         &[],
@@ -1165,7 +1184,7 @@ fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes(
     );
     the_share_stays_live(
         "a third device of the person was admitted",
-        Duration::from_secs(30),
+        Duration::from_secs(2),
         &share,
         &mut window,
         &[&tablet],
@@ -1173,7 +1192,7 @@ fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes(
     tablet.stop();
     the_share_stays_live(
         "the third device went off",
-        Duration::from_secs(20),
+        Duration::from_secs(2),
         &share,
         &mut window,
         &[],
@@ -1198,6 +1217,7 @@ fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes(
 /// again. The share stays live through that, through its end and through a second share.
 #[test]
 fn a_window_a_copied_machine_shares_stays_live_while_a_second_copy_comes_and_goes() {
+    short_view();
     log_sessions_at(LOGGED);
     let ada = Person::new("Ada");
     let mut desktop = ada.device("Ada's desktop");
@@ -1235,7 +1255,7 @@ fn a_window_a_copied_machine_shares_stays_live_while_a_second_copy_comes_and_goe
     };
     the_share_stays_live(
         "the window was received",
-        Duration::from_secs(15),
+        Duration::from_secs(2),
         &share,
         &mut window,
         &[],
@@ -1250,7 +1270,7 @@ fn a_window_a_copied_machine_shares_stays_live_while_a_second_copy_comes_and_goe
     );
     the_share_stays_live(
         "a second copy of the machine was admitted",
-        Duration::from_secs(25),
+        Duration::from_secs(2),
         &share,
         &mut window,
         &[],
@@ -1258,7 +1278,7 @@ fn a_window_a_copied_machine_shares_stays_live_while_a_second_copy_comes_and_goe
     later.stop();
     the_share_stays_live(
         "the second copy went off",
-        Duration::from_secs(10),
+        Duration::from_secs(1),
         &share,
         &mut window,
         &[],
@@ -1266,7 +1286,7 @@ fn a_window_a_copied_machine_shares_stays_live_while_a_second_copy_comes_and_goe
     the_share_stops(&share);
     the_live_sessions_stay_open(
         "the share was stopped",
-        Duration::from_secs(5),
+        Duration::from_secs(1),
         &workspace,
         &[&desktop, &copy],
     );
@@ -1281,7 +1301,7 @@ fn a_window_a_copied_machine_shares_stays_live_while_a_second_copy_comes_and_goe
     );
     the_share_stays_live(
         "the window was shared a second time",
-        Duration::from_secs(15),
+        Duration::from_secs(2),
         &share,
         &mut window,
         &[],
@@ -1296,6 +1316,7 @@ fn a_window_a_copied_machine_shares_stays_live_while_a_second_copy_comes_and_goe
 /// second copy on, and the share stays live while it goes off, through its end and a second share.
 #[test]
 fn a_window_shared_after_the_host_was_copied_again_stays_live() {
+    short_view();
     log_sessions_at(LOGGED);
     let ada = Person::new("Ada");
     let mut desktop = ada.device("Ada's desktop");
@@ -1373,7 +1394,7 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
     };
     the_share_stays_live(
         "the window was received, with the second copy on",
-        Duration::from_secs(40),
+        Duration::from_secs(3),
         &share,
         &mut window,
         &[&later],
@@ -1381,7 +1402,7 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
     later.stop();
     the_share_stays_live(
         "the second copy went off",
-        Duration::from_secs(15),
+        Duration::from_secs(2),
         &share,
         &mut window,
         &[],
@@ -1389,7 +1410,7 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
     the_share_stops(&share);
     the_live_sessions_stay_open(
         "the share was stopped",
-        Duration::from_secs(5),
+        Duration::from_secs(1),
         &workspace,
         &[&desktop, &copy],
     );
@@ -1404,7 +1425,7 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
     );
     the_share_stays_live(
         "the window was shared a second time",
-        Duration::from_secs(15),
+        Duration::from_secs(2),
         &share,
         &mut window,
         &[],
@@ -1456,6 +1477,7 @@ fn comes_into(
 /// device for the ones linked to it.
 #[test]
 fn a_window_the_hosting_device_shares_is_pictured_on_the_persons_other_device() {
+    short_view();
     log_sessions_at(LOGGED);
     let (_site, _ada, laptop, phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
@@ -1466,6 +1488,7 @@ fn a_window_the_hosting_device_shares_is_pictured_on_the_persons_other_device() 
 /// of them pictures it, and the hosting device names both as viewing it.
 #[test]
 fn a_window_the_hosting_device_shares_is_pictured_on_each_of_two_other_devices() {
+    short_view();
     log_sessions_at(LOGGED);
     let (site, ada, laptop, phone, mut tablet) = three_devices_of_one_person();
     let made = made_on(&phone, &laptop);
@@ -1501,6 +1524,7 @@ fn a_window_the_hosting_device_shares_is_pictured_on_each_of_two_other_devices()
 /// a session that read the workspace's governance off its disk, the other device pictures.
 #[test]
 fn a_window_the_hosting_device_shares_after_it_came_back_last_is_pictured() {
+    short_view();
     log_sessions_at(LOGGED);
     let (_site, _ada, mut laptop, mut phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
@@ -1536,6 +1560,7 @@ fn a_window_the_hosting_device_shares_after_it_came_back_last_is_pictured() {
 /// more, and the tab each pictured it in is gone from its shell.
 #[test]
 fn a_share_the_hosting_device_stops_is_shown_on_no_other_device() {
+    short_view();
     log_sessions_at(LOGGED);
     let (site, ada, laptop, phone, mut tablet) = three_devices_of_one_person();
     let made = made_on(&phone, &laptop);
@@ -1558,7 +1583,7 @@ fn a_share_the_hosting_device_stops_is_shown_on_no_other_device() {
     };
     the_share_stays_live(
         "a third device of the person came to picture the window",
-        Duration::from_secs(10),
+        Duration::from_secs(1),
         &share,
         &mut window,
         &[&tablet],
@@ -1584,7 +1609,7 @@ fn a_share_the_hosting_device_stops_is_shown_on_no_other_device() {
     }
     the_live_sessions_stay_open(
         "the share was stopped",
-        Duration::from_secs(5),
+        Duration::from_secs(1),
         &made,
         &[&phone, &laptop, &tablet],
     );

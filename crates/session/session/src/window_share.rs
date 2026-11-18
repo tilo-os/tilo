@@ -79,6 +79,57 @@ const VIEW_AGAIN: Duration = Duration::from_secs(2);
 /// How long a viewer's ask keeps its streams up after the last one arrived.
 const VIEW_EXPIRY: Duration = Duration::from_secs(6);
 
+/// [`VIEW_AGAIN`] as a name the environment reads: a test that proves a share outlives the
+/// waiting for the viewer to ask again shortens both by this and [`VIEW_EXPIRY_ENV`], and the
+/// share it watches has to be renewed that much sooner.
+pub const VIEW_AGAIN_ENV: &str = "TILO_WINDOW_SHARE_VIEW_AGAIN_MS";
+/// [`VIEW_EXPIRY`] as a name the environment reads: milliseconds.
+pub const VIEW_EXPIRY_ENV: &str = "TILO_WINDOW_SHARE_VIEW_EXPIRY_MS";
+
+/// How often a viewer asks again, and how long its ask keeps the streams up: the production
+/// periods, or what the environment names (a test that proves a share is renewed has no minutes
+/// to spend on it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ViewPeriods {
+    /// How often a viewer's ask is said again.
+    pub again: Duration,
+    /// How long an ask keeps the streams of what it names up.
+    pub expiry: Duration,
+}
+
+impl Default for ViewPeriods {
+    fn default() -> Self {
+        Self {
+            again: VIEW_AGAIN,
+            expiry: VIEW_EXPIRY,
+        }
+    }
+}
+
+impl ViewPeriods {
+    /// The periods the process environment names, or the production ones. A value that is not a
+    /// whole number of milliseconds names no period: production's stands, and the log says so.
+    #[must_use]
+    pub(crate) fn from_env() -> Self {
+        let read = |name: &str, fallback: Duration| {
+            let Some(named) = std::env::var(name).ok() else {
+                return fallback;
+            };
+            match named.trim().parse::<u64>() {
+                Ok(millis) => Duration::from_millis(millis),
+                Err(error) => {
+                    tracing::warn!(%name, %error, "a share period that is not milliseconds is not used");
+                    fallback
+                }
+            }
+        };
+        Self {
+            again: read(VIEW_AGAIN_ENV, VIEW_AGAIN),
+            expiry: read(VIEW_EXPIRY_ENV, VIEW_EXPIRY),
+        }
+    }
+}
+
 /// What the person asks of the shares, as the resource's actions spell it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "do", rename_all = "kebab-case")]
@@ -236,6 +287,9 @@ pub(crate) struct WindowShares {
     /// The seat each member controlling a shared window acts at: its own pointer and keyboard in
     /// that window, beside the person's.
     seats: BTreeMap<(PeerId, SurfaceId), tilo_compositor::Seat>,
+    /// How often this device asks again for what it shows, and how long its asks keep another
+    /// device's streams up ([`ViewPeriods`]).
+    view: ViewPeriods,
     /// Whether this session exists to be seen: a hosted browser environment shares its windows with
     /// the workspace's members the moment they open, since nobody runs it for itself.
     share_by_default: bool,
@@ -321,6 +375,7 @@ impl WindowShares {
             person,
             salt,
             share_by_default,
+            view: ViewPeriods::from_env(),
             ..Self::default()
         }))
     }
@@ -446,11 +501,11 @@ impl WindowShares {
         let asked_again = self
             .watching
             .values()
-            .filter_map(|watched| watched.asked_at.checked_add(VIEW_AGAIN));
+            .filter_map(|watched| watched.asked_at.checked_add(self.view.again));
         let expired = self
             .asked
             .values()
-            .filter_map(|asked| asked.at.checked_add(VIEW_EXPIRY));
+            .filter_map(|asked| asked.at.checked_add(self.view.expiry));
         let frames = self.hosted.values().filter_map(|hosted| {
             if !hosted.shown {
                 return None;
@@ -863,7 +918,7 @@ impl WindowShares {
         now: Instant,
     ) -> Vec<[u8; 32]> {
         if let Some((read_at, devices)) = self.admitted.get(workspace)
-            && now.duration_since(*read_at) < VIEW_AGAIN
+            && now.duration_since(*read_at) < self.view.again
         {
             return devices.clone();
         }
@@ -993,7 +1048,7 @@ impl WindowShares {
         {
             seat.insert(Watched {
                 host,
-                asked_at: now.checked_sub(VIEW_AGAIN).unwrap_or(now),
+                asked_at: now.checked_sub(self.view.again).unwrap_or(now),
             });
             self.changed();
         }
@@ -1912,14 +1967,14 @@ impl WindowShares {
 
     /// Stop naming the members this device stopped hearing say they view its windows. A viewer
     /// that went away, or stopped showing the window, says nothing: its last ask keeps it among
-    /// the window's viewers for [`VIEW_EXPIRY`] and no longer, whether or not this device watches
-    /// a window itself. The window's pictures are the live session's to stop: its track is published
-    /// only while a member's session asks for it.
+    /// the window's viewers for the view's expiry ([`ViewPeriods::expiry`]) and no longer, whether
+    /// or not this device watches a window itself. The window's pictures are the live session's
+    /// to stop: its track is published only while a member's session asks for it.
     fn end_silent_viewers(&mut self, now: Instant) {
         let expired: Vec<(TabId, PeerId)> = self
             .asked
             .iter()
-            .filter(|(_, asked)| now.duration_since(asked.at) > VIEW_EXPIRY)
+            .filter(|(_, asked)| now.duration_since(asked.at) > self.view.expiry)
             .map(|(key, _)| *key)
             .collect();
         if expired.is_empty() {
@@ -1959,7 +2014,7 @@ impl WindowShares {
         // device wants of that host, so one naming a single window would take back the others.
         let mut asks: Vec<Ask> = Vec::new();
         for ((workspace, tab), watched) in &self.watching {
-            let due = now.duration_since(watched.asked_at) >= VIEW_AGAIN;
+            let due = now.duration_since(watched.asked_at) >= self.view.again;
             match asks
                 .iter_mut()
                 .find(|ask| ask.host == watched.host && &ask.workspace == workspace)
