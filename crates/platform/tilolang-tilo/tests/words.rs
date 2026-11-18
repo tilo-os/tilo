@@ -236,10 +236,11 @@ fn a_catalogue_line_changes_a_label_and_a_search_match() {
     );
 }
 
-/// What a start pays for a package's words: reading its catalogues out of its module and parsing
-/// them into the toolkit's, which is all `Host::set_words` does with them.
+/// Every catalogue a package ships is carried by its module and loads into the toolkit, which is
+/// all `Host::set_words` does with them. What a start pays for that is measured and printed here,
+/// not asserted: it is machine and load dependent, as `budgets.rs` says.
 #[test]
-fn a_packages_catalogues_load_under_a_millisecond() {
+fn a_packages_catalogues_all_load() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/notes");
     let source = tilolang::PackageSource::read_dir(&dir).expect("the notes package reads");
     let ids = tilolang::IdsLock::parse(
