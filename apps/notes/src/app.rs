@@ -522,6 +522,9 @@ pub struct NotesApp {
     follows: Option<(LiveNotebook, Option<FollowedAt>)>,
     /// What effects' completions left for the window, done on its next sync.
     completions: effects::Completions,
+    /// What the app writes into the notes on its own, kept until a settle
+    /// pass, where the window's documents are free.
+    deferred_writes: std::cell::RefCell<Vec<actions::Action>>,
     /// Whether Back and Forward lead anywhere, as the effects' statuses say.
     steps: Rc<std::cell::Cell<(bool, bool)>>,
     /// A capture's scenario, staged on the window's next sync.
@@ -857,6 +860,7 @@ impl NotesApp {
             opened: Rc::default(),
             follows: None,
             completions: effects::Completions::default(),
+            deferred_writes: std::cell::RefCell::default(),
             steps: Rc::default(),
             #[cfg(feature = "samples")]
             staged: Rc::default(),
@@ -1243,6 +1247,22 @@ impl NotesApp {
             .collect()
     }
 
+    /// Write what the app kept for the window's documents to be free.
+    fn drain_deferred_writes(&mut self) {
+        let actions = std::mem::take(&mut *self.deferred_writes.borrow_mut());
+        for action in actions {
+            if let Err(error) = self.apply_page(&action) {
+                self.notify(
+                    crate::metadata::CATALOG.t_args(
+                        "notes-image-import-failed",
+                        &[("error", ui::i18n::ArgValue::from(error))],
+                    ),
+                    ui::widget::toast::ToastKind::Error,
+                );
+            }
+        }
+    }
+
     /// Keep each image pasted into the open note with the notebook and put it
     /// after the caret, as a chosen image is.
     fn drain_pasted_images(&mut self) {
@@ -1331,7 +1351,12 @@ impl NotesApp {
                 })
                 .ok_or("the note's part is not held here")?
                 .map_err(|error| error.to_string())?;
-            self.apply_page(&actions::show_image(page, bytes, edit))?;
+            self.apply_page(&actions::show_image(
+                page,
+                ui::tilo_resource::Bytes::keep(&crate::notebook::content(), &bytes)
+                    .map_err(|error| error.to_string())?,
+                edit,
+            ))?;
             // Typing goes on under the picture, on the line the paste left
             // after it, and the next paste goes after that line.
             let after = self
@@ -1376,7 +1401,7 @@ impl NotesApp {
             return;
         };
         let inserted = bytes.and_then(|bytes| {
-            let insertion = effects::image_insertion(page, self.image_anchor(page), alt, bytes);
+            let insertion = effects::image_insertion(page, self.image_anchor(page), alt, &bytes)?;
             self.apply_page(&insertion)
         });
         match inserted {
@@ -2955,6 +2980,7 @@ impl Widget for NotesApp {
     /// What the sidebar, the title field, a paste or the empty state asked
     /// for since the last frame, applied through the notebook's actions.
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        self.drain_deferred_writes();
         self.drain_title_rename(edits);
         self.main.show_held_title();
         self.follow_page_tree();

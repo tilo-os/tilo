@@ -31,6 +31,9 @@ pub(crate) enum Completed {
     Open(PageId),
     /// Bind the open note's editor again: its blocks changed under it.
     Rebind,
+    /// Write this into the notes: what the app does on its own, named by no
+    /// published action, once the window's documents are free.
+    Write(Box<actions::Action>),
 }
 
 impl Completions {
@@ -176,6 +179,10 @@ impl NotesApp {
                 Completed::Open(page) => self.open_when_present(page),
                 Completed::Rebind => {
                     self.bound_page = None;
+                    self.self_dirty = true;
+                }
+                Completed::Write(action) => {
+                    self.deferred_writes.borrow_mut().push(*action);
                     self.self_dirty = true;
                 }
             }
@@ -534,7 +541,8 @@ impl NotesApp {
     }
 
     fn choose_image(&self, page: PageId, cx: &mut Cx) -> EffectAnswer {
-        let chain = self.pages_chain()?;
+        // A notebook open to view only takes no picture.
+        self.pages_chain()?;
         let request = PickRequest::open(
             &CATALOG.t("notes-insert-image-title"),
             &CATALOG.t("notes-insert-image-accept"),
@@ -566,14 +574,17 @@ impl NotesApp {
                 .and_then(|stem| stem.to_str())
                 .map_or_else(|| CATALOG.t("notes-image-default-alt"), str::to_owned)
                 .replace([']', '[', '(', ')'], " ");
-            // Submitted, not written at once: the host's answer arrives
-            // while the window's records are in use.
-            chain
-                .dispatcher()
-                .apply(&image_insertion(page, after, alt.trim(), file.bytes));
+            // Written once the window's documents are free: a file the host
+            // hands over arrives while they are in use.
             completions.extend([
                 Completed::Rebind,
                 Completed::Notify(CATALOG.t("notes-image-inserted"), ToastKind::Success),
+                Completed::Write(Box::new(image_insertion(
+                    page,
+                    after,
+                    alt.trim(),
+                    &file.bytes,
+                )?)),
             ]);
             Ok(Effected::done())
         }))
@@ -602,15 +613,19 @@ pub(super) fn image_insertion(
     page: PageId,
     after: Option<String>,
     alt: &str,
-    bytes: Vec<u8>,
-) -> actions::Action {
-    let digest = blake3::hash(&bytes).to_hex().to_string();
+    bytes: &[u8],
+) -> Result<actions::Action, String> {
+    let digest = blake3::hash(bytes).to_hex().to_string();
     let text = format!("![{alt}](asset:{digest})");
     let edit = match after {
         Some(after) => tilo_document::RichTextAction::InsertParagraph { after, text },
         None => tilo_document::RichTextAction::AppendParagraph { text },
     };
-    actions::show_image(page, bytes, edit)
+    // A picture too large for a part is kept in the window's store, named by
+    // its reference there.
+    let picture = ui::tilo_resource::Bytes::keep(&crate::notebook::content(), bytes)
+        .map_err(|error| error.to_string())?;
+    Ok(actions::show_image(page, picture, edit))
 }
 
 /// Add `markdown` to the notebook as a note titled `title`, leaving in

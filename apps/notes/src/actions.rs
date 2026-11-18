@@ -342,12 +342,12 @@ pub fn keep_image_action(bytes: Vec<u8>) -> Action {
 #[must_use]
 pub fn show_image(
     page: PageId,
-    bytes: Vec<u8>,
+    picture: Bytes,
     show: impl std::borrow::Borrow<RichTextAction>,
 ) -> Action {
     stamped(PagePartAction::ShowImage(page_part::ShowImage {
         page: page_id(page),
-        bytes: Bytes::to_keep(bytes),
+        bytes: picture,
         edit: show.borrow().clone(),
     }))
 }
