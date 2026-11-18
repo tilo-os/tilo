@@ -21,14 +21,12 @@
 
 use super::SystemTime;
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
-use super::{ROOT, now_ns};
-use automerge::transaction::Transactable as _;
-use automerge::{ObjType, ReadDoc, ScalarValue, Value};
+use super::{device_rows, now_ns};
 use serde::{Deserialize, Serialize};
 
-/// Key of the work a workspace's key holders did, in its own document: a map
-/// from each lease id the work was done under to a map from each device key
-/// (hex) that did it to what it answered.
+/// Key of the work a workspace's key holders did, in its own document: a map,
+/// there from the workspace's founding, from `<lease id>/<device key hex>` of
+/// each device that did it to what it answered ([`device_rows`]).
 pub const DONE_KEY: &str = "done_v1";
 
 /// The lease a message is sent under, named by the outbox entry the message
@@ -59,35 +57,17 @@ struct StoredDone {
 
 /// The rows of the work done under `id` in `doc`.
 fn rows_of(doc: Option<&automerge::AutoCommit>, id: &str) -> Vec<Done> {
-    let Some(doc) = doc else {
-        return Vec::new();
-    };
-    let Ok(Some((Value::Object(ObjType::Map), done))) = doc.get(ROOT, DONE_KEY) else {
-        return Vec::new();
-    };
-    let Ok(Some((Value::Object(ObjType::Map), devices))) = doc.get(&done, id) else {
-        return Vec::new();
-    };
-    let mut rows = Vec::new();
-    for device in doc.keys(&devices) {
-        let Ok(Some((Value::Scalar(value), _))) = doc.get(&devices, device.as_str()) else {
-            continue;
-        };
-        let ScalarValue::Str(json) = value.as_ref() else {
-            continue;
-        };
-        let (Ok(stored), Some(key)) =
-            (serde_json::from_str::<StoredDone>(json), device_of(&device))
-        else {
-            continue;
-        };
-        rows.push(Done {
-            device: key,
-            done_at_ns: stored.done_at_ns,
-            answer: stored.answer,
-        });
-    }
-    rows
+    device_rows::rows_of(doc, DONE_KEY, id)
+        .into_iter()
+        .filter_map(|(device, json)| {
+            let stored = serde_json::from_str::<StoredDone>(&json).ok()?;
+            Some(Done {
+                device,
+                done_at_ns: stored.done_at_ns,
+                answer: stored.answer,
+            })
+        })
+        .collect()
 }
 
 /// The work `rows` say was done: the earliest row, so work two key holders
@@ -96,15 +76,6 @@ fn rows_of(doc: Option<&automerge::AutoCommit>, id: &str) -> Vec<Done> {
 fn earliest(rows: Vec<Done>) -> Option<Done> {
     rows.into_iter()
         .min_by(|left, right| (left.done_at_ns, left.device).cmp(&(right.done_at_ns, right.device)))
-}
-
-/// The key a device row's hex names, if it is one.
-fn device_of(device: &str) -> Option<[u8; 32]> {
-    let key = tilo_failure::ignored!(
-        "a device row another build wrote is not a key this one can name",
-        hex::decode(device).ok()
-    )?;
-    <[u8; 32]>::try_from(key.as_slice()).ok()
 }
 
 impl PeerWorkspace<'_> {
@@ -135,7 +106,6 @@ impl PeerWorkspaceMut<'_> {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.check_writer(device, now)?;
-        let row = hex::encode(device.device_public_key);
         if rows_of(self.peer.core.workspace_doc.as_deref(), id)
             .iter()
             .any(|done| done.device == device.device_public_key)
@@ -147,41 +117,10 @@ impl PeerWorkspaceMut<'_> {
             answer,
         })
         .map_err(|error| error.to_string())?;
-        let actor = self.peer.workspace_actor_for(&device.device_public_key);
-        let workspace = self
-            .peer
-            .core
-            .workspace_doc
-            .as_deref()
-            .ok_or("the workspace's document is absent")?;
-        let mut candidate = workspace.clone();
-        candidate.set_actor(actor);
-        let done = match candidate.get(ROOT, DONE_KEY).map_err(error_text)? {
-            Some((Value::Object(ObjType::Map), done)) => done,
-            Some(_) => return Err("the workspace's done work is malformed".into()),
-            None => candidate
-                .put_object(ROOT, DONE_KEY, ObjType::Map)
-                .map_err(error_text)?,
-        };
-        let devices = match candidate.get(&done, id).map_err(error_text)? {
-            Some((Value::Object(ObjType::Map), devices)) => devices,
-            Some(_) => return Err(format!("the work done under `{id}` is malformed")),
-            None => candidate
-                .put_object(&done, id, ObjType::Map)
-                .map_err(error_text)?,
-        };
-        candidate
-            .put(&devices, row.as_str(), json.as_str())
-            .map_err(error_text)?;
-        candidate.commit();
-        self.peer.core.workspace_doc = Some(candidate.into());
+        let key = device_rows::row_key(id, &device.device_public_key);
+        self.write_row(DONE_KEY, &key, &device.device_public_key, Some(&json))?;
         Ok(true)
     }
-}
-
-/// A document operation's error as text.
-fn error_text(error: impl std::fmt::Display) -> String {
-    error.to_string()
 }
 
 #[cfg(test)]
@@ -321,7 +260,12 @@ mod tests {
     fn two_senders_after_a_partition_merge_on_one_winner_and_send_no_more() {
         let (mut left, _left_key, mut right, _right_key) = desktops();
         let now = now();
+        let left_cert = cert_of(&left);
         let right_cert = cert_of(&right);
+        assert!(
+            left_cert.device_public_key < right_cert.device_public_key,
+            "the fixture's left device has the lesser key"
+        );
         let message = "outbox-3";
         // The partition: neither sees the other, so both take the message.
         let left_claim =
@@ -330,31 +274,28 @@ mod tests {
             take(&mut right, message, now, 60).expect("alone, the right device takes it too");
         assert_eq!(left_claim.term, right_claim.term);
 
-        // The partition ends. The claims rank the same on both devices, and
-        // only the winner sends; the loser stops and withdraws its claim.
+        // The partition ends. The claims rank the same on both devices, so
+        // the lesser device key holds; only it sends, and the loser stops and
+        // withdraws its claim.
         sync(&left, &mut right);
         sync(&right, &mut left);
-        let winner = left.workspace().lease(&mail_send_lease(message), now);
-        let holder = winner.holder.expect("one claim wins").device;
-        assert_eq!(holder, right_cert.device_public_key, "the better rank wins");
+        let winner = right.workspace().lease(&mail_send_lease(message), now);
+        assert_eq!(winner.holder, Some(left_claim), "the tie goes one way");
+        assert_eq!(winner.claims.len(), 2, "both claims merge");
         assert_eq!(
             winner,
-            right.workspace().lease(&mail_send_lease(message), now)
+            left.workspace().lease(&mail_send_lease(message), now)
         );
         assert!(
-            take(&mut left, message, now, 60).is_none(),
+            take(&mut right, message, now, 60).is_none(),
             "the loser does not send, and withdraws its claim"
         );
-        sync(&left, &mut right);
+        sync(&right, &mut left);
         assert_eq!(
-            right
-                .workspace()
+            left.workspace()
                 .lease(&mail_send_lease(message), now)
-                .claims
-                .iter()
-                .map(|claim| claim.device)
-                .collect::<Vec<_>>(),
-            vec![right_cert.device_public_key],
+                .claims,
+            vec![left_claim],
             "one claim is left"
         );
         assert!(right.workspace().done(&mail_send_lease(message)).is_none());

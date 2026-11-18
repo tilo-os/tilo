@@ -79,6 +79,11 @@ pub fn seed_workspace(
     .map_err(err)?;
     doc.put_object(ROOT, "invitation_receipts_v1", ObjType::Map)
         .map_err(err)?;
+    // Maps of rows every device writes for itself exist from the founding,
+    // so no device's first row makes a map another's would replace.
+    for rows in super::device_rows::FOUNDED {
+        doc.put_object(ROOT, rows, ObjType::Map).map_err(err)?;
+    }
     let names = doc.put_object(ROOT, "peers", ObjType::Map).map_err(err)?;
     let identities = doc
         .put_object(ROOT, "peer_identities_v1", ObjType::Map)

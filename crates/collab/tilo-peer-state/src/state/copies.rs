@@ -19,6 +19,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::device_rows::device_of;
 use super::facades::{PeerGovernance, PeerGovernanceMut, PeerWorkspace, PeerWorkspaceMut};
 use super::{ROOT, SystemTime, err};
 use automerge::transaction::Transactable as _;
@@ -28,8 +29,9 @@ use serde::{Deserialize, Serialize};
 
 /// Key of the workspace's copy policy in its governance.
 pub const COPY_POLICY_KEY: &str = "copies_v1";
-/// Key of the holders' rows in the workspace's state: a map from each
-/// holder's device key (hex) to its [`HeldCopy`] (JSON).
+/// Key of the holders' rows in the workspace's state: a map, there from the
+/// workspace's founding, from each holder's device key (hex) to its
+/// [`HeldCopy`] (JSON).
 pub const HELD_COPIES_KEY: &str = "held_copies_v1";
 
 /// How many copies of each kind a workspace wants kept.
@@ -126,15 +128,6 @@ impl StoredCopy {
                 .collect(),
         }
     }
-}
-
-/// The key a device row's hex names, if it is one.
-fn device_of(hex: &str) -> Option<[u8; 32]> {
-    let key = tilo_failure::ignored!(
-        "a device row another build wrote is not a key this one can name",
-        hex::decode(hex).ok()
-    )?;
-    <[u8; 32]>::try_from(key).ok()
 }
 
 /// A device key as its hex, in what every device reads.
@@ -408,7 +401,7 @@ impl PeerWorkspaceMut<'_> {
     /// `device` is not the exact current certificate of a device that may
     /// change this workspace, or the row cannot be written.
     pub fn report_copy(
-        self,
+        mut self,
         device: &tilo_user_identity::DeviceCert,
         held: &HeldCopy,
         now: SystemTime,
@@ -425,24 +418,13 @@ impl PeerWorkspaceMut<'_> {
         self.check_writer(device, now)?;
         let json =
             serde_json::to_string(&StoredCopy::from(held)).map_err(|error| error.to_string())?;
-        let mut candidate = workspace.clone();
-        candidate.set_actor(self.peer.workspace_actor_for(&device.device_public_key));
-        let rows = match candidate.get(ROOT, HELD_COPIES_KEY).map_err(err)? {
-            Some((Value::Object(ObjType::Map), rows)) => rows,
-            Some(_) => return Err("the workspace's held copies are malformed".into()),
-            None => candidate
-                .put_object(ROOT, HELD_COPIES_KEY, ObjType::Map)
-                .map_err(err)?,
-        };
-        candidate
-            .put(
-                &rows,
-                hex::encode(device.device_public_key).as_str(),
-                json.as_str(),
-            )
-            .map_err(err)?;
-        candidate.commit();
-        self.peer.core.workspace_doc = Some(candidate.into());
+
+        self.write_row(
+            HELD_COPIES_KEY,
+            &hex::encode(device.device_public_key),
+            &device.device_public_key,
+            Some(&json),
+        )?;
         Ok(true)
     }
 }

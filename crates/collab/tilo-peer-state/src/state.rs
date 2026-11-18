@@ -49,6 +49,7 @@ mod delegates;
 pub(crate) use bot_members::requests_in as bot_requests_in;
 pub use bot_members::{InstalledBot, RequestedBot};
 mod copies;
+mod device_rows;
 pub use copies::{
     COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, HELD_COPIES_KEY, HeldCopy, HolderCopy,
     Missing, Shortfall,
