@@ -15,16 +15,28 @@ use crate::common::people::{Person, shared_invitation};
 use serde_json::json;
 
 /// The invitation the shell hands out admits the person it was made for: their device joins the
-/// workspace the shell shows and holds it, and the site records them as a member.
+/// workspace the shell shows, holds it, and shows it on their own shell.
 #[test]
 fn the_shells_invitation_admits_the_person_it_names() {
-    let (site, _ada, bob, ada_laptop) = crate::common::people::a_site_with_files_for_one_laptop();
-    let invitation = crate::common::people::shared_invitation(&ada_laptop, "editor", bob.public);
+    let ada = Person::new("Ada");
+    let bob = Person::new("Bob");
+    let mut laptop = ada.device("Ada's laptop");
     let mut bob_laptop = bob.device("Bob's laptop");
+    laptop.start();
+    // A workspace the person made here is held on this device's own workspace service, so its
+    // invitations are this shell's to hand out.
+    tilo_test_env::wait_until("Ada's shell shows the workspace it made", || {
+        laptop.showing().is_some()
+    });
+    let workspace = laptop.showing().expect("the workspace Ada's shell made");
+    // The device founded it on its own workspace service off the loop; its invitations are made
+    // once the service holds it.
+    laptop.wait_holding(&workspace);
+    let invitation = shared_invitation(&laptop, "editor", bob.public);
     bob_laptop.install_files();
     bob_laptop.join(&invitation);
-    bob_laptop.wait_holding(&site.workspace);
-    site.wait_for_member(bob.public);
+    bob_laptop.wait_holding(&workspace);
+    bob_laptop.wait_showing(&workspace);
 }
 
 /// A member whose part is to read is refused the invitation an app asks the shell for: sharing is
@@ -72,6 +84,12 @@ fn a_link_made_right_after_start_names_the_relay_the_device_is_reached_through()
         laptop.label,
         laptop.diagnostic()
     );
+    // The workspace is founded on this device's own workspace service, off the loop: an invitation
+    // into it is the service's to make, once it holds the workspace.
+    let workspace = laptop
+        .showing()
+        .expect("the workspace the laptop made is in front");
+    laptop.wait_holding(&workspace);
     let link = shared_invitation(&laptop, "editor", ada.public);
     let join = tilo_workspace_join::decode_and_verify_invitation_text(
         &link,
