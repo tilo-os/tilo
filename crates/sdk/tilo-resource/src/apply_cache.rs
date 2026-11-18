@@ -29,6 +29,10 @@
 //! once), what was kept is the document as the change left it: the next action reads only what
 //! others wrote beside it, not the group's own change back.
 //!
+//! A write also keeps the items it stored whole into new entries, for the view
+//! that follows its change: that view takes them as they were written rather
+//! than reading each back ([`taking_stored`]).
+//!
 //! Keyed by the record's type and by content-addressed change hashes, so a
 //! record kept for one document is never mistaken for another's: a document
 //! without the kept version reads the record whole.
@@ -39,7 +43,7 @@ use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable as _;
-use automerge::{ActorId, ChangeHash, ReadDoc};
+use automerge::{ActorId, ChangeHash, ObjId, ReadDoc};
 
 use crate::delta::Delta;
 use crate::model::Doc;
@@ -238,4 +242,125 @@ fn kept_base(doc: &Doc, started: &[ChangeHash]) -> Option<(Vec<ChangeHash>, Wrot
 #[doc(hidden)]
 pub fn forget_all() {
     KEPT.with(|kept| kept.borrow_mut().clear());
+    STORED.with(|stored| stored.borrow_mut().clear());
+}
+
+/// The items an action's write stored whole into new entries of a
+/// collection, each by the entry object it was stored under (an `Arc` of the
+/// item, as the collection holds it), with the change that holds exactly what
+/// was written: its actor, the version it was made on, sorted, and how many
+/// operations it holds. A reader that follows exactly that change takes these
+/// items as they are rather than reading each back from the document
+/// ([`taking_stored`]). Only items that read back as they were written are
+/// noted: one holding rich text, which reads back as the document's own
+/// structure, is read.
+struct Stored {
+    actor: ActorId,
+    base: Vec<ChangeHash>,
+    ops: u64,
+    items: StoredItems,
+}
+
+/// The items one write stored, by the entry object each was stored under.
+type StoredItems = std::rc::Rc<HashMap<ObjId, Box<dyn Any>>>;
+
+/// How many writes' items are kept for their readers.
+const STORED_KEPT: usize = 4;
+
+thread_local! {
+    /// The items noted by the write under way on this thread, if there is one.
+    static STORING: RefCell<Option<HashMap<ObjId, Box<dyn Any>>>> = const { RefCell::new(None) };
+    /// The items of the latest writes, newest last.
+    static STORED: RefCell<Vec<Stored>> = const { RefCell::new(Vec::new()) };
+    /// The items of the change the reader on this thread is following now.
+    static TAKING: RefCell<Option<StoredItems>> = const { RefCell::new(None) };
+}
+
+/// Note the items the write about to start stores ([`note_stored`]), until
+/// [`seal_stored`]: from nothing, as what a write that failed noted names
+/// objects its rolled back transaction never made.
+pub(crate) fn begin_storing() {
+    STORING.with(|storing| *storing.borrow_mut() = Some(HashMap::new()));
+}
+
+/// The item `shared` (an `Arc` of it) was stored whole under the new entry
+/// object `entry`, if a write notes what it stores.
+pub(crate) fn note_stored(entry: &ObjId, shared: &dyn Fn() -> Option<Box<dyn Any>>) {
+    STORING.with(|storing| {
+        if let Some(storing) = storing.borrow_mut().as_mut()
+            && let Some(shared) = shared()
+        {
+            storing.insert(entry.clone(), shared);
+        }
+    });
+}
+
+/// The write is done: what it noted is kept for the change `doc`'s open
+/// transaction holds now, if that transaction commits as it stands.
+pub(crate) fn seal_stored(doc: &Doc) {
+    let Some(items) = STORING.with(|storing| storing.borrow_mut().take()) else {
+        return;
+    };
+    let ops = u64::try_from(doc.pending_ops()).unwrap_or(0);
+    if items.is_empty() || ops == 0 {
+        return;
+    }
+    let mut base = doc.base_heads();
+    base.compact_sort();
+    let stored = Stored {
+        actor: doc.get_actor().clone(),
+        base,
+        ops,
+        items: std::rc::Rc::new(items),
+    };
+    STORED.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if kept.len() >= STORED_KEPT {
+            kept.remove(0);
+        }
+        kept.push(stored);
+    });
+}
+
+/// Call `follow`, a reader bringing its state up to date with the changes
+/// `metas`, taking the items a write on this thread stored when those changes
+/// are exactly that write's change: nothing else wrote beside it, so every
+/// item it stored is still as it was written.
+pub(crate) fn taking_stored<T>(
+    metas: &[automerge::ChangeMetadata<'_>],
+    follow: impl FnOnce() -> T,
+) -> T {
+    let [meta] = metas else {
+        return follow();
+    };
+    let ops = meta.max_op.saturating_add(1).saturating_sub(meta.start_op);
+    let mut deps = meta.deps.clone();
+    deps.compact_sort();
+    let items = STORED.with(|stored| {
+        stored
+            .borrow()
+            .iter()
+            .rev()
+            .find(|stored| stored.ops == ops && *meta.actor == stored.actor && stored.base == deps)
+            .map(|stored| std::rc::Rc::clone(&stored.items))
+    });
+    let Some(items) = items else {
+        return follow();
+    };
+    let before = TAKING.with(|taking| taking.borrow_mut().replace(items));
+    let followed = follow();
+    TAKING.with(|taking| *taking.borrow_mut() = before);
+    followed
+}
+
+/// Hand `take` the item stored under the new entry object `entry` by the
+/// change the reader follows, if it stored one there. Whether `take` took it.
+pub(crate) fn take_stored(entry: &ObjId, take: &mut dyn FnMut(&dyn Any) -> bool) -> bool {
+    TAKING.with(|taking| {
+        taking
+            .borrow()
+            .as_ref()
+            .and_then(|items| items.get(entry))
+            .is_some_and(|stored| take(stored.as_ref()))
+    })
 }

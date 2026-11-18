@@ -394,9 +394,9 @@ impl Following {
             return Ok(true);
         }
         let held = state.get();
-        let delta = self
+        let (delta, changes) = self
             .tracker
-            .committed_delta_located(doc, &|obj| (ops.locate)(held, obj));
+            .committed_delta_read(doc, &|obj| (ops.locate)(held, obj));
         let delta = if self.uncommitted.take().is_some() && delta.is_empty() {
             // The transaction was rolled back: read what is left.
             Delta::everything()
@@ -411,7 +411,9 @@ impl Following {
         if delta.is_empty() {
             return Ok(false);
         }
-        self.apply(ops, state, doc, &delta)?;
+        // Following the change a write on this thread just made, the items
+        // it stored are taken as they were written, not read back.
+        crate::apply_cache::taking_stored(&changes, || self.apply(ops, state, doc, &delta))?;
         Ok(true)
     }
 
