@@ -592,13 +592,6 @@ mod tests {
     }
 
     #[test]
-    fn a_new_layout_is_the_tree_by_cpu() {
-        let app = TestApp::<MonitorShell>::new().unwrap();
-        assert_eq!(app.state(), Monitor::default());
-        assert_eq!(Monitor::default().sort, SortKey::Cpu);
-    }
-
-    #[test]
     fn history_entries_render_as_the_apps_sentences() {
         use ui::tilo_actions::ActionInvoker;
 

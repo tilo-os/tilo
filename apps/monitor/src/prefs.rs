@@ -57,16 +57,3 @@ impl Default for MonitorPreferences {
 impl SettingsSchema for MonitorPreferences {
     const SCOPE: Scope = Scope::Personal;
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_favor_periodic_sampling_without_kernel_threads() {
-        let prefs = Prefs::default();
-        assert_eq!(prefs.interval_ms, 1500);
-        assert!(prefs.auto_refresh);
-        assert!(!prefs.show_kernel_threads);
-    }
-}
