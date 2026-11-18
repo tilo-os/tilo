@@ -32,6 +32,34 @@ impl GovernanceHeads {
             })
         })
     }
+
+    /// Whether this state holds a change for every head an op names
+    /// ([`collab_types::SignedOp::governance`]), or the op names more than
+    /// [`collab_types::MAX_GOVERNANCE_HEADS`] (and so names none). Asked only
+    /// of a change that would be refused: a head that is one of the
+    /// governance's own is found at once, an older one by a pass over its
+    /// change hashes.
+    #[must_use]
+    pub fn holds_named(&self, heads: &[[u8; 4]]) -> bool {
+        if heads.len() > collab_types::MAX_GOVERNANCE_HEADS {
+            return true;
+        }
+        let Some(doc) = self.0.as_ref() else {
+            return heads.is_empty();
+        };
+        let current: Vec<_> = automerge::transaction::Transactable::base_heads(&**doc)
+            .iter()
+            .map(|head| collab_types::governance_head(&head.0))
+            .collect();
+        heads.iter().all(|head| {
+            current.contains(head)
+                || doc
+                    .committed_document()
+                    .change_hashes()
+                    .iter()
+                    .any(|hash| collab_types::governance_head(&hash.0) == *head)
+        })
+    }
 }
 
 impl PeerGovernance<'_> {

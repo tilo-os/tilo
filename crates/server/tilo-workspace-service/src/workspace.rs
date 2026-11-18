@@ -1108,7 +1108,7 @@ impl Governing {
 pub(crate) async fn access_deciding(
     ws: &SharedWorkspace,
     author: [u8; 32],
-    claimed: &[[u8; 32]],
+    claimed: &[[u8; 4]],
     refuses: impl Fn(Option<&DeviceAccess>, &dyn crate::payloads::ShellPayloads) -> bool,
 ) -> AccessDecision {
     let deadline = tokio::time::Instant::now()
@@ -1138,7 +1138,7 @@ pub(crate) async fn access_deciding(
             .is_some_and(|device_access| !device_access.contains_key(&author));
         let behind = refusing
             && device_access.is_some()
-            && (!heads.holds(claimed) || !heads.holds(&Box::pin(authority.heads()).await));
+            && (!heads.holds_named(claimed) || !heads.holds(&Box::pin(authority.heads()).await));
         // A writer with as many changes waiting for governance as it may
         // have is not waited for again.
         let may_wait_behind = behind

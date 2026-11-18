@@ -1096,7 +1096,7 @@ impl StatePeer {
 
     /// Whether `envelope` names governance heads this peer does not hold yet.
     fn lacks_governance_of(&self, envelope: &SignedOp) -> bool {
-        !self.governance().held_heads().holds(&envelope.governance)
+        !self.governance().held_heads().holds_named(&envelope.governance)
     }
 
     /// The authority of `source` for the change `envelope` makes on `record`
