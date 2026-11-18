@@ -351,6 +351,7 @@ mod availability_control_tests {
     /// A file is freed here and fetched again by its content's hash: the availability record,
     /// the eviction and the fetch all name the hash the tree's node holds.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
     async fn a_file_freed_by_its_content_hash_is_fetched_again_by_it() {
         let dir = tempfile::tempdir().unwrap();
         let (source_endpoint, source_router, first, second) = pinned_content_source().await;
