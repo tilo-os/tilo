@@ -14,6 +14,18 @@
 //!   approved the certificate themselves ([`Certifier::Approved`]);
 //! * its nonce has never been redeemed, recorded durably in the one
 //!   [`NonceStore`] before the certificate leaves this function.
+//!
+//! Which ways a machine may enroll at all — a token, a code approved on
+//! another device, pairing over the local network — its image declares once
+//! ([`methods`]).
+
+pub mod methods;
+#[cfg(unix)]
+pub mod token_file;
+
+pub use methods::{DECLARATION, Method, Methods, Refused, UnknownMethod};
+#[cfg(unix)]
+pub use token_file::{given_token, spend_token};
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
@@ -219,7 +231,7 @@ pub struct Redemption<'a> {
     pub label: &'a str,
     pub now_ns: u64,
     /// When the new certificate starts to be valid: `now_ns`, or a little
-    /// earlier so a device whose clock runs behind accepts it.
+    /// earlier so a device whose clock is behind accepts it.
     pub valid_from_ns: u64,
     /// The approving device's own certificate, used as the issuer when the
     /// fleet does not list it (a host that keeps no fleet).
@@ -708,6 +720,75 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
             let token = tilo_user_identity::decode_enrollment_token(&encoded).expect("decode");
             assert!(!store.nonces().is_consumed(&token.nonce).expect("marker"));
+        }
+
+        phase an_expired_token_admits_nothing;
+        // A token the person made for a machine that arrives late admits
+        // nothing, and spending nothing leaves the fleet as it was.
+        {
+            let fixture = fixture();
+            let store = &fixture.store;
+            let now = fixture.issued_at_ns;
+            let (encoded, token) = fixture.mint();
+            let after = token.expires_at_ns;
+            let error = store
+                .complete_enrollment(&fixture.identity_id, &encoded, device(91), "Laptop", after)
+                .expect_err("a token past its expiry admits nothing");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(error.to_string().contains("expired"), "{error}");
+            assert!(!store.nonces().is_consumed(&token.nonce).expect("marker"));
+            assert_eq!(
+                store
+                    .load(&fixture.identity_id)
+                    .expect("fleet")
+                    .certificates
+                    .len(),
+                1,
+                "no device joined"
+            );
+            store
+                .complete_enrollment(&fixture.identity_id, &encoded, device(91), "Laptop", now)
+                .expect("the same token before its expiry admits the device");
+        }
+
+        phase a_code_approval_enrolls_one_device;
+        // The machine that shows a code is admitted by a device of the
+        // person's that computed the same code from what the machine
+        // announced, and by no other machine.
+        {
+            let fixture = fixture();
+            let store = &fixture.store;
+            let now = fixture.issued_at_ns;
+            let machine = device(101);
+            let service = device(102);
+            let shown = crate::certification_ceremony::pairing_code(machine, service);
+            assert_eq!(shown.len(), 6);
+            assert_eq!(
+                crate::certification_ceremony::pairing_code(machine, service),
+                shown,
+                "the approving device computes the code the machine shows"
+            );
+            assert_ne!(
+                crate::certification_ceremony::pairing_code(device(103), service),
+                shown,
+                "another device shows another code"
+            );
+            let (encoded, token) = fixture.mint();
+            let cert = store
+                .complete_enrollment(&fixture.identity_id, &encoded, machine, "Home server", now)
+                .expect("the approved device joins");
+            assert_eq!(cert.device_public_key, machine);
+            assert_eq!(cert.device_label, "Home server");
+            assert_eq!(cert.user_public_key, token.user_public_key);
+            verify_device_cert(&cert).expect("the certificate chains to the identity");
+            assert!(store.nonces().is_consumed(&token.nonce).expect("marker"));
+            assert_eq!(
+                store
+                    .complete_enrollment(&fixture.identity_id, &encoded, machine, "Home server", now)
+                    .expect_err("the code admitted exactly one device")
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
         }
 
         phase nonce_markers_spend_once_and_record_idempotently;

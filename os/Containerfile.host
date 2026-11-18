@@ -279,12 +279,19 @@ COPY docs/recovery.md docs/app-model/environments.md /usr/share/doc/tilo/
 # release image.
 RUN install -d -m 0755 /usr/lib/tilo && echo server > /usr/lib/tilo/image-flavour
 
-# The first-boot script consumes /etc/tilo/enrollment-token.txt (a
-# base32-Crockford EnrollmentToken minted on the operator's primary
-# device by the imager app) and mints a device keypair + persists
-# a device cert once the LAN mdns discovery hands back the signed
-# cert. Baked into the ISO by `tilo-installer` — the sample stub
-# here is overwritten at install time.
+# The enrollment methods this image offers, in the one place an image declares
+# them. A server has no one at it to confirm a device it found, so it enrolls
+# with the token made for it or with the code it shows for a device of the
+# person's to approve; local-network pairing is a desktop's way in.
+RUN printf '# Tilo Server: the token made for this machine, or the short code it\n# shows for a device of yours to approve.\ntoken\ncode\n' \
+        > /usr/lib/tilo/enrollment-methods
+
+# The first-boot script runs the one enrollment every image runs:
+# `tilo-enroll enroll` spends the token in /etc/tilo/enrollment-token.txt (a
+# base32-Crockford token minted on the operator's primary device by the imager
+# app) and persists a device cert, or shows a code a device of theirs approves
+# when no token was put there. Baked into the ISO by `tilo-installer` — the
+# sample stub here is overwritten at install time.
 RUN mkdir -p /etc/tilo \
     && echo "# Replace with a base32-Crockford enrollment token minted by your primary device." \
         > /etc/tilo/enrollment-token.txt

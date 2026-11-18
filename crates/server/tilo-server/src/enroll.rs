@@ -1,4 +1,8 @@
-//! LAN/OOB completion for a pre-authorised Tilo device enrollment token.
+//! The one enrollment every Tilo image uses, and the device side that admits
+//! it. A machine enrolls with the single-use token the person made for it, or
+//! by showing a short code one of the person's devices approves; a device of
+//! theirs finds a machine on the local network and approves that. Which of
+//! those an image offers it declares once (`tilo_identity::enrollment`).
 
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::path::PathBuf;
@@ -45,8 +49,33 @@ struct Cli {
     /// to the account this runs as.
     #[arg(long, global = true)]
     person_uid: Option<u32>,
+    /// The file the image declares its enrollment methods in. A machine
+    /// without one offers every method.
+    #[arg(long, global = true, default_value = tilo_identity::enrollment::DECLARATION)]
+    methods_file: PathBuf,
     #[command(subcommand)]
     command: Command,
+}
+
+/// The methods this image declares, read once before any command is dispatched.
+static METHODS: std::sync::OnceLock<tilo_identity::enrollment::Methods> =
+    std::sync::OnceLock::new();
+
+/// Every enrollment goes through the methods the image declares.
+fn ensure_offered(method: tilo_identity::enrollment::Method) -> anyhow::Result<()> {
+    METHODS
+        .get()
+        .copied()
+        .unwrap_or(tilo_identity::enrollment::Methods::ALL)
+        .ensure(method)
+        .map_err(anyhow::Error::from)
+}
+
+fn declared_methods() -> tilo_identity::enrollment::Methods {
+    METHODS
+        .get()
+        .copied()
+        .unwrap_or(tilo_identity::enrollment::Methods::ALL)
 }
 
 /// `--person-uid`, set once before any command runs.
@@ -62,6 +91,17 @@ fn as_person<T>(
     tilo_identity::person_files::as_person(PERSON_UID.get().copied(), identity_dir, write)
 }
 
+fn parse_method(name: &str) -> Result<tilo_identity::enrollment::Method, String> {
+    tilo_identity::enrollment::Method::parse(name).ok_or_else(|| {
+        format!(
+            "{name:?} is not an enrollment method ({})",
+            tilo_identity::enrollment::Method::ALL
+                .map(tilo_identity::enrollment::Method::name)
+                .join(", ")
+        )
+    })
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Find one unprovisioned home server broadcasting on this LAN.
@@ -74,9 +114,13 @@ enum Command {
         #[arg(long, default_value_t = 15)]
         timeout: u64,
     },
-    /// Join the identity named by TOKEN, discovering its approving device on this LAN.
-    Join {
-        #[arg(long)]
+    /// Enroll this machine: with the token it was given, or by showing a code
+    /// a device of the person's approves. Both are the one enrollment every
+    /// image uses; the image declares which it offers.
+    Enroll {
+        /// The token the person made for this machine. The image's placeholder
+        /// and an absent file are no token.
+        #[arg(long, default_value = "/etc/tilo/enrollment-token.txt")]
         token_file: PathBuf,
         #[arg(long, default_value = "/var/lib/tilo")]
         identity_root: PathBuf,
@@ -86,17 +130,10 @@ enum Command {
         timeout: u64,
         #[arg(long, default_value = "/etc/tilo/home-peer.toml")]
         home_peer_output: PathBuf,
-    },
-    /// Pair with a nearby trusted Tilo device without pre-installing a token.
-    Pair {
-        #[arg(long, default_value = "/var/lib/tilo")]
-        identity_root: PathBuf,
-        #[arg(long, default_value = "Home server")]
-        label: String,
-        #[arg(long, default_value_t = 270)]
-        timeout: u64,
-        #[arg(long, default_value = "/etc/tilo/home-peer.toml")]
-        home_peer_output: PathBuf,
+        /// token or code; by default a token when this machine was handed one,
+        /// and a code otherwise.
+        #[arg(long, value_parser = parse_method)]
+        method: Option<tilo_identity::enrollment::Method>,
     },
     /// Join an existing identity as an ordinary personal device.
     PairDevice {
@@ -1551,29 +1588,47 @@ fn validate_requester(lease: Option<tilo_server::ProcessLease>) -> anyhow::Resul
     Ok(())
 }
 
-fn join(
+/// The one enrollment every image uses: with the token the machine was given,
+/// or by showing a code a device of the person's approves.
+fn enroll(
     token_file: &std::path::Path,
     identity_root: &std::path::Path,
     label: &str,
     timeout: u64,
     home_peer_output: &std::path::Path,
+    method: Option<tilo_identity::enrollment::Method>,
 ) -> anyhow::Result<()> {
-    let token_text = std::fs::read_to_string(token_file)
+    let token = tilo_identity::enrollment::given_token(token_file)
         .with_context(|| format!("read {}", token_file.display()))?;
-    join_with_token(
-        token_text.trim(),
-        JoinOptions {
-            identity_root,
-            label,
-            timeout,
-            kind: EnrollmentKind::HomePeer,
-            home_peer_output: Some(home_peer_output),
-            identity_dir: None,
-            requester_lease: None,
-            port: NEARBY_PORT,
-        },
-    )
-    .map(|_| ())
+    let method = declared_methods()
+        .choose(method, token.is_some())
+        .map_err(anyhow::Error::from)?;
+    let options = JoinOptions {
+        identity_root,
+        label,
+        timeout,
+        kind: EnrollmentKind::HomePeer,
+        home_peer_output: Some(home_peer_output),
+        identity_dir: None,
+        requester_lease: None,
+        port: NEARBY_PORT,
+    };
+    match method {
+        tilo_identity::enrollment::Method::Token => {
+            let token = token
+                .as_deref()
+                .context("this machine was handed no enrollment token")?;
+            join_with_token(token, options)?;
+            // The token is spent by the certificate it bought.
+            tilo_identity::enrollment::spend_token(token_file)
+                .with_context(|| format!("burn {}", token_file.display()))
+        }
+        tilo_identity::enrollment::Method::Code => pair(options, None),
+        tilo_identity::enrollment::Method::LocalNetwork => bail!(
+            "a machine enrolls with a token or a code; local-network pairing is approved from \
+             one of the person's devices"
+        ),
+    }
 }
 
 /// Join with `token_text`; a personal device gets back its joined identity
@@ -2798,55 +2853,43 @@ fn pair_device_cli(
     result
 }
 
-/// `tilo-enroll pair`: join the person's home peers from this machine.
-fn pair_home_peer(
-    identity_root: &std::path::Path,
-    label: &str,
-    timeout: u64,
-    home_peer_output: &std::path::Path,
-) -> anyhow::Result<()> {
-    pair(
-        JoinOptions {
-            identity_root,
-            label,
-            timeout,
-            kind: EnrollmentKind::HomePeer,
-            home_peer_output: Some(home_peer_output),
-            identity_dir: None,
-            requester_lease: None,
-            port: NEARBY_PORT,
-        },
-        None,
-    )
-}
-
+#[allow(
+    clippy::too_many_lines,
+    reason = "one dispatch: each arm names the arguments of the command it starts"
+)]
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if let Some(uid) = cli.person_uid {
         let _ = PERSON_UID.set(uid);
     }
+    // The image's declaration is read before any enrollment starts, so a
+    // method it does not offer is refused whatever the command line asks.
+    let methods = tilo_identity::enrollment::Methods::of_image(&cli.methods_file)?;
+    let _ = METHODS.set(methods);
     match cli.command {
-        Command::Discover { timeout } => discover(timeout, EnrollmentKind::HomePeer),
-        Command::DiscoverDevice { timeout } => discover(timeout, EnrollmentKind::PersonalDevice),
-        Command::Join {
+        Command::Discover { timeout } => {
+            ensure_offered(tilo_identity::enrollment::Method::LocalNetwork)?;
+            discover(timeout, EnrollmentKind::HomePeer)
+        }
+        Command::DiscoverDevice { timeout } => {
+            ensure_offered(tilo_identity::enrollment::Method::LocalNetwork)?;
+            discover(timeout, EnrollmentKind::PersonalDevice)
+        }
+        Command::Enroll {
             token_file,
             identity_root,
             label,
             timeout,
             home_peer_output,
-        } => join(
+            method,
+        } => enroll(
             &token_file,
             &identity_root,
             &label,
             timeout,
             &home_peer_output,
+            method,
         ),
-        Command::Pair {
-            identity_root,
-            label,
-            timeout,
-            home_peer_output,
-        } => pair_home_peer(&identity_root, &label, timeout, &home_peer_output),
         Command::PairDevice {
             identity_root,
             identity_dir,
@@ -2856,16 +2899,19 @@ fn run() -> anyhow::Result<()> {
             headless,
             requester_pid,
             requester_start_time,
-        } => pair_device_cli(
-            &identity_root,
-            &identity_dir,
-            &label,
-            timeout,
-            status_file.as_deref(),
-            headless,
-            requester_pid,
-            requester_start_time,
-        ),
+        } => {
+            ensure_offered(tilo_identity::enrollment::Method::Code)?;
+            pair_device_cli(
+                &identity_root,
+                &identity_dir,
+                &label,
+                timeout,
+                status_file.as_deref(),
+                headless,
+                requester_pid,
+                requester_start_time,
+            )
+        }
         Command::Approve {
             identity_root,
             identity_dir,
@@ -2875,20 +2921,23 @@ fn run() -> anyhow::Result<()> {
             server_workspace_ids,
             expected_device,
             expected_service,
-        } => approve(&ApprovalOptions {
-            identity_root: &identity_root,
-            identity_dir: identity_dir.as_deref(),
-            timeout,
-            workspace_cache: &workspace_cache,
-            acl: &acl,
-            server_workspace_ids: &server_workspace_ids,
-            expected_device: expected_device.as_deref(),
-            expected_service: expected_service.as_deref(),
-            kind: EnrollmentKind::HomePeer,
-            port: NEARBY_PORT,
-            ready: None,
-            approved: None,
-        }),
+        } => {
+            ensure_offered(tilo_identity::enrollment::Method::LocalNetwork)?;
+            approve(&ApprovalOptions {
+                identity_root: &identity_root,
+                identity_dir: identity_dir.as_deref(),
+                timeout,
+                workspace_cache: &workspace_cache,
+                acl: &acl,
+                server_workspace_ids: &server_workspace_ids,
+                expected_device: expected_device.as_deref(),
+                expected_service: expected_service.as_deref(),
+                kind: EnrollmentKind::HomePeer,
+                port: NEARBY_PORT,
+                ready: None,
+                approved: None,
+            })
+        }
         Command::ApproveDevice {
             identity_root,
             identity_dir,
@@ -2896,24 +2945,27 @@ fn run() -> anyhow::Result<()> {
             expected_device,
             expected_service,
             approved_cert,
-        } => approve(&ApprovalOptions {
-            identity_root: &identity_root,
-            identity_dir: Some(&identity_dir),
-            timeout,
-            workspace_cache: std::path::Path::new(""),
-            acl: std::path::Path::new(""),
-            server_workspace_ids: &[],
-            expected_device: expected_device.as_deref(),
-            expected_service: expected_service.as_deref(),
-            kind: EnrollmentKind::PersonalDevice,
-            port: NEARBY_PORT,
-            ready: None,
-            approved: approved_cert
-                .map(|path| tilo_user_identity::persist::read_device_cert(&path))
-                .transpose()
-                .context("read the approved certificate")?
-                .as_ref(),
-        }),
+        } => {
+            ensure_offered(tilo_identity::enrollment::Method::LocalNetwork)?;
+            approve(&ApprovalOptions {
+                identity_root: &identity_root,
+                identity_dir: Some(&identity_dir),
+                timeout,
+                workspace_cache: std::path::Path::new(""),
+                acl: std::path::Path::new(""),
+                server_workspace_ids: &[],
+                expected_device: expected_device.as_deref(),
+                expected_service: expected_service.as_deref(),
+                kind: EnrollmentKind::PersonalDevice,
+                port: NEARBY_PORT,
+                ready: None,
+                approved: approved_cert
+                    .map(|path| tilo_user_identity::persist::read_device_cert(&path))
+                    .transpose()
+                    .context("read the approved certificate")?
+                    .as_ref(),
+            })
+        }
         Command::Revoke(options) => revoke(&options),
         Command::OutOfBand(command) => out_of_band(command),
     }

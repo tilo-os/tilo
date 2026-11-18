@@ -3194,6 +3194,8 @@ RUN case "${TILO_GENERATION}" in \
     esac \
  && install -d -m 0755 /usr/lib/tilo \
  && printf '%s\n' "${TILO_GENERATION}" > /usr/lib/tilo/generation \
+ && printf '# Tilo OS: every way to enroll. `token` is the single-use token made\n# for this machine, `code` the short code it shows for a device of yours to\n# approve, `local-network` a device of yours finding it on the network.\ntoken\ncode\nlocal-network\n' \
+      > /usr/lib/tilo/enrollment-methods \
  && printf '# Written by the image build from the TILO_GENERATION build argument.\nkargs = ["tilo.generation=%s"]\n' \
       "${TILO_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml \
  && echo "generation ${TILO_GENERATION}: sealed via kargs.d, readable at /usr/lib/tilo/generation"

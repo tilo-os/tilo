@@ -48,6 +48,9 @@ mod holder_copies;
 mod hosted_browser;
 #[path = "hosting_member.rs"]
 mod hosting_member;
+#[cfg(unix)]
+#[path = "image_enrollment_methods.rs"]
+mod image_enrollment_methods;
 #[path = "live_session.rs"]
 mod live_session;
 #[path = "multi_host.rs"]

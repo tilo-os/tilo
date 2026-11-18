@@ -42,6 +42,15 @@ certificate it shows is admitted. Another person's device is never admitted
 through pairing; it comes in through an invitation to a workspace, as that
 person's device.
 
+**One enrollment serves every device.** A machine arrives with a single-use,
+expiring token the person made for it, shows a short code that one of their
+devices approves, or is found and paired by one of their devices on the local
+network. Every image uses the same enrollment; what an image allows is declared
+once in it, one method per line in `/usr/lib/tilo/enrollment-methods`. Tilo
+Server offers the token and the code, because nobody is at it to confirm a
+device it found; Tilo OS and a board offer all three. A method an image does
+not declare is refused.
+
 **Each device has a role in each workspace it holds:**
 
 - **Key holder**: it holds the workspace's keys, reads and writes its state,
