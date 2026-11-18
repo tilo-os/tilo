@@ -667,3 +667,7 @@ mod connections;
 /// The same server, person and assistant, opening Browser in the workspace's machine.
 #[path = "hosted_turn_browser.rs"]
 mod turn_browser;
+
+/// The same server, person and assistant, sending the workspace's Browser window to an address.
+#[path = "hosted_turn_pages.rs"]
+mod turn_pages;
