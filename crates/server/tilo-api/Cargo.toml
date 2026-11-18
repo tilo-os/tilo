@@ -6,6 +6,11 @@ publish.workspace = true
 description = "The Tilo API server: OAuth 2.1 for agents, sign-in with a device of the person, scope consent, revocable grants and API keys, and the agent surface served for each session over the grant's own session with the server."
 license = "MIT OR Apache-2.0"
 
+[features]
+# A test hands the API the receivers it starts on its own machine, to stand in for the public
+# internet where a webhook is posted. A test target turns it on; no program of a site holds it.
+test-support = []
+
 [dependencies]
 # The client's errors, as the programs that call it report them.
 anyhow.workspace = true
