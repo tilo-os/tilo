@@ -113,6 +113,14 @@ impl WebPush {
         let client = tilo_net::Client::builder()
             .timeout(Duration::from_secs(15))
             .redirects(tilo_net::Redirects::None)
+            // A browser names the address: only the public internet is
+            // dialled, judged at the connection's own lookup, and no proxy
+            // of this server's environment is taken, which would resolve
+            // the name behind that lookup.
+            .direct()
+            .lookup(tilo_net::address::public_only(
+                tilo_net::address::system_lookup(),
+            ))
             .build()
             .context("the push client")?;
         Ok(Self {
@@ -142,6 +150,7 @@ impl WebPush {
         subscription: PushSubscription,
     ) -> Result<(), String> {
         subscription.check()?;
+        public_endpoint(&subscription.endpoint)?;
         let mut kept = self.kept.lock_recover();
         let key = hex::encode(person);
         if !kept.people.contains_key(&key) && kept.people.len() >= PEOPLE {
@@ -199,6 +208,10 @@ impl WebPush {
     }
 
     async fn push(&self, browser: &PushSubscription, plain: &[u8]) -> Result<(), Pushed> {
+        if public_endpoint(&browser.endpoint).is_err() {
+            // Kept before an address was judged: never posted to, forgotten.
+            return Err(Pushed::Gone);
+        }
         let body = encrypt(browser, plain).map_err(|()| Pushed::Failed("encrypt".into()))?;
         let authorization = self
             .vapid(&browser.endpoint)
@@ -244,6 +257,18 @@ impl WebPush {
             URL_SAFE_NO_PAD.encode(signature.as_ref()),
             URL_SAFE_NO_PAD.encode(self.public_key())
         ))
+    }
+}
+
+/// Whether `endpoint` is an address this server posts a push to: one of the
+/// web, and no address of this machine or its network written into it. A
+/// name is judged where the connection looks it up.
+fn public_endpoint(endpoint: &str) -> Result<(), &'static str> {
+    let refusal = "a push subscription names a push service on the public internet";
+    let url = tilo_net::Url::parse(endpoint).map_err(|_| refusal)?;
+    match tilo_net::address::written_out(&url) {
+        Some(address) if !tilo_net::address::is_public(address) => Err(refusal),
+        _ => Ok(()),
     }
 }
 
@@ -485,5 +510,205 @@ pub(crate) mod tests {
         // so the browsers subscribed to it keep working.
         let again = WebPush::open(state.path(), "mailto:ops@example.com").unwrap();
         assert_eq!(again.public_key(), push.public_key());
+    }
+
+    const ADA: [u8; 32] = [0xad; 32];
+
+    /// A subscription a push can be encrypted for, at `endpoint`.
+    fn subscription(endpoint: &str) -> PushSubscription {
+        let browser =
+            agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &SystemRandom::new())
+                .unwrap();
+        PushSubscription {
+            endpoint: endpoint.into(),
+            p256dh: browser.compute_public_key().unwrap().as_ref().to_vec(),
+            auth: vec![7; 16],
+        }
+    }
+
+    fn a_question() -> Message<'static> {
+        Message {
+            title: "An agent needs you",
+            body: "Open Tilo to answer.",
+            tag: "tilo-question-1",
+            url: "/",
+        }
+    }
+
+    /// A listener on this machine that counts the connections made to it and
+    /// closes each at once, so whoever connected is not kept waiting.
+    struct Here {
+        port: u16,
+        connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Here {
+        async fn listen() -> Self {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = std::sync::Arc::clone(&connections);
+            tokio::spawn(async move {
+                while let Ok((connection, _)) = listener.accept().await {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    drop(connection);
+                }
+            });
+            Self { port, connections }
+        }
+
+        fn connections(&self) -> usize {
+            self.connections.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    /// What is kept on disk under `state`, by person.
+    fn kept_under(state: &Path) -> Kept {
+        std::fs::read(state.join(SUBSCRIPTIONS_FILE))
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+            .unwrap_or_default()
+    }
+
+    /// A browser's subscription names the address this server posts to. One
+    /// that names this machine or its network, in any form an address takes,
+    /// is not kept; a push service on the public internet is.
+    #[test]
+    fn a_subscription_that_names_an_own_address_is_not_kept() {
+        let state = tempfile::tempdir().unwrap();
+        let push = WebPush::open(state.path(), "mailto:ops@example.com").unwrap();
+        for own in [
+            "https://127.0.0.1/send/abc",
+            "https://127.0.0.1:8443/send/abc",
+            "https://10.0.0.7/send/abc",
+            "https://192.168.1.1/send/abc",
+            "https://100.64.0.1/send/abc",
+            "https://169.254.169.254/latest/meta-data",
+            "https://168.63.129.16/machine",
+            "https://0.0.0.0/send/abc",
+            "https://[::1]/send/abc",
+            "https://[::ffff:127.0.0.1]/send/abc",
+            "https://[64:ff9b::a00:7]/send/abc",
+            "https://[2002:a00:7::]/send/abc",
+            "https://[fd00::7]/send/abc",
+            "https://[fe80::1]/send/abc",
+        ] {
+            assert!(
+                push.subscribe(&ADA, subscription(own)).is_err(),
+                "{own} names this machine or its network and was kept"
+            );
+        }
+        assert!(
+            kept_under(state.path()).people.is_empty(),
+            "nothing of them is kept"
+        );
+        push.subscribe(&ADA, subscription("https://push.example/send/abc"))
+            .unwrap();
+        assert_eq!(kept_under(state.path()).people.len(), 1);
+    }
+
+    /// A name is judged where the connection looks it up: a push to a name
+    /// that answers with an address of this machine connects to nothing.
+    #[tokio::test]
+    async fn a_push_to_a_name_that_answers_with_this_machine_connects_to_nothing() {
+        let here = Here::listen().await;
+        let state = tempfile::tempdir().unwrap();
+        let push = WebPush::open(state.path(), "mailto:ops@example.com").unwrap();
+        push.subscribe(
+            &ADA,
+            subscription(&format!("https://localhost:{}/send/abc", here.port)),
+        )
+        .unwrap();
+
+        assert_eq!(push.notify(&ADA, &a_question()).await, 0);
+        assert_eq!(
+            here.connections(),
+            0,
+            "a push to a name that answers with this machine connected to it"
+        );
+    }
+
+    /// An address of this machine that was kept before subscriptions were
+    /// judged is never posted to, and is forgotten.
+    #[tokio::test]
+    async fn a_push_to_an_own_address_kept_earlier_connects_to_nothing_and_forgets_it() {
+        let here = Here::listen().await;
+        let state = tempfile::tempdir().unwrap();
+        let mut kept = Kept::default();
+        kept.people.insert(
+            hex::encode(ADA),
+            vec![subscription(&format!(
+                "https://127.0.0.1:{}/send/abc",
+                here.port
+            ))],
+        );
+        // Kept as the server keeps it: a private file.
+        tilo_files::native::private::write_atomic(
+            &state.path().join(SUBSCRIPTIONS_FILE),
+            &serde_json::to_vec(&kept).unwrap(),
+        )
+        .unwrap();
+        let push = WebPush::open(state.path(), "mailto:ops@example.com").unwrap();
+
+        assert_eq!(push.notify(&ADA, &a_question()).await, 0);
+        assert_eq!(
+            here.connections(),
+            0,
+            "a push to an address of this machine kept earlier connected to it"
+        );
+        assert!(
+            kept_under(state.path()).people.values().all(Vec::is_empty),
+            "an address of this machine is forgotten, not tried again"
+        );
+    }
+
+    /// A push takes no proxy from this server's environment: such a proxy
+    /// would resolve the name itself, behind the lookup a push is judged by,
+    /// and so reach what that lookup refuses.
+    #[tokio::test]
+    async fn a_push_sends_nothing_to_a_proxy_the_environment_names() {
+        if !tilo_test_env::in_own_process_here(
+            module_path!(),
+            "a_push_sends_nothing_to_a_proxy_the_environment_names",
+        ) {
+            return;
+        }
+        let proxy = Here::listen().await;
+        let here = Here::listen().await;
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        for name in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            environment.set(name, format!("http://127.0.0.1:{}", proxy.port));
+        }
+        // Nothing exempts an address from that proxy, and nothing has a name of it ignored.
+        for name in ["NO_PROXY", "no_proxy", "REQUEST_METHOD"] {
+            environment.remove(name);
+        }
+        let state = tempfile::tempdir().unwrap();
+        let push = WebPush::open(state.path(), "mailto:ops@example.com").unwrap();
+        push.subscribe(
+            &ADA,
+            subscription(&format!("https://localhost:{}/send/abc", here.port)),
+        )
+        .unwrap();
+
+        assert_eq!(push.notify(&ADA, &a_question()).await, 0);
+        assert_eq!(
+            proxy.connections(),
+            0,
+            "the proxy this server's environment names was sent a push's connection"
+        );
+        assert_eq!(
+            here.connections(),
+            0,
+            "a push to a name that answers with this machine connected to it"
+        );
     }
 }

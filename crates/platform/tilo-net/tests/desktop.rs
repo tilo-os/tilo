@@ -560,3 +560,32 @@ async fn a_direct_client_sends_nothing_to_a_proxy_its_environment_names() {
     );
     assert_eq!(page.drain_requests().len(), 1);
 }
+
+/// A client whose lookup is the one judge's (`address::public_only`) is
+/// refused a name that answers with an address of this machine: the request
+/// ends as blocked, told apart from a connection that failed, and nothing is
+/// sent.
+#[tokio::test]
+async fn a_client_that_looks_up_public_only_is_refused_a_name_that_answers_with_this_machine() {
+    let page = Responder::handle(|_| Some(Reply::status(200).body("the page")));
+    let lookup: tilo_net::Lookup = std::sync::Arc::new(
+        |_name: String| -> std::pin::Pin<
+            Box<dyn Future<Output = std::io::Result<Vec<std::net::IpAddr>>> + Send>,
+        > { Box::pin(async { Ok(vec![std::net::IpAddr::from([127, 0, 0, 1])]) }) },
+    );
+    let client = Client::builder()
+        .direct()
+        .lookup(tilo_net::address::public_only(lookup))
+        .build()
+        .unwrap();
+    let address = format!(
+        "http://a-name-only-the-lookup-knows.invalid:{}/page",
+        page.port()
+    );
+    let refused = client.get(address.as_str()).send().await;
+    assert!(
+        matches!(refused, Err(NetError::Blocked(_))),
+        "a name the one judge refuses ends as blocked"
+    );
+    assert!(page.drain_requests().is_empty(), "nothing was sent");
+}
