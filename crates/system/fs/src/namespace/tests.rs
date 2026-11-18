@@ -1181,3 +1181,64 @@ fn a_write_through_the_mount_names_its_file_actions_and_the_agent_that_wrote() {
     );
     assert_eq!(ns.hash_for(ino), Some(h(2)));
 }
+
+/// Each chunk's heads, the tree's own document first.
+fn chunk_heads(ns: &mut Namespace) -> BTreeMap<fs_protocol::TreeChunk, Vec<automerge::ChangeHash>> {
+    ns.note_change();
+    ns.doc.heads()
+}
+
+/// A device that wrote a change and has not published it yet takes in another device's change of
+/// the same chunk: its own change is not counted as one the holders have, so it goes out with
+/// its next publication and the holders merge every later change built on it.
+#[test]
+fn a_change_not_published_yet_goes_out_after_another_devices_change_arrives() {
+    let mut laptop = Namespace::new("laptop").unwrap();
+    laptop
+        .create_file(ROOT_INO, "report.txt", Some(&h(1)), 1, 1)
+        .unwrap();
+    laptop
+        .create_file(ROOT_INO, "build.bin", Some(&h(2)), 1, 1)
+        .unwrap();
+    let mut desktop = Namespace::new("desktop").unwrap();
+    desktop
+        .take_documents(
+            laptop
+                .document_writes(&BTreeMap::new())
+                .into_iter()
+                .map(|w| (w.chunk, w.changes))
+                .collect(),
+        )
+        .unwrap();
+    let (laptop_published, desktop_published) =
+        (chunk_heads(&mut laptop), chunk_heads(&mut desktop));
+
+    // The desktop renames one file and has not published it when the laptop's rename arrives.
+    assert!(desktop.rename(ROOT_INO, "report.txt", ROOT_INO, "notes.txt", 2));
+    assert!(laptop.rename(ROOT_INO, "build.bin", ROOT_INO, "out.bin", 2));
+    let from_laptop = laptop.document_writes(&laptop_published);
+    let holders = desktop
+        .take_published_documents(
+            from_laptop
+                .into_iter()
+                .map(|w| (w.chunk, w.changes))
+                .collect(),
+            &desktop_published,
+        )
+        .unwrap();
+    assert!(desktop.lookup(ROOT_INO, "out.bin").is_some());
+
+    // The desktop's next publication carries its rename, and the laptop takes it.
+    let from_desktop = desktop.document_writes(&holders);
+    assert!(!from_desktop.is_empty(), "the desktop's rename goes out");
+    laptop
+        .take_documents(
+            from_desktop
+                .into_iter()
+                .map(|w| (w.chunk, w.changes))
+                .collect(),
+        )
+        .unwrap();
+    assert!(laptop.lookup(ROOT_INO, "notes.txt").is_some());
+    assert_eq!(chunk_heads(&mut laptop), chunk_heads(&mut desktop));
+}

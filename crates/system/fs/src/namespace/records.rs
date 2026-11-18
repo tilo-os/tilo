@@ -276,55 +276,51 @@ impl Namespace {
             .is_some_and(|doc| doc.has_change(hash))
     }
 
-    /// Take in the records `records` ([`Self::take_documents`]) and answer what settling them wrote,
-    /// one write per record: this device's own changes repairing a conflict the records brought,
-    /// which go out on their own so every holder of the tree settles it alike. Empty when nothing
-    /// needed settling.
+    /// Take in what another device published of the tree ([`Self::take_documents`]), and answer
+    /// the heads the tree's holders have of each of its documents now: what they had
+    /// (`published`, as this device published it) and the changes that arrived.
     ///
-    /// The changes taken in are not this device's to publish: only the changes this namespace
-    /// authored beyond what its records held before are answered.
+    /// This device's own changes are not among them: neither the ones it wrote since it last
+    /// published nor the ones settling what arrived. They stand past the answered heads, so the
+    /// next [`Self::document_writes`] carries them; a change built on one its writer never sent
+    /// is one no holder can merge.
     ///
     /// # Errors
-    /// A record does not load; what loaded before it is kept.
-    pub fn take_documents_and_resolve(
+    /// What arrived does not load; what loaded before it is kept.
+    pub fn take_published_documents(
         &mut self,
-        records: Vec<(TreeChunk, Vec<u8>)>,
-    ) -> Result<Vec<ResourceWrite>, automerge::AutomergeError> {
-        let before = self.record_heads();
-        self.take_documents(records)?;
+        arrived: Vec<(TreeChunk, Vec<u8>)>,
+        published: &BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
+    ) -> Result<BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>, automerge::AutomergeError> {
+        self.note_change();
+        let before = self.doc.heads();
+        self.take_documents(arrived)?;
         let actor = self.doc.index().get_actor().clone();
-        let mut writes = Vec::new();
+        let mut holders = BTreeMap::new();
         for (chunk, doc) in self.doc.each_mut() {
-            let heads = doc.get_heads();
-            let held: Vec<automerge::ChangeHash> = before
-                .get(&chunk)
-                .map(|held| {
-                    held.iter()
-                        .copied()
-                        .filter(|hash| doc.has_change(hash))
-                        .collect()
-                })
-                .unwrap_or_default();
-            if heads == held {
-                continue;
-            }
-            let mut changes = Vec::new();
-            for change in doc.get_changes(&held) {
-                if change.actor_id() != &actor {
+            let mut held = |hashes: Option<&Vec<automerge::ChangeHash>>| {
+                hashes
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|hash| doc.has_change(hash))
+                    .collect::<Vec<_>>()
+            };
+            let (before, mut heads) = (held(before.get(&chunk)), held(published.get(&chunk)));
+            let mut built_on = HashSet::new();
+            for change in doc.get_changes(&before) {
+                if change.actor_id() == &actor {
                     continue;
                 }
-                changes.extend_from_slice(change.raw_bytes());
+                built_on.extend(change.deps().iter().copied());
+                heads.push(change.hash());
             }
-            if changes.is_empty() {
-                continue;
-            }
-            writes.push(ResourceWrite {
-                chunk,
-                changes,
-                heads,
-            });
+            heads.retain(|hash| !built_on.contains(hash));
+            heads.sort_unstable();
+            heads.dedup();
+            holders.insert(chunk, heads);
         }
-        Ok(writes)
+        Ok(holders)
     }
 
     /// What each record holds beyond `known`, the heads its holder has of each record (none of
