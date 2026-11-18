@@ -446,3 +446,8 @@ reason = "the refusal a spent change budget sent goes with that budget, since a 
 file = "crates/collab/actions/src/remote.rs"
 enum = "WireActionCallError"
 reason = "the rate-limited answer a spent change budget sent goes with that budget, since a member's changes are no longer refused by a clock; a refusal is a live answer in a versioned frame and nothing keeps it, and the remote-action frame version is bumped from 1 to 2 with the removal, so a device at another version reads none of these bytes"
+
+[[break]]
+file = "crates/agent/model-client/src/lib.rs"
+enum = "Request"
+reason = "the raw-body plan request had no caller left once every model turn went through the neutral complete request; a request is JSON (named by its verb) on a live socket between an app and its gateway, which ship together, and nothing keeps it, so an app that still sent the verb is refused as an unknown request rather than misread"

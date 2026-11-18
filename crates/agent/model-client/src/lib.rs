@@ -128,27 +128,6 @@ pub enum Request {
         expected_revision: String,
         config: agent_provider_config::ProviderConfig,
     },
-    Plan {
-        profile_id: String,
-        model_id: String,
-        body: serde_json::Value,
-        timeout_ms: u64,
-        /// Ask for streaming frames: zero or more [`Response`]s with an
-        /// `event` (each a completed tool call), then one final response
-        /// without `event` carrying the assembled, non-streaming-shaped
-        /// provider body. Older gateways ignore the field and send only the
-        /// final response, which a streaming client reads the same way.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        stream: bool,
-        /// With `stream`, also ask for coalesced [`EVENT_TOOL_CALL_DELTA`]
-        /// frames carrying the argument text of the call in progress. Older
-        /// gateways ignore it; the client then sees only `tool_call` events.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        deltas: bool,
-        /// Opaque, content-free correlation for the gateway's timing log.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        trace: Option<PlanTrace>,
-    },
     /// A content-free timing mark from the agent (whose own stderr a managed
     /// launch discards), written to the gateway's timing log. Older RPC3
     /// servers reject this additive verb; callers ignore the refusal.
@@ -156,7 +135,7 @@ pub enum Request {
         trace: PlanTrace,
         event: TraceEvent,
         /// When the mark happened (Unix ms), if the caller had to hold it
-        /// while a streamed Plan owned the channel. Absent: now.
+        /// while a streamed turn owned the channel. Absent: now.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at_unix_ms: Option<u64>,
     },
@@ -253,7 +232,7 @@ pub struct SubjectMatte {
 /// segmentation model is installed, so a caller can offer to set one up.
 pub const NO_SEGMENTATION_MODEL: &str = "no on-device subject model is installed";
 
-/// Correlates the Plan requests (model turns) of one agent decision.
+/// Correlates the model turns of one agent decision.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PlanTrace {
     /// Random per decision; carries no content.
@@ -552,28 +531,6 @@ fn service_stream() -> Result<UnixStream, ClientError> {
 #[cfg(not(unix))]
 pub fn request(_request: Request) -> Result<Response, ClientError> {
     Err(ClientError::Unavailable)
-}
-
-/// Ask the isolated model gateway to plan against one configured provider.
-pub fn plan(
-    profile_id: &str,
-    model_id: &str,
-    body: serde_json::Value,
-    timeout: Duration,
-) -> Result<String, ClientError> {
-    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
-    let response = request(Request::Plan {
-        profile_id: profile_id.to_string(),
-        model_id: model_id.to_string(),
-        body,
-        timeout_ms,
-        stream: false,
-        deltas: false,
-        trace: None,
-    })?;
-    response
-        .output
-        .ok_or_else(|| ClientError::Protocol("gateway returned no provider response".into()))
 }
 
 /// Complete a neutral turn, delivering presentation-only deltas followed by
@@ -910,10 +867,10 @@ fn read_stream(
     }
 }
 
-/// The most intermediate frames one streaming Plan may carry.
+/// The most intermediate frames one streamed turn may carry.
 pub const MAX_STREAM_EVENTS: usize = 64;
 
-/// The most `tool_call_delta` frames one streaming Plan may carry; bounded
+/// The most `tool_call_delta` frames one streamed turn may carry; bounded
 /// separately from [`MAX_STREAM_EVENTS`]. A gateway stops sending deltas at
 /// this count (the completed `tool_call` events still follow).
 pub const MAX_DELTA_EVENTS: usize = 4096;
@@ -929,7 +886,7 @@ pub fn trace(trace: PlanTrace, event: TraceEvent) -> Result<(), ClientError> {
 }
 
 /// [`trace`] for a mark that happened at `at_unix_ms` and was held back while
-/// a streamed Plan used the channel; the gateway logs that time.
+/// a streamed turn used the channel; the gateway logs that time.
 ///
 /// # Errors
 ///
@@ -1242,7 +1199,7 @@ mod wire_tests {
                 // The stream: one event, then its answer, written at once, as a
                 // gateway writes them whenever the provider has them.
                 let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
-                assert!(matches!(frame.value, Request::Plan { .. }));
+                assert!(matches!(frame.value, Request::Complete { .. }));
                 write_frame(&mut gateway, &answer("{}", Some(EVENT_TOOL_CALL))).unwrap();
                 write_frame(&mut gateway, &answer("the plan", None)).unwrap();
                 // Then each transform, answered with its own input.
@@ -1258,15 +1215,7 @@ mod wire_tests {
             let (go_on, go) = std::sync::mpsc::channel::<()>();
             let stream = std::thread::spawn(move || {
                 streaming_request(
-                    Request::Plan {
-                        profile_id: "hosted".into(),
-                        model_id: "model".into(),
-                        body: serde_json::Value::Null,
-                        timeout_ms: 1000,
-                        stream: true,
-                        deltas: false,
-                        trace: None,
-                    },
+                    streamed_turn(),
                     false,
                     &mut |kind, _| {
                         assert_eq!(kind, EVENT_TOOL_CALL);
@@ -1362,15 +1311,7 @@ mod wire_tests {
             });
             let mut nested = None;
             let plan = streaming_request(
-                Request::Plan {
-                    profile_id: "hosted".into(),
-                    model_id: "model".into(),
-                    body: serde_json::Value::Null,
-                    timeout_ms: 1000,
-                    stream: true,
-                    deltas: false,
-                    trace: None,
-                },
+                streamed_turn(),
                 false,
                 &mut |_, _| {
                     nested = Some(request(Request::Trace {
@@ -1388,7 +1329,19 @@ mod wire_tests {
         }
     }
 
-    /// A gateway that streams one event of a cancellable `Plan`, then
+    /// A streamed neutral turn, as the agent asks for one.
+    fn streamed_turn() -> Request {
+        Request::Complete {
+            profile_id: "hosted".into(),
+            model_id: "model".into(),
+            request: agent_provider_config::protocol::Conversation::new("system", "hello")
+                .request(Vec::new(), 64),
+            timeout_ms: 1000,
+            stream: true,
+        }
+    }
+
+    /// A gateway that streams one event of a cancellable turn, then
     /// (when `answers_first`) its answer, and acknowledges the stop it is
     /// then sent; afterwards it answers each transform with its input.
     /// Hands back the id the stop named.
@@ -1407,7 +1360,7 @@ mod wire_tests {
             let Request::Cancellable { id, request } = frame.value else {
                 panic!("a stoppable stream starts a cancellable operation");
             };
-            assert!(matches!(*request, Request::Plan { .. }));
+            assert!(matches!(*request, Request::Complete { .. }));
             write_frame(&mut gateway, &answer("{}", Some(EVENT_TOOL_CALL))).unwrap();
             if answers_first {
                 write_frame(&mut gateway, &answer("the plan", None)).unwrap();
@@ -1432,21 +1385,13 @@ mod wire_tests {
         })
     }
 
-    /// Ask a stoppable `Plan` that its caller gives up on at its first event,
+    /// Ask a stoppable turn that its caller gives up on at its first event,
     /// then a transform on the same channel.
     fn give_up_then_transform() -> (Result<String, ClientError>, Result<String, ClientError>) {
         let stop = std::sync::atomic::AtomicBool::new(false);
         let mut events = 0_usize;
         let plan = streaming_request(
-            Request::Plan {
-                profile_id: "hosted".into(),
-                model_id: "model".into(),
-                body: serde_json::Value::Null,
-                timeout_ms: 1000,
-                stream: true,
-                deltas: false,
-                trace: None,
-            },
+            streamed_turn(),
             false,
             &mut |_, _| {
                 events = events.saturating_add(1);

@@ -382,6 +382,7 @@ dependencies = [
  "tempfile",
  "tilo-paths",
  "tilo-resource",
+ "tilo-test-env",
  "url",
  "uuid",
  "wire-frame",
@@ -13896,31 +13897,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rig-core"
-version = "0.44.0"
-dependencies = [
- "async-stream",
- "base64 0.22.1",
- "bytes",
- "fastrand",
- "futures",
- "glob",
- "http",
- "mime",
- "mime_guess",
- "ordered-float",
- "rig-http",
- "schemars",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.21",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "rig-http"
 version = "0.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20058,7 +20034,6 @@ dependencies = [
  "libc",
  "local-model-service",
  "reqwest",
- "rig-core",
  "rustix 1.1.6",
  "serde",
  "serde_json",
@@ -28573,7 +28548,6 @@ dependencies = [
  "rfc6979 0.4.0",
  "rfc6979 0.6.0",
  "rgb",
- "rig-core",
  "rig-http",
  "ring",
  "roman-numerals-rs",

@@ -202,7 +202,6 @@ impl Transport for FdTransport {
             let millis = match &request {
                 Request::Complete { timeout_ms, .. }
                 | Request::CompleteDefault { timeout_ms, .. }
-                | Request::Plan { timeout_ms, .. }
                 | Request::Transform { timeout_ms, .. } => (*timeout_ms).clamp(1, 120_000),
                 _ => 120_000,
             };

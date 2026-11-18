@@ -257,14 +257,13 @@ fn complete_error(profile_id: &str, model_id: &str) -> ModelError {
         .build()
         .unwrap();
     runtime
-        .block_on(rig_adapter::complete(
+        .block_on(provider_call::complete(
             &provider_client().unwrap(),
             &PlanCall {
                 profile_id,
                 model_id,
                 timeout: tilo_test_env::hang_bound(),
                 stream: false,
-                deltas: false,
                 trace: None,
             },
             agent_provider_config::protocol::Conversation::new("system", "hello")

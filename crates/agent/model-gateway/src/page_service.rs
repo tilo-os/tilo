@@ -26,12 +26,10 @@ use agent_provider_config::protocol::{
     CompletionFuture, ErrorKind, ModelBackend, ModelError, ModelRequest,
 };
 use agent_provider_config::{
-    ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol, transform,
+    ModelDescriptor, ProviderConfig, ProviderProfile, ProviderProtocol, transform, wire,
 };
 use tilo_net::proxy::ProxyUse;
 use zeroize::Zeroizing;
-
-use crate::conversation;
 
 /// The longest a provider may take over one turn.
 const TURN_TIMEOUT: Duration = Duration::from_secs(120);
@@ -120,10 +118,10 @@ impl PageService {
     ) -> Result<agent_provider_config::protocol::ModelResponse, ModelError> {
         let (profile, model) = select(&ProviderConfig::load(), choice)?;
         let key = self.key(&profile)?;
-        let body = conversation::body(&profile, &model, request)?;
+        let body = wire::body(&profile, &model, request, wire::Ask::default())?;
         let body =
             serde_json::to_vec(&body).map_err(|_| ModelError::new(ErrorKind::InvalidRequest))?;
-        let url = transform::url(profile.protocol, &profile.endpoint);
+        let url = wire::url(&profile);
         let answer = self
             .exchange(
                 &profile,
@@ -137,7 +135,7 @@ impl PageService {
                 },
             )
             .await?;
-        conversation::response(profile.protocol, &answer)
+        wire::response(&profile, request, &answer)
     }
 
     /// The key `profile` authenticates with, `None` for one that needs none.

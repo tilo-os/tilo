@@ -39,32 +39,6 @@ path, so the wait ends and the paused relay read becomes backpressure on
 the relay server. See `vendor/iroh/TILO-PATCH.md` for the details and an
 upstream-ready description.
 
-## Rig Chat tool-name fragments
-
-`rig-core` 0.44.0 is the checksum-verified MIT registry runtime crate. Its
-OpenAI Chat decoder accumulates tool names per call, ignores empty names and
-identical full-name restatements, and supplies the final name to both the replay
-item and normalized writer. A Chat-only writer API streams arguments under an
-unnamed presentation-only Start before closure; End supplies the final name.
-The transcript validator accepts these unnamed tool Starts. Gateway previews
-remain inert until the provider successfully finishes and authorizes the final
-call. No request-tool prefix guessing, generic name concatenation,
-other-provider change or second SSE decoder is introduced. `vendor/rig-core/PROVENANCE.md` records the
-exact release/checksum and the upstream HEAD inspected for an existing fix.
-Gateway wire fixtures and vendored Chat tests cover fragmented/interleaved names
-and agreement across emitted, normalized and replay calls. Remove the patch
-once upstream provides this behavior.
-
-## Rig Responses instructions placement
-
-In the same `rig-core`, a placement of system messages for OpenAI Responses,
-`FirstInstructions`, lifts only the first into `instructions` and keeps the
-rest of the leading run as `system` items in `input`. The gateway selects it
-for OpenAI's own API so that system context after a planner's stable
-instructions (its apps), which varies, leaves the cached instructions prefix
-intact. Other placements and dialects are unchanged; the gateway's
-`host_backend` tests cover the request it sends.
-
 ## Cast transport
 
 `fcast-sender-sdk` 0.3.0 is the checksum-verified MIT registry release, moved to

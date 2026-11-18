@@ -131,12 +131,14 @@ server coverage. These tests use local fixtures, not live provider credentials.
 
 ## Streaming and credentials
 
-Rig 0.44 owns provider JSON, SSE event decoding, reasoning normalization and
-argument assembly. Its OpenAI chat decoder rejects EOF without a finish reason,
-but allows EOF after an explicit finish (some compatible providers omit
-`[DONE]`). Unknown valid JSON events are ignored; malformed JSON fails the turn.
-The gateway additionally rejects an undelimited SSE tail, which Rig's framer
-otherwise discards. It does not infer success from a connection closing.
+`agent_provider_config::wire` is the one codec for provider requests, answers
+and their event streams, shared with the browser page's model service: it
+writes the request body (with every profile setting applied), decodes whole and
+streamed answers, and checks a turn before any call in it may run. A chat
+stream needs a finish reason, a Messages stream its `message_stop`, a Responses
+stream its completed answer; an event without its closing blank line counts as
+cut. Unknown valid JSON events are ignored; malformed JSON fails the turn. The
+gateway does not infer success from a connection closing.
 
 `complete_streaming` (native or `transport::ModelClient`) emits text and
 provider-exposed reasoning deltas. Reasoning can be raw provider-exposed tokens

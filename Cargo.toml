@@ -6,7 +6,6 @@ exclude = [
     "vendor/hexane",
     "vendor/iroh-blobs",
     "vendor/buffa-build",
-    "vendor/rig-core",
     "tools/web/wasm-split",
     "fuzz",
     # A wasm32 library `tilolang bench --library` runs; built by its own build.sh.
@@ -1583,9 +1582,6 @@ hexane = { path = "vendor/hexane" }
 # The content store's metadata database keeps the page cache its owner bounds, not redb's
 # default gigabyte. See vendor/iroh-blobs/TILO-PATCH.md.
 iroh-blobs = { path = "vendor/iroh-blobs" }
-# Assemble fragmented OpenAI Chat tool names consistently in Rig's decoder.
-# Exact registry baseline and removal condition: vendor/rig-core/PROVENANCE.md.
-rig-core = { path = "vendor/rig-core" }
 # Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
 buffa-build = { path = "vendor/buffa-build" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity

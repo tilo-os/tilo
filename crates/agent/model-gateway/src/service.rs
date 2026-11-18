@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 pub mod host_backend;
 #[path = "profile_cache.rs"]
 mod profile_cache;
-#[path = "rig_adapter.rs"]
-mod rig_adapter;
+#[path = "provider_call.rs"]
+mod provider_call;
 use profile_cache::{PLAN_PROFILES, PROFILE_REUSE, ProfileSources};
 
 use crate::{
@@ -38,8 +38,8 @@ use account_credentials::{
 };
 use accounts::{AccountId, CredentialRef, ServiceAuthorization, ServiceCredentials};
 use agent_provider_config::{
-    EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol, ReasoningParam,
-    SignInIssuer, transform as provider_transform,
+    EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol, SignInIssuer,
+    transform as provider_transform,
 };
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
@@ -642,30 +642,6 @@ pub(super) async fn handle_streaming(
         {
             return permission_denied();
         }
-        Request::Plan {
-            profile_id,
-            model_id,
-            body,
-            timeout_ms,
-            stream,
-            deltas,
-            trace,
-        } if app_id == AGENT_APP => plan(
-            http,
-            &PlanCall {
-                profile_id: &profile_id,
-                model_id: &model_id,
-                timeout: Duration::from_millis(timeout_ms),
-                stream,
-                deltas: stream && deltas,
-                trace,
-            },
-            body,
-            emit,
-        )
-        .await
-        .map(output),
-        Request::Plan { .. } => Err("only tilo-agent may plan through the model gateway".into()),
         request @ Request::Transform { .. } if app_id == AGENT_APP => {
             transform_request(http, request).await.map(output)
         }
@@ -902,14 +878,13 @@ async fn complete_request(
         }
         _ => return Err(ModelError::new(ErrorKind::InvalidRequest)),
     };
-    rig_adapter::complete(
+    provider_call::complete(
         http,
         &PlanCall {
             profile_id: &profile_id,
             model_id: &model_id,
             timeout: Duration::from_millis(timeout_ms),
             stream,
-            deltas: stream,
             trace: None,
         },
         request,
@@ -1285,41 +1260,13 @@ struct ProviderFailure {
     status: Option<u16>,
 }
 
-impl ProviderFailure {
-    fn message(self) -> String {
-        if self.outcome_unknown {
-            // Provider acceptance is not idempotency authority.
-            format!(
-                "provider outcome is unknown; request was not retried ({})",
-                self.why
-            )
-        } else {
-            self.why
-        }
-    }
-}
-
-/// One Plan request's non-content parameters.
+/// One model turn's non-content parameters.
 struct PlanCall<'a> {
     profile_id: &'a str,
     model_id: &'a str,
     timeout: Duration,
     stream: bool,
-    /// Also emit coalesced `tool_call_delta` frames (streaming only).
-    deltas: bool,
     trace: Option<PlanTrace>,
-}
-
-async fn plan(
-    http: &reqwest::Client,
-    call: &PlanCall<'_>,
-    body: serde_json::Value,
-    emit: Emit<'_>,
-) -> Result<String, String> {
-    let mut timing = PlanTiming::start();
-    let result = plan_dispatch(http, call, body, emit, &mut timing).await;
-    timing.log(call, result.as_ref().map(|_| ()));
-    result
 }
 
 /// A configured profile and its API key (none for an unauthenticated local
@@ -1475,531 +1422,6 @@ fn plan_secret(profile: &ProviderProfile) -> Result<Option<Zeroizing<String>>, M
     resolve_key(profile).map(Some)
 }
 
-async fn plan_dispatch(
-    http: &reqwest::Client,
-    call: &PlanCall<'_>,
-    body: serde_json::Value,
-    emit: Emit<'_>,
-    timing: &mut PlanTiming,
-) -> Result<String, String> {
-    let (profile_id, model_id) = (call.profile_id.to_owned(), call.model_id.to_owned());
-    let (profile, mut secret) = blocking_model(move || plan_profile(&profile_id, &model_id))
-        .await
-        .map_err(|error| error.message)?;
-    let streaming = call.stream;
-    timing.stream = streaming;
-    let mut body = body;
-    let object = body
-        .as_object_mut()
-        .ok_or("plan body must be a JSON object")?;
-    object.insert("model".into(), call.model_id.into());
-    let output = model_output_limit(&profile, call.model_id, object)?
-        .map(|(_, limit)| limit)
-        .or_else(|| {
-            object
-                .get("max_completion_tokens")
-                .or_else(|| object.get("max_tokens"))
-                .and_then(serde_json::Value::as_u64)
-        });
-    let budget = timing.budget(call, &profile, output)?;
-    let result = rig_adapter::legacy(
-        http,
-        &profile,
-        secret.as_ref().map(|secret| secret.as_str()),
-        body,
-        budget,
-        streaming.then_some((emit, &mut *timing, call.deltas)),
-        true,
-    )
-    .await
-    .inspect_err(|failure| timing.status = failure.status)
-    .map_err(ProviderFailure::message);
-    secret.zeroize();
-    if let Ok(text) = &result {
-        timing.status = Some(200);
-        timing.observe_body(text);
-    }
-    result
-}
-
-/// Resolve only the checked model's explicit output policy; legacy bodies stay untouched.
-fn model_output_limit(
-    profile: &ProviderProfile,
-    model_id: &str,
-    object: &serde_json::Map<String, serde_json::Value>,
-) -> Result<Option<(&'static str, u64)>, String> {
-    let limits = profile
-        .models
-        .iter()
-        .find(|model| model.id == model_id)
-        .and_then(|model| model.request_limits.as_ref().map(|limits| (model, limits)));
-    let requested_limit = if let Some((model, limits)) = limits {
-        limits
-            .validate(model.context_window)
-            .map_err(str::to_owned)?;
-        let number = |key: &str| -> Result<Option<u64>, String> {
-            object
-                .get(key)
-                .map(|value| {
-                    value
-                        .as_u64()
-                        .filter(|value| *value > 0)
-                        .ok_or_else(|| "output limit must be a positive integer".into())
-                })
-                .transpose()
-        };
-        let completion = number("max_completion_tokens")?;
-        let tokens = number("max_tokens")?;
-        if completion.is_some() && tokens.is_some() && completion != tokens {
-            return Err("conflicting output limits".into());
-        }
-        Some(
-            completion
-                .or(tokens)
-                .unwrap_or_else(|| u64::from(limits.max_output_tokens))
-                .min(u64::from(limits.max_output_tokens)),
-        )
-    } else {
-        None
-    };
-    let capped_field = if profile.protocol == ProviderProtocol::Anthropic {
-        "max_tokens"
-    } else {
-        profile.token_limit_param.map_or_else(
-            || {
-                if object.contains_key("max_tokens")
-                    && !object.contains_key("max_completion_tokens")
-                {
-                    "max_tokens"
-                } else {
-                    "max_completion_tokens"
-                }
-            },
-            |param| param.key(),
-        )
-    };
-    Ok(requested_limit.map(|limit| (capped_field, limit)))
-}
-
-/// The request actually sent. The gateway owns it: the checked `model_id`
-/// replaces whatever model the caller named (the allowlist cannot be
-/// bypassed through the body), and for OpenAI-compatible profiles the
-/// profile's configured reasoning setting and token-limit field name are
-/// applied here, so the model is configured in exactly one place (the
-/// profile). Nothing here depends on the endpoint's host.
-fn outbound_body(
-    profile: &ProviderProfile,
-    model_id: &str,
-    body: serde_json::Value,
-    streaming: bool,
-    responses: bool,
-) -> Result<serde_json::Value, String> {
-    let serde_json::Value::Object(mut object) = body else {
-        return Err("plan body must be a JSON object".into());
-    };
-    let api_responses = responses && !provider_transform::speaks_responses(profile);
-    if api_responses && let Some(limit) = object.remove("max_output_tokens") {
-        object.insert("max_completion_tokens".into(), limit);
-    }
-    let capped = model_output_limit(profile, model_id, &object)?;
-    if profile.signs_in_with_google() && ends_with_model_turn(&object) {
-        return Err("Google Vertex AI cannot continue the model\'s own reply: the conversation must end with a user or tool message".into());
-    }
-    object.insert("model".into(), serde_json::Value::String(model_id.into()));
-    if provider_transform::speaks_responses(profile) {
-        // The ChatGPT backend streams every answer, keeps nothing and takes
-        // no output limit or sampling temperature: its requests carry what
-        // Rig's Codex wire (or the transform) wrote, minus anything it
-        // refuses, so a model's configured output allowance cannot be sent.
-        for refused in [
-            "max_output_tokens",
-            "max_tokens",
-            "max_completion_tokens",
-            "temperature",
-            "stream_options",
-        ] {
-            object.remove(refused);
-        }
-        object.insert("stream".into(), serde_json::Value::Bool(true));
-        object.insert("store".into(), serde_json::Value::Bool(false));
-        for param in &profile.omit_params {
-            object.remove(param.as_str());
-        }
-        return Ok(serde_json::Value::Object(object));
-    }
-    if api_responses {
-        responses_body(
-            profile,
-            &mut object,
-            streaming,
-            capped.map(|(_, limit)| limit),
-        );
-        return Ok(serde_json::Value::Object(object));
-    }
-    match profile.protocol {
-        ProviderProtocol::OpenAiCompatible => {
-            // The profile names its provider's token-limit field; whichever
-            // one the caller sent is moved there. No host is inferred.
-            if let Some(param) = profile.token_limit_param {
-                let limit = object
-                    .remove("max_completion_tokens")
-                    .or_else(|| object.remove("max_tokens"));
-                object.remove("max_tokens");
-                if let Some(limit) = limit {
-                    object.insert(param.key().into(), limit);
-                }
-            }
-            // The profile's reasoning setting replaces any the caller sent.
-            if let Some(reasoning) = &profile.reasoning {
-                object.remove("reasoning_effort");
-                object.remove("reasoning");
-                let effort = serde_json::Value::String(reasoning.effort.clone());
-                match reasoning.param {
-                    ReasoningParam::ReasoningEffort => {
-                        object.insert("reasoning_effort".into(), effort);
-                    }
-                    ReasoningParam::ReasoningObject => {
-                        object.insert("reasoning".into(), serde_json::json!({ "effort": effort }));
-                    }
-                    ReasoningParam::Omit => {}
-                }
-            }
-            if streaming {
-                object.insert("stream".into(), serde_json::Value::Bool(true));
-                object.insert(
-                    "stream_options".into(),
-                    serde_json::json!({ "include_usage": true }),
-                );
-            } else {
-                object.remove("stream");
-                object.remove("stream_options");
-            }
-            // Last: fields this provider rejects, whoever added them.
-            for param in &profile.omit_params {
-                object.remove(param.as_str());
-            }
-        }
-        ProviderProtocol::Anthropic => {
-            if streaming {
-                object.insert("stream".into(), serde_json::Value::Bool(true));
-            } else {
-                object.remove("stream");
-            }
-        }
-    }
-    if profile.protocol == ProviderProtocol::Anthropic {
-        apply_anthropic_cache_breakpoints(profile, &mut object);
-    }
-    // Apply the model-owned cap after provider shaping and optional omission.
-    // A caller cannot suppress or duplicate the enforced token-limit field.
-    if let Some((capped_field, limit)) = capped {
-        object.remove("max_tokens");
-        object.remove("max_completion_tokens");
-        object.insert(capped_field.into(), serde_json::Value::from(limit));
-    }
-    Ok(serde_json::Value::Object(object))
-}
-
-/// `object` as `OpenAI`'s Responses API takes it: the output limit in
-/// `max_output_tokens`, the reasoning effort as an object, and nothing kept
-/// (`store: false`), so a reasoning turn's ciphertext is asked for and
-/// carries its reasoning into the next turn. A model that does not reason
-/// refuses the ciphertext, so it is asked for only when the request reasons.
-fn responses_body(
-    profile: &ProviderProfile,
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    streaming: bool,
-    capped: Option<u64>,
-) {
-    const CIPHERTEXT: &str = "reasoning.encrypted_content";
-    let limit = object
-        .remove("max_completion_tokens")
-        .or_else(|| object.remove("max_tokens"));
-    object.remove("max_tokens");
-    if let Some(limit) = capped.map(serde_json::Value::from).or(limit) {
-        object.insert("max_output_tokens".into(), limit);
-    }
-    if let Some(effort) = object.remove("reasoning_effort") {
-        object.insert("reasoning".into(), serde_json::json!({ "effort": effort }));
-    }
-    if let Some(reasoning) = &profile.reasoning {
-        object.remove("reasoning");
-        if reasoning.param != ReasoningParam::Omit {
-            object.insert(
-                "reasoning".into(),
-                serde_json::json!({ "effort": reasoning.effort }),
-            );
-        }
-    }
-    object.remove("stream_options");
-    if streaming {
-        object.insert("stream".into(), serde_json::Value::Bool(true));
-    } else {
-        object.remove("stream");
-    }
-    object.insert("store".into(), serde_json::Value::Bool(false));
-    let reasons = object
-        .get("reasoning")
-        .and_then(|reasoning| reasoning.get("effort"))
-        .is_some_and(|effort| effort != "none");
-    let mut include: Vec<serde_json::Value> = object
-        .remove("include")
-        .and_then(|include| include.as_array().cloned())
-        .unwrap_or_default();
-    include.retain(|item| item != CIPHERTEXT);
-    if reasons {
-        include.push(CIPHERTEXT.into());
-    }
-    if !include.is_empty() {
-        object.insert("include".into(), serde_json::Value::Array(include));
-    }
-    for param in &profile.omit_params {
-        object.remove(param.as_str());
-    }
-}
-
-/// Whether the last message of a request is the model's (an assistant
-/// prefill).
-fn ends_with_model_turn(object: &serde_json::Map<String, serde_json::Value>) -> bool {
-    object
-        .get("messages")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|messages| messages.last())
-        .and_then(|message| message.get("role"))
-        .and_then(serde_json::Value::as_str)
-        == Some("assistant")
-}
-
-/// Anthropic's limit on `cache_control` breakpoints in one request.
-const MAX_CACHE_BREAKPOINTS: usize = 4;
-
-/// Mark an Anthropic request's stable prefixes for prompt caching.
-///
-/// Anthropic caches only up to an explicit `cache_control` breakpoint (an
-/// OpenAI-compatible provider caches a repeated prefix by itself), so without
-/// these every agent turn re-prefills the tools, the system prompt and the
-/// whole conversation. In order of value, each only while a breakpoint is
-/// left and only where none is already set:
-///
-/// 1. the last `system` block (a string becomes one text block): tools and
-///    system render first, so this one entry holds both, across turns and
-///    tasks;
-/// 2. the last cacheable block of the last `user` message, so the growing
-///    conversation is read back incrementally on the next turn — skipped
-///    when the caller asked for automatic caching (top-level
-///    `cache_control`), which places that breakpoint itself;
-/// 3. the first of several `system` blocks: stable instructions kept apart
-///    from the system context after them (a planner's apps), which still
-///    holds when that context changes;
-/// 4. the first block of the first user message with at least two text
-///    blocks: the catalogue boundary preserved separately from the task;
-/// 5. the last tool, which still holds when the system prompt changes.
-///
-/// A caller's own breakpoints count against the limit and are never moved or
-/// duplicated. At most four are placed, in this order, and while the first
-/// turn is still the last one its tail marker goes on the request after the
-/// catalogue. A caller that chose a non-default TTL owns the whole layout
-/// (a shorter-lived entry may not precede a longer one), so nothing is
-/// added. A profile listing `cache_control` in `omit_params` (an
-/// Anthropic-compatible endpoint that rejects it) gets no breakpoints and
-/// loses a top-level `cache_control`, as every omitted field does.
-fn apply_anthropic_cache_breakpoints(
-    profile: &ProviderProfile,
-    object: &mut serde_json::Map<String, serde_json::Value>,
-) {
-    if profile
-        .omit_params
-        .iter()
-        .any(|param| param == "cache_control")
-    {
-        object.remove("cache_control");
-        return;
-    }
-    let existing = cache_markers(object);
-    if existing.iter().any(|marker| {
-        marker
-            .get("ttl")
-            .is_some_and(|ttl| ttl.as_str() != Some("5m"))
-    }) {
-        return;
-    }
-    let mut free = MAX_CACHE_BREAKPOINTS.saturating_sub(existing.len());
-    let automatic = object.contains_key("cache_control");
-    if free > 0 && object.get_mut("system").is_some_and(mark_last_cacheable) {
-        free = free.saturating_sub(1);
-    }
-    if free > 0 && !automatic && mark_conversation_tail(object) {
-        free = free.saturating_sub(1);
-    }
-    let system = object
-        .get_mut("system")
-        .and_then(serde_json::Value::as_array_mut);
-    let several =
-        |blocks: &&mut Vec<_>| blocks.iter().filter(|block| cacheable_block(block)).count() > 1;
-    if let Some(stable) = system
-        .filter(several)
-        .and_then(|blocks| blocks.first_mut())
-        .filter(|block| free > 0 && cacheable_block(block) && block.get("cache_control").is_none())
-    {
-        stable["cache_control"] = serde_json::json!({ "type": "ephemeral" });
-        free = free.saturating_sub(1);
-    }
-    if free > 0 && mark_catalogue_boundary(object) {
-        free = free.saturating_sub(1);
-    }
-    if free > 0 {
-        mark_last_tool(object);
-    }
-}
-
-/// Every `cache_control` already in an Anthropic request: top-level
-/// (automatic caching), on tools, on system blocks, on message blocks and on
-/// the blocks inside a `tool_result`. Structural, so a tool schema or a tool
-/// input that merely has a `cache_control` key is not counted.
-fn cache_markers(object: &serde_json::Map<String, serde_json::Value>) -> Vec<&serde_json::Value> {
-    fn items(value: Option<&serde_json::Value>) -> impl Iterator<Item = &serde_json::Value> {
-        value
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-    }
-    let mut markers: Vec<&serde_json::Value> = object.get("cache_control").into_iter().collect();
-    for item in items(object.get("tools")).chain(items(object.get("system"))) {
-        markers.extend(item.get("cache_control"));
-    }
-    for message in items(object.get("messages")) {
-        for block in items(message.get("content")) {
-            markers.extend(block.get("cache_control"));
-            if block.get("type").and_then(serde_json::Value::as_str) == Some("tool_result") {
-                for inner in items(block.get("content")) {
-                    markers.extend(inner.get("cache_control"));
-                }
-            }
-        }
-    }
-    markers
-}
-
-/// Whether a content block may carry `cache_control`. Thinking blocks cannot,
-/// and an empty text block is refused with or without a marker.
-fn cacheable_block(block: &serde_json::Value) -> bool {
-    match block.get("type").and_then(serde_json::Value::as_str) {
-        Some("text") => block
-            .get("text")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|text| !text.trim().is_empty()),
-        Some("image" | "document" | "search_result" | "tool_use" | "tool_result") => true,
-        _ => false,
-    }
-}
-
-/// Put a breakpoint on the last cacheable block of `content` (a `system`
-/// value or a message's `content`), turning a plain string into one text
-/// block. False when there is no such block or it is already marked.
-fn mark_last_cacheable(content: &mut serde_json::Value) -> bool {
-    match content {
-        serde_json::Value::String(text) if !text.trim().is_empty() => {
-            let text = std::mem::take(text);
-            *content = serde_json::json!([{
-                "type": "text",
-                "text": text,
-                "cache_control": { "type": "ephemeral" },
-            }]);
-            true
-        }
-        serde_json::Value::Array(blocks) => {
-            let Some(block) = blocks
-                .iter_mut()
-                .rev()
-                .find(|block| cacheable_block(block))
-                .and_then(serde_json::Value::as_object_mut)
-            else {
-                return false;
-            };
-            if block.contains_key("cache_control") {
-                return false;
-            }
-            block.insert(
-                "cache_control".into(),
-                serde_json::json!({ "type": "ephemeral" }),
-            );
-            true
-        }
-        _ => false,
-    }
-}
-
-/// Put a breakpoint at the end of the last `user` message.
-fn mark_conversation_tail(object: &mut serde_json::Map<String, serde_json::Value>) -> bool {
-    object
-        .get_mut("messages")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|messages| {
-            messages.iter_mut().rev().find(|message| {
-                message.get("role").and_then(serde_json::Value::as_str) == Some("user")
-            })
-        })
-        .and_then(|message| message.get_mut("content"))
-        .is_some_and(mark_last_cacheable)
-}
-
-/// Cache the catalogue kept as the first text block of the first user turn,
-/// separately from its task. Single-block and non-text prefixes stay untouched.
-fn mark_catalogue_boundary(object: &mut serde_json::Map<String, serde_json::Value>) -> bool {
-    let Some(blocks) = object
-        .get_mut("messages")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|messages| {
-            messages.iter_mut().find(|message| {
-                message.get("role").and_then(serde_json::Value::as_str) == Some("user")
-            })
-        })
-        .and_then(|message| message.get_mut("content"))
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return false;
-    };
-    if blocks
-        .iter()
-        .filter(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("text"))
-        .take(2)
-        .count()
-        < 2
-    {
-        return false;
-    }
-    let Some(block) = blocks.first_mut().filter(|block| {
-        block.get("type").and_then(serde_json::Value::as_str) == Some("text")
-            && cacheable_block(block)
-            && block.get("cache_control").is_none()
-    }) else {
-        return false;
-    };
-    block["cache_control"] = serde_json::json!({ "type": "ephemeral" });
-    true
-}
-
-/// Put a breakpoint on the last tool sent with the request (a deferred tool
-/// is not part of the prompt prefix).
-fn mark_last_tool(object: &mut serde_json::Map<String, serde_json::Value>) {
-    let Some(tool) = object
-        .get_mut("tools")
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|tools| {
-            tools.iter_mut().rev().find(|tool| {
-                tool.get("defer_loading")
-                    .and_then(serde_json::Value::as_bool)
-                    != Some(true)
-            })
-        })
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return;
-    };
-    tool.entry("cache_control")
-        .or_insert_with(|| serde_json::json!({ "type": "ephemeral" }));
-}
-
 /// The largest provider stream read for one Plan.
 const MAX_STREAM_BYTES: usize = 1024 * 1024;
 
@@ -2147,7 +1569,7 @@ struct StreamCall {
     arguments: String,
 }
 
-/// Presentation state for Rig-normalized tool and reasoning events.
+/// Presentation state for a stream's tool and reasoning events.
 #[derive(Default)]
 struct StreamAssembly {
     calls: Vec<StreamCall>,
@@ -2279,38 +1701,26 @@ impl PlanTiming {
         )
     }
 
-    /// Token counts and tool-call count from a non-streaming body.
-    fn observe_body(&mut self, text: &str) {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-            return;
-        };
-        self.observe_usage(value.get("usage"));
-        let openai = value
-            .pointer("/choices/0/message/tool_calls")
-            .and_then(serde_json::Value::as_array);
-        let anthropic = value.get("content").and_then(serde_json::Value::as_array);
-        self.tool_calls = match (openai, anthropic) {
-            (Some(calls), _) => calls.len(),
-            (None, Some(blocks)) => blocks
-                .iter()
-                .filter(|block| {
-                    block.get("type").and_then(serde_json::Value::as_str) == Some("tool_use")
-                })
-                .count(),
-            _ => 0,
-        };
-    }
-
-    fn observe_usage(&mut self, usage: Option<&serde_json::Value>) {
-        let Some(usage) = usage else { return };
-        let number = |pointer: &str| usage.pointer(pointer).and_then(serde_json::Value::as_u64);
-        self.prompt_tokens = number("/prompt_tokens").or_else(|| number("/input_tokens"));
-        self.completion_tokens = number("/completion_tokens").or_else(|| number("/output_tokens"));
-        self.reasoning_tokens = number("/completion_tokens_details/reasoning_tokens");
-        // OpenAI-compatible (Cerebras, OpenAI) and Anthropic spellings.
-        self.cached_tokens = number("/prompt_tokens_details/cached_tokens")
-            .or_else(|| number("/cache_read_input_tokens"));
-        self.cache_write_tokens = number("/cache_creation_input_tokens");
+    /// Token counts and tool-call count of a validated answer.
+    fn observe_answer(&mut self, answer: &agent_provider_config::protocol::ModelResponse) {
+        let usage = &answer.usage;
+        let some = |count: u64| (count > 0).then_some(count);
+        self.prompt_tokens = Some(usage.input_tokens);
+        self.completion_tokens = Some(usage.output_tokens);
+        self.reasoning_tokens = some(usage.reasoning_tokens);
+        self.cached_tokens = some(usage.cached_input_tokens);
+        self.cache_write_tokens = some(usage.cache_write_tokens);
+        self.tool_calls = answer
+            .message
+            .content
+            .iter()
+            .filter(|content| {
+                matches!(
+                    content,
+                    agent_provider_config::protocol::Content::ToolCall(_)
+                )
+            })
+            .count();
     }
 
     /// What the tokens this call counted cost, at the model's price.
@@ -2695,10 +2105,27 @@ async fn unary_with_retries(
     timeout: Duration,
 ) -> Result<String, String> {
     let began = Instant::now();
+    let model = body
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
     while_busy(
         || timeout.checked_sub(began.elapsed()),
         tokio::time::sleep,
-        |budget| rig_adapter::legacy(client, profile, secret, body.clone(), budget, None, false),
+        |budget| {
+            provider_call::post(
+                provider_call::Post {
+                    client,
+                    profile,
+                    url: provider_url(profile),
+                    secret,
+                    model,
+                    budget,
+                    resend: false,
+                },
+                body,
+            )
+        },
     )
     .await
 }
@@ -3179,22 +2606,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cached_prompt_tokens_are_read_from_either_usage_spelling() {
-        let mut timing = PlanTiming::start();
-        timing.observe_usage(Some(&serde_json::json!({
-            "prompt_tokens": 12000, "completion_tokens": 40,
-            "prompt_tokens_details": {"cached_tokens": 11520}
-        })));
-        assert_eq!(timing.cached_tokens, Some(11520));
-        timing.observe_usage(Some(&serde_json::json!({
-            "input_tokens": 900, "output_tokens": 5, "cache_read_input_tokens": 800
-        })));
-        assert_eq!(timing.cached_tokens, Some(800));
-        timing.observe_usage(Some(&serde_json::json!({"prompt_tokens": 1})));
-        assert_eq!(timing.cached_tokens, None);
-    }
-
     fn vision_image() -> VisionImage {
         VisionImage {
             media_type: "image/jpeg".into(),
@@ -3458,312 +2869,6 @@ mod tests {
         }
     }
 
-    fn hosted_openai() -> ProviderProfile {
-        let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
-        profile.endpoint = "https://models.example.test/api/v1".into();
-        profile.models = vec![agent_provider_config::ModelDescriptor::new(
-            "vendor/model-a",
-        )];
-        profile
-    }
-
-    fn reasoning(param: ReasoningParam, effort: &str) -> agent_provider_config::ReasoningSetting {
-        agent_provider_config::ReasoningSetting {
-            param,
-            effort: effort.into(),
-        }
-    }
-
-    tilo_test_env::scenario! {
-        /// The request body the gateway sends for a Plan, per protocol.
-        fn the_outbound_body_is_the_gateways_own_in_every_dialect;
-
-        phase outbound_model_limits_are_explicit_bounded_and_protocol_aware;
-        {
-            for protocol in [
-                ProviderProtocol::OpenAiCompatible,
-                ProviderProtocol::Anthropic,
-            ] {
-                let mut profile = ProviderProfile::hosted(protocol);
-                let mut model = agent_provider_config::ModelDescriptor::new("bounded");
-                model.request_limits = Some(agent_provider_config::ModelRequestLimits {
-                    max_output_tokens: 512,
-                    runtime_context_tokens: Some(4096),
-                    plan_timeout_ms: None,
-                });
-                profile.models = vec![model, agent_provider_config::ModelDescriptor::new("legacy")];
-                profile.omit_params = vec!["max_tokens".into(), "max_completion_tokens".into()];
-                for body in [
-                    serde_json::json!({}),
-                    serde_json::json!({"max_tokens":4096}),
-                    serde_json::json!({"max_completion_tokens":4096}),
-                    serde_json::json!({"max_tokens":4096,"max_completion_tokens":4096}),
-                ] {
-                    let outbound = outbound_body(&profile, "bounded", body, false, false).unwrap();
-                    let key = if protocol == ProviderProtocol::Anthropic {
-                        "max_tokens"
-                    } else {
-                        "max_completion_tokens"
-                    };
-                    assert_eq!(
-                        outbound
-                            .get("max_tokens")
-                            .or_else(|| outbound.get("max_completion_tokens")),
-                        Some(&serde_json::json!(512))
-                    );
-                    // The OpenAI caller's existing token field is preserved unless
-                    // the profile explicitly chooses one; Anthropic has one field.
-                    if protocol == ProviderProtocol::Anthropic {
-                        assert_eq!(outbound[key], 512);
-                    }
-                    assert!(
-                        !(outbound.get("max_tokens").is_some()
-                            && outbound.get("max_completion_tokens").is_some())
-                    );
-                }
-                for bad in [
-                    serde_json::json!({"max_tokens":false}),
-                    serde_json::json!({"max_tokens":0}),
-                    serde_json::json!({"max_tokens":-1}),
-                    serde_json::json!({"max_tokens":1.5}),
-                    serde_json::json!({"max_tokens":64,"max_completion_tokens":512}),
-                ] {
-                    assert!(outbound_body(&profile, "bounded", bad.clone(), false, false).is_err());
-                    assert!(outbound_body(&profile, "legacy", bad, false, false).is_ok());
-                }
-                profile.omit_params.clear();
-                assert_eq!(
-                    outbound_body(
-                        &profile,
-                        "legacy",
-                        serde_json::json!({"max_tokens":4096}),
-                        false,
-                        false
-                    )
-                    .unwrap()["max_tokens"],
-                    4096
-                );
-            }
-        }
-
-        phase a_vertex_plan_keeps_its_fields_and_refuses_a_trailing_model_turn;
-        // The request a Google Vertex AI profile sends: the checked model id
-        // under its publisher, every field the endpoint accepts left in place
-        // (each verified against Vertex AI's OpenAI-compatible endpoint), and a
-        // conversation ending with the model's own turn refused locally.
-        {
-            let vertex = agent_provider_config::ProviderProfile::google_vertex(
-                "tilo-509618",
-                "global",
-                "gemini-4-argon",
-            );
-            let caller = serde_json::json!({
-                "model": "anything",
-                "max_completion_tokens": 4096,
-                "parallel_tool_calls": false,
-                "tool_choice": "required",
-                "tools": [{"type": "function", "function": {"name": "plan", "parameters": {"type": "object"}}}],
-                "messages": [
-                    {"role": "system", "content": "s"},
-                    {"role": "user", "content": "u"}
-                ]
-            });
-            let sent = outbound_body(
-                &vertex,
-                "google/gemini-4-argon",
-                caller.clone(),
-                true,
-                false,
-            )
-            .unwrap();
-            assert_eq!(sent["model"], "google/gemini-4-argon");
-            assert_eq!(sent["stream"], true);
-            assert_eq!(
-                sent["stream_options"],
-                serde_json::json!({"include_usage": true})
-            );
-            assert_eq!(sent["max_completion_tokens"], 4096);
-            assert_eq!(sent["parallel_tool_calls"], false);
-            assert_eq!(sent["tool_choice"], "required");
-            let mut prefill = caller;
-            prefill["messages"]
-                .as_array_mut()
-                .unwrap()
-                .push(serde_json::json!({"role": "assistant", "content": "Hel"}));
-            let refused = outbound_body(
-                &vertex,
-                "google/gemini-4-argon",
-                prefill.clone(),
-                false,
-                false,
-            )
-            .unwrap_err();
-            assert!(refused.contains("Vertex AI"), "{refused}");
-            // Other providers accept a prefill; nothing changes for them.
-            assert!(outbound_body(&hosted_openai(), "vendor/model-a", prefill, false, false).is_ok());
-        }
-
-        phase a_responses_body_names_its_limit_and_reasoning_and_keeps_nothing;
-        {
-            let mut openai = hosted_openai();
-            openai.token_limit_param =
-                Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
-            let caller = serde_json::json!({
-                "model": "other", "input": [], "max_output_tokens": 64, "stream": true,
-                "stream_options": {"include_usage": true}, "reasoning_effort": "low",
-                "include": ["reasoning.encrypted_content", "message.output_text.logprobs"]
-            });
-            let body = outbound_body(&openai, "vendor/model-a", caller.clone(), false, true).unwrap();
-            assert_eq!(body["model"], "vendor/model-a");
-            assert_eq!(body["max_output_tokens"], 64);
-            assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
-            assert_eq!(body["store"], false);
-            assert_eq!(
-                body["include"],
-                serde_json::json!([
-                    "message.output_text.logprobs",
-                    "reasoning.encrypted_content"
-                ])
-            );
-            for chat_only in [
-                "max_completion_tokens",
-                "max_tokens",
-                "reasoning_effort",
-                "stream",
-                "stream_options",
-            ] {
-                assert!(body.get(chat_only).is_none(), "{chat_only}: {body}");
-            }
-            assert_eq!(
-                outbound_body(&openai, "vendor/model-a", caller.clone(), true, true).unwrap()["stream"],
-                true
-            );
-
-            // A model that does not reason is not asked for reasoning ciphertext.
-            let mut plain = openai.clone();
-            plain.reasoning = Some(reasoning(ReasoningParam::Omit, ""));
-            let body = outbound_body(&plain, "vendor/model-a", caller.clone(), false, true).unwrap();
-            assert!(body.get("reasoning").is_none(), "{body}");
-            assert_eq!(
-                body["include"],
-                serde_json::json!(["message.output_text.logprobs"])
-            );
-            let mut none = openai.clone();
-            none.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "none"));
-            let body =
-                outbound_body(&none, "vendor/model-a", serde_json::json!({}), false, true).unwrap();
-            assert_eq!(body["reasoning"], serde_json::json!({"effort": "none"}));
-            assert!(body.get("include").is_none(), "{body}");
-
-            // The model's own output policy caps the Responses limit.
-            let mut capped = openai;
-            capped.models[0].request_limits = Some(agent_provider_config::ModelRequestLimits {
-                max_output_tokens: 32,
-                runtime_context_tokens: None,
-                plan_timeout_ms: None,
-            });
-            let body = outbound_body(&capped, "vendor/model-a", caller, false, true).unwrap();
-            assert_eq!(body["max_output_tokens"], 32);
-            assert!(body.get("max_completion_tokens").is_none(), "{body}");
-        }
-
-        phase outbound_body_is_owned_by_the_gateway;
-        {
-            let caller = serde_json::json!({
-                "model": "other/model", "max_completion_tokens": 64, "stream": true,
-                "stream_options": {"include_usage": true}, "reasoning_effort": "high", "messages": []
-            });
-            // An unconfigured profile: only the model, and the caller's stream, change.
-            let body = outbound_body(
-                &hosted_openai(),
-                "vendor/model-a",
-                caller.clone(),
-                false,
-                false,
-            )
-            .unwrap();
-            assert_eq!(body["model"], "vendor/model-a");
-            assert_eq!(body["max_completion_tokens"], 64);
-            assert_eq!(body["reasoning_effort"], "high");
-            assert!(body.get("stream").is_none() && body.get("stream_options").is_none());
-
-            let streamed = outbound_body(
-                &hosted_openai(),
-                "vendor/model-a",
-                caller.clone(),
-                true,
-                false,
-            )
-            .unwrap();
-            assert_eq!(streamed["stream"], true);
-            assert_eq!(streamed["stream_options"]["include_usage"], true);
-
-            // OpenRouter-style: `max_tokens` and the reasoning object.
-            let mut router = hosted_openai();
-            router.token_limit_param = Some(agent_provider_config::TokenLimitParam::MaxTokens);
-            router.reasoning = Some(reasoning(ReasoningParam::ReasoningObject, "low"));
-            let body = outbound_body(&router, "vendor/model-a", caller.clone(), false, false).unwrap();
-            assert_eq!(body["max_tokens"], 64);
-            assert!(body.get("max_completion_tokens").is_none());
-            assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
-            assert!(body.get("reasoning_effort").is_none());
-
-            // OpenAI-style: `max_completion_tokens` and top-level effort.
-            let mut openai = hosted_openai();
-            openai.token_limit_param =
-                Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
-            openai.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "none"));
-            let legacy = serde_json::json!({"max_tokens": 9, "reasoning": {"effort": "high"}});
-            let body = outbound_body(&openai, "vendor/model-a", legacy, false, false).unwrap();
-            assert_eq!(body["max_completion_tokens"], 9);
-            assert!(body.get("max_tokens").is_none() && body.get("reasoning").is_none());
-            assert_eq!(body["reasoning_effort"], "none");
-
-            // Cerebras-style: fields the provider rejects are stripped last,
-            // including the gateway's own stream_options.
-            let mut strict = hosted_openai();
-            strict.omit_params = vec!["stream_options".into(), "parallel_tool_calls".into()];
-            let with_extras = serde_json::json!({"parallel_tool_calls": false, "messages": []});
-            let body = outbound_body(&strict, "vendor/model-a", with_extras, true, false).unwrap();
-            assert_eq!(body["stream"], true);
-            assert!(body.get("stream_options").is_none() && body.get("parallel_tool_calls").is_none());
-
-            // `none` strips every reasoning field.
-            let mut omit = hosted_openai();
-            omit.reasoning = Some(reasoning(ReasoningParam::Omit, ""));
-            let body = outbound_body(&omit, "vendor/model-a", caller, false, false).unwrap();
-            assert!(body.get("reasoning_effort").is_none() && body.get("reasoning").is_none());
-
-            let mut anthropic = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-            anthropic.models = vec![agent_provider_config::ModelDescriptor::new("claude-x")];
-            anthropic.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "low"));
-            anthropic.token_limit_param =
-                Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
-            let caller = serde_json::json!({"model": "other", "max_tokens": 9, "stream": true});
-            let body = outbound_body(&anthropic, "claude-x", caller.clone(), false, false).unwrap();
-            assert_eq!(body["model"], "claude-x");
-            assert_eq!(body["max_tokens"], 9);
-            assert!(body.get("stream").is_none() && body.get("reasoning_effort").is_none());
-            // A streamed Anthropic Plan asks for the event stream, and nothing
-            // of the OpenAI-compatible stream options.
-            let streamed = outbound_body(&anthropic, "claude-x", caller, true, false).unwrap();
-            assert_eq!(streamed["stream"], true);
-            assert!(streamed.get("stream_options").is_none());
-            assert!(streamed.get("reasoning_effort").is_none());
-
-            assert!(
-                outbound_body(
-                    &hosted_openai(),
-                    "vendor/model-a",
-                    serde_json::json!([]),
-                    false,
-                    false
-                )
-                .is_err()
-            );
-        }
-    }
-
     /// The real accept loop on its own runtime, serving `listener` (peer
     /// check stubbed: other hosts refuse every peer, and the check itself is
     /// unchanged). `workers` of one proves concurrency comes from serving
@@ -3915,14 +3020,6 @@ mod tests {
 #[cfg(test)]
 #[path = "service_error_tests.rs"]
 mod service_error_tests;
-
-#[cfg(test)]
-#[path = "cache_tests.rs"]
-mod cache_tests;
-
-#[cfg(test)]
-#[path = "plan_tests.rs"]
-mod plan_tests;
 
 #[cfg(test)]
 #[path = "stream_policy_tests.rs"]

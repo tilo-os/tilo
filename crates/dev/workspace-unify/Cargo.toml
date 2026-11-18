@@ -886,7 +886,6 @@ doc = false
 "rfc6979-0_4_0" = { package = "rfc6979", version = "^0.4.0", default-features = false, features = [] }
 "rfc6979-0_6_0" = { package = "rfc6979", version = "^0.6.0", default-features = false, features = [] }
 "rgb-0_8_52" = { package = "rgb", version = "^0.8.52", default-features = false, features = ["argb", "as-bytes", "bytemuck", "default", "grb"] }
-"rig-core-0_44_0" = { package = "rig-core", path = "../../../vendor/rig-core", default-features = false, features = [] }
 "rig-http-0_44_0" = { package = "rig-http", version = "^0.44.0", default-features = false, features = [] }
 "ring-0_17_14" = { package = "ring", version = "^0.17.14", default-features = false, features = ["alloc", "default", "dev_urandom_fallback", "std"] }
 "roman-numerals-rs-3_1_0" = { package = "roman-numerals-rs", version = "^3.1.0", default-features = false, features = ["default", "std"] }
@@ -3490,7 +3489,6 @@ doc = false
 "rfc6979-0_4_0" = { package = "rfc6979", version = "^0.4.0", default-features = false, features = [] }
 "rfc6979-0_6_0" = { package = "rfc6979", version = "^0.6.0", default-features = false, features = [] }
 "rgb-0_8_52" = { package = "rgb", version = "^0.8.52", default-features = false, features = ["argb", "as-bytes", "bytemuck", "default", "grb"] }
-"rig-core-0_44_0" = { package = "rig-core", path = "../../../vendor/rig-core", default-features = false, features = [] }
 "rig-http-0_44_0" = { package = "rig-http", version = "^0.44.0", default-features = false, features = [] }
 "ring-0_17_14" = { package = "ring", version = "^0.17.14", default-features = false, features = ["alloc", "default", "dev_urandom_fallback", "std"] }
 "roman-numerals-rs-3_1_0" = { package = "roman-numerals-rs", version = "^3.1.0", default-features = false, features = ["default", "std"] }
