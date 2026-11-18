@@ -165,8 +165,8 @@ pub fn enroll_into(
         return Err("empty governor supplied seeded application records".into());
     }
     owner
-        .install(&finalize(intent, pending, bootstrap).unwrap(), now)
-        .unwrap();
+        .install(&finalize(intent, pending, bootstrap)?, now)
+        .map_err(|error| error.to_string())?;
     Ok(governor)
 }
 pub fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {

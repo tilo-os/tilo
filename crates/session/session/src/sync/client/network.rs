@@ -420,7 +420,7 @@ struct Asking {
 }
 
 /// One thing the peer network asks a workspace's host for: someone's invitation redeemed into their
-/// workspace, or one of the person's own workspaces entered at the device serving_own it.
+/// workspace, or one of the person's own workspaces entered at the device serving it.
 enum Ask {
     Invitation(Box<super::Enrolling>),
     Entry(Box<super::Entering>),
@@ -501,6 +501,38 @@ impl Asking {
     }
 }
 
+/// Where the device's files daemon reaches the network: through this endpoint rather than one of
+/// its own under the same key, since a device has one endpoint id (`fs::net`).
+fn files_link(
+    endpoint: &iroh::Endpoint,
+    reachability: &Reachability,
+) -> tilo_network_actor::own_service::Protocols {
+    let woken = reachability.clone();
+    fs::net::DaemonLink::serve(
+        endpoint.clone(),
+        launcher::services::blob_socket().with_file_name(fs::net::LINK_FILE),
+        Arc::new(move || {
+            woken.wake("the files daemon reaches a peer");
+        }),
+    )
+}
+
+/// Wait for `opening`, this device's own workspace service opening, and tell the peer actor once
+/// it is open.
+async fn own_service_opened(
+    opening: impl std::future::Future<Output = Result<impl Sized, String>>,
+    actor: &tokio::sync::mpsc::Sender<NetCmd>,
+) {
+    match opening.await {
+        Ok(_) => {
+            let _ = actor.send(NetCmd::OwnServiceReady).await;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
+        }
+    }
+}
+
 /// Bind this device's endpoint, serve the peer actor and its app wire on it, and say where the
 /// session's apps reach this device — or say why it could not, and answer nothing.
 async fn listening(
@@ -556,17 +588,8 @@ async fn listening(
     // What the session serves beside its own peer networks: this device's exit for the person's other
     // devices, when it offers one.
     served.extend(protocols);
-    // The device's files daemon reaches the network through this endpoint rather than one of its
-    // own under the same key: a device has one endpoint id (`fs::net`).
     if identity.is_some() {
-        let woken = reachability.clone();
-        served.extend(fs::net::DaemonLink::serve(
-            endpoint.clone(),
-            launcher::services::blob_socket().with_file_name(fs::net::LINK_FILE),
-            Arc::new(move || {
-                woken.wake("the files daemon reaches a peer");
-            }),
-        ));
+        served.extend(files_link(&endpoint, &reachability));
     }
     let _ = bound.endpoint.set(endpoint.clone());
     if let Some(device) =
@@ -600,14 +623,8 @@ async fn listening(
         served,
     );
     if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
-        match super::own_service::open(service, identity, engine, endpoint.clone()).await {
-            Ok(_) => {
-                let _ = actor.send(NetCmd::OwnServiceReady).await;
-            }
-            Err(error) => {
-                tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
-            }
-        }
+        let opening = super::own_service::open(service, identity, engine, endpoint.clone());
+        own_service_opened(Box::pin(opening), &actor).await;
     }
     let founding_link = link.clone();
     let (events, carrying, attending) = heard(

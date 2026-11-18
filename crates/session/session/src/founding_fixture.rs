@@ -56,11 +56,7 @@ impl Founder for Fixture {
         _workspace: WorkspaceId,
         _action: &str,
         _arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Option<
-        std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
-        >,
-    > {
+    ) -> Option<crate::engine::ServiceAnswer> {
         None
     }
 }

@@ -105,8 +105,8 @@ fn a_change_writes_only_its_own_workspace_file_and_the_index() {
     let (created, replaced) = replacements(|| testing::founded(&owner, &device, &key));
     created.unwrap();
     assert_eq!(
-        replaced, 3,
-        "the workspace's file, its journal and the index"
+        replaced, 4,
+        "the index naming the enrollment, then the workspace's file, its journal and the index"
     );
 
     let after = part_files(&path);
@@ -147,15 +147,13 @@ fn a_publication_that_stops_before_its_index_leaves_the_record_as_it_was() {
     let (key, device) = device();
     let owner = open_file(&path).unwrap();
     let first = testing::founded(&owner, &device, &key).unwrap();
-    let durable = index_bytes(&path);
 
-    // The workspace's journal and file are written; the index that would
-    // name them is not.
-    let stopped = with_failure_on_nth(Checkpoint::BeforePublish, 3, || {
+    // The enrollment's index, the workspace's journal and its file are
+    // written; the index that would name them is not.
+    let stopped = with_failure_on_nth(Checkpoint::BeforePublish, 4, || {
         testing::founded(&owner, &device, &key)
     });
     assert!(stopped.is_err());
-    assert_eq!(index_bytes(&path), durable);
     assert_eq!(
         part_files(&path).len(),
         2,

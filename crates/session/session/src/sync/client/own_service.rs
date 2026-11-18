@@ -137,6 +137,7 @@ impl tilo_session_client::engine::Founder for Founding {
             let invitation = service
                 .place_own_workspace(&workspace.to_string(), &name, &self.identity.device_cert)
                 .await?;
+            drop(service);
             super::adopt::redeem(
                 self.endpoint.clone(),
                 self.identity.clone(),

@@ -494,7 +494,7 @@ enum InternalEvent {
     /// A workspace's link brought a frame into this device's owner.
     NativeHeard {
         ws: WorkspaceId,
-        heard: tilo_peer_state::direct::Heard,
+        heard: Box<tilo_peer_state::direct::Heard>,
     },
     /// A workspace's link has the host's retained history in hand.
     NativeReady { ws: WorkspaceId },
@@ -1909,7 +1909,7 @@ impl ActorState {
                 held,
             }) => self.native_link_connected(ws, *linked, scope, held),
             Some(InternalEvent::NativeHeard { ws, heard }) => {
-                self.native_heard(ws, heard).await;
+                self.native_heard(ws, *heard).await;
             }
             Some(InternalEvent::NativeReady { ws }) => self.native_ready(ws).await,
             Some(InternalEvent::NativeAnswered { ws, answers }) => {
@@ -3185,7 +3185,7 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
 
 /// Whether `msg` is said again byte for byte on purpose, so that every saying of it is news. A
 /// device says which windows of another it views every few seconds for as long as it views them,
-/// and the device serving_own them stops naming a viewer it no longer hears: an ask dropped as a
+/// and the device serving them stops naming a viewer it no longer hears: an ask dropped as a
 /// repeat of the first would leave the viewer unnamed from then on. It says what the viewer wants
 /// now, so a copy that came over another route changes nothing.
 ///
@@ -3731,7 +3731,10 @@ fn spawn_direct_pump(
                 // from the workspace's history before it reads on.
                 received = reader.recv() => match received {
                     Some(heard) => {
-                        if tx.send(InternalEvent::NativeHeard { ws, heard }).await.is_err() {
+                        if tx.send(InternalEvent::NativeHeard {
+                            ws,
+                            heard: Box::new(heard),
+                        }).await.is_err() {
                             return;
                         }
                     }
