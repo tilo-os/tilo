@@ -529,7 +529,10 @@ mod tests {
     }
 }
 
-ui::reach_tests!(RemoteShell);
+ui::reach_tests!(
+    RemoteShell,
+    shares: [share_0, share_1, share_2],
+);
 
 #[cfg(test)]
 mod window_bar_tests {
