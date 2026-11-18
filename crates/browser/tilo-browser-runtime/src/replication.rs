@@ -45,7 +45,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{DocumentAnswer, Events, Link};
-use ui::automerge::{AutoCommit, transaction::Transactable as _};
+use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::collaboration::document_content::ContentLink;
 use ui::resource::{DocumentSync, WorkspaceAnswer};
 use ui::state::DocumentReplica;
@@ -341,9 +341,8 @@ pub(crate) fn changes() -> tilo_session::platform::records::Changes {
     CHANGES.with(Clone::clone)
 }
 
-/// Wire record `record` of `app` as peer `id` holds it now: the open
-/// record a mount has, else the workspace's replica of it.
-pub(crate) fn resource_document(id: u32, app: &str, record: &str) -> Option<AutoCommit> {
+/// Wire document `wire` of `app` as a window of this page holds it open, if one does.
+fn open_resource(id: u32, app: &str, wire: &str) -> Option<AutoCommit> {
     let joined = replica_of(id)?;
     let joined = joined.borrow();
     for mounted in joined.mounts.values() {
@@ -352,7 +351,7 @@ pub(crate) fn resource_document(id: u32, app: &str, record: &str) -> Option<Auto
                 continue;
             }
             let Some(checkout) = store.open_resources().into_iter().find(|checkout| {
-                tilo_desktop_surface::host::records::wire_document(&checkout.id) == record
+                tilo_desktop_surface::host::records::wire_document(&checkout.id) == wire
             }) else {
                 continue;
             };
@@ -361,35 +360,73 @@ pub(crate) fn resource_document(id: u32, app: &str, record: &str) -> Option<Auto
             }
         }
     }
+    None
+}
+
+/// Wire document `wire` of `app` as peer `id` holds it now: the open
+/// document a mount has, else the workspace's replica of it.
+pub(crate) fn resource_document(id: u32, app: &str, wire: &str) -> Option<AutoCommit> {
+    if let Some(doc) = open_resource(id, app, wire) {
+        return Some(doc);
+    }
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
     let bytes = joined
         .peer
         .engine()
-        .record(&joined.uuid, app, record)
+        .record(&joined.uuid, app, wire)
         .ok()??;
     tilo_automerge::shared::load(&bytes).ok()
 }
 
-/// What changed of `record` of `app` since `heads`, as the workspace holds it: its changes alone
-/// where it holds those heads, and the record whole otherwise.
+/// What changed of `wire` of `app` since `heads`, as the workspace holds it: its changes alone
+/// where it holds those heads, and the document whole otherwise.
 pub(crate) fn record_since(
     id: u32,
     app: &str,
-    record: &str,
+    wire: &str,
     heads: &[ui::automerge::ChangeHash],
 ) -> tilo_session::platform::records::Since {
     use tilo_session::platform::records::Since;
     let Some(joined) = replica_of(id) else {
         return Since::Whole;
     };
-    let joined = joined.borrow();
     let held = sorted_heads(&heads.iter().map(|head| head.0).collect::<Vec<_>>());
     if held.is_empty() {
         return Since::Whole;
     }
+    // A window here holds this document open: what it holds answers, without opening its sealed
+    // history again for what is already on this page. A person's edit reads here before it
+    // paints, and a document of many notes opens once, not once per reader.
+    if let Some(mut doc) = open_resource(id, app, wire) {
+        let base = held
+            .iter()
+            .copied()
+            .map(ui::automerge::ChangeHash)
+            .collect::<Vec<_>>();
+        if base
+            .iter()
+            .all(|head| doc.get_change_by_hash(head).is_some())
+        {
+            let mut at = doc.get_heads();
+            at.sort();
+            if at == base {
+                return Since::Unchanged;
+            }
+            let mut bytes = Vec::new();
+            for change in doc.get_changes(&base) {
+                bytes.extend_from_slice(change.raw_bytes());
+            }
+            if !bytes.is_empty() {
+                return Since::Changes { heads: at, bytes };
+            }
+        }
+    }
+    let joined = joined.borrow();
     match joined
         .peer
         .engine()
-        .record_update(&joined.uuid, app, record, Some(&held))
+        .record_update(&joined.uuid, app, wire, Some(&held))
     {
         Ok(ResourceReading::Changes { heads, bytes, .. }) => Since::Changes {
             heads: heads.into_iter().map(ui::automerge::ChangeHash).collect(),

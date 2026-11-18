@@ -102,10 +102,24 @@ pub enum ActionBindingError {
 type Arguments<I> =
     Arc<dyn Fn(I) -> Result<serde_json::Map<String, serde_json::Value>, String> + Send + Sync>;
 
+/// What a control binds to: one published resource and the actions it exports. A row an app
+/// publishes ([`ResourceSpec`] here, the framework's live row above it) is one, so a control
+/// binds to the row it shows without the app building the published tree itself.
+pub trait Exports {
+    /// The resource as it is published: its identity, kind, sharing and exported actions.
+    fn exported(&self) -> &ResourceSpec;
+}
+
+impl Exports for ResourceSpec {
+    fn exported(&self) -> &ResourceSpec {
+        self
+    }
+}
+
 /// Type-safe adapter from a control's input value to an exported action.
 ///
-/// Construction requires the real [`ResourceSpec`] and [`ActionSpec`], rather
-/// than parallel string constants. Construction and emission validate the
+/// Construction requires the row that really exports the action ([`Exports`])
+/// and its [`ActionSpec`], rather than parallel string constants. Construction and emission validate the
 /// arguments against the parameters of a clone of that spec and never run its
 /// encoder, which may plan the whole action: a binding is made for each control
 /// a frame reads. The host re-resolves, validates and encodes at dispatch time
@@ -133,7 +147,7 @@ impl<I> ActionBinding<I> {
     /// Returns [`ActionBindingError::ActionNotExported`] if `spec` is absent
     /// from `resource`.
     pub fn new(
-        resource: &ResourceSpec,
+        resource: &(impl Exports + ?Sized),
         spec: &ActionSpec,
         arguments: impl Fn(I) -> serde_json::Map<String, serde_json::Value> + Send + Sync + 'static,
     ) -> Result<Self, ActionBindingError> {
@@ -149,13 +163,14 @@ impl<I> ActionBinding<I> {
     /// Returns [`ActionBindingError::ActionNotExported`] if `spec` is absent
     /// from `resource`.
     pub fn fallible(
-        resource: &ResourceSpec,
+        resource: &(impl Exports + ?Sized),
         spec: &ActionSpec,
         arguments: impl Fn(I) -> Result<serde_json::Map<String, serde_json::Value>, String>
         + Send
         + Sync
         + 'static,
     ) -> Result<Self, ActionBindingError> {
+        let resource = resource.exported();
         let exported = resource
             .actions
             .iter()
@@ -236,7 +251,10 @@ impl<I> ActionBinding<I> {
 
 impl ActionBinding<()> {
     /// Bind a nullary control to a nullary exported action.
-    pub fn unit(resource: &ResourceSpec, spec: &ActionSpec) -> Result<Self, ActionBindingError> {
+    pub fn unit(
+        resource: &(impl Exports + ?Sized),
+        spec: &ActionSpec,
+    ) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, |()| serde_json::Map::new())?;
         // Refuse a required-argument action at construction, not first click.
         binding.spec.validate_json(&serde_json::Map::new())?;
@@ -245,13 +263,17 @@ impl ActionBinding<()> {
 
     /// Look up the real exported spec by stable id, then create a nullary
     /// binding. Useful when the resource is assembled inline or generated.
-    pub fn unit_for(resource: &ResourceSpec, action_id: &str) -> Result<Self, ActionBindingError> {
+    pub fn unit_for(
+        resource: &(impl Exports + ?Sized),
+        action_id: &str,
+    ) -> Result<Self, ActionBindingError> {
         let spec = resource
+            .exported()
             .actions
             .iter()
             .find(|spec| spec.id == action_id)
             .ok_or_else(|| ActionBindingError::ActionNotExported {
-                resource: resource.id.0.clone(),
+                resource: resource.exported().id.0.clone(),
                 action: action_id.to_string(),
             })?;
         Self::unit(resource, spec)
@@ -259,7 +281,7 @@ impl ActionBinding<()> {
 
     /// Bind a control to a fixed, strictly validated JSON argument object.
     pub fn static_json(
-        resource: &ResourceSpec,
+        resource: &(impl Exports + ?Sized),
         spec: &ActionSpec,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<Self, ActionBindingError> {
@@ -272,16 +294,17 @@ impl ActionBinding<()> {
 
     /// Look up the real exported spec by id, then bind fixed JSON arguments.
     pub fn static_json_for(
-        resource: &ResourceSpec,
+        resource: &(impl Exports + ?Sized),
         action_id: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<Self, ActionBindingError> {
         let spec = resource
+            .exported()
             .actions
             .iter()
             .find(|spec| spec.id == action_id)
             .ok_or_else(|| ActionBindingError::ActionNotExported {
-                resource: resource.id.0.clone(),
+                resource: resource.exported().id.0.clone(),
                 action: action_id.to_string(),
             })?;
         Self::static_json(resource, spec, arguments)

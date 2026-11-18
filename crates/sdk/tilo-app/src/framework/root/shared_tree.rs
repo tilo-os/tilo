@@ -42,10 +42,45 @@ pub(super) struct DocumentChildren {
 
 /// The item children last published: the collections they were built from,
 /// at one locale (their actions' labels are localised).
-pub(super) struct ItemChildren {
+pub(crate) struct ItemChildren {
     i18n: u64,
     collections: Vec<ItemCollection>,
     children: SharedChildren,
+}
+
+impl ItemChildren {
+    /// One child per item of `collections` carrying `actions`
+    /// ([`tilo_resource::items::item_children`]) of `resource`, each made
+    /// into the node it is published as by `finish`: the very children of
+    /// `memo` when it was built from these collections, otherwise each child
+    /// `memo` holds whose label is unchanged, and the rest built. So a change
+    /// to one item builds that item, whatever the collections hold. `keep`
+    /// remembers these in `memo` for the next version.
+    pub(crate) fn build(
+        memo: &mut Option<Self>,
+        resource: &ResourceType,
+        collections: Vec<ItemCollection>,
+        actions: &[ItemAction],
+        keep: bool,
+        finish: &dyn Fn(tilo_actions::ResourceSpec) -> SharedResource,
+    ) -> SharedChildren {
+        let i18n = ui_core::i18n::I18nManager::revision();
+        if memo.as_ref().is_some_and(|last| last.i18n != i18n) {
+            *memo = None;
+        }
+        if let Some(last) = memo.as_ref().filter(|last| last.collections == collections) {
+            return last.children.clone();
+        }
+        let children = build_items(resource, memo.as_ref(), &collections, actions, finish);
+        if keep {
+            *memo = Some(Self {
+                i18n,
+                collections,
+                children: children.clone(),
+            });
+        }
+        children
+    }
 }
 
 /// The view operation types beneath the resource and its records, at one live
@@ -278,29 +313,20 @@ impl ResourceRoot {
         keep: bool,
         state: &dyn Any,
     ) -> SharedChildren {
-        let i18n = ui_core::i18n::I18nManager::revision();
-        let mut memo = self.item_children.borrow_mut();
-        if memo.as_ref().is_some_and(|last| last.i18n != i18n) {
-            *memo = None;
-        }
-        if let Some(last) = memo.as_ref().filter(|last| last.collections == collections) {
-            return last.children.clone();
-        }
-        let children = build_items(
+        let readable = self.resource.readable;
+        ItemChildren::build(
+            &mut self.item_children.borrow_mut(),
             &self.resource,
-            memo.as_ref(),
-            &collections,
+            collections,
             actions,
-            &|id| self.typed.document_child(state, id),
-        );
-        if keep {
-            *memo = Some(ItemChildren {
-                i18n,
-                collections,
-                children: children.clone(),
-            });
-        }
-        children
+            keep,
+            &|mut child| {
+                if readable {
+                    offer_document_reads(&mut child, &|id| self.typed.document_child(state, id));
+                }
+                SharedResource::from_resource(child)
+            },
+        )
     }
 
     /// The view operation types beneath the live state and the records kept
@@ -713,7 +739,7 @@ fn build_items(
     last: Option<&ItemChildren>,
     collections: &[ItemCollection],
     actions: &[ItemAction],
-    eligible: &dyn Fn(&str) -> bool,
+    finish: &dyn Fn(tilo_actions::ResourceSpec) -> SharedResource,
 ) -> SharedChildren {
     let last_children = last.map_or(&[][..], |last| last.children.as_slice());
     let in_place = last.is_some_and(|last| same_members(&last.collections, collections));
@@ -738,11 +764,8 @@ fn build_items(
             kept.filter(|child| child.head().label == label)
                 .cloned()
                 .unwrap_or_else(|| {
-                    let mut child = build();
-                    if resource.readable {
-                        offer_document_reads(&mut child, eligible);
-                    }
-                    SharedResource::from_resource(child)
+                    let _profile = tilo_resource::profiling::Phase::start("framework.item_child");
+                    finish(build())
                 }),
         );
     });

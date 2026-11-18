@@ -2,13 +2,13 @@
 # (tools/policy/check_glossary_words.py). Counts only go down.
 room 3283
 space 4648
-channel 19471
+channel 19470
 subject 3015
 host 27592
 relay 3524
 run 29506
 seat 1445
 record 56948
-slot 11551
+slot 11550
 plane 15
 seam 7

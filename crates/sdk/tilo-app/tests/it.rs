@@ -21,6 +21,8 @@ pub mod by_app;
 pub mod chain_list;
 #[path = "chain_spread.rs"]
 pub mod chain_spread;
+#[path = "chain_write_cost.rs"]
+pub mod chain_write_cost;
 #[path = "child_records.rs"]
 pub mod child_records;
 #[path = "child_resources.rs"]
