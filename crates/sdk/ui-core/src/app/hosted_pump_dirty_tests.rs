@@ -1134,3 +1134,60 @@ mod input_publication {
         }
     }
 }
+
+/// A part built in the update that sees its answer land, as a query's
+/// arriving view is: no model state moves, only the widgets shown change.
+struct AnswerPart(crate::widget::Element, std::rc::Rc<Cell<bool>>, bool);
+impl Widget for AnswerPart {
+    crate::testing::delegate_widget_methods!(
+        0: sync, build_layout, apply_layout, draw, handle_event, get_rect
+    );
+    fn name(&self) -> &str {
+        "AnswerPart"
+    }
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
+        if self.1.get() && !self.2 {
+            self.0 = Box::new(Button::new("see-history", "See history").on_view(|| {}));
+            self.2 = true;
+        }
+        false
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.2) | self.0.take_structure_dirty()
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![self.0.as_ref()]
+    }
+    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
+        vec![self.0.as_mut()]
+    }
+}
+
+#[test]
+fn a_part_built_for_an_answer_is_published() {
+    let scope = crate::wake::WakeScope::new();
+    let wake = scope.handle();
+    let answered = std::rc::Rc::new(Cell::new(false));
+    let waiting = Box::new(Button::new("waiting", "Waiting").on_view(|| {}));
+    let root = AnswerPart(waiting, answered.clone(), false);
+    let mut app =
+        App::from_scoped_parts_with_controlled_inputs(scope, State::new(), Box::new(root));
+    app.collaboration.manager = CollaborationManager::with_peer_transport(HostedPumpTransport {
+        sent: std::rc::Rc::default(),
+        events: std::rc::Rc::default(),
+        directory: std::rc::Rc::default(),
+    });
+    app.init_layout();
+    app.pump_hosted_model_as(false);
+    let published = |app: &App| format!("{:?}", app.actions.last_published_actions);
+    assert!(published(&app).contains("waiting"), "{}", published(&app));
+    // The answer lands with a queue wake; the update builds its part.
+    answered.set(true);
+    wake.notify_events();
+    assert!(app.pump_hosted_model_as(false).updated);
+    let surface = published(&app);
+    assert!(
+        surface.contains("see-history") && !surface.contains("waiting"),
+        "the surface offers the button the answer built: {surface}"
+    );
+}
