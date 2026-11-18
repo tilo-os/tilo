@@ -833,6 +833,9 @@ pub struct Webhook {
     /// What deliveries are signed with: answered once, when it is made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
+    /// Why nothing is posted to its URL, where nothing is: it is not one this API posts to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undelivered: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

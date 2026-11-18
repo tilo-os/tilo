@@ -946,7 +946,10 @@ impl<'a> Caller<'a> {
                     .store
                     .webhooks(Some((&self.grant.id, &ws)))
                     .into_iter()
-                    .map(|hook| webhook_row(&hook, false))
+                    .map(|hook| {
+                        let undelivered = self.server.posting.refusal(&hook.url);
+                        webhook_row(&hook, false, undelivered)
+                    })
                     .collect();
                 Ok(Answer::ok(json!({"webhooks": hooks})))
             }
@@ -1196,11 +1199,8 @@ impl<'a> Caller<'a> {
 
     fn create_webhook(&self) -> Result<Answer, ApiError> {
         let new: answers::NewWebhook = self.json_body()?;
-        if !webhooks::deliverable(&new.url) {
-            return Err(ApiError::new(
-                "invalid_arguments",
-                "a webhook posts to an https URL (or plain http to this machine)",
-            ));
+        if let Some(why) = self.server.posting.refusal(&new.url) {
+            return Err(ApiError::new("invalid_arguments", why));
         }
         let kinds = ["change", "invocation", "presence"];
         if let Some(unknown) = new
@@ -1230,7 +1230,7 @@ impl<'a> Caller<'a> {
             .store
             .add_webhook(hook.clone())
             .map_err(|_| ApiError::new("unavailable", "the webhook could not be kept"))?;
-        let row = webhook_row(&hook, true);
+        let row = webhook_row(&hook, true, None);
         webhooks::Deliveries::start(self.server, hook);
         Ok(Answer::created(row))
     }
@@ -1483,13 +1483,20 @@ fn json_of<T: serde::Serialize>(value: &T) -> String {
     })
 }
 
-fn webhook_row(hook: &crate::store::Webhook, with_secret: bool) -> Value {
+/// `hook` as its holder reads it: with its secret when it is made, and with
+/// why nothing is posted to its URL (`undelivered`) where nothing is.
+fn webhook_row(
+    hook: &crate::store::Webhook,
+    with_secret: bool,
+    undelivered: Option<&str>,
+) -> Value {
     let row = with(
         json!({"id": hook.id, "url": hook.url, "events": hook.events}),
         "path",
         hook.path.as_ref(),
     );
-    with(row, "secret", with_secret.then_some(&hook.secret))
+    let row = with(row, "secret", with_secret.then_some(&hook.secret));
+    with(row, "undelivered", undelivered)
 }
 
 /// `object` with `name` set to `value` when there is one.
