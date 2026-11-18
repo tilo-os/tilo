@@ -2,6 +2,7 @@
 //! capture handoff, merging and what history says.
 
 use super::*;
+use crate::model::{CaptureKind, Facing};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Replica;
 

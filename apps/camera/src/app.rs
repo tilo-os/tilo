@@ -946,7 +946,10 @@ impl CameraApp {
                 Role::Button,
                 crate::CATALOG.t_args(
                     "camera-a11y-switch-camera",
-                    &[("facing", ui::i18n::ArgValue::Text(self.facing.label()))],
+                    &[(
+                        "facing",
+                        ui::i18n::ArgValue::Text(crate::model::facing_label(self.facing)),
+                    )],
                 ),
                 AccessState::new().focusable(true),
             ),
@@ -3810,8 +3813,11 @@ mod tests {
         }
         {
             // The lens selector caption must not be the word "Back".
-            assert_eq!(Facing::Back.label(), crate::CATALOG.t("camera-facing-rear"));
-            assert_ne!(Facing::Back.label(), "Back");
+            assert_eq!(
+                crate::model::facing_label(Facing::Back),
+                crate::CATALOG.t("camera-facing-rear")
+            );
+            assert_ne!(crate::model::facing_label(Facing::Back), "Back");
         }
         {
             let (app, doc, _root) = sample_app();

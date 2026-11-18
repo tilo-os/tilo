@@ -1045,3 +1045,13 @@ reason = "A nextest filter names the ush test module `served_runs::`; the word i
 words = ["run"]
 identifiers = ["served_runs"]
 paths = ["tools/tests/test_test_environment.py"]
+
+[[allow]]
+reason = "Camera's verb that keeps a scanned code, its action-id constant and the catalogue keys the action macro reads: renaming them is an action-id change of its own."
+words = ["record"]
+identifiers = ["record", "record_scan", "RECORD_SCAN"]
+paths = [
+    "apps/camera-model/src/camera.rs",
+    "apps/camera-model/locales/en-US.ftl",
+    "apps/camera-model/locales/de-DE.ftl",
+]

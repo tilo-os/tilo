@@ -1943,6 +1943,7 @@ name = "camera"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "camera-model",
  "image",
  "qrcode",
  "rqrr",
@@ -1963,6 +1964,17 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-vello",
  "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "camera-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-content",
+ "tilo-resource",
  "workspace-hack",
 ]
 
