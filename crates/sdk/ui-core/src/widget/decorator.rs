@@ -402,7 +402,7 @@ decorator_trait! {
         }
 
         fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-            Decorator::html(self, cx)
+            Decorator::html(self, cx);
         }
 
         fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {

@@ -32,6 +32,10 @@ pub(crate) const SIGNAL_QUEUE: usize = 64;
 pub enum NmError {
     #[error("cannot reach NetworkManager: {0}")]
     Bus(#[from] zbus::Error),
+    /// A session that runs inside another desktop reaches no daemon of it:
+    /// the machine's `NetworkManager` is not this session's to ask.
+    #[error("this session reaches no machine: NetworkManager belongs to the desktop it runs in")]
+    Hosted,
     #[error("NetworkManager is not running")]
     NotRunning,
     #[error("NetworkManager returned an unsafe connectivity-check URI")]
@@ -76,10 +80,18 @@ pub struct NmClient {
 impl NmClient {
     /// Connect to the system bus.
     ///
+    /// A session that runs inside another desktop owns no machine of its own
+    /// ([`tilo_paths::machine`]): it reaches no `NetworkManager` at all, and
+    /// never the host's.
+    ///
     /// # Errors
     ///
-    /// [`NmError::Bus`] when the system bus cannot be reached.
+    /// [`NmError::Hosted`] when this session owns no machine, `NmError::Bus`
+    /// when the system bus cannot be reached.
     pub async fn system() -> Result<Self, NmError> {
+        if !tilo_paths::machine::owns_the_machine() {
+            return Err(NmError::Hosted);
+        }
         Ok(Self::new(Connection::system().await?))
     }
 

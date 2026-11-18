@@ -620,6 +620,33 @@ fn the_panel_stands_hidden_between_openings_and_the_next_opening_starts_nothing(
     );
 }
 
+/// What of the person's stood over the shell goes down with the lock: a panel up at the moment the
+/// session locks was theirs to open, not one to find again over the lock screen when they unlock.
+#[test]
+fn locking_closes_the_panel_the_person_had_open() {
+    let (mut session, _panel) = session_with_quick_settings();
+    open(&mut session, "quick-settings", None);
+    assert!(session.quick_settings_open(), "the panel is up");
+    // The person locks the screen from the panel's own power menu.
+    session.compositor().lock_now().expect("the screen locks");
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(
+        parts(&session).is_empty(),
+        "nothing of the person's stands over the lock: {:?}",
+        parts(&session)
+    );
+    assert!(!session.quick_settings_open(), "the panel went down");
+    // Unlocking does not bring it back: what the person opened was not theirs to find again.
+    session.compositor().unlock().expect("the screen unlocks");
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(
+        parts(&session).is_empty(),
+        "unlocking brings back no surface: {:?}",
+        parts(&session)
+    );
+    assert!(!session.quick_settings_open(), "and the panel stays down");
+}
+
 #[test]
 fn a_press_outside_the_popover_closes_it_and_one_inside_it_does_not() {
     let (mut session, _panel) = session_with_quick_settings();

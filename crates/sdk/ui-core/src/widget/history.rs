@@ -248,7 +248,10 @@ impl HistoryFilter {
             };
             if !self.work_groups.iter().any(|candidate| {
                 candidate.eq_ignore_ascii_case(&group.id)
-                    || candidate.eq_ignore_ascii_case(&group.label)
+                    || group
+                        .label
+                        .as_ref()
+                        .is_some_and(|label| candidate.eq_ignore_ascii_case(label))
             }) {
                 return false;
             }

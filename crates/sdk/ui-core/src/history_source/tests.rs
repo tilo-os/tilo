@@ -994,7 +994,7 @@ tilo_test_env::scenario! {
             .and_then(|context| context.group.as_ref())
             .expect("the group the change was made in");
         assert_eq!(group.kind, "task");
-        assert_eq!(group.label, "Prepare Q3 financials");
+        assert_eq!(group.label.as_deref(), Some("Prepare Q3 financials"));
         assert_eq!(group.id, "11111111-1111-4111-8111-111111111111");
     }
 

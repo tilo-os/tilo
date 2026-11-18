@@ -132,10 +132,10 @@ pub async fn enter(
 
 impl Entered {
     /// `device`'s entry into `workspace` (`workspace_id` on its session), which a dedicated
-    /// server serves: the agent surface runs here over the server's actions, as the run called
-    /// `name`.
+    /// server serves: the agent surface runs here over the server's actions, in a session of its
+    /// own.
     #[must_use]
-    pub fn on_host(device: Device, workspace_id: WorkspaceId, workspace: &str, name: &str) -> Self {
+    pub fn on_host(device: Device, workspace_id: WorkspaceId, workspace: &str) -> Self {
         let cert = device.cert();
         let (user, key) = (cert.user_public_key, cert.device_public_key);
         let person = hex::encode(user);
@@ -147,7 +147,7 @@ impl Entered {
             tilo_actions::remote::Caller::authenticated(user, key),
         );
         let server = McpServer::new(actions, workspace.to_owned(), person.clone())
-            .with_agent_session(uuid::Uuid::new_v4().simple().to_string(), name.to_owned())
+            .with_agent_session(uuid::Uuid::new_v4().simple().to_string())
             .with_task_hosts(Some(std::sync::Arc::new(
                 crate::task_hosts::TaskHosts::new(Some(&person), std::sync::Arc::new(catalogue)),
             )));

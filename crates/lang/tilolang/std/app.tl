@@ -989,7 +989,9 @@ view history<R>(of: R) {
                                 }
                             }
                             if let run = s.run {
-                                ui.Text(run.title, role: .caption, secondary: true)
+                                if run.title != "" {
+                                    ui.Text(run.title, role: .caption, secondary: true)
+                                }
                             }
                             if s.changes == 1 {
                                 if let v = s.versions.last() {

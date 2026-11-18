@@ -73,11 +73,9 @@ impl Worker {
             .map(|group| tilo_desktop_model::ownership::OpenedBy {
                 run: group.id,
                 agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
-                // The agent, by its own name; its session, by the title it gave.
-                label: caller
-                    .agent_session()
-                    .map_or(group.label, |session| session.label),
-                title: group.title.unwrap_or_default(),
+                // The agent, by its own name; its session, by what it was asked.
+                label: caller.agent_called().unwrap_or_default().to_owned(),
+                title: group.label.unwrap_or_default(),
             });
         let title = self
             .catalogue

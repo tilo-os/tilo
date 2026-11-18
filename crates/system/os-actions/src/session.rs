@@ -41,9 +41,7 @@ pub fn user_switching_supported() -> bool {
 
 fn bus_name_owned(name: &str) -> Result<bool, String> {
     crate::block_on(async {
-        let bus = zbus::Connection::system()
-            .await
-            .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+        let bus = crate::system_bus().await?;
         let reply = bus
             .call_method(
                 Some("org.freedesktop.DBus"),
@@ -63,9 +61,7 @@ fn bus_name_owned(name: &str) -> Result<bool, String> {
 
 fn open_greeter() -> Result<(), String> {
     crate::block_on(async {
-        let bus = zbus::Connection::system()
-            .await
-            .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+        let bus = crate::system_bus().await?;
         bus.call_method(
             Some(GDM_BUS_NAME),
             "/org/gnome/DisplayManager/LocalDisplayFactory",

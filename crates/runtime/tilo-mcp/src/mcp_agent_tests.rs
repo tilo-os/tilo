@@ -219,7 +219,7 @@ impl Notes {
                 let context = request.context.as_ref()?;
                 Some((
                     context.gesture,
-                    context.group.as_ref().map(|group| group.label.clone()),
+                    context.group.as_ref().and_then(|group| group.label.clone()),
                     request.target.address.action.clone(),
                 ))
             })
@@ -1219,7 +1219,7 @@ where
     H: ActionProvider + Clone + Send + Sync + 'static,
 {
     McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada")
-        .with_agent_session("mcp:test", "MCP agent")
+        .with_agent_session("mcp:test")
 }
 
 #[test]
@@ -1728,7 +1728,7 @@ tilo_test_env::scenario! {
             assert_eq!(told["invocation_id"], ran["invocation_id"]);
             assert_eq!(told["path"], "notes/Todo/body#append-paragraph");
             assert_eq!(told["phase"], "succeeded");
-            assert_eq!(told["title"], "MCP agent");
+            assert_eq!(told["title"], "", "a connection is asked nothing");
             let here = events
                 .iter()
                 .find(|event| event["kind"] == "presence")
@@ -1952,7 +1952,7 @@ tilo_test_env::scenario! {
     {
         let host = tilolang_kind(&Notes::new(true));
         let server = agent(&host)
-            .with_agent_session("task:1", "Tidy the notes")
+            .with_agent_session("task:1")
             .with_task_hosts(Some(CatalogueHost::new(tilolang_notes_catalogue())));
         let live_todo = host.id(&Notes::live_key(TODO));
         run(async {
@@ -2332,7 +2332,7 @@ tilo_test_env::scenario! {
     {
         let host = Notes::new(true);
         run(async {
-            let server = agent(&host).with_agent_session("task:7", "Tidy the notes");
+            let server = agent(&host).with_agent_session("task:7");
             let call = |text: &str, meta: Value| {
                 let mut request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
                     "name":"tilo_do",
@@ -2359,7 +2359,7 @@ tilo_test_env::scenario! {
             assert!(!steps[2..].contains(&steps[0]));
             // The step a client names is this session's: another session naming
             // it does not join it.
-            let other = agent(&host).with_agent_session("task:7", "Tidy the notes");
+            let other = agent(&host).with_agent_session("task:7");
             other.handle(call("jam", step.clone())).await.unwrap();
             assert_ne!(runs::gestures(&host)[4], steps[0]);
             // Every invocation is attributed to the task.

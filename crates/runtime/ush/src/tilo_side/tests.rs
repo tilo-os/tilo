@@ -165,8 +165,8 @@ tilo_test_env::scenario! {
         assert_eq!(writes.len(), 1, "one redirect is one History entry");
         let group = writes[0].group.as_ref().expect("in the command line's run");
         assert_eq!(
-            (group.id.as_str(), group.label.as_str()),
-            ("ush-1-1", "echo hi > a.txt")
+            (group.id.as_str(), group.label.as_deref()),
+            ("ush-1-1", Some("echo hi > a.txt"))
         );
         assert_eq!(
             writes[0].invoker.as_ref().map(|invoker: &tilo_actions::ActionInvoker| invoker.acting.by.clone()),

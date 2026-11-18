@@ -213,8 +213,8 @@ impl WorkspaceActivityPane {
     }
 
     /// Every session the history keeps as a work group that no recorded session holds: one agent
-    /// connection's work, or one agent's session of a task, named as the history names it ("Claude
-    /// Code #2"), its actions the records it changed in the order it changed them.
+    /// connection's work, or one agent's session of a task, by the agent whose work it is and what
+    /// it was asked, its actions what it changed in the order it changed it.
     fn group_sessions(
         &self,
         entries: &[HistoryEntry],
@@ -261,19 +261,21 @@ impl WorkspaceActivityPane {
                 actions.extend(self.segment_actions(segment, workspace, None, undo));
             }
             let mut agent = author(&first.author);
-            agent.name.clone_from(&group.label);
             agent.relation = wire::Relation::Software;
-            let instruction = members
-                .iter()
-                .find_map(|entry| {
-                    entry
-                        .context
-                        .as_ref()
-                        .and_then(|context| context.purpose.clone())
-                        .filter(|purpose| !purpose.trim().is_empty())
+            let instruction = group
+                .label
+                .clone()
+                .or_else(|| {
+                    members.iter().find_map(|entry| {
+                        entry
+                            .context
+                            .as_ref()
+                            .and_then(|context| context.purpose.clone())
+                            .filter(|purpose| !purpose.trim().is_empty())
+                    })
                 })
                 .or_else(|| actions.first().map(|action| action.summary.clone()))
-                .unwrap_or_else(|| group.label.clone());
+                .unwrap_or_default();
             sessions.push(wire::AgentSession {
                 id: group.id.clone(),
                 agent,

@@ -249,7 +249,7 @@ pub fn session_of(context: &tilo_actions::ActionContext) -> Option<Run> {
     let group = context.group.as_ref()?;
     (group.kind == tilo_actions::context::AGENT_SESSION_GROUP).then(|| Run {
         id: group.id.clone(),
-        title: group.label.clone(),
+        title: group.label.clone().unwrap_or_default(),
     })
 }
 

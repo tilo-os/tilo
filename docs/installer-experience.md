@@ -3,14 +3,16 @@
 ## Contract and scope
 
 This is the product specification for installing Tilo OS on the current computer,
-preparing it for another computer, and adding Tilo Desktop to an existing Linux
-installation. It specifies the experience, not what a release has shipped yet.
+preparing it for another computer, installing Tilo Server, and adding Tilo
+Desktop to an existing Linux installation. Desktop and server use one installer
+and one way of customising an installation. It specifies the experience, not what a release has shipped yet.
 [`apps/imager`](../apps/imager) meets it.
 
 The installer does the technical work. The person chooses the destination,
 identity, data and storage allocation, then approves the concrete result.
-It does not ask the person to choose image formats, a server/computer purpose,
-bootloader machinery or migration implementation details.
+It does not ask the person to choose image formats, a purpose for a desktop
+computer, bootloader machinery or migration implementation details. Tilo Server
+is a destination OS like Tilo Desktop, not a purpose question.
 
 The initial OS installation preserves the existing OS and its persistent startup
 default. Erasing the existing system is not an implicit fallback. An unavailable
@@ -177,20 +179,77 @@ Screen order:
    choices where requested, choose space, and confirm the resulting operation.
    Do not repeat completed choices. Finish the login password at first boot.
 
-### Unattended installation
+### Install plans
 
-This is an explicit mode, not the normal interactive flow. Before proceeding it
-requires the account credentials, a concrete disk plan, data-source access and
-an actual destination security check. A model lookup cannot attest hardware
-protection or authorize a disk write.
+Preparing another computer makes an **install plan**, kept in the person's
+own store (for a server, in their Servers workspace), so it has history, any of
+their devices or an agent can edit it, and one plan can serve several machines.
+Every choice in it is either made now or left open: identity and computer name,
+destination OS, network, disk rule, data, unlock method, which updates it follows, and for
+a server which workspaces it holds and how.
 
-Protect credentials in transit and at rest; never place them in public media
+The installation medium carries no choices and no credentials, only a
+single-use enrollment token that expires and names the plan. The plan can
+change after the medium is made, and a lost medium exposes one short-lived
+token. The same plan reaches the machine as a USB medium, a command for a
+rescue or netboot system, or an installation alongside the OS already on it.
+
+On the destination, the installer gets a network connection, dials the
+person's devices with the token and fetches the plan:
+
+- **Every choice made:** it installs without asking. This is unattended
+  installation, the same flow with nothing left open.
+- **Choices left open:** the machine appears on the person's devices as a new
+  machine waiting, and the remaining steps open there, showing the
+  destination's real hardware (drives with model, serial, size and current
+  contents; network; hardware protection). A machine with a screen may answer
+  them locally instead.
+- **No token or no connection:** the destination shows a short code and a QR
+  code on its screen or console; approving it on one of the person's devices
+  continues as above. Only network settings, when automatic configuration
+  fails, are ever asked on a headless machine itself.
+
+A disk is chosen by a rule (an empty drive, a serial, the largest drive that is
+not the current boot drive). A rule that matches no drive or several is never
+guessed: the choice opens on the person's devices. Erasing a drive that holds
+data needs a confirmation that shows that drive, unless the plan says so
+explicitly. The installation is an action whose progress, logs and failures
+show on the person's devices; the machine then restarts, protects its disk,
+unlocks by the chosen method, passes its first health check and joins as one of
+the person's devices.
+
+Protect the token in transit and at rest; never place it in public media
 metadata, logs, action responses or command arguments. The absence of suitable
-hardware protection needs an explicit secure alternative, not a silently weakened
-plan. If destination facts differ, refuse the conflicting operation and offer
-interactive completion with a precise error. Do not guess a disk or hang at an
-invisible prompt. Console and semantic control must expose the same recoverable
-state without exposing secrets.
+hardware protection needs an explicit secure alternative, not a silently
+weakened plan. If destination facts differ from the plan, refuse the
+conflicting operation and open the open choice with a precise reason. Do not
+hang at an invisible prompt. Console and semantic control expose the same
+recoverable state without exposing secrets.
+
+## Tilo Server
+
+Tilo Server is the headless OS for machines that hold workspaces and take
+their work: a home server, a workstation in a cupboard, or servers in a data
+centre. It goes through the same steps as Tilo OS (destination, identity, your data,
+drives, review), through an install plan, with these differences:
+
+- **Identity:** the machine becomes a device of an existing identity. A home
+  server may be someone's first Tilo device, so creating or restoring an
+  identity stays available; a data-centre server joins an identity that
+  already has devices.
+- **Your data:** offered, because a home server is a natural place for a photo
+  library, a NAS share or a self-hosted service's data. Usually skipped for a
+  data-centre server.
+- **Drives:** a server may take whole drives, several of them, and drives
+  without data are preferred. Installing alongside an existing OS keeps that
+  OS as the fallback start, and starts the new installation once.
+- **No login password and no local desktop.** It is managed from the person's
+  other devices through its entry in their Servers workspace.
+- **Enrollment** is the one enrollment every Tilo device uses, with methods
+  switched on per image: the server image uses the token and code approval,
+  not local-network pairing.
+- **Hosting choices:** which workspaces it holds, and for each whether it
+  keeps encrypted copies only or holds the keys and takes work.
 
 ## Tilo Desktop only
 

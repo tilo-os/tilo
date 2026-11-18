@@ -345,8 +345,8 @@ fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
         "person"
     };
     let name = caller
-        .agent_session()
-        .map(|run| run.label)
+        .agent_called()
+        .map(str::to_owned)
         .or_else(|| {
             acting
                 .person_id()

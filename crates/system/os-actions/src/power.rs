@@ -31,9 +31,7 @@ impl PowerProfile {
 }
 
 async fn daemon() -> Result<PowerProfilesMonitor, String> {
-    let bus = zbus::Connection::system()
-        .await
-        .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+    let bus = crate::system_bus().await?;
     PowerProfilesMonitor::with_connection(&bus)
         .await
         .map_err(|e| format!("power-profiles-daemon: {e}"))

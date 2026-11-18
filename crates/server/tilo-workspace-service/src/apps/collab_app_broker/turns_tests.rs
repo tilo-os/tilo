@@ -67,6 +67,7 @@ fn ask(f: &Fixture) {
                 subject: None,
                 spend: None,
             },
+            asked: "Add the release date to the notes\nand say when".into(),
         });
 }
 
@@ -182,9 +183,12 @@ async fn a_turn_is_answered_by_its_agent_and_its_steps_are_the_turns() {
             );
             let group = wire.context().and_then(|context| context.group.clone());
             assert_eq!(
-                group.map(|group| group.id).as_deref(),
-                Some(SESSION),
-                "the step is listed under the turn's session"
+                group.map(|group| (group.id, group.label)),
+                Some((
+                    SESSION.to_owned(),
+                    Some("Add the release date to the notes".to_owned())
+                )),
+                "the step is listed under the turn's session, labelled by what the person asked"
             );
 
             // Handed once: a second look hands nothing new.

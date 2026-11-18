@@ -3,8 +3,6 @@
 
 use tilo_actions::remote::{Caller, InvokeRequest};
 
-/// The longest title the host keeps, as the API bounds the one it reads.
-const MAX_INVOCATION_TITLE: usize = 96;
 /// The longest id the host keeps, as the API bounds the one it reads.
 const MAX_INVOCATION_ID: usize = 96;
 
@@ -13,20 +11,12 @@ const MAX_INVOCATION_ID: usize = 96;
 /// to read, never the group itself, which is the host's to say ([`caller_context`]).
 /// `None` when it called it nothing.
 pub(super) fn said_invocation_title(request: &InvokeRequest) -> Option<String> {
-    let title: String = request
-        .context
-        .as_ref()?
-        .group
-        .as_ref()
-        .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)?
-        .title
-        .as_deref()?
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(MAX_INVOCATION_TITLE)
-        .collect();
-    let title = title.trim();
-    (!title.is_empty()).then(|| title.to_owned())
+    let group = request.context.as_ref()?.group.as_ref();
+    let said = group.filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)?;
+    tilo_actions::context::one_line(
+        said.label.as_deref()?,
+        tilo_actions::context::MAX_LABEL_CHARS,
+    )
 }
 
 /// The id the agent gave the group `request` says it is a step of (`_meta`
@@ -52,7 +42,7 @@ pub(super) fn said_invocation_id(request: &InvokeRequest) -> Option<String> {
 /// said, and the work it is part of. The group is
 /// the host's to say: an agent's or a key's actions on one connection are the
 /// group [`Caller::agent_session`] names, by the title the agent gave it
-/// ([`said_invocation_title`]), else by the name the host knows for the agent, and
+/// ([`said_invocation_title`]), else by what it was asked, and
 /// naming the id the agent gave it ([`said_invocation_id`]); one a client claims
 /// for itself is never taken.
 pub(super) fn caller_context(
@@ -63,8 +53,7 @@ pub(super) fn caller_context(
     let group = match caller.agent_session() {
         Some(mut group) => {
             if let Some(title) = said_invocation_title(request) {
-                group.label.clone_from(&title);
-                group.title = Some(title);
+                group.label = Some(title);
             }
             group.declared_id = said_invocation_id(request);
             Some(group)

@@ -472,6 +472,40 @@ impl Backend for NestedBackend {
         )
     }
 
+    fn read_back(
+        &mut self,
+        state: &mut State,
+        target: &crate::capture::Target,
+        held: crate::capture::Held,
+    ) -> Result<Screenshot, crate::capture::CaptureError> {
+        let mut inner = self.inner.borrow_mut();
+        let renderer = inner
+            .graphics
+            .as_mut()
+            .ok_or_else(|| crate::capture::CaptureError::Backend(no_graphics()))?
+            .renderer();
+        crate::capture::read_back::<_, smithay::backend::renderer::gles::GlesTexture>(
+            renderer, state, target, held,
+        )
+    }
+
+    fn read_back_scaled(
+        &mut self,
+        state: &mut State,
+        target: &crate::capture::Target,
+        max: (u32, u32),
+    ) -> Result<Screenshot, crate::capture::CaptureError> {
+        let mut inner = self.inner.borrow_mut();
+        let renderer = inner
+            .graphics
+            .as_mut()
+            .ok_or_else(|| crate::capture::CaptureError::Backend(no_graphics()))?
+            .renderer();
+        crate::capture::read_back_scaled::<_, smithay::backend::renderer::gles::GlesTexture>(
+            renderer, state, target, max,
+        )
+    }
+
     fn screenshot(&mut self, state: &mut State, name: &str) -> Result<Screenshot, BackendError> {
         let mut guard = self.inner.borrow_mut();
         let inner = &mut *guard;

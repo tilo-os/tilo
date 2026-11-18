@@ -828,11 +828,14 @@ fn in_run(
     invoker: &tilo_actions::ActionInvoker,
     run: Option<&tilo_actions::WorkGroup>,
 ) -> ActionContext {
-    let context = context.with_invoker(invoker.clone());
-    match run {
-        Some(run) => context.with_group(run.id.clone(), run.label.clone(), run.kind.clone()),
-        None => context,
+    let mut context = context.with_invoker(invoker.clone());
+    if let Some(run) = run {
+        context.group = Some(tilo_actions::WorkGroup {
+            declared_id: None,
+            ..run.clone()
+        });
     }
+    context
 }
 
 /// The reading of the document or item `resource` (its published id, `tl:<app>:<id>`) that `host`

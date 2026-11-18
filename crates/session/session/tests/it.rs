@@ -153,6 +153,8 @@ mod log_says_once;
 mod logging;
 #[path = "lounge_e2e.rs"]
 mod lounge_e2e;
+#[path = "machine_isolation.rs"]
+mod machine_isolation;
 #[path = "mcp_server_workspace.rs"]
 mod mcp_server_workspace;
 #[path = "network_agent_questions.rs"]

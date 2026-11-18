@@ -526,7 +526,7 @@ struct Task {
     when_opened: BTreeSet<WorkspaceId>,
     /// Each waits for the writes that were in this device's ownership when it was called, and
     /// completes with the host's refusal of any of them: the writes of every workspace, or of
-    /// the workspaces it was asked for alone ([`outbound::Scope`]).
+    /// the workspaces or the documents it was asked for alone ([`outbound::Scope`]).
     barriers: Vec<outbound::Owed>,
     /// What this connection sent its host of each workspace's ownership.
     sending: BTreeMap<tilo_desktop_model::WorkspaceId, crate::membership_check::Sending>,
@@ -1629,11 +1629,21 @@ impl Task {
                 true
             }
             Command::Client(Cmd::Barrier(done)) => {
-                self.barrier(done, None);
+                self.barrier(done, outbound::Scope::Session);
                 true
             }
             Command::Client(Cmd::BarrierOf(workspaces, done)) => {
-                self.barrier(done, Some(workspaces.into_iter().collect()));
+                self.barrier(
+                    done,
+                    outbound::Scope::Workspaces(workspaces.into_iter().collect()),
+                );
+                true
+            }
+            Command::Client(Cmd::BarrierOfDocuments(documents, done)) => {
+                self.barrier(
+                    done,
+                    outbound::Scope::Documents(documents.into_iter().collect()),
+                );
                 true
             }
             Command::Client(Cmd::KeptOf(workspaces, said)) => {

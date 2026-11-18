@@ -150,7 +150,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .unwrap_or_default();
         let title = match DeclaredInvocation::current().map(|invocation| invocation.title) {
             Some(title) if !title.is_empty() => title,
-            _ => session.map_or_else(String::new, |session| session.label),
+            _ => session
+                .and_then(|session| session.label)
+                .unwrap_or_default(),
         };
         (title, id)
     }

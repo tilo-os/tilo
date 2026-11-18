@@ -294,6 +294,7 @@ mod tests {
             conversation: "ada with scout".to_owned(),
             cause: message.to_owned(),
             request: message.to_owned(),
+            asked: message.to_owned(),
             fold: None,
             typed: true,
             line: None,

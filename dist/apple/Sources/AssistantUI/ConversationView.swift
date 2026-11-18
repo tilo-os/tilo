@@ -13,6 +13,13 @@ public struct ConversationView: View {
     private let head: String?
     @Environment(AssistantModel.self) private var model
     @Environment(\.wording) private var wording
+    /// Whether the conversation's end is in sight: the person has not scrolled away from it.
+    @State private var atEnd = true
+    /// Whether something came or grew under what the person scrolled up to.
+    @State private var moreBelow = false
+    /// Whether the height of the line that said an answer was being written is kept after
+    /// the answer ended, so that nothing above it moves. The next piece takes its place.
+    @State private var keepsFoot = false
 
     public init(chat: Chat, picturedSecret: String = "", head: String? = nil) {
         self.chat = chat
@@ -22,6 +29,8 @@ public struct ConversationView: View {
 
     public var body: some View {
         let conversation = model.conversation(chat)
+        // The reply its model is writing now: the newest piece, while an answer is being written.
+        let written = conversation.isAnswering ? conversation.items.last?.id : nil
         let rows = conversation.rows(in: chat, wording)
         let ready = chat == .main ? model.tasks(.readyForReview).count : 0
         // What came while the person was away stands at the top of the stretch that came since.
@@ -55,8 +64,10 @@ public struct ConversationView: View {
                         }
                         // What stands between the person and a first answer is said where that answer would stand.
                         if chat == .main { SetupStep() }
-                        if conversation.isAnswering {
+                        if conversation.isAnswering || keepsFoot {
                             Fine(words: "\(AssistantWords.answering.said)…").padding(.leading, 14)
+                                .opacity(conversation.isAnswering ? 1 : 0)
+                                .accessibilityHidden(!conversation.isAnswering)
                         }
                         if ready > 0 { ReviewLine(ready: ready) }
                         if let problem = model.problem {
@@ -75,7 +86,41 @@ public struct ConversationView: View {
                 // cut flat there, its round corners made square.
                 .overlay(alignment: .top) { EdgeFade(edge: .top) }
                 .overlay(alignment: .bottom) { EdgeFade(edge: .bottom) }
+                // The end is in sight while what shows reaches to within two lines of it.
+                .onScrollGeometryChange(for: Bool.self) { place in
+                    place.contentSize.height - place.visibleRect.maxY <= 40
+                } action: { _, inSight in
+                    atEnd = inSight
+                    if inSight { moreBelow = false }
+                }
+                // Scrolled up, the view stays where the person put it, and a quiet mark says that
+                // more came below. A press on it brings the end back.
+                .overlay(alignment: .bottom) {
+                    if moreBelow {
+                        Button {
+                            moreBelow = false
+                            reader.scrollTo("end", anchor: .bottom)
+                        } label: {
+                            Tag(words: AssistantWords.moreBelow.said)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 8)
+                    }
+                }
+                .onChange(of: conversation.items.last) {
+                    if !atEnd, !newestIsOwn(conversation) { moreBelow = true }
+                }
+                .onChange(of: conversation.isAnswering) { was, now in
+                    keepsFoot = was && !now
+                }
+                .onChange(of: chat) {
+                    keepsFoot = false
+                    moreBelow = false
+                }
                 .onChange(of: rows.last?.id) {
+                    keepsFoot = false
+                    // A new piece brings the end into view for a person who stands at it, or who sent it.
+                    guard atEnd || newestIsOwn(conversation) else { return }
                     withAnimation(.easeOut(duration: 0.2)) { reader.scrollTo("end", anchor: .bottom) }
                 }
                 .onChange(of: model.shownItem) {
@@ -85,6 +130,12 @@ public struct ConversationView: View {
                 }
             }
         }
+        .environment(\.writtenPiece, written)
+    }
+
+    /// Whether the newest piece is what the person wrote themselves.
+    private func newestIsOwn(_ conversation: Conversation) -> Bool {
+        if case .message(let message)? = conversation.items.last?.content { message.author == .person } else { false }
     }
 
     private var liveAgent: SubAgent? {
@@ -160,12 +211,13 @@ private struct Replies: View {
 private struct PieceView: View {
     let item: Item
     let picturedSecret: String
+    @Environment(\.writtenPiece) private var writtenPiece
     @Environment(AssistantModel.self) private var model
 
     var body: some View {
         switch item.content {
         case .message(let message):
-            MessageView(message: message)
+            MessageView(message: message, isWritten: item.id == writtenPiece)
         case .report(let line):
             Bubble { MarkdownText(text: line) }
         case .reminder(let words):
@@ -217,6 +269,8 @@ private struct SaidByPerson: ViewModifier {
 /// Words from the person, the assistant or the main agent, with what came with them.
 private struct MessageView: View {
     let message: Message
+    /// Whether its model is writing it now.
+    var isWritten = false
     @Environment(AssistantModel.self) private var model
     /// The file a press on its tag fetched, shown by the system's own viewer.
     @State private var shown: URL?
@@ -228,7 +282,8 @@ private struct MessageView: View {
                     // An address alone is shown as what it is, letter by letter.
                     Text(message.text).font(.tiloMono(12.5))
                 } else {
-                    MarkdownText(text: message.text)
+                    // What a person wrote stands as they wrote it; a reply that is being written is read as it will stand.
+                    MarkdownText(text: message.text, isWritten: isWritten && message.author != .person)
                 }
             }
             #if os(macOS)
@@ -271,4 +326,9 @@ private struct MessageView: View {
         let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return !text.contains(" ") && !text.contains("\n") && (text.hasPrefix("https://") || text.hasPrefix("http://"))
     }
+}
+
+extension EnvironmentValues {
+    /// The piece whose reply is being written now, in the conversation a view stands in.
+    @Entry var writtenPiece: Item.ID?
 }

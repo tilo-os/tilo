@@ -128,7 +128,7 @@ impl Request {
         // The broker has no application decoder: published parameters are checked
         // at admission, but correspondence to this encoded input remains a claim.
         if let Some(group) = &value.group {
-            for field in [&group.id, &group.label, &group.kind] {
+            for field in [&group.id, &group.kind].into_iter().chain(&group.label) {
                 if field.is_empty() || field.len() > 4096 || field.chars().any(char::is_control) {
                     return Err("invalid local document report group".into());
                 }

@@ -466,6 +466,15 @@ export RUST_LOG=${RUST_LOG:-warn}
 # host /usr/share/tilo/system-interfaces.toml is that image's, which may be
 # newer or older than the apps built here.
 export TILO_SYSTEM_INTERFACES=$repo_root/os/usr/share/tilo/system-interfaces.toml
+# This session runs inside another desktop, so it owns no machine of the one it
+# runs on: `TILO_MACHINE=hosted` is the one answer every service that acts on
+# the machine reads (tilo_paths::machine). With it, nothing here asks this
+# machine's VPN helper to change its kill switch, follows its NetworkManager or
+# BlueZ, holds its logind or UPower, registers an agent on its system bus or
+# joins its systemd user manager's session target; and the programs the session
+# starts (its apps above all, through the launcher) inherit the same answer
+# rather than reaching for the desktop's daemons themselves.
+export TILO_MACHINE=hosted
 # The private D-Bus answers no Secret Service, so secrets (the collaboration
 # channels' keys among them) go to the sealed file store a headless machine
 # uses, in the state directory.

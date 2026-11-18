@@ -159,6 +159,23 @@ pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
         Ok(receipt)
     }
 
+    /// [`Self::barrier_of`] for `documents` alone: a receipt that completes once every write said
+    /// before it to one of them is durable at its holder, or with the refusal that prevents it.
+    /// What this device still holds or owes of a document not named, of the same workspace too,
+    /// does not keep it waiting: a change that waits for its document says nothing about the
+    /// writes to another.
+    ///
+    /// # Errors
+    /// The transport is gone.
+    fn barrier_of_documents(
+        &self,
+        documents: &[DocumentRoute],
+    ) -> Result<Receipt<Result<(), String>>, Closed> {
+        let (answer, receipt) = answer();
+        self.send(Cmd::BarrierOfDocuments(documents.to_vec(), answer))?;
+        Ok(receipt)
+    }
+
     /// What this device's session still keeps of what it wrote to `workspaces`, a document each,
     /// with what its writes wait for and for how long: none once every write to them is durable
     /// at its holder. Whoever finds a write unconfirmed ([`Self::barrier_of`]) reads here why,
@@ -479,6 +496,9 @@ pub enum Cmd {
     /// Answer once every write said before this to one of these workspaces is durable at its
     /// holder ([`Outbox::barrier_of`]).
     BarrierOf(Vec<Topic>, Answer<Result<(), String>>),
+    /// Answer once every write said before this to one of these documents is durable at its
+    /// holder ([`Outbox::barrier_of_documents`]).
+    BarrierOfDocuments(Vec<DocumentRoute>, Answer<Result<(), String>>),
     /// Answer what this session still keeps of what it wrote to these workspaces, and what each
     /// document's writes wait for ([`Outbox::kept_of`]).
     KeptOf(Vec<Topic>, Answer<Vec<Kept>>),

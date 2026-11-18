@@ -568,10 +568,10 @@ impl ModemManager {
     }
 
     pub async fn system() -> Result<Self, ModemError> {
-        zbus::Connection::system()
+        crate::system_bus()
             .await
             .map(Self::on)
-            .map_err(|error| ModemError::Unavailable(error.to_string()))
+            .map_err(ModemError::Unavailable)
     }
 
     async fn proxy<'p, P>(&self, path: &str) -> Result<P, ModemError>

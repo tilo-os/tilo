@@ -122,6 +122,18 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-server) and test(coding_agents::)"
 setup = "machine-siblings"
 
+# A host holds a served run in its workspace's machine by starting the same agent
+# program (`ush`'s served-run and environment-program tests).
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(ush) and (test(served_runs::) or test(environment_programs::))"
+setup = "machine-siblings"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(ush) and (test(served_runs::) or test(environment_programs::))"
+setup = "machine-siblings"
+
 # So do the agent session's tests of a coding agent on a person's server, which start it
 # through that server's own keeper of coding agents.
 [[profile.default.scripts]]

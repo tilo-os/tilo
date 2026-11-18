@@ -193,7 +193,7 @@ fn run<F: std::future::Future>(future: F) -> F::Output {
 
 fn agent(host: &Tracker) -> McpServer<Tracker> {
     McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada")
-        .with_agent_session("mcp:test", "MCP agent")
+        .with_agent_session("mcp:test")
 }
 
 /// The text a tool call answered.

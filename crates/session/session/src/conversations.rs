@@ -1178,6 +1178,7 @@ fn turns(
                         subject,
                         spend: None,
                     },
+                    asked: chat::summons::asked_words(message),
                 },
                 name,
             ))

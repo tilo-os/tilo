@@ -145,9 +145,8 @@ impl HostStepServices for TaskPrograms {
             .cloned()
             .unwrap_or_else(|| tilo_actions::WorkGroup {
                 id: session.to_owned(),
-                label: agent.to_owned(),
+                label: None,
                 kind: tilo_actions::context::AGENT_SESSION_GROUP.to_owned(),
-                title: None,
                 declared_id: None,
             });
         self.programs.run(ProgramRequest {

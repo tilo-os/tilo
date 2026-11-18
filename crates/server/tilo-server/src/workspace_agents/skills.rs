@@ -1065,6 +1065,7 @@ mod tests {
             conversation: chat::summons::conversation_address(conversation),
             cause: "m1".to_owned(),
             request: "Do the job.".to_owned(),
+            asked: "Do the job.".to_owned(),
             fold: None,
             typed: false,
             line: None,

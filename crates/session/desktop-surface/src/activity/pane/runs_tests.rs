@@ -94,7 +94,7 @@ fn ask(
                 tilo_actions::entry::Scalar::argument(&serde_json::json!(command)).unwrap(),
             )],
         )))
-        .with_group(group, "Claude Code #2", "agent-session");
+        .with_group(group, "Fix the signup tests", "agent-session");
     doc.commit_with(
         CommitOptions::default()
             .with_time(at)
@@ -251,7 +251,7 @@ tilo_test_env::scenario! {
             .iter()
             .find(|run| run.id == "mcp:session-2")
             .unwrap_or_else(|| panic!("the session's work is one run: {served:#?}"));
-        assert_eq!(run.agent.name, "Claude Code #2");
+        assert_eq!(run.instruction, "Fix the signup tests", "listed by what it was asked");
         assert_eq!(run.agent.relation, wire::Relation::Software);
         assert_eq!(run.actions.len(), 2, "{:#?}", run.actions);
 
@@ -617,7 +617,7 @@ impl Connection {
                 .with_described(crate::activity::testing::verb("Write the note"))
                 .with_group(
                     GROUP,
-                    "Claude Code #2",
+                    "Write the notes",
                     ui::history_source::steps::AGENT_SESSION,
                 );
             let at = 10_i64.saturating_add(i64::try_from(index).unwrap_or(0));

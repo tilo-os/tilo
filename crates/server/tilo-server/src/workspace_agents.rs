@@ -555,6 +555,8 @@ pub struct Turn {
     pub cause: String,
     /// What the person asked, in words.
     pub request: String,
+    /// What they asked, as a person reads it: what the agent's session is labelled by.
+    pub asked: String,
     /// What the turn asks its agent to take into its conversation's summary while it answers
     /// ([`chat::recall::told`]): none for most turns, and for every issue.
     pub fold: Option<runtime_collab::recall::Fold>,
@@ -1030,6 +1032,7 @@ impl HostAgents {
                     conversation: summons.address(),
                     cause: summons.message.to_string(),
                     request: told.instruction,
+                    asked: chat::summons::asked_words(message),
                     fold: told.fold,
                     typed: summons.typed,
                     line: None,
@@ -1050,6 +1053,7 @@ impl HostAgents {
                     conversation: summons.address(),
                     cause: summons.message.to_string(),
                     request: String::new(),
+                    asked: String::new(),
                     fold: None,
                     typed: summons.typed,
                     line: None,
@@ -1127,6 +1131,7 @@ impl HostAgents {
                 conversation: tasks_model::issue_resource(&ask.issue),
                 cause: ask.cause.clone(),
                 request,
+                asked: issue.title.clone(),
                 fold: None,
                 typed: true,
                 line: None,
@@ -1758,6 +1763,7 @@ impl TurnScope {
             .delegated_to(turn.agent.id.0.clone())
             .named(&turn.agent.name)
             .in_agent_session(session)
+            .asked(&turn.asked)
             .on_turn(
                 tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone()),
                 turn.agent.turn_rules(&self.workspace),

@@ -670,14 +670,10 @@ impl RuntimeActionProvider {
         let provider = self;
         Arc::new(move || {
             // The MCP client is an agent the person's device hands this
-            // session to; the admission stays the person's. Its name is part
-            // of the durable owner, so people are shown a short label for it
-            // instead of the whole run id.
+            // session to; the admission stays the person's.
             let (session_host, caller, agent) =
                 provider.agent_session(&workspace, &actor, &policy_time, tilo_mcp::agent_id)?;
-            let label = tilo_mcp::agent_label(&agent);
-            Ok(tilo_mcp::McpServer::admitted(session_host, caller)?
-                .with_agent_session(agent, label))
+            Ok(tilo_mcp::McpServer::admitted(session_host, caller)?.with_agent_session(agent))
         })
     }
 

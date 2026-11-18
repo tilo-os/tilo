@@ -392,6 +392,25 @@ pub fn request(message: &Message) -> (String, Option<tilo_actions::SelectionSubj
     (instruction, subject)
 }
 
+/// What `message` asks its agent to do, as a person reads it: their own words without the mention
+/// of an agent they open with, else the first thing it carries (what they sent the agent). What
+/// the agent's session is labelled by; empty when it holds neither.
+pub fn asked_words(message: &Message) -> String {
+    let text = message.text.trim_start();
+    let opening = message.text.len() - text.len();
+    let words = message
+        .mentions
+        .iter()
+        .find(|mention| mention.is_agent && mention.start == opening)
+        .and_then(|mention| message.text.get(mention.end()..))
+        .unwrap_or(text)
+        .trim();
+    match message.attachments.first() {
+        Some(attached) if words.is_empty() => attached.label().to_owned(),
+        _ => words.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::indexing_slicing, reason = "in a test this is the assertion")]
@@ -478,6 +497,32 @@ mod tests {
     }
 
     /// A message with the cause `key` of `kind` for `person`, written by `author`.
+    /// A message asks its agent in the person's words, without the agent's name they open with;
+    /// one with no words asks by what it carries.
+    #[test]
+    fn what_a_message_asks_is_its_words_after_the_agents_name_or_what_it_carries() {
+        let general = Id::from_raw("c_general");
+        let mut naming = said(
+            &general,
+            MemberId::person(ADA),
+            "@Helper Rename the second task",
+            1,
+        );
+        naming.mentions = vec![crate::mention::Mention {
+            user: MemberId::agent("helper"),
+            start: 0,
+            len: 7,
+            is_agent: true,
+        }];
+        assert_eq!(asked_words(&naming), "Rename the second task");
+        let mut sent = said(&general, MemberId::person(ADA), "  ", 2);
+        sent.attachments = vec![tilo_reference::Attached::Text {
+            text: "Second task".to_owned(),
+            from: None,
+        }];
+        assert_eq!(asked_words(&sent), "Second task");
+    }
+
     fn caused(
         channel: &Id,
         author: MemberId,

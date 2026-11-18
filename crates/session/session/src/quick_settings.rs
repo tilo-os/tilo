@@ -167,7 +167,19 @@ impl PanelMotion {
         let share = |at: f64, length: f64| if length > 0.0 { at / length } else { 0.0 };
         Some(LayerPose {
             scale: coming.scale,
-            opacity: coming.opacity,
+            // Opaque from its first frame as it arrives: the panel is floating chrome, and the
+            // workspace under it is not what a person opened it to look at. Faded in with the
+            // motion's own opacity it let the sharp, bright desktop show through it while it
+            // arrived — the cards under it read as drawn over it, and the panel seemed to jump
+            // above them once it was opaque. It grows from where it was opened instead, off its
+            // material's own tint (`docs/design-language.md`, "Material and transparency"). It
+            // still fades as it leaves, which is how a shrunk-back panel goes.
+            // Reduced motion moves nothing: the fade is the whole of it, so it keeps it.
+            opacity: if self.appear.is_open() && !self.motion.reduced() {
+                1.0
+            } else {
+                coming.opacity
+            },
             anchor: (
                 share(origin.x, self.surface.width()),
                 share(origin.y, self.surface.height()),
@@ -245,8 +257,10 @@ impl crate::Session {
         // What the keys asked the panel to show, which it can only be told while it runs. It is
         // told before it shows, and shows only once it has drawn a frame after it answered: the
         // first frame a person sees is that page, fitted, never the one it was left on, which it
-        // may draw again at its new place before the ask reaches it.
-        let drawn_before = self.compositor.layer_frames(SURFACE_NAMESPACE);
+        // may draw again at its new place before the ask reaches it. An opening that asks for no
+        // page waits for nothing: the panel holds the frame it was left on (it was told to show
+        // its controls when it went down), and the compositor shows it at once rather than hold it
+        // back for a frame a hidden app never draws.
         let asked = std::mem::take(&mut *self.shared.panel_asks.borrow_mut());
         let page = self.ask_panel(&asked);
         if opening && page.is_some() {
@@ -268,7 +282,7 @@ impl crate::Session {
                 self.quick_settings_asked = None;
                 Some(self.compositor.layer_frames(SURFACE_NAMESPACE))
             }
-            None => opening.then_some(drawn_before),
+            None => None,
         };
         self.show_quick_settings(after);
         // The panel takes the keyboard once the person sees it: Tab walks its controls and Enter
@@ -805,8 +819,13 @@ mod tests {
             assert!(drawn);
             let coming = coming.expect("it arrives");
             assert!(
-                coming.opacity < 0.05 && coming.scale < 1.0,
-                "from faint and small: {coming:?}"
+                coming.scale < 1.0 && coming.offset.0 > 0.0,
+                "from small, toward the corner it was opened from: {coming:?}"
+            );
+            assert!(
+                (coming.opacity - 1.0).abs() < f32::EPSILON,
+                "opaque as it arrives: the sharp workspace under it never shows through the \
+                 floating chrome it is made of, which read as the cards drawn over it: {coming:?}"
             );
             assert!(
                 coming.offset.0 > 0.0 && coming.offset.1 < 0.0 && coming.anchor == (1.0, 0.0),
@@ -816,6 +835,14 @@ mod tests {
                 asks(&panel, 0),
                 "an arriving panel asks for the pass that moves it"
             );
+            // Part way through its arrival it is still wholly opaque: no frame of the motion shows
+            // the workspace under it through the panel.
+            let partway = look(&panel, 60).1.expect("its arrival is drawn");
+            assert!(
+                (partway.opacity - 1.0).abs() < f32::EPSILON,
+                "opaque all the way in: {partway:?}"
+            );
+            assert!(partway.scale < 1.0, "and still small: {partway:?}");
 
             assert_eq!(
                 look(&panel, 600).1,

@@ -853,6 +853,7 @@ mod tests {
                 subject: None,
                 spend: None,
             },
+            asked: "add the revenue curve".into(),
         }
     }
 

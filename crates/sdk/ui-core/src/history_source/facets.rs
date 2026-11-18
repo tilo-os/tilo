@@ -40,8 +40,12 @@ impl HistoryFacetIndex {
                 bump(&mut index.resource_kinds, &resource.kind);
                 bump(&mut index.resources, &resource.label);
             }
-            if let Some(group) = context.group.as_ref() {
-                bump(&mut index.work_groups, &group.label);
+            if let Some(label) = context
+                .group
+                .as_ref()
+                .and_then(|group| group.label.as_ref())
+            {
+                bump(&mut index.work_groups, label);
             }
             for facet in &context.facets {
                 bump(

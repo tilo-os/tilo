@@ -1608,8 +1608,8 @@ fn spawn_on_pty_with(
     };
 
     let slave_fd = slave.as_raw_fd();
-    // SAFETY: `pre_exec` runs between fork and exec in the child. Both calls
-    // are async-signal-safe and neither allocates. `setsid` is what makes the
+    // SAFETY: `pre_exec` runs between fork and exec in the child. Every call
+    // here is async-signal-safe and none allocates. `setsid` is what makes the
     // child a session leader so `TIOCSCTTY` can hand it the pty; without a
     // controlling terminal the shell has no job control.
     unsafe {
@@ -1633,8 +1633,18 @@ fn spawn_on_pty_with(
     cmd.spawn()
 }
 
+/// A pty whose two ends are close-on-exec: neither end travels into the shell, and holding the
+/// master is the only thing that keeps the terminal open.
+///
+/// `openpty` (glibc) leaves both descriptors inheritable, so without this the shell a session
+/// starts inherits the *master* as well as its own terminal, and it keeps the terminal's last
+/// reader alive itself: when the session ends and the supervisor drops its end, the hangup never
+/// arrives and the shell runs on as an orphan, reparented and holding a terminal nothing shows
+/// (the Terminal's shell is the one that matters — it is the program a session starts, not one
+/// the supervisor could only kill). The fork for `spawn_on_pty` happens between this call and the
+/// exec, so the flags reach the child too.
 fn open_pty(cols: u16, rows: u16) -> std::io::Result<(std::fs::File, std::fs::File)> {
-    use std::os::fd::FromRawFd;
+    use std::os::fd::{AsRawFd as _, FromRawFd};
     let mut master: RawFd = -1;
     let mut slave: RawFd = -1;
     let size = libc::winsize {
@@ -1655,13 +1665,23 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(std::fs::File, std::fs::Fi
     if rc != 0 {
         return Err(std::io::Error::last_os_error());
     }
-    // SAFETY: `openpty` succeeded, so both are owned, open descriptors.
-    Ok(unsafe {
-        (
+    // SAFETY: `openpty` succeeded, so both are owned, open descriptors. `fcntl` only reads and rewrites
+    // their descriptor flags; both calls are async-signal-safe and neither allocates.
+    let pty = unsafe {
+        let pty = (
             std::fs::File::from_raw_fd(master),
             std::fs::File::from_raw_fd(slave),
-        )
-    })
+        );
+        for end in [&pty.0, &pty.1] {
+            let fd = end.as_raw_fd();
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        pty
+    };
+    Ok(pty)
 }
 
 fn reply(

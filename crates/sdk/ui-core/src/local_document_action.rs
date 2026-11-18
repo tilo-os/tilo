@@ -568,7 +568,7 @@ fn report_budget(
         .map_err(|error| error.to_string())?;
     let group = context.and_then(|cx| cx.group.as_ref());
     if let Some(group) = group {
-        for field in [&group.id, &group.label, &group.kind] {
+        for field in [&group.id, &group.kind].into_iter().chain(&group.label) {
             validate_report_field(field)?;
         }
     }

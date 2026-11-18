@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tilo_action_policy::Lifetime;
+use tilo_test_env::{DiesWithTheTest as _, SpawnUnderEnvLock as _};
 use ush::host::{HostPolicy, TERMINAL_APP_ID, encode_handoff};
 use ush::store::Store;
 use ush::supervisor::{ServeResponse, recv_with_fd};
@@ -104,52 +105,63 @@ fn allow(socket: &Path, app: Option<&str>, lifetime: Lifetime) -> ServeResponse 
 #[test]
 fn allows_last_as_long_as_the_person_said_and_only_the_shell_records_them() {
     crate::serve_handoff::require_trusted_loader!();
-    let dir = tempfile::tempdir().unwrap();
-    let _env = identities(dir.path(), OWNER, OWNER);
-    let (socket, store) = serving(dir.path());
+    // A session's own allows live in the process (`HostPolicy::SESSION_GRANTS`), so this test has
+    // the process to itself: its session grants never reach another test's supervisor.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "allows_last_as_long_as_the_person_said_and_only_the_shell_records_them",
+        || {
+            let dir = tempfile::tempdir().unwrap();
+            let _env = identities(dir.path(), OWNER, OWNER);
+            let (socket, store) = serving(dir.path());
 
-    let response = allow(&socket, Some(TERMINAL_APP_ID), Lifetime::UntilRevoked);
-    assert!(reason(&response).contains("shell"), "{response:?}");
-    let (response, _, _) = ask(&socket, Some(TERMINAL_APP_ID), "person");
-    assert!(matches!(response, ServeResponse::HostNotAllowed { .. }));
+            let response = allow(&socket, Some(TERMINAL_APP_ID), Lifetime::UntilRevoked);
+            assert!(reason(&response).contains("shell"), "{response:?}");
+            let (response, _, _) = ask(&socket, Some(TERMINAL_APP_ID), "person");
+            assert!(matches!(response, ServeResponse::HostNotAllowed { .. }));
 
-    assert_eq!(allow(&socket, None, Lifetime::Once), ServeResponse::Allowed);
-    let (response, fd, _first) = ask(&socket, Some(TERMINAL_APP_ID), "person");
-    assert!(
-        matches!(response, ServeResponse::Session { .. }),
-        "{response:?}"
-    );
-    assert!(fd.is_some());
-    let (response, _, _) = ask(&socket, Some(TERMINAL_APP_ID), "person");
-    assert!(
-        matches!(response, ServeResponse::HostNotAllowed { .. }),
-        "a one-time allow is spent: {response:?}"
-    );
+            assert_eq!(allow(&socket, None, Lifetime::Once), ServeResponse::Allowed);
+            let (response, fd, _first) = ask(&socket, Some(TERMINAL_APP_ID), "person");
+            assert!(
+                matches!(response, ServeResponse::Session { .. }),
+                "{response:?}"
+            );
+            assert!(fd.is_some());
+            let (response, _, _) = ask(&socket, Some(TERMINAL_APP_ID), "person");
+            assert!(
+                matches!(response, ServeResponse::HostNotAllowed { .. }),
+                "a one-time allow is spent: {response:?}"
+            );
 
-    // "This session": every session until logout, never on disk.
-    assert_eq!(
-        allow(&socket, None, Lifetime::Session),
-        ServeResponse::Allowed
-    );
-    for _ in 0..2 {
-        let (response, _, _session) = ask(&socket, Some(TERMINAL_APP_ID), "person");
-        assert!(
-            matches!(response, ServeResponse::Session { .. }),
-            "{response:?}"
-        );
-    }
-    assert!(
-        HostPolicy::load(&HostPolicy::path(&store))
-            .capabilities
-            .is_empty(),
-        "a session's allow is never written to disk"
-    );
+            // "This session": every session until logout, never on disk.
+            assert_eq!(
+                allow(&socket, None, Lifetime::Session),
+                ServeResponse::Allowed
+            );
+            for _ in 0..2 {
+                let (response, _, _session) = ask(&socket, Some(TERMINAL_APP_ID), "person");
+                assert!(
+                    matches!(response, ServeResponse::Session { .. }),
+                    "{response:?}"
+                );
+            }
+            assert!(
+                HostPolicy::load(&HostPolicy::path(&store))
+                    .capabilities
+                    .is_empty(),
+                "a session's allow is never written to disk"
+            );
 
-    assert_eq!(
-        allow(&socket, None, Lifetime::UntilRevoked),
-        ServeResponse::Allowed
+            assert_eq!(
+                allow(&socket, None, Lifetime::UntilRevoked),
+                ServeResponse::Allowed
+            );
+            assert!(
+                HostPolicy::load(&HostPolicy::path(&store))
+                    .allows_host_shell(TERMINAL_APP_ID, None)
+            );
+        },
     );
-    assert!(HostPolicy::load(&HostPolicy::path(&store)).allows_host_shell(TERMINAL_APP_ID, None));
 }
 
 fn reason(response: &ServeResponse) -> String {
@@ -164,43 +176,178 @@ fn reason(response: &ServeResponse) -> String {
 #[test]
 fn the_host_shell_is_terminal_only_owner_only_and_asked_for_once() {
     crate::serve_handoff::require_trusted_loader!();
+    // A session's own allows live in the process (`HostPolicy::SESSION_GRANTS`), so this test has
+    // the process to itself: another test's allow or spent one-time allow never leaks in.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "the_host_shell_is_terminal_only_owner_only_and_asked_for_once",
+        || {
+            let dir = tempfile::tempdir().unwrap();
+            let _env = identities(dir.path(), OWNER, OWNER);
+            let (socket, store) = serving(dir.path());
+
+            // Not allowed yet: the one refusal Terminal turns into a prompt.
+            let (response, fd, _) = ask(&socket, Some(TERMINAL_APP_ID), "person");
+            assert!(
+                matches!(response, ServeResponse::HostNotAllowed { .. }),
+                "{response:?}"
+            );
+            assert!(fd.is_none());
+
+            let mut policy = HostPolicy::default();
+            policy.allow_host_shell(TERMINAL_APP_ID);
+            policy.save(&HostPolicy::path(&store)).unwrap();
+
+            // Another app is refused outright, allow or not.
+            let (response, fd, _) = ask(&socket, Some("so.tilo.notes"), "person");
+            assert!(reason(&response).contains("only Terminal"), "{response:?}");
+            assert!(fd.is_none());
+            let (response, fd, _) = ask(&socket, Some(TERMINAL_APP_ID), "agent");
+            assert!(reason(&response).contains("agents"), "{response:?}");
+            assert!(fd.is_none());
+
+            let (response, fd, _lifetime) = ask(&socket, None, "person");
+            assert!(
+                matches!(response, ServeResponse::Session { .. }),
+                "{response:?}"
+            );
+            let fd = fd.expect("a pty arrives with the session");
+            let mut master = std::fs::File::from(fd);
+            master.write_all(b"echo host-$((6*7))\n").unwrap();
+            let seen = read_until(&master, "host-42", tilo_test_env::hang_bound());
+            assert!(
+                seen.contains("host-42"),
+                "the host shell did not answer: {seen:?}"
+            );
+        },
+    );
+}
+
+/// A Host session's shell lives exactly as long as the supervisor that served it: a session is
+/// what a desktop starts, and nothing about it may outlive the desktop.
+///
+/// Before the fix, `openpty` handed back an inheritable master, and the shell inherited it along
+/// with its own terminal: it kept the terminal's last reader alive itself, so when the
+/// supervisor died the hangup never arrived and the shell ran on as an orphan, reparented and
+/// holding a terminal nothing showed (the Terminal's shell the reported run left behind). A
+/// supervisor that is killed outright leaves no shell, and no shell survives its terminal
+/// closing: both are the same defect, the master reaching the child.
+#[test]
+fn a_host_shell_ends_with_the_supervisor_that_served_it() {
+    crate::serve_handoff::require_trusted_loader!();
+    // The supervisor as its own process, so the test can kill it the way a session's teardown
+    // does.
     let dir = tempfile::tempdir().unwrap();
     let _env = identities(dir.path(), OWNER, OWNER);
-    let (socket, store) = serving(dir.path());
-
-    // Not allowed yet: the one refusal Terminal turns into a prompt.
-    let (response, fd, _) = ask(&socket, Some(TERMINAL_APP_ID), "person");
-    assert!(
-        matches!(response, ServeResponse::HostNotAllowed { .. }),
-        "{response:?}"
-    );
-    assert!(fd.is_none());
-
+    let socket = dir.path().join("ush.sock");
+    let store_root = dir.path().join("store");
+    let store = Store::at(&store_root);
+    store.ensure().unwrap();
     let mut policy = HostPolicy::default();
     policy.allow_host_shell(TERMINAL_APP_ID);
     policy.save(&HostPolicy::path(&store)).unwrap();
 
-    // Another app is refused outright, allow or not.
-    let (response, fd, _) = ask(&socket, Some("so.tilo.notes"), "person");
-    assert!(reason(&response).contains("only Terminal"), "{response:?}");
-    assert!(fd.is_none());
-    let (response, fd, _) = ask(&socket, Some(TERMINAL_APP_ID), "agent");
-    assert!(reason(&response).contains("agents"), "{response:?}");
-    assert!(fd.is_none());
+    let mut supervisor = std::process::Command::new(tilo_test_env::package_binary!("tilo-ush"))
+        .arg("serve")
+        .arg("--socket")
+        .arg(&socket)
+        .env("TILO_USH_HOME", &store_root)
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env_remove("TILO_MACHINE")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .dies_with_the_test()
+        .spawn_locked()
+        .expect("the supervisor starts");
+    let deadline = tilo_test_env::hang_deadline();
+    while !socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(socket.exists(), "the supervisor bound its socket");
 
-    let (response, fd, _lifetime) = ask(&socket, None, "person");
+    // Open the Host session, as Terminal does.
+    let session = UnixStream::connect(&socket).expect("connect");
+    (&session)
+        .write_all(&encode_handoff(TERMINAL_APP_ID).unwrap())
+        .unwrap();
+    let request = serde_json::json!({
+        "op": "open-session",
+        "target": {"kind": "host"},
+        "requested_by": "person",
+        "end_report": true,
+    });
+    let mut line = serde_json::to_vec(&request).unwrap();
+    line.push(b'\n');
+    (&session).write_all(&line).unwrap();
+    let (payload, fd) = recv_with_fd(&session).expect("the supervisor answers");
+    let response: ServeResponse =
+        serde_json::from_slice(String::from_utf8_lossy(&payload).trim().as_bytes())
+            .unwrap_or_else(|e| panic!("bad reply {payload:?}: {e}"));
     assert!(
         matches!(response, ServeResponse::Session { .. }),
         "{response:?}"
     );
-    let fd = fd.expect("a pty arrives with the session");
-    let mut master = std::fs::File::from(fd);
-    master.write_all(b"echo host-$((6*7))\n").unwrap();
-    let seen = read_until(&master, "host-42", tilo_test_env::hang_bound());
+    let master = fd.expect("a pty arrives with the session");
+    let mut writer = std::fs::File::from(master);
+    writer.write_all(b"echo shell-$((6*7))\n").unwrap();
+    let seen = read_until(&writer, "shell-42", tilo_test_env::hang_bound());
     assert!(
-        seen.contains("host-42"),
+        seen.contains("shell-42"),
         "the host shell did not answer: {seen:?}"
     );
+    let shell = tilo_test_env::wait_for("the host shell's process", || {
+        shell_named_by(&store_root.join("sessions"))
+    });
+    assert!(alive(shell), "the shell answers, so it runs");
+
+    // The session's teardown: it stops the group its processes run in and the supervisor goes with
+    // it, while Terminal's end of the pty closes. The lease is still open, so the supervisor never
+    // gets to kill the child itself; the shell must end because no one holds its terminal any
+    // more. Before the fix the shell held the master itself, so this closing left it running as an
+    // orphan; now the master reached no child and the hangup ends it with its supervisor.
+    drop(writer);
+    supervisor.kill().expect("kill the supervisor");
+    let _ = supervisor.wait();
+    tilo_test_env::wait_until("the shell to end with its supervisor", || !alive(shell));
+    drop(session);
+}
+
+/// The pid of the shell the supervisor started for a session under `sessions`: the one process
+/// whose command line names one of its directories' `shell.bash`.
+fn shell_named_by(sessions: &Path) -> Option<u32> {
+    let entries = std::fs::read_dir(sessions).ok()?;
+    for entry in entries.flatten() {
+        let rc = entry.path().join("shell.bash");
+        if !rc.exists() {
+            continue;
+        }
+        let needle = rc.to_string_lossy().into_owned();
+        for proc in std::fs::read_dir("/proc").ok()?.flatten() {
+            let Ok(pid) = proc.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            let Ok(cmdline) = std::fs::read(proc.path().join("cmdline")) else {
+                continue;
+            };
+            let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+            if cmdline.contains(&needle) {
+                return Some(pid);
+            }
+        }
+    }
+    None
+}
+
+fn alive(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        // A process that ended is reaped by the supervisor, or a zombie until it is.
+        !stat
+            .rsplit(')')
+            .next()
+            .unwrap_or_default()
+            .starts_with(" Z ")
+    })
 }
 
 #[test]

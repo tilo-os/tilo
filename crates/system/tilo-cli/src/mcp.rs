@@ -374,7 +374,7 @@ fn open(session: &Arc<Session>, device: &Device, run: &str) -> Result<Served, St
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key),
     );
     let server = McpServer::for_agent(actions, device.workspace.clone(), &agent, &person)
-        .with_agent_session(run, device.agent.clone())
+        .with_agent_session(run)
         .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
             Some(&person),
             Arc::new(catalogue),

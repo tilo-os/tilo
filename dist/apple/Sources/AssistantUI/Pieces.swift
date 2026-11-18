@@ -127,9 +127,11 @@ struct Bubble<Content: View>: View {
 /// A message's Markdown as a bubble shows it: paragraphs, lists, headings, code.
 struct MarkdownText: View {
     let text: String
+    /// Whether the message is still being written: then its end is read as it will stand.
+    var isWritten = false
 
     var body: some View {
-        let blocks = Markdown.blocks(in: text)
+        let blocks = Markdown.blocks(in: text, whileWritten: isWritten)
         VStack(alignment: .leading, spacing: 6) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
@@ -175,8 +177,7 @@ struct MarkdownText: View {
     }
 
     private func inline(_ words: String) -> Text {
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        guard let read = try? AttributedString(markdown: words, options: options) else { return Text(words) }
+        guard let read = InlineReadings.reading(of: words) else { return Text(words) }
         return Text(read)
     }
 }
@@ -473,7 +474,9 @@ struct Fine: View {
     }
 }
 
-/// The place of a live Tilo thing. The source's own view draws it; without one, its name stands there.
+/// The place of a live Tilo thing: one card, filled whole in the cards' own tone. The source's
+/// own view draws the thing there, or says in its place why it is not shown, at the height it
+/// takes itself; its buttons are a card's buttons. Without a source, the thing's name stands there.
 struct LiveThingPlace: View {
     let thing: LiveThing
     @Environment(\.liveThingView) private var draw
@@ -481,19 +484,19 @@ struct LiveThingPlace: View {
     var body: some View {
         Group {
             if let draw {
-                draw(thing)
+                draw(thing).buttonStyle(BoxButtonStyle())
             } else {
                 VStack(spacing: 6) {
                     Mark(side: 22)
                     Text(thing.title).font(.tilo(14, .medium)).foregroundStyle(Token.ink)
                     Fine(words: AssistantWords.liveThing.said)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Token.raised)
+                .frame(maxWidth: .infinity)
+                .frame(height: 360)
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: thing.sizesItself && draw != nil ? nil : 360)
+        .background(Token.raised)
         .clipShape(RoundedRectangle(cornerRadius: Measure.cardRadius))
         .overlay { RoundedRectangle(cornerRadius: Measure.cardRadius).strokeBorder(Token.line, lineWidth: 1) }
         .accessibilityLabel(thing.title)

@@ -489,3 +489,71 @@ fn a_size_asked_for_is_answered_even_when_it_changes_nothing() {
     }
     assert_eq!(bar.seen.layer_configures, configured);
 }
+
+/// A panel the session keeps running between openings stops drawing while it is hidden. Shown
+/// again where the stack places it, it holds the frame it was left on, at the size it asked for:
+/// the session shows it at once rather than hold the person looking at nothing until a wait for a
+/// frame a hidden app never draws gives up. A show that names the commit it must follow still
+/// waits for one drawn after it.
+#[test]
+fn a_placed_surface_holding_its_sized_frame_shows_at_once() {
+    const PANEL: [u8; 4] = [255, 255, 0, 255];
+    let mut compositor = headless();
+    let mut panel = TestClient::connect_trusted(&mut compositor);
+    pump(&mut compositor, &mut [&mut panel], |_, clients| {
+        clients[0].seen.layer_shell.is_some()
+    });
+    let (_surface, _layer) = panel.layer_surface(
+        zwlr_layer_shell_v1::Layer::Overlay,
+        zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left,
+        (380, 408),
+        0,
+        zwlr_layer_surface_v1::KeyboardInteractivity::None,
+    );
+    pump(&mut compositor, &mut [&mut panel], |_, clients| {
+        clients[0].seen.layer_size == Some((380, 408))
+    });
+    // The session places it, as it places the panel under the bar's trailing end.
+    compositor.place_layer_in("test", Some((40, 32, 380, 440)), false);
+    panel.show(380, 408, PANEL);
+    pump(&mut compositor, &mut [&mut panel], |_, _| true);
+
+    // Hidden between openings, as the panel is: the app draws nothing more while it is hidden.
+    compositor.show_layer("test", false);
+    compositor.draw_frame().expect("a frame");
+    pump(&mut compositor, &mut [&mut panel], |_, _| true);
+    assert!(!compositor.layer_visible("test"), "hidden");
+
+    // Opened again with no page asked of it: it is seen on the very next frame, not the one a wait
+    // for another commit would leave it out of.
+    compositor.show_layer("test", true);
+    assert!(
+        compositor.layer_visible("test"),
+        "the frame it holds is at the size it asked for: shown at once"
+    );
+    assert_eq!(
+        compositor.layer_settle_deadline(),
+        None,
+        "the session is not left waiting for a frame the hidden app never draws"
+    );
+    compositor.draw_frame().expect("a frame");
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        frame.pixel(48, 40),
+        Some(PANEL),
+        "the panel's own frame, where it stands"
+    );
+
+    // A show that names a frame the app has not drawn after still waits for it.
+    compositor.show_layer("test", false);
+    compositor.draw_frame().expect("a frame");
+    compositor.show_layer_after("test", compositor.layer_frames("test"));
+    assert!(
+        !compositor.layer_visible("test"),
+        "a frame drawn after the ask is what the show waits for"
+    );
+    assert!(
+        compositor.layer_settle_deadline().is_some(),
+        "and it does wait for one"
+    );
+}

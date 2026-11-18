@@ -161,30 +161,73 @@ impl GatewayHttp {
             .map_err(|_| {
                 http::Error::instance(std::io::Error::other("invalid request encoding"))
             })?;
-        let body = outbound_body(
+        let responses = self.api == Some(OpenAiApi::Responses);
+        let invalid =
+            |_: String| http::Error::instance(std::io::Error::other("invalid request body"));
+        let plain = plain_body(
             &self.profile,
             &self.model,
-            body,
+            body.clone(),
             self.streaming,
-            self.api == Some(OpenAiApi::Responses),
+            responses,
         )
-        .map_err(|_| http::Error::instance(std::io::Error::other("invalid request body")))?;
-        let body = self.target.shape(body);
-        if !self.retry_refusals {
+        .map(|body| self.target.shape(body))
+        .map_err(invalid)?;
+        let asked = outbound_body(&self.profile, &self.model, body, self.streaming, responses)
+            .map(|body| self.target.shape(body))
+            .map_err(invalid)?;
+        // What this provider is asked beside the request, unless it refused
+        // that before.
+        let beside = road::added(&plain, &asked);
+        if beside.is_empty() || road::refused(&self.profile, &self.model) {
             return self
-                .dispatch_once(&head.headers, &body, self.budget)
+                .send(&head.headers, &plain)
                 .await
                 .map_err(|failure| self.fail(failure));
+        }
+        let mut sent = self.send(&head.headers, &asked).await;
+        if let Err(refusal) = sent.as_ref()
+            && road::refuses(refusal)
+        {
+            // Content-free: the status and the fields' names, never the
+            // provider's words.
+            eprintln!(
+                "tilo-model-gateway: provider refused what the gateway asks beside the request \
+                 (status={}) model={} fields={}; asking once more without it",
+                refusal
+                    .status
+                    .map_or_else(|| "-".to_string(), |status| status.to_string()),
+                log_token(&self.model),
+                beside.join(",")
+            );
+            sent = self.send(&head.headers, &plain).await;
+            // A request refused either way was not refused for what was
+            // added.
+            if !sent.as_ref().is_err_and(road::refuses) {
+                road::remember(&self.profile, &self.model);
+            }
+        }
+        sent.map_err(|failure| self.fail(failure))
+    }
+
+    /// Send `body` once, or again while the provider provably did not take
+    /// it, as this transport is set to.
+    async fn send(
+        &self,
+        headers: &reqwest::header::HeaderMap,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, ProviderFailure> {
+        if !self.retry_refusals {
+            return self.dispatch_once(headers, body, self.budget).await;
         }
         let started = Instant::now();
         plan_send(
             || self.budget.checked_sub(started.elapsed()),
             tokio::time::sleep,
             &|| false, // No output can precede the HTTP response headers.
-            |budget| self.dispatch_once(&head.headers, &body, budget),
+            |budget| self.dispatch_once(headers, body, budget),
         )
         .await
-        .map_err(|failure| self.fail(failure))
     }
 
     async fn dispatch_once(

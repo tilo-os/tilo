@@ -398,7 +398,7 @@ impl Session {
         let catalogue =
             tilo_mcp::task_hosts::WorkspaceCatalogue::new(actions.clone(), self.caller());
         let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())
-            .with_agent_session(&self.id, self.label.clone())
+            .with_agent_session(&self.id)
             .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
                 Some(&self.person),
                 Arc::new(catalogue),

@@ -593,6 +593,8 @@ impl HostedBrowser {
     /// Follow what the session's broker admits: an action on the window's page is the page in use,
     /// and the page track's viewers say so too ([`Self::follow`]). `hosted` is where the workspace's
     /// host is asked about a departure the window holds, and `person` who this device acts as.
+    /// A session that waits for its window is woken once the broker lists it
+    /// ([`Self::wake_when_listed`]).
     pub(crate) fn watching(
         &mut self,
         broker: Option<&std::sync::Arc<AppBrokerState>>,
@@ -609,6 +611,7 @@ impl HostedBrowser {
             tracing::warn!("a hosted Browser's page is not watched: no task to watch it on");
             return;
         };
+        self.wake_when_listed(&broker);
         let mut activity = broker.subscribe_execution_activity();
         let arrived = self.sender.clone();
         let waking = self.waking.clone();
@@ -631,6 +634,43 @@ impl HostedBrowser {
                     wake();
                 }
             }
+        });
+    }
+
+    /// Wake the session's loop once `broker` lists the window this session holds, so `up` is
+    /// said by the pass that wake makes ([`Self::publish`]) and not by the next one made for
+    /// something else. Only a session that holds Browser waits for a window. The wake is all
+    /// this does: it reads the listing [`Self::publish`] reads, hands the session nothing and
+    /// reports nothing, and it ends with its one wake.
+    fn wake_when_listed(&self, broker: &std::sync::Arc<AppBrokerState>) {
+        if self.holds != Holds::Browser {
+            return;
+        }
+        let (Some(wake), Ok(tasks)) = (self.waking.clone(), tilo_rt::try_app()) else {
+            return;
+        };
+        // Followed from here, before the task has its first turn: whatever an app publishes
+        // from now on is seen.
+        let mut changes = broker.surface_changes();
+        // The task keeps no broker alive: a session that ends takes its broker with it.
+        let listing = std::sync::Arc::downgrade(broker);
+        let workspace = self.material.workspace.clone();
+        let shown = self.material.record.clone();
+        tasks.spawn(async move {
+            loop {
+                match listing
+                    .upgrade()
+                    .map(|broker| listed(&broker, &workspace, &shown))
+                {
+                    None => return,
+                    Some(Some(_)) => break,
+                    Some(None) => {}
+                }
+                if changes.changed().await.is_err() {
+                    return;
+                }
+            }
+            wake();
         });
     }
 
@@ -861,13 +901,12 @@ impl HostedBrowser {
     }
 
     /// The provider the session's broker lists this session's window under: the
-    /// app the session started, on the record the server opened it on. `None`
-    /// while the broker lists no such window yet.
+    /// app the session started, showing what the server opened it on ([`listed`]).
     fn window_provider(&self) -> Option<u64> {
-        self.broker.as_ref()?.window_provider(
-            BROWSER,
+        listed(
+            self.broker.as_ref()?,
             &self.material.workspace,
-            Some(&self.material.record),
+            &self.material.record,
         )
     }
 
@@ -1170,6 +1209,13 @@ async fn invitation(material: &Material) -> Result<String, String> {
     joined
 }
 
+/// The provider `broker` lists Browser's window under in `workspace`, the one that shows
+/// `shown` when one does: what a session reports its window as, and what it waits for.
+/// `None` while the broker lists no such window yet.
+fn listed(broker: &AppBrokerState, workspace: &str, shown: &str) -> Option<u64> {
+    broker.window_provider(BROWSER, workspace, Some(shown))
+}
+
 /// The departures `page` reports the window holding: each action the window
 /// publishes to let one leave, named by the id it is bound to and worded as
 /// what leaves. A window that holds nothing reports none.
@@ -1285,6 +1331,7 @@ fn holds_windows(shared: &Shared, workspace: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use tilo_server_protocol::WorkspaceId;
 
@@ -1386,6 +1433,9 @@ mod tests {
         }
     }
 
+    /// What the window of the session [`holding`] makes shows.
+    const SHOWN: &str = "uuid:5c07c075-0000-4000-8000-0000000000aa";
+
     /// A session in a workspace's VM, holding the window `provider` and reporting into `said`.
     fn holding(provider: u64, said: &Arc<Mutex<Vec<String>>>) -> HostedBrowser {
         let reports = Arc::clone(said);
@@ -1394,7 +1444,7 @@ mod tests {
             material: Material {
                 workspace: "11111111-1111-4111-8111-111111111111".into(),
                 workspace_id: WorkspaceId::from_u128(1),
-                record: "uuid:5c07c075-0000-4000-8000-0000000000aa".into(),
+                record: SHOWN.into(),
                 device: tilo_user_identity::DeviceCert {
                     user_public_key: [1; 32],
                     device_public_key: [2; 32],
@@ -1652,6 +1702,155 @@ mod tests {
             }
         }
         assert_eq!(told, ["xterm", "org.gnome.TextEditor"]);
+    }
+
+    /// A wake that counts itself in `woken` and stirs the thread that made it, which waits in
+    /// [`woken_within`].
+    fn counted(woken: &Arc<AtomicUsize>) -> tilo_service::Wake {
+        let (woken, waiting) = (Arc::clone(woken), std::thread::current());
+        Arc::new(move || {
+            woken.fetch_add(1, Ordering::SeqCst);
+            waiting.unpark();
+        })
+    }
+
+    /// How often the loop was woken, once it was or once `limit` is over.
+    fn woken_within(woken: &AtomicUsize, limit: Duration) -> usize {
+        let began = Instant::now();
+        loop {
+            let times = woken.load(Ordering::SeqCst);
+            let left = limit.saturating_sub(began.elapsed());
+            if times > 0 || left.is_zero() {
+                return times;
+            }
+            std::thread::park_timeout(left);
+        }
+    }
+
+    /// Let every task a publication to the broker woke have its turn: the app's tasks are
+    /// polled in the order they were woken, so one started now ends after them.
+    fn settled() {
+        let tasks = tilo_rt::try_app().expect("the app's tasks");
+        tasks
+            .block_on(tasks.spawn(async {}))
+            .expect("this thread may wait")
+            .expect("the task ended");
+    }
+
+    /// What `app` publishes for one window in `workspace`, as connection `peer_id`: `live`
+    /// while the app is open.
+    fn window_surface(
+        peer_id: u64,
+        app: &str,
+        workspace: &str,
+        live: bool,
+    ) -> tilo_workspace_service::apps::collab_app_broker::PublishedSurface {
+        tilo_workspace_service::apps::collab_app_broker::PublishedSurface {
+            peer_id,
+            app_id: app.to_owned(),
+            route: tilo_workspace_service::apps::route::CrdtRoute::app(app, workspace).on_resource(SHOWN),
+            actions: Vec::new(),
+            live,
+        }
+    }
+
+    /// A session that waits for its Browser window is woken when its broker lists the
+    /// window, so `up` is said on the pass that wake makes and not on the next one made for
+    /// another reason. The wake is only a wake: it says nothing and hands the session
+    /// nothing, `up` names the provider the broker lists, and what is not this session's
+    /// window (another app's, Browser's in another workspace, a Browser that closed) wakes
+    /// nobody.
+    #[test]
+    fn a_session_waiting_for_its_window_is_woken_when_its_broker_lists_it() {
+        let said: Arc<Mutex<Vec<String>>> = Arc::default();
+        let reports = || said.lock().expect("this test's reports").clone();
+        let mut hosted = holding(0, &said);
+        hosted.window = Window::Opening;
+        let woken: Arc<AtomicUsize> = Arc::default();
+        hosted.waking(counted(&woken));
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
+        hosted.watching(Some(broker.state()), None, "person");
+        let here = hosted.material.workspace.clone();
+
+        // The broker lists no window yet: the pass finds none, and nothing is said.
+        hosted.publish();
+        assert!(
+            reports().is_empty(),
+            "no window is up before the broker lists one"
+        );
+
+        // Nothing that is not this session's window wakes it.
+        broker.publish_surface_for_test(window_surface(4, "so.tilo.notes", &here, true));
+        broker.publish_surface_for_test(window_surface(
+            5,
+            BROWSER,
+            "22222222-2222-4222-8222-222222222222",
+            true,
+        ));
+        broker.publish_surface_for_test(window_surface(6, BROWSER, &here, false));
+        settled();
+        assert_eq!(
+            hosted.window_provider(),
+            None,
+            "none of them is this session's window"
+        );
+        assert_eq!(
+            woken.load(Ordering::SeqCst),
+            0,
+            "what is not this session's window wakes nobody"
+        );
+
+        // The Browser the session started publishes: the broker lists its window, and the
+        // loop is woken for it.
+        broker.publish_surface_for_test(window_surface(7, BROWSER, &here, true));
+        assert_eq!(
+            hosted.window_provider(),
+            Some(7),
+            "the broker lists the window"
+        );
+        assert_eq!(
+            woken_within(&woken, Duration::from_secs(10)),
+            1,
+            "the loop is woken when its broker lists the window"
+        );
+        assert!(reports().is_empty(), "the wake itself says nothing");
+        assert!(
+            hosted.arrived.try_recv().is_err(),
+            "and it hands the session nothing"
+        );
+
+        // The pass that wake makes says the window is up, under the provider the broker lists.
+        hosted.publish();
+        let up = Report::Up {
+            provider: "7".to_owned(),
+        };
+        assert_eq!(
+            reports(),
+            [up.line()],
+            "the window is up under the provider its broker lists it by"
+        );
+        assert!(matches!(hosted.window, Window::Open(7)));
+    }
+
+    /// A session that holds a workspace's Linux apps waits for no window of Browser: one the
+    /// broker lists in its workspace wakes nobody.
+    #[test]
+    fn an_apps_session_is_woken_for_no_window_of_browser() {
+        let said: Arc<Mutex<Vec<String>>> = Arc::default();
+        let mut hosted = holding(0, &said);
+        hosted.holds = Holds::Apps;
+        let woken: Arc<AtomicUsize> = Arc::default();
+        hosted.waking(counted(&woken));
+        let broker = AppBrokerState::test_broker_with_idle_directory_queue();
+        hosted.watching(Some(broker.state()), None, "person");
+        let here = hosted.material.workspace.clone();
+        broker.publish_surface_for_test(window_surface(7, BROWSER, &here, true));
+        settled();
+        assert_eq!(
+            woken.load(Ordering::SeqCst),
+            0,
+            "an apps session waits for no window of Browser"
+        );
     }
 
     #[test]
