@@ -117,7 +117,8 @@ final class AsksHoldTests: XCTestCase {
         },
         invoke: (target, argument) => {
           const action = target.address.action.startsWith('set-agent-') ? 'answer-for' : target.address.action;
-          const kind = (target.provider.startsWith('tilo.') ? target.provider : 'chat') + ' ' + action;
+          // What is asked of the workspace's tracker is no ask of Chat: this server keeps no tracker.
+          const kind = (target.provider.startsWith('tilo.') ? target.provider : target.provider.includes(':so.tilo.tasks:') ? 'tasks' : 'chat') + ' ' + action;
           window.asks.push(kind);
           return planned(kind, async () => {
             switch (kind) {

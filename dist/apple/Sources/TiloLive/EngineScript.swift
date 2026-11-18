@@ -304,6 +304,13 @@ public enum EngineScript {
       const pass = %PASS%;
       const providers = new Set(%PROVIDERS%);
       const agentActions = new Set(['read', 'create-agent', 'set-agent-on-host', 'retire-agent']);
+      // An app's own document of the workspace, as the workspace's server names what it offers
+      // of one: the app and nothing after it. Under any longer name the server offers nothing of it.
+      const ownDocument = app => `record:${app}:`;
+      // The chain the workspace's tracker keeps its issues in (Tasks' `tasks.issues`), as every
+      // device of the workspace names it, and what is asked of it for the app.
+      const issues = 'chain:derived:issues@derived:default@tab:0000000000000000';
+      const issueActions = new Set(['read']);
       const holds = given => {
         if (typeof given !== 'string' || !pass || given.length !== pass.length) return false;
         let differs = 0;
@@ -381,11 +388,22 @@ public enum EngineScript {
           const named = item === null || item === undefined || (typeof item === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(item));
           if (!holds(given) || !agentActions.has(action) || !named || (item && action !== 'read')) return unknown('chat.agent', action);
           if (!device) return noDevice();
-          // Chat's own document of the workspace, as the workspace's server names it: the app
-          // and nothing after it. Under any longer name the server offers nothing of it.
-          const provider = 'record:so.tilo.chat:';
+          const provider = ownDocument('so.tilo.chat');
           try {
             const answer = await device.invoke({provider, address: {resource: item ? `chat.agent/agents/${item}` : 'chat.agent', action}},
+              argument && Object.keys(argument).length ? argument : null);
+            return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
+              error: answer?.error ?? null}, '')});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
+        // The tasks of the person's assistant are issues of the workspace's tracker, which this
+        // page does not hold: it shows Chat. They are asked of the workspace's server as the
+        // person on this device: the read of the tracker's issues, and nothing else of Tasks.
+        async tasks(given, action, argument) {
+          if (!holds(given) || !issueActions.has(action)) return unknown('tasks.issues', action);
+          if (!device) return noDevice();
+          try {
+            const answer = await device.invoke({provider: ownDocument('so.tilo.tasks'), address: {resource: issues, action}},
               argument && Object.keys(argument).length ? argument : null);
             return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
               error: answer?.error ?? null}, '')});

@@ -103,7 +103,7 @@ public final class TiloSource: AssistantSource {
     private var naming: Task<Void, Never>?
     /// The person's identity, as Chat names the author of what they write.
     private var me: String?
-    /// The agent that is the person's assistant, by its id in Chat's record of agents.
+    /// The agent that is the person's assistant, by its id among the agents Chat keeps.
     private var assistant: String?
     private var recipient: ChatRecipient?
     /// Whether the page names a member by its kind (`{"person": …}`), and so spells the id of
@@ -880,6 +880,8 @@ public final class TiloSource: AssistantSource {
         feed.answering = on
         feeds[chat] = feed
         for listener in feed.listeners.values { listener.yield(.answering(on)) }
+        // An answer that ended may have made a task or moved one on: the list is read again.
+        if !on { Task { [weak self] in await self?.readTasks() } }
     }
 
     private func held(_ id: String) -> (Chat, Item)? {
@@ -987,6 +989,8 @@ public final class TiloSource: AssistantSource {
                         }
                         if before { for chat in Array(self.feeds.keys) { self.feeds[chat]?.told = false } }
                         await self.look()
+                        // What she was told may be of a task that moved on: the list is read again.
+                        if waits { await self.readTasks() }
                     }
                     // What happened while the person was away is counted at their first look after.
                     if !waits { await self.readSince() }
@@ -1562,6 +1566,48 @@ public final class TiloSource: AssistantSource {
 
     public nonisolated func tasks() -> AsyncStream<[AssistantTask]> { taskList.stream() }
 
+    /// Whether the tasks are being read right now, and whether they are wanted once more after.
+    private var readsTasks = false
+    private var tasksWanted = false
+    /// The read of the tasks, made again where it went unanswered.
+    private let tasksAgain = Again()
+
+    /// Read the assistant's tasks again: the issues of the workspace's tracker that are given
+    /// to it, as the workspace's server lists them to the person on this device.
+    ///
+    /// Nothing tells a native app that Tasks changed, and her server is not asked on a clock.
+    /// The list is read when the device gets in, when this app changed something there, when
+    /// her server told her something and when an answer in a conversation ended: after each of
+    /// these a task may have been made or moved on. A read that went unanswered, or that her
+    /// server failed at, is made again by itself after a pause that grows, and what was listed
+    /// stands meanwhile. A server that keeps no tracker, or offers no such read, lists nothing.
+    private func readTasks() async {
+        guard case .open = engine.state, let assistant else { return }
+        guard !readsTasks else {
+            tasksWanted = true
+            return
+        }
+        readsTasks = true
+        defer { readsTasks = false }
+        repeat {
+            tasksWanted = false
+            do {
+                let rows = try await engine.issues(givenTo: assistant)
+                // Whoever signed out meanwhile is listed nothing of the person before.
+                guard self.assistant == assistant else { return }
+                taskList.set(TiloTasks.listed(rows))
+                tasksAgain.settle()
+            } catch TiloEngine.Problem.refused(let code, _) where TiloSource.offersNone(code) {
+                tasksAgain.settle()
+            } catch TiloEngine.Problem.notOpen {
+                // The page is on its way in again: the tasks are read anew when it is in.
+                tasksAgain.settle()
+            } catch {
+                tasksAgain.later(first: firstPause) { [weak self] in await self?.readTasks() }
+            }
+        } while tasksWanted
+    }
+
     public func addTask(_ title: String) async throws {
         throw SourceProblem.refused("Tasks cannot be reached from this app yet")
     }
@@ -1859,6 +1905,8 @@ public final class TiloSource: AssistantSource {
             seen.connections = Connected.lines(of: listed, site: TiloSource.placeName)
             if connected.heard(listed, for: awaited) { await look() }
         }
+        // The assistant's tasks: the issues of the workspace's tracker that are given to it.
+        await readTasks()
         return unanswered
     }
 
