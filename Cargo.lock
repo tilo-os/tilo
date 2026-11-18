@@ -14068,6 +14068,7 @@ dependencies = [
  "des",
  "iroh-base",
  "remote",
+ "remote-model",
  "runtime-collab",
  "runtime-dylib",
  "russh",
@@ -14085,6 +14086,19 @@ dependencies = [
  "tokio",
  "uuid",
  "vte",
+ "workspace-hack",
+]
+
+[[package]]
+name = "remote-model"
+version = "0.1.0"
+dependencies = [
+ "iroh-base",
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
+ "uuid",
  "workspace-hack",
 ]
 

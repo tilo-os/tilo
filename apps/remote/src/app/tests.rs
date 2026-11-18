@@ -393,7 +393,7 @@ tilo_test_env::scenario! {
         let password = || ui::storage::secrets(RemoteShell::ID).item(SSH_PASSWORD, &id.to_string());
         password().put_blocking(b"hunter2").unwrap();
         let delete = || {
-            Remote::DELETE_CONNECTION.with(crate::resource::remote::DeleteConnection {
+            Remote::DELETE_CONNECTION.with(remote_model::remote::DeleteConnection {
                 connection: Remote::item(id),
             })
         };
@@ -624,7 +624,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             sent(&app),
             [as_sent(&Remote::MARK_USED.with(
-                crate::resource::remote::MarkUsed {
+                remote_model::remote::MarkUsed {
                     connection: Remote::item(id),
                     at_ms: now,
                 }

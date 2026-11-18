@@ -845,3 +845,13 @@ paths = [
     "apps/poker-model/locales/en-US.ftl",
     "apps/poker-model/locales/de-DE.ftl",
 ]
+
+[[allow]]
+reason = "A connection's host, the network host name a transport reaches, which the glossary keeps as a network host name."
+words = ["host"]
+identifiers = ["host", "host_part", "Host"]
+paths = [
+    "apps/remote-model/src/lib.rs",
+    "apps/remote-model/locales/en-US.ftl",
+    "apps/remote-model/locales/de-DE.ftl",
+]

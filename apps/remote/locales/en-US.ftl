@@ -107,7 +107,7 @@ remote-effect-trust-host-key = Trust host key
 remote-effect-forget-host-key = Forget host key
 remote-connection-list = Remote connections
 remote-connection-list-add-connection = Add connection
-remote-connection-list-mark-used = Record use
+remote-connection-list-mark-used = Set its last use
 
 ## What a connection is called
 remote-kind-ssh = SSH
@@ -121,6 +121,9 @@ remote-readiness-ready = Ready
 remote-readiness-elsewhere = Not available here
 remote-readiness-no-rdp = RDP isn't supported
 remote-readiness-editing = Needs editing
+remote-issue-needs-name = A connection needs a name
+remote-issue-needs-address = A connection needs an address
+remote-issue-port = A port is 1–65535
 remote-issue-ssh-auth = SSH profiles support password or public-key authentication.
 remote-issue-vnc-auth = VNC profiles support password authentication only.
 remote-issue-rdp-auth = RDP profiles support password authentication only.

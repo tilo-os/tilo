@@ -1,5 +1,5 @@
-//! Remote as a resource: the saved connections are the [`Remote`] model, their fields edited
-//! at their paths; connecting and the SSH host-key prompts are effects of the window, and a
+//! Remote as a resource: the saved connections are `remote-model`, their fields edited at
+//! their paths; connecting and the SSH host-key prompts are effects of the window, and a
 //! credential stays in this device's secret store.
 
 #[cfg(feature = "samples")]
@@ -9,12 +9,11 @@ use ui::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::items::item_resource_id;
-use ui::tilo_resource::{self, ActionCx, Id, Refusal, resource};
 use ui::widget::Element;
 
 use crate::app::RemoteApp;
+use crate::model::ConnectionId;
 pub use crate::model::Remote;
-use crate::model::{AuthMethod, ConnectionDraft, ConnectionId, ConnectionKind};
 
 pub use ui::apps::REMOTE as REMOTE_APP_ID;
 
@@ -22,85 +21,6 @@ ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 pub fn connection_resource_id(id: ConnectionId) -> String {
     item_resource_id::<Remote>("connections", &Remote::item(id))
-}
-
-impl Remote {
-    /// What the resource holds: the saved connections.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "remote.connection-list",
-    read_content = Remote::read_document
-)]
-impl Remote {
-    /// Save a new connection, signing in the protocol's first way.
-    #[action]
-    pub fn add_connection(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("Name")] name: String,
-        #[param("Host, or a Tilo endpoint id")] host: String,
-        #[param("ssh, vnc or tilo")] kind: ConnectionKind,
-        #[param("Port; the protocol's own when none")] port: Option<u16>,
-        #[param("User")] user: Option<String>,
-    ) -> Result<(), Refusal> {
-        if !kind.is_supported() {
-            return Err(Refusal::new("`kind` is ssh, vnc or tilo"));
-        }
-        let port = port.unwrap_or_else(|| kind.default_port());
-        let draft = ConnectionDraft {
-            name,
-            host,
-            port: port.to_string(),
-            user: user.unwrap_or_default(),
-            kind,
-            auth: AuthMethod::available_for(kind)
-                .first()
-                .copied()
-                .unwrap_or(AuthMethod::Password),
-            group: String::new(),
-        };
-        if let Some(problem) = draft.problems().into_iter().next() {
-            return Err(Refusal::new(problem));
-        }
-        let id = cx.uuid();
-        self.connections.push(Self::item(id), draft.build(id));
-        Ok(())
-    }
-
-    /// Remove a saved connection from every device, and the passwords each device saved for
-    /// it.
-    #[action(destructive, irreversible, item = connections, label = "remote-delete-connection-button")]
-    pub fn delete_connection(&mut self, connection: &Id) -> Result<(), Refusal> {
-        self.connections
-            .remove(connection)
-            .map(drop)
-            .ok_or_else(|| Refusal::new("no such connection"))
-    }
-
-    /// Record that a session was opened at `at_ms`. The later of two concurrent resources wins
-    /// on every replica.
-    #[action(housekeeping, item = connections)]
-    pub fn mark_used(
-        &mut self,
-        connection: &Id,
-        #[param("When the session was opened, in milliseconds since the Unix epoch")] at_ms: i64,
-    ) -> Result<(), Refusal> {
-        let connection = self
-            .connections
-            .get_mut(connection)
-            .ok_or("no such connection")?;
-        if connection.last_used_ms.is_none_or(|last| last < at_ms) {
-            connection.last_used_ms = Some(at_ms);
-        }
-        Ok(())
-    }
 }
 
 pub struct RemoteShell;
@@ -187,6 +107,8 @@ impl ResourceApp for RemoteShell {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::{AuthMethod, ConnectionKind};
+
     use super::*;
     use crate::model::Connection;
     use ui::prelude::TestApp;
@@ -253,7 +175,7 @@ mod tests {
                 .apply(Invoke::edit(&paths.favorite.set(true)).unwrap())
                 .unwrap();
             remote
-                .apply(Remote::MARK_USED.with(remote::MarkUsed {
+                .apply(Remote::MARK_USED.with(remote_model::remote::MarkUsed {
                     connection: Remote::item(id),
                     at_ms: 5_000,
                 }))
@@ -288,7 +210,7 @@ mod tests {
             let id = Uuid::new_v4();
             save(&mut remote, &sample(id, "Box"));
             let used = |at_ms| {
-                Remote::MARK_USED.with(remote::MarkUsed {
+                Remote::MARK_USED.with(remote_model::remote::MarkUsed {
                     connection: Remote::item(id),
                     at_ms,
                 })
@@ -302,7 +224,7 @@ mod tests {
             );
 
             let delete = || {
-                Remote::DELETE_CONNECTION.with(remote::DeleteConnection {
+                Remote::DELETE_CONNECTION.with(remote_model::remote::DeleteConnection {
                     connection: Remote::item(id),
                 })
             };
