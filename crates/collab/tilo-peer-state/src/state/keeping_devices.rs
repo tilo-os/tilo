@@ -5,7 +5,7 @@
 //! (a home relay the person chose for it), named by its own signed address, so a
 //! member reaches the workspace while the owner's own device is away.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
-use super::{ROOT, SystemTime, err};
+use super::{ROOT, SystemTime, err, governed_map};
 use crate::join::TransportHint;
 use automerge::transaction::Transactable as _;
 use automerge::{ObjType, ReadDoc as _, Value};
@@ -71,12 +71,7 @@ impl PeerGovernanceMut<'_> {
         }
         let json = serde_json::to_string(hint).map_err(|error| error.to_string())?;
         self.write(key, now, |doc| {
-            let hosts = match doc.get(ROOT, WORKSPACE_KEEPING_DEVICES_KEY).map_err(err)? {
-                Some((Value::Object(ObjType::Map), hosts)) => hosts,
-                _ => doc
-                    .put_object(ROOT, WORKSPACE_KEEPING_DEVICES_KEY, ObjType::Map)
-                    .map_err(err)?,
-            };
+            let hosts = governed_map(doc, WORKSPACE_KEEPING_DEVICES_KEY)?;
             doc.put(
                 &hosts,
                 hex::encode(hint.host.device_public_key).as_str(),

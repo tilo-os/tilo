@@ -79,9 +79,20 @@ pub fn seed_workspace(
     .map_err(err)?;
     doc.put_object(ROOT, "invitation_receipts_v1", ObjType::Map)
         .map_err(err)?;
-    // Maps of rows every device writes for itself exist from the founding,
-    // so no device's first row makes a map another's would replace.
+    // Maps of rows each device writes for itself exist from the founding, so
+    // no device's first row makes a map another device's would replace.
     for rows in super::device_rows::FOUNDED {
+        doc.put_object(ROOT, rows, ObjType::Map).map_err(err)?;
+    }
+    // So are the maps of governance rows each governor adds to.
+    for rows in [
+        collab_types::workspace_grant::WORKSPACE_GRANTS_KEY,
+        super::keeping_devices::WORKSPACE_KEEPING_DEVICES_KEY,
+        super::app_versions::APP_VERSIONS,
+        super::bot_members::PROGRAMS,
+        super::bot_members::REQUESTS,
+        tilo_desktop_model::projection::WORKSPACE_AUTOMATIONS_KEY,
+    ] {
         doc.put_object(ROOT, rows, ObjType::Map).map_err(err)?;
     }
     let names = doc.put_object(ROOT, "peers", ObjType::Map).map_err(err)?;

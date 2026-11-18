@@ -1,6 +1,6 @@
 //! The grants a workspace admitted, as its governance records them.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
-use super::{ROOT, SystemTime, err};
+use super::{ROOT, SystemTime, err, governed_map};
 use automerge::transaction::Transactable as _;
 use automerge::{ObjType, ReadDoc as _, Value};
 use collab_types::signer::DeviceSigner;
@@ -66,12 +66,7 @@ impl PeerGovernanceMut<'_> {
         let json = serde_json::to_string(grant).map_err(|error| error.to_string())?;
         let id = grant.id.clone();
         self.write(key, now, |doc| {
-            let grants = match doc.get(ROOT, WORKSPACE_GRANTS_KEY).map_err(err)? {
-                Some((Value::Object(ObjType::Map), grants)) => grants,
-                _ => doc
-                    .put_object(ROOT, WORKSPACE_GRANTS_KEY, ObjType::Map)
-                    .map_err(err)?,
-            };
+            let grants = governed_map(doc, WORKSPACE_GRANTS_KEY)?;
             doc.put(&grants, id.as_str(), json.as_str()).map_err(err)
         })
     }

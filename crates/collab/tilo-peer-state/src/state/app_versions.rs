@@ -9,17 +9,17 @@
 //! not refused: once its author runs the workspace's version, the same changes
 //! name that version's surface and are decided against it.
 
-use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use collab_types::signer::DeviceSigner;
 use tilo_action_policy::roles::governance;
 use tilo_user_identity::DeviceCert;
 
 use super::facades::PeerGovernance;
-use super::{StatePeer, SystemTime, err, now_ns, person_of};
+use super::{StatePeer, SystemTime, err, governed_map, now_ns, person_of};
 use crate::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
 
 /// The governed map that keeps the workspace's app versions, by app id.
-const APP_VERSIONS: &str = "app_versions_v1";
+pub(super) const APP_VERSIONS: &str = "app_versions_v1";
 
 /// An app version the workspace runs, as its governance keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -118,12 +118,7 @@ impl StatePeer {
             .ok_or("workspace governance missing")?;
         let before = doc.get_heads();
         doc.set_actor(self.workspace_actor_of(key));
-        let versions = match doc.get(ROOT, APP_VERSIONS).map_err(err)? {
-            Some((_, map)) => map,
-            None => doc
-                .put_object(ROOT, APP_VERSIONS, ObjType::Map)
-                .map_err(err)?,
-        };
+        let versions = governed_map(&doc, APP_VERSIONS)?;
         match row {
             Some(row) => doc
                 .put(

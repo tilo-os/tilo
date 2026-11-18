@@ -8,7 +8,7 @@
 //! governed changes too; none of them is host-local state.
 
 use super::facades::PeerGovernance;
-use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use collab_types::signer::DeviceSigner;
 use tilo_action_policy::{Context, Grant, GrantId, WorkspacePolicy, bot, roles::governance};
 use tilo_automation::program::{parse_program, program_hash};
@@ -22,10 +22,10 @@ use crate::installation::Installation;
 use crate::workspace_membership::{BotDevice, BotInstall, BotRenewal};
 
 /// The governed map that keeps bot programs, by BLAKE3 hex.
-const PROGRAMS: &str = "bot_programs_v1";
+pub(super) const PROGRAMS: &str = "bot_programs_v1";
 /// The governed map that keeps the bots the workspace asks its host to run, by
 /// directory entry.
-const REQUESTS: &str = "bot_requests_v1";
+pub(super) const REQUESTS: &str = "bot_requests_v1";
 
 /// A bot the workspace asks its host to run, as the workspace keeps the request.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -389,10 +389,7 @@ impl StatePeer {
             changes.push(tilo_action_policy::Change::Grant(grant.clone()));
         }
         if write.program.is_some() || write.drop_program.is_some() {
-            let programs = match doc.get(ROOT, PROGRAMS).map_err(err)? {
-                Some((_, map)) => map,
-                None => doc.put_object(ROOT, PROGRAMS, ObjType::Map).map_err(err)?,
-            };
+            let programs = governed_map(&doc, PROGRAMS)?;
             if let Some((hash, text)) = &write.program {
                 doc.put(
                     &programs,
@@ -494,10 +491,7 @@ impl StatePeer {
             .ok_or("workspace governance missing")?;
         let before = doc.get_heads();
         doc.set_actor(self.workspace_actor_of(key));
-        let requests = match doc.get(ROOT, REQUESTS).map_err(err)? {
-            Some((_, map)) => map,
-            None => doc.put_object(ROOT, REQUESTS, ObjType::Map).map_err(err)?,
-        };
+        let requests = governed_map(&doc, REQUESTS)?;
         match row {
             Some(row) => doc
                 .put(
