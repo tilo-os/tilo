@@ -251,3 +251,90 @@ tilo_test_env::scenario! {
         assert_ne!(std::fs::read(&entry).unwrap(), damaged);
     }
 }
+
+/// A start module as a split bundle's is: memory, table and a function every app calls, and
+/// an entry per app that calls through the table entry its app's module fills.
+const RUNTIME: &str = r#"
+(module
+  (type $entry (func (result i32)))
+  (memory (export "memory") 1)
+  (table (export "__indirect_function_table") 2 2 funcref)
+  (func (export "double") (param i32) (result i32)
+    (i32.mul (local.get 0) (i32.const 2)))
+  (func (export "apply_a") (result i32)
+    (call_indirect (type $entry) (i32.const 0)))
+  (func (export "apply_b") (result i32)
+    (call_indirect (type $entry) (i32.const 1)))
+)
+"#;
+
+/// An app's module: imports what it uses of the start module by name, writes its own data and
+/// fills its table entry.
+fn app(entry: u32, at: u32, value: u32, add: u32) -> Vec<u8> {
+    wat::parse_str(format!(
+        r#"
+(module
+  (import "__wasm_split" "memory" (memory 1))
+  (import "__wasm_split" "__indirect_function_table" (table 2 2 funcref))
+  (import "__wasm_split" "double" (func $double (param i32) (result i32)))
+  (data (i32.const {at}) "{bytes}")
+  (func $entry (result i32)
+    (i32.add (call $double (i32.load (i32.const {at}))) (i32.const {add})))
+  (elem (i32.const {entry}) $entry)
+)
+"#,
+        bytes = value
+            .to_le_bytes()
+            .iter()
+            .fold(String::new(), |mut out, byte| {
+                use std::fmt::Write as _;
+                write!(out, "\\{byte:02x}").unwrap();
+                out
+            }),
+    ))
+    .unwrap()
+}
+
+tilo_test_env::scenario! {
+    fn a_linked_set_answers_as_one_module;
+
+    phase a_set_links_each_module_to_the_ones_before_it_on_both_tiers;
+    {
+        let process = Process::new(None);
+        process.top().pause(true);
+        let engine = process.engine();
+        let runtime = wat::parse_str(RUNTIME).unwrap();
+        let a = engine.compile_linked(&[&runtime, &app(0, 100, 21, 0)]).unwrap();
+        let b = engine.compile_linked(&[&runtime, &app(1, 104, 7, 1)]).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(engine.tier(&a), Some(EngineKind::Wasmi));
+        assert_eq!(call(&engine, &a, "apply_a", &[]).unwrap(), Some(Wasm::I32(42)));
+        assert_eq!(call(&engine, &b, "apply_b", &[]).unwrap(), Some(Wasm::I32(15)));
+        // `b`'s module is not in `a`'s set: its table entry is empty there.
+        assert!(call(&engine, &a, "apply_b", &[]).is_err());
+
+        process.top().pause(false);
+        engine.settle_compile(&a);
+        engine.settle_compile(&b);
+        assert_eq!(engine.compile_failure(&a), None);
+        assert_eq!(call(&engine, &a, "apply_a", &[]).unwrap(), Some(Wasm::I32(42)));
+        assert_eq!(engine.tier(&a), Some(EngineKind::Cranelift));
+        assert_eq!(call(&engine, &b, "apply_b", &[]).unwrap(), Some(Wasm::I32(15)));
+        assert_eq!(engine.tier(&b), Some(EngineKind::Cranelift));
+        assert!(call(&engine, &a, "apply_b", &[]).is_err());
+        // The runtime both sets share was compiled once, as a module of its own.
+        assert!(process.top().compiled(&ModuleHash::of_bytes(&runtime)).is_some());
+    }
+
+    phase an_import_no_module_before_it_exports_does_not_link;
+    {
+        let process = Process::new(None);
+        let engine = process.engine();
+        let runtime = wat::parse_str(RUNTIME.replace("\"double\"", "\"twice\"")).unwrap();
+        let refused = engine.compile_linked(&[&runtime, &app(0, 100, 1, 0)]);
+        assert!(
+            matches!(&refused, Err(CallError::Link(_))),
+            "{refused:?}"
+        );
+    }
+}

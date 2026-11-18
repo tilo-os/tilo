@@ -39,7 +39,8 @@ pub(super) struct Slot {
 
 pub(super) struct Pooled {
     store: Store<Slot>,
-    instance: Instance,
+    /// The module's instance, or a linked set's, in the order they were made.
+    instances: Vec<Instance>,
     /// Export handles and result types, resolved on first use.
     funcs: HashMap<String, (Func, Vec<ValType>)>,
 }
@@ -191,7 +192,7 @@ impl Backend for Wasmi {
     fn instantiate(
         &self,
         linker: &Linker<Slot>,
-        module: &Module,
+        modules: &[Module],
         limits: &EngineLimits,
     ) -> Result<Pooled, CallError> {
         let store_limits = StoreLimitsBuilder::new()
@@ -209,12 +210,38 @@ impl Backend for Wasmi {
         store
             .set_fuel(limits.fuel_per_call)
             .map_err(|e| CallError::Link(e.to_string()))?;
-        let instance = linker
-            .instantiate_and_start(&mut store, module)
-            .map_err(|e| CallError::Link(e.to_string()))?;
+        let (first, rest) = modules
+            .split_first()
+            .ok_or_else(|| CallError::Link("no module to instantiate".into()))?;
+        let mut instances = vec![
+            linker
+                .instantiate_and_start(&mut store, first)
+                .map_err(|e| CallError::Link(e.to_string()))?,
+        ];
+        for module in rest {
+            let imports = module
+                .imports()
+                .map(|import| {
+                    instances
+                        .iter()
+                        .rev()
+                        .find_map(|instance| instance.get_export(&store, import.name()))
+                        .ok_or_else(|| {
+                            CallError::Link(format!(
+                                "no module before it exports {}::{}",
+                                import.module(),
+                                import.name()
+                            ))
+                        })
+                })
+                .collect::<Result<Vec<Extern>, _>>()?;
+            let instance = Instance::new(&mut store, module, &imports)
+                .map_err(|e| CallError::Link(e.to_string()))?;
+            instances.push(instance);
+        }
         Ok(Pooled {
             store,
-            instance,
+            instances,
             funcs: HashMap::new(),
         })
     }
@@ -253,8 +280,10 @@ fn run(
         found.clone()
     } else {
         let func = pooled
-            .instance
-            .get_func(&pooled.store, export)
+            .instances
+            .iter()
+            .rev()
+            .find_map(|instance| instance.get_func(&pooled.store, export))
             .ok_or_else(|| CallError::NoExport(export.to_owned()))?;
         let results = func.ty(&pooled.store).results().to_vec();
         pooled
