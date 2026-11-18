@@ -830,7 +830,23 @@ impl ChainCore {
             ));
         }
         drop(kept);
-        let mut published = route(head.head.clone(), &self.id);
+        let published = self.head_resource(&head.head);
+        if !hidden.is_empty() {
+            items.retain(|item| !hidden.contains(item.id()));
+        }
+        let items = nest(items, tree);
+        ui_core::published::SharedResource::new(
+            published,
+            ui_core::published::SharedChildren::new(items),
+        )
+    }
+
+    /// The chain's own resource as [`Self::publish`] carries it: the head
+    /// part's resource, the chain's read and its edit verbs, without the
+    /// items it holds. What a name the app's level carries is answered with,
+    /// at the head's cost and never the whole chain's.
+    fn head_resource(&self, head: &tilo_actions::ResourceSpec) -> tilo_actions::ResourceSpec {
+        let mut published = route(head.clone(), &self.id);
         published
             .actions
             .push(read_spec(self.part.label, &self.id, None));
@@ -845,14 +861,7 @@ impl ChainCore {
                 .filter(|spec| !named.contains(&spec.id))
                 .map(|spec| super::resources::route_operation(spec, CHAIN_ACTION_TYPE, &self.id)),
         );
-        if !hidden.is_empty() {
-            items.retain(|item| !hidden.contains(item.id()));
-        }
-        let items = nest(items, tree);
-        ui_core::published::SharedResource::new(
-            published,
-            ui_core::published::SharedChildren::new(items),
-        )
+        published
     }
 
     /// Answer the read the chain publishes ([`read_spec`]) from the parts this
@@ -2117,9 +2126,17 @@ impl ChainState {
         self.publish_shared().to_resource()
     }
 
-    /// [`Self::publish`] without its items: what a table of the chain's own actions reads.
+    /// [`Self::publish`] without its items: what a table of the chain's own
+    /// actions reads, and what a name the app's level carries is answered
+    /// with — the head part's resource, never a read of every part the chain
+    /// holds.
     pub(crate) fn publish_head(&self) -> tilo_actions::ResourceSpec {
-        self.publish_shared().head().clone()
+        let part = self.part();
+        let head = match self.parts().last() {
+            Some((_index, head)) => (part.publish_head)(&self.core.id, &**head),
+            None => (part.publish)(&self.core.id, &*self.empty),
+        };
+        self.core.head_resource(&head)
     }
 
     /// [`Self::publish`] as a shared tree ([`ChainCore::publish`]).

@@ -989,6 +989,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         name: &str,
         levels: &mut Levels,
     ) -> Result<Option<Level>, String> {
+        // A name the app's own level carries is asked of the app by name
+        // first: a chain it keeps is answered from the head part publishing
+        // it, never a page of the listing built from every item the app
+        // shows. A name no one resource there answers is listed as before.
+        if let Some(among) = self.named(provider, "", name).await?
+            && let [only] = among.children.as_slice()
+        {
+            return Ok(Some(Level {
+                own: Vec::new(),
+                children: vec![only.clone()],
+                revision: among.revision,
+                pages: std::sync::Arc::default(),
+            }));
+        }
         let root = self.level(provider, "", levels).await?;
         let mut revision = root.revision.clone();
         // A name the app's own level carries exactly is answered there: its id

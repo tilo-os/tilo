@@ -715,11 +715,11 @@ impl Replica {
 
     /// The page a lookup `query` asks for, answered from the one resource it
     /// names and never from the whole tree the view publishes: an action by
-    /// its address ([`Self::descriptor`]), or a chain's item by its id or
-    /// label, built alone from the part keeping it, past whatever page the
-    /// chain publishes. Either costs the same however many items there are.
-    /// `None` for a query that is no such lookup, or a name no chain item
-    /// answers.
+    /// its address ([`Self::descriptor`]), a chain's item by its id or
+    /// label, built alone from the part keeping it past whatever page the
+    /// chain publishes, or a chain at the app's own level, built from its
+    /// head part. Either costs the same however many items there are.
+    /// `None` for a query that is no such lookup, or a name no chain answers.
     fn looked_up(
         &self,
         query: &tilo_actions::remote::CatalogueQuery,
@@ -735,12 +735,28 @@ impl Replica {
                 .collect();
             return Some(Self::page_of(&rows, query, (can_render, window)));
         }
-        let (Some(name), Some(parent)) = (
-            query.resource_name.as_deref(),
-            query.parent_resource.as_deref(),
-        ) else {
-            return None;
-        };
+        let name = query.resource_name.as_deref()?;
+        // A name at the app's own level is a chain it keeps beside its
+        // resource: answered from the chain's head, never the listing's
+        // page, which is built from every item the app's views publish. A
+        // name that is no one chain — none, or several, or the resource's
+        // own — is listed as before.
+        if query.parent_resource.is_none() {
+            let same = |text: &str| text.trim().eq_ignore_ascii_case(name);
+            if same(self.kind.kind()) || same(self.view.definition().title()) {
+                return None;
+            }
+            let named = self.view.chains_named_at_top(name);
+            if named.len() != 1 {
+                return None;
+            }
+            let surveyed: Vec<_> = named
+                .iter()
+                .flat_map(|child| self.rows_of_item(child, ""))
+                .collect();
+            return Some(Self::page_of(&surveyed, query, (can_render, window)));
+        }
+        let parent = query.parent_resource.as_deref()?;
         ui::resource::chain_of_resource_id(parent)?;
         let named = self.view.chain_items_named(parent, name);
         if named.is_empty() {

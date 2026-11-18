@@ -462,6 +462,21 @@ impl ViewStorage {
             .find_map(|api| Some(self.kept_where(api.id(), api.item(id)?)))
     }
 
+    /// The chains the views opened that `name` names by their id, kind or
+    /// label, each as its head part publishes it ([`ResourceApi::publish_head`]):
+    /// what a path's first segment costs, however many items the chains hold.
+    pub(crate) fn chains_named(&self, name: &str) -> Vec<tilo_actions::ResourceSpec> {
+        let same = |text: &str| text.trim().eq_ignore_ascii_case(name);
+        self.chains
+            .apis()
+            .into_iter()
+            .filter_map(|api| {
+                let head = api.publish_head();
+                (same(head.id.as_str()) || same(&head.kind) || same(&head.label)).then_some(head)
+            })
+            .collect()
+    }
+
     /// `resource`, of the one `owner` names, with its actions carried out by
     /// the provider keeping `owner` when another one does.
     fn kept_where(

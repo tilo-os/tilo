@@ -670,6 +670,25 @@ impl AttachedView {
             .collect()
     }
 
+    /// The chains the view opened that `name` names at the app's own level,
+    /// by their id, kind or label, each as its head part publishes it, and
+    /// only those the member may reach: what a path's first segment costs,
+    /// however many items the chains hold, and without a frame of the view.
+    #[must_use]
+    pub fn chains_named_at_top(&self, name: &str) -> Vec<tilo_actions::ResourceSpec> {
+        let found = {
+            let mut frame = self.frame.borrow_mut();
+            frame
+                .widget_mut::<super::root::ResourceRoot>()
+                .map(|root| root.storage.chains_named(name))
+                .unwrap_or_default()
+        };
+        found
+            .into_iter()
+            .filter_map(|resource| self.permitted(resource))
+            .collect()
+    }
+
     /// Whether `id` is an item a chain the view opened keeps, found in the
     /// part keeping it without a frame of the view: what an action on it is
     /// offered as.

@@ -193,10 +193,11 @@ fn built(observed: &[ui::tilo_resource::profiling::Sample]) -> (usize, usize) {
 }
 
 /// An issue named by its id, as an agent's path names one and acts on it:
-/// found under the chain, its action looked up by address, renamed and
-/// deleted. None of it builds the tree the tracker publishes or lays its
-/// view out, at twenty-five issues as at a thousand, and an issue past the
-/// page its part publishes is found and acted on the same way.
+/// the chain a path starts with named at the app's own level, the issue found
+/// under it, its action looked up by address, renamed and deleted. None of it
+/// builds the tree the tracker publishes or lays its view out, at twenty-five
+/// issues as at a thousand, and an issue past the page its part publishes is
+/// found and acted on the same way.
 #[test]
 fn an_issue_named_by_its_id_is_acted_on_without_building_the_tree() {
     for size in [25, 1000] {
@@ -234,6 +235,17 @@ fn an_issue_named_by_its_id_is_acted_on_without_building_the_tree() {
         if size > PAST_PAGE {
             targets.push(held[PAST_PAGE].clone());
         }
+        // A path names the chain the app keeps at its own level
+        // (`tasks/Issues/<id>`) before the item: the app answers the name
+        // from the chain's head part, never a page of the listing built from
+        // every item the app shows.
+        let named_chain = tilo_actions::remote::CatalogueQuery {
+            parent_resource: None,
+            resource_name: Some("Issues".to_owned()),
+            max_results: 50,
+            ..tilo_actions::remote::CatalogueQuery::default()
+        };
+        let mut found_chain = false;
         for target in targets {
             let named = tilo_actions::remote::CatalogueQuery {
                 parent_resource: Some(issues()),
@@ -267,6 +279,14 @@ fn an_issue_named_by_its_id_is_acted_on_without_building_the_tree() {
                     page.invoke(&address, arguments.as_object().unwrap(), confirmed)
                         .unwrap_or_else(|error| panic!("{action} of {target}: {error}"));
                 }
+                // Asked after that change: the app's level names the chain a
+                // path starts with, as the next path would.
+                let (_, named) = page.survey_page(&named_chain, (false, (0, 50)));
+                found_chain = named.iter().any(|row| {
+                    row.action
+                        .as_ref()
+                        .is_some_and(|action| action.address.action == "create")
+                });
                 rows
             });
             assert!(!rows.is_empty());
@@ -274,6 +294,10 @@ fn an_issue_named_by_its_id_is_acted_on_without_building_the_tree() {
                 built(&observed),
                 (0, 0),
                 "{target} of {size} issues was acted on by building the tree or laying it out"
+            );
+            assert!(
+                found_chain,
+                "the app's level names the chain a path starts with, at {size} issues"
             );
             assert!(
                 !held_issues(&page).contains(&target),
