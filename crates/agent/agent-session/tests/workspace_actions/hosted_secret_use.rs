@@ -648,6 +648,75 @@ async fn the_assistant_signs_in_to_mail_with_a_password_it_never_sees() {
     hosted.page.peer.close();
 }
 
+/// A use that was refused: the agent is not told that its person is asked, nobody is asked,
+/// and nothing signed in.
+async fn refused_and_nobody_is_asked(hosted: &Hosted, told: &str) {
+    assert!(
+        !told.contains(ASKED),
+        "the agent is told it was refused: {told}"
+    );
+    assert!(
+        hosted.questions(chat::question::ACTION).await.is_empty(),
+        "nobody is asked about a use that names no item of theirs"
+    );
+    assert!(
+        hosted.proved.lock().unwrap().is_empty(),
+        "nothing signed in"
+    );
+}
+
+/// A reference opens nothing by itself. One that names no item of the vault of the person the
+/// turn acts for, as the address of an item in anybody else's vault does, reaches the action as
+/// it was written and is refused there: nobody is asked, and nothing signs in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reference_her_vault_does_not_hold_is_refused_by_the_use_and_nobody_is_asked() {
+    let hosted = Hosted::start().await;
+    let elsewhere = format!("vault.item:{}", "0123456789abcdef".repeat(2));
+    hosted
+        .turn(
+            "Sign in to my mail with the password you were given.",
+            vec![
+                add_mail("call-1", "ada@example.test", &elsewhere),
+                Reply::text("That was refused."),
+            ],
+        )
+        .await;
+    let told = hosted.last_tool_result();
+    assert!(
+        !told.contains("is a resource of the workspace"),
+        "a secret's reference is no path of the workspace, and is not refused as one: {told}"
+    );
+    refused_and_nobody_is_asked(&hosted, &told).await;
+    hosted.page.peer.close();
+}
+
+/// Where a secret is taken, a text that is no reference stays a text: a path of the workspace,
+/// one that climbs out of it and a reference spelled to climb read no resource and open
+/// nothing. Each is refused, nobody is asked, and nothing signs in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_path_where_a_secret_is_taken_reads_no_resource_and_opens_nothing() {
+    let hosted = Hosted::start().await;
+    for (call, written) in [
+        ("call-1", "chat"),
+        ("call-2", "notes/Launch checklist"),
+        ("call-3", "../../../etc/passwd"),
+        ("call-4", "vault.item:../../people"),
+    ] {
+        hosted
+            .turn(
+                "Sign in to my mail with this.",
+                vec![
+                    add_mail(call, "ada@example.test", written),
+                    Reply::text("That was refused."),
+                ],
+            )
+            .await;
+        let told = hosted.last_tool_result();
+        refused_and_nobody_is_asked(&hosted, &told).await;
+    }
+    hosted.page.peer.close();
+}
+
 /// What a person's "Always" to a question its agent reworded does: nothing.
 #[path = "hosted_reworded_question.rs"]
 mod reworded;
