@@ -208,10 +208,17 @@ tilo_test_env::scenario! {
             PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
         let mut view = attached(&app, reader);
         assert!(view.operations().is_empty());
-        assert!(matches!(
-            view.invoke_typed(&Tally::BUMP.invoke(), false),
-            Err(tilo_actions::api::ApiError::Unknown(_))
-        ));
+        // Refused as an edit the agent may not make, never as one the app
+        // does not have: an agent told that looks for another way.
+        let refused = view.invoke_typed(&Tally::BUMP.invoke(), false).map(drop);
+        assert!(
+            matches!(
+                &refused,
+                Err(tilo_actions::api::ApiError::Unavailable { code, .. })
+                    if code == "permission_denied"
+            ),
+            "{refused:?}"
+        );
         assert_eq!(count(&view), 0);
     }
 
