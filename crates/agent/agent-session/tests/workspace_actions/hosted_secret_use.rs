@@ -675,3 +675,8 @@ mod turn_pages;
 /// The same server, person and assistant, signing a mail account in from its address alone.
 #[path = "hosted_mail_connect.rs"]
 mod mail_connect;
+
+/// Told at its start what its workspace has, a turn signs a mail account in with its first
+/// tool call.
+#[path = "hosted_mail_told.rs"]
+mod mail_told;
