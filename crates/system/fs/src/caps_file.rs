@@ -208,14 +208,52 @@ fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, Stamp), CapsError
         path: path.to_path_buf(),
         source,
     })?);
-    let authority: collab_types::FsAuthority =
-        serde_json::from_reader(std::io::BufReader::new(file)).map_err(|source| {
-            CapsError::Parse {
-                path: path.to_path_buf(),
-                source,
-            }
-        })?;
+    let parse = |source| CapsError::Parse {
+        path: path.to_path_buf(),
+        source,
+    };
+    let mut authority: serde_json::Value =
+        serde_json::from_reader(std::io::BufReader::new(file)).map_err(parse)?;
+    lifetime_of_a_seeded_expiry(&mut authority);
+    let authority: collab_types::FsAuthority = serde_json::from_value(authority).map_err(parse)?;
     Ok((authority.capabilities, stamp))
+}
+
+/// tmpfiles seeds `/var/lib/tilo/fs-capabilities.json` with `C`, which never
+/// overwrites, so a machine keeps the list in the shape it was installed with.
+/// Lists seeded before capabilities said how long they stand as a `lifetime`
+/// name it an `expiry`: `"Never"` or `{"AtUnix": seconds}`, the two that were
+/// ever written to disk. Each reads as the lifetime it meant; any other
+/// `expiry` is left for the parse to refuse.
+fn lifetime_of_a_seeded_expiry(authority: &mut serde_json::Value) {
+    let Some(capabilities) = authority
+        .get_mut("capabilities")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for capability in capabilities
+        .iter_mut()
+        .filter_map(serde_json::Value::as_object_mut)
+    {
+        if capability.contains_key("lifetime") {
+            continue;
+        }
+        let lifetime = match capability.get("expiry") {
+            Some(serde_json::Value::String(never)) if never == "Never" => {
+                serde_json::json!("until_revoked")
+            }
+            Some(serde_json::Value::Object(at)) => {
+                match at.get("AtUnix").and_then(serde_json::Value::as_u64) {
+                    Some(seconds) => serde_json::json!({ "until": seconds.saturating_mul(1000) }),
+                    None => continue,
+                }
+            }
+            _ => continue,
+        };
+        capability.remove("expiry");
+        capability.insert("lifetime".into(), lifetime);
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
