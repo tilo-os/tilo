@@ -487,6 +487,48 @@ fn an_app_whose_keeper_stops_says_so_in_its_own_tab() {
     pass.end(Teardown::Logout);
 }
 
+/// A keeper killed with no word of how its app ended, while no desktop was there, took the app
+/// with it: the person is told it stopped working in the tab its window was in, and nothing else
+/// opens.
+#[test]
+fn a_keeper_killed_while_no_desktop_was_there_says_the_app_stopped_in_its_tab() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let mut first = rig.desktop(false);
+    rig.launch(&first);
+    let placed = shown_and_told(&rig, &mut first, &["Only"]);
+    let tab = placed[0].1;
+    let (dir, pid, _) = rig.kept();
+    first.end(Teardown::InPlaceRestart);
+    signal(parent_of(pid), libc::SIGKILL);
+    tilo_test_env::exited("the app of a keeper killed while away", pid);
+    assert!(
+        !dir.join("ended").exists(),
+        "its keeper never said how it ended"
+    );
+
+    let mut second = rig.desktop(true);
+    until(&mut second.session, "its tab says it stopped", |session| {
+        matches!(
+            tile_of(session, tab),
+            Some(TileContent::AppPlaceholder { .. })
+        )
+    });
+    for _ in 0..100 {
+        second.session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(
+        tabs(&second.session)
+            .into_iter()
+            .map(|(other, _)| other)
+            .collect::<Vec<_>>(),
+        [tab],
+        "the notice stands where the window was, and no other tab opens"
+    );
+    assert_eq!(rig.starts(), [pid], "and the app is not started again");
+    second.end(Teardown::Logout);
+}
+
 /// A program whose window names its app otherwise than the desktop entry it was launched by takes
 /// the tab the shell held for that launch: the window comes on the keeper connection the session
 /// handed over for exactly that launch.
