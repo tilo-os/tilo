@@ -139,6 +139,13 @@ impl Desktop {
             .expect("the founding installs here");
     }
 
+    /// Whether this desktop founds the workspace's key group.
+    fn founds_group(&self) -> bool {
+        self.owner
+            .with_current(workspace(), |view| Ok(view.founded_here()))
+            .expect("this desktop holds the workspace")
+    }
+
     /// Where the workspace is held: the signed address of each of its holders.
     async fn holders(&self) -> Vec<TransportHint> {
         self.service
@@ -526,6 +533,32 @@ async fn five_desktops_hold_one_workspace_with_no_server_in_it() {
     .await;
 
     for desktop in [a1, a3, b1, b2] {
+        desktop.leaves().await;
+    }
+}
+
+/// The desktop a workspace was made on founds its key group, though its own
+/// service created the workspace: nobody else would, and the desktop could
+/// seal nothing. A further desktop of the same person does not.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_desktop_a_workspace_was_made_on_founds_its_key_group() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = SigningKey::from_bytes(&[0x71; 32]);
+    let (a1_key, a1_cert) = device(&root, 0x72);
+    let (a2_key, a2_cert) = device(&root, 0x73);
+    let desktops = [
+        Desktop::start(directory.path(), "a1", a1_key, a1_cert).await,
+        Desktop::start(directory.path(), "a2", a2_key, a2_cert).await,
+    ];
+    let [a1, a2] = &desktops;
+    a1.founds().await;
+    a2.enters_as_member(a1.own_holder().await).await;
+    assert!(
+        a1.founds_group(),
+        "the desktop it was made on founds the group"
+    );
+    assert!(!a2.founds_group(), "a further desktop joins the group");
+    for desktop in desktops {
         desktop.leaves().await;
     }
 }

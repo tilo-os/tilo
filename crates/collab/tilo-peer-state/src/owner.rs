@@ -338,10 +338,19 @@ impl NativeCommittedView {
     pub fn workspace_host(&self) -> &DeviceCert {
         &self.record.workspace_host
     }
-    /// Whether this device created the workspace, and so founds its MLS group.
+    /// Whether this device created the workspace, itself or through the
+    /// workspace service it certified, and so founds its MLS group: that
+    /// service takes part in the group with this device's keys.
     #[must_use]
     pub fn founded_here(&self) -> bool {
-        self.peer.governance().founder() == Some(self.device().device_public_key)
+        let Some(founder) = self.peer.governance().founder() else {
+            return false;
+        };
+        let device = &self.device().device_public_key;
+        founder == *device
+            || self
+                .transport_hint()
+                .is_ok_and(|hint| hosted_by(hint, &founder) && hosted_by(hint, device))
     }
     /// Whether this device entered a workspace that existed before it: it
     /// redeemed an invitation, or a host vouched for it as a further device of
