@@ -97,31 +97,6 @@ guest_tools() {
   use_cosign
 }
 
-# The image in the archive DIR/image.oci.tar, checked against DIR/digest, as podman's NAME.
-load_archive() {
-  local dir=$1 name=$2
-  [[ $(archive_digest "$dir/image.oci.tar") == "$(cat "$dir/digest")" ]] || die "$dir/image.oci.tar is not the image $dir/digest names"
-  podman tag "$(podman pull -q "oci-archive:$dir/image.oci.tar")" "$name"
-}
-
-# podman's NAME into OUT/image.oci.tar, with OUT/digest and OUT/generation.
-save_archive() {
-  local name=$1 out=$2
-  rm -f "$out/image.oci.tar"
-  podman push -q --compression-format zstd --compression-level 3 "$name" "oci-archive:$out/image.oci.tar"
-  archive_digest "$out/image.oci.tar" > "$out/digest"
-  podman run --rm --entrypoint /bin/cat "$name" /usr/lib/tilo/generation > "$out/generation"
-  [[ $(cat "$out/generation") =~ ^[1-9][0-9]*$ ]] || die "$name carries no generation"
-}
-
-# Install podman's NAME onto a scratch disk as a device installs it: the first install seals its
-# UKI with the composefs digest it computes, rewriting NAME (os/dev/build-image.sh).
-install_disk() {
-  TILO_IMAGE=$1 TILO_SKIP_BUILD=1 TILO_DISTROBOX= TILO_VM_ARCH=$arch \
-    TILO_OUTPUT=$scratch/boot-output TILO_RUN=$scratch/boot-run TMPDIR=/var/tmp \
-    bash os/dev/build-image.sh
-}
-
 cmd_seal() {
   local image=$1 out=$2 status=0 qemu=()
   case $arch in
@@ -212,19 +187,6 @@ seal_board() {
   install_disk localhost/tilo:release > "$out/install.log" 2>&1 \
     || { tail -n 80 "$out/install.log"; echo 'FAIL  the image does not install onto a disk'; return 1; }
   echo 'ok    the image installs onto a disk, which sealed its UKI'
-}
-
-# jsign (the pinned jar, os/external-assets) on PATH, for tools/signing/boot-signer.sh, with the
-# AWS CLI it signs the PCR digest with.
-use_signing_tools() {
-  local jar
-  rpm -q java-25-openjdk-headless awscli2 openssl >/dev/null 2>&1 \
-    || dnf install -y --setopt=install_weak_deps=False java-25-openjdk-headless awscli2 openssl >/dev/null
-  jar=$(pinned_assets jsign-7.6.jar)/jsign-7.6.jar
-  mkdir -p "$scratch/bin"
-  printf '#!/bin/sh\nexec java -jar %s "$@"\n' "$jar" > "$scratch/bin/jsign"
-  chmod 0755 "$scratch/bin/jsign"
-  PATH=$scratch/bin:$PATH
 }
 
 cmd_sign_boot() {

@@ -20,6 +20,12 @@
 # The guest OS inside each workspace VM is not here: the service fetches the
 # rootfs Firecracker boots, pinned by digest in os/hosted-guest-snapshot.env and
 # signed with the release key.
+#
+# The image is sealed as the desktop's is: host-build.sh appends the desktop's
+# own sealing stages (os/image/boot.Containerfile: kernel, split, uki-input, uki,
+# final) to this file, so the kernel, the initramfs and the command line with
+# the generation and the composefs digest are one Unified Kernel Image under
+# /boot. This file's `rootfs` stage is what they seal, and nothing may follow it.
 # ============================================================================
 
 # ---- Programs on the cached base -------------------------------------------
@@ -27,6 +33,10 @@
 # Firecracker, which change only when the snapshot or the base does. This layer
 # is built from it in seconds.
 ARG HOST_BASE=localhost/tilo-host-base:latest
+# The sealing tools, the desktop's `uki-tools` stage built with the base
+# (host-base.sh), as an image: this build has no RPM snapshot to install them from.
+ARG UKI_TOOLS=localhost/tilo-host-uki-tools:latest
+FROM ${UKI_TOOLS} AS uki-tools
 
 # NetworkManager's resolver file, restored as the image's last layer (as the
 # desktop image does): the base leaves a placeholder there, because a RUN with
@@ -34,7 +44,7 @@ ARG HOST_BASE=localhost/tilo-host-base:latest
 FROM ${HOST_BASE} AS runtime-resolver-link
 RUN mkdir -p /out && ln -s ../run/NetworkManager/resolv.conf /out/resolv.conf
 
-FROM ${HOST_BASE}
+FROM ${HOST_BASE} AS rootfs
 
 ARG SOURCE_REVISION
 LABEL org.opencontainers.image.title="Tilo server" \
@@ -66,8 +76,9 @@ COPY bin/tilo-board-successor /usr/libexec/tilo-board-successor
 # holds the TPM's generation keyslots and floor, tilo-boot-signin is the sign-in
 # screen tilo-root-discover steps aside from on a machine nobody signs in to;
 # tilo-auth's own sibling commands enrol the sibling factor from the owner's
-# session.
-COPY bin/tilo-auth bin/tilo-boot-signin bin/tilo-rollback /usr/libexec/tilo/
+# session. tilo-crypto checks the signatures a release adds to the boot chain
+# (os/dev/sign-target-prediction.sh runs the image's own copy).
+COPY bin/tilo-auth bin/tilo-boot-signin bin/tilo-rollback bin/tilo-crypto /usr/libexec/tilo/
 # The jail helper is root-owned and runnable only by the service's group (10001,
 # os/usr/lib/sysusers.d/tilo-hosted.conf; numeric here because the accounts are
 # made further down). Its capabilities are given by tilo-hosted.service at start
@@ -84,7 +95,7 @@ RUN chown 0:10001 /usr/libexec/tilo/tilo-hosted-jail \
         /usr/libexec/tilo-esp-write /usr/libexec/tilo-image-policy-check \
         /usr/libexec/tilo-board-successor /usr/bin/fs \
         /usr/libexec/tilo/tilo-auth /usr/libexec/tilo/tilo-boot-signin \
-        /usr/libexec/tilo/tilo-rollback \
+        /usr/libexec/tilo/tilo-rollback /usr/libexec/tilo/tilo-crypto \
     && for name in tilo-server tilo-server-admin tilo-enroll tilo-linux-vm; do \
          ln -s ../libexec/tilo/"$name" /usr/bin/"$name"; \
        done \
@@ -143,8 +154,8 @@ RUN install -d -m 0755 /usr/share/tilo/pcr-predictions
 # only place that can happen is an initramfs built with the unlock module in it.
 # dracut runs here, from the desktop image's own script, with the module list a
 # headless machine has: the crypt stack and the unlock chain with the sibling
-# factor's network, without the greeter and the splash. bootc install copies this
-# initramfs into the installed machine's boot entries.
+# factor's network, without the greeter and the splash. The `uki` stage seals it
+# into the UKI beside the kernel.
 COPY os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/build-initramfs.sh /usr/local/bin/verify-board-initramfs.py \
     && set -- /usr/lib/modules/*/vmlinuz \
@@ -236,12 +247,10 @@ RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/
 
 COPY docs/recovery.md docs/app-model/environments.md /usr/share/doc/tilo/
 
-# This image boots bootc's split kernel/initrd entries rather than a sealed UKI,
-# and the boot-entry pass accepts that layout only from an image that says which
-# layout it boots (os/usr/libexec/tilo-deployment, /usr/lib/tilo/image-flavour).
-# `server` and not `dev`: everything that treats `dev` as a development image —
-# the development signing key, dev-only paths — must keep treating this one as a
-# release image.
+# Which image this is: a first boot and the installer tell a server from a
+# desktop by it. `server` and not `dev`: everything that treats `dev` as a
+# development image — split boot entries, the development signing key, dev-only
+# paths — treats this one as a release image.
 RUN install -d -m 0755 /usr/lib/tilo && echo server > /usr/lib/tilo/image-flavour
 
 # The enrollment methods this image offers, in the one place an image declares
@@ -351,11 +360,16 @@ COPY os/etc/containers/registries.d/registry.tilo.so.yaml /etc/containers/regist
 # Same bootloader swap as the desktop image (os/Containerfile.host-base installs systemd-boot
 # and drops the GRUB stack); the install-time configuration it reads is this image's.
 COPY os/usr/lib/bootc/install/40-tilo.toml /usr/lib/bootc/install/40-tilo.toml
-# The desktop's kernel hardening arguments (kernel lockdown, zeroed allocations,
-# no merged slabs, a randomised stack offset, no vsyscall page) and its refusal
-# to import systemd credentials from firmware or the boot loader. bootc writes
-# kargs.d into the boot entry at install and at every update.
-COPY os/usr/lib/bootc/kargs.d/01-hardening.toml os/usr/lib/bootc/kargs.d/05-credentials.toml \
+# The desktop's command line, which the `uki` stage seals into the UKI from
+# kargs.d: the root found and opened by the unlock chain (00-root), kernel
+# hardening (01: lockdown, zeroed allocations, no merged slabs, a randomised
+# stack offset, no vsyscall page), the boot's consoles, the serial one included
+# (03), the normal boot mode the repair entry is derived from (04), and no
+# systemd credentials from firmware or the boot loader (05). The generation (02)
+# is written further down.
+COPY os/usr/lib/bootc/kargs.d/00-root.toml os/usr/lib/bootc/kargs.d/01-hardening.toml \
+    os/usr/lib/bootc/kargs.d/03-boot.toml os/usr/lib/bootc/kargs.d/04-mode.toml \
+    os/usr/lib/bootc/kargs.d/05-credentials.toml \
     /usr/lib/bootc/kargs.d/
 # Nor do the consoles' gettys ask for credentials: there are none, and asking
 # keeps them from starting.
@@ -378,7 +392,22 @@ RUN firewall-offline-cmd --set-default-zone=FedoraServer \
     && firewall-offline-cmd --zone=FedoraServer --remove-service-from-zone=cockpit \
     && test "$(firewall-offline-cmd --zone=FedoraServer --list-services)" = dhcpv6-client
 
+# The generation this image carries, a dense series of the server's own
+# (registry.tilo.so/tilo/tilo-host's gen<N> tags, os/dev/next-generation.sh): on
+# the sealed command line through kargs.d, which systemd-stub measures into PCR
+# 11 and the TPM keyslot of each generation is bound to, and in
+# /usr/lib/tilo/generation for the staged deployment whose keyslot is made
+# before it boots. os/Containerfile's generation step says why it has no default.
+ARG TILO_GENERATION
+RUN case "${TILO_GENERATION}" in \
+      ''|*[!0-9]*) echo "TILO_GENERATION must be a decimal integer; got '${TILO_GENERATION}'." >&2; exit 1 ;; \
+    esac \
+ && printf '%s\n' "${TILO_GENERATION}" > /usr/lib/tilo/generation \
+ && printf '# Written by the image build from the TILO_GENERATION build argument.\nkargs = ["tilo.generation=%s"]\n' \
+      "${TILO_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml
+
 RUN bootc container lint
-# The last layer: NetworkManager's resolver file (the runtime-resolver-link stage
-# says why it comes after every RUN).
+# The last layer of the rootfs: NetworkManager's resolver file (the
+# runtime-resolver-link stage says why it comes after every RUN). The sealing
+# stages follow, and add nothing to it.
 COPY --from=runtime-resolver-link /out/ /etc/
