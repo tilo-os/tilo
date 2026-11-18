@@ -2492,7 +2492,7 @@ impl Worker {
                     caller,
                     &who,
                     (request, &route, &state),
-                    (target, arguments),
+                    (target, arguments, &withheld),
                 )
                 .map(|(output, left_at)| (withheld.shown(output), left_at));
         }
@@ -2502,7 +2502,7 @@ impl Worker {
             .app
             .descriptor(&target.address)
             .ok_or_else(unknown_action)?;
-        let arguments = descriptor.bind_prompt_text(arguments);
+        let arguments = withheld.given(descriptor.bind_prompt_text(arguments))?;
         let binding = bounded::ApprovalBinding::of(workspace_id, caller, request);
         let confirmed = confirms(
             &descriptor.contract.confirmation,
