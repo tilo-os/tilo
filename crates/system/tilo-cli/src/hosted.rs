@@ -1081,6 +1081,10 @@ const TREE_BATCH_BYTES: usize = 32 * 1024 * 1024;
 /// The most raw bytes one many-files call carries: under the 1 MiB request
 /// and session frame bounds once base64 and hex grow them.
 const MANY_BYTES: usize = 512 * 1024;
+/// How many many-files calls go at once. A workspace answers them one after
+/// another, so more in flight only queue: the oldest waits a step for every
+/// call ahead of it, and the peer gives up on one that waits half a minute.
+const CONTENTS_AT_ONCE: usize = 4;
 /// How many content hashes one call asks the workspace about: a small body,
 /// and the session asks the store in [`MAX_HAVE_HASHES`]-sized steps.
 const HAVE_HASHES: usize = 2_000;
@@ -1156,7 +1160,7 @@ pub(crate) async fn upload_all(
                 .context("storing the files")?;
             anyhow::Ok((group, refs))
         })
-        .buffer_unordered(UPLOADS_AT_ONCE);
+        .buffer_unordered(CONTENTS_AT_ONCE);
     while let Some(sent) = sending.next().await {
         let (group, refs) = sent?;
         for (index, content) in group.into_iter().zip(refs) {
