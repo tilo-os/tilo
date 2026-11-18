@@ -46,6 +46,10 @@ import WebKit
 ///                                                    the front: it says whether the thing loaded
 ///   {"do": "live-text", "item": "…"}                  what a live document of the word processor reads as now
 ///   {"do": "sign-out"}                               as "Sign out of this device" does: the device is nobody's here
+///   {"do": "live-read", "item": "…", "picture": "…"}   what a piece's live thing draws now: the size its content asks
+///                                                    for, its mount's frames and the names it says; with "picture"
+///                                                    the web view's own snapshot of itself (FILE.snapshot.png, said
+///                                                    in a line of its own when it comes)
 ///   {"do": "models"}   {"do": "state"}   {"do": "quit"}
 /// Of each reply that grew it says, once its writing has ended, when it drew the first change
 /// of its words and when the last, in milliseconds, and how many it drew ("grew"): what a
@@ -537,6 +541,9 @@ final class AssistantDrive {
             guard let thing = live(of: item) else { AssistantDrive.say(["liveShown": ["state": "none"]]); return }
             let asked = Date()
             await source.stage.bring(thing)
+            // No screen asks a web view in no window for a frame: there the clock asks, as for a
+            // page nobody sees, so the thing brought up goes on drawing for the check.
+            if source.engine.view.window == nil { source.engine.setSeen(false) }
             var said: [String: JSON] = ["reference": .string(thing.reference),
                                         "ms": .number((Date().timeIntervalSince(asked) * 1000).rounded())]
             switch source.stage.state(of: thing) {
@@ -562,6 +569,38 @@ final class AssistantDrive {
                 AssistantDrive.say(["liveText": ["held": true, "text": read["output"]?["value"]?["content"]?["markdown"] ?? .null]])
             } catch {
                 AssistantDrive.say(["liveText": ["held": true, "text": .null, "why": .string("\(error)")]])
+            }
+        case "live-read":
+            guard let item = step["item"]?.string else { AssistantDrive.say(["error": "live-read takes item"]); return }
+            guard let thing = live(of: item) else { AssistantDrive.say(["liveRead": ["held": false]]); return }
+            var said: [String: JSON] = ["held": true]
+            if let asks = source.stage.sizes[thing.id] {
+                said["asks"] = ["width": .number(Double(asks.width)), "height": .number(Double(asks.height))]
+            }
+            let view = source.engine.view
+            if view.window == nil { source.engine.setSeen(false) }
+            said["view"] = ["width": .number(Double(view.frame.width)), "height": .number(Double(view.frame.height)),
+                            "inAWindow": .bool(view.window != nil)]
+            let file = step["picture"]?.string
+            do {
+                said["mount"] = try await source.engine.drawn(live: thing.id)
+            } catch {
+                said["why"] = .string("\(error)")
+            }
+            AssistantDrive.say(["liveRead": .object(said)])
+            // The web view's own picture of itself. A view in no window may never answer: it is asked
+            // beside the steps and said in a line of its own when it comes.
+            if let file {
+                Task { @MainActor in
+                    guard let image = try? await view.takeSnapshot(configuration: nil), let tiff = image.tiffRepresentation,
+                          let bitmap = NSBitmapImageRep(data: tiff),
+                          let png = bitmap.representation(using: .png, properties: [:])
+                    else { AssistantDrive.say(["liveSnapshot": ["came": false]]); return }
+                    try? png.write(to: URL(fileURLWithPath: file + ".snapshot.png"))
+                    AssistantDrive.say(["liveSnapshot": ["came": true, "bytes": .number(Double(png.count)),
+                                                         "width": .number(Double(bitmap.pixelsWide)),
+                                                         "height": .number(Double(bitmap.pixelsHigh))]])
+                }
             }
         case "stop-sharing":
             // As the press on Stop sharing under a live thing the person's own assistant shared for them.
