@@ -1,7 +1,9 @@
-//! A search whose word many messages of one conversation hold names its hits from one reading
-//! of each level of the conversation's listing. It used to ask the listing again for every hit,
-//! and a listing page costs what the conversation holds, whatever it lists. What a search
-//! answers is the same, and what its caller may not read is still not found.
+//! A search whose word many messages of one conversation hold names its hits without asking
+//! the conversation's listing again for every hit: a hit its app's index names by its own
+//! resource is answered as it is named, and a hit it names through the listing costs each level
+//! of that listing once. It used to ask the listing again for every hit, and a listing page
+//! costs what the conversation holds, whatever it lists. What a search answers is the same, and
+//! what its caller may not read is still not found.
 use super::*;
 use crate::workspace_actions::hosted_secret_use::logged;
 
@@ -91,9 +93,9 @@ async fn a_search_with_many_hits_in_one_conversation_reads_each_level_of_its_lis
         "each is a message of the conversation, named as its listing names it: {found:?}"
     );
     assert!(
-        (1..=8).contains(&pages),
-        "the levels its hits are named in are read once, not once for every hit: {pages} \
-         listing pages for {} hits",
+        pages <= 8,
+        "the levels its hits are named in are read at most once each, never once for every \
+         hit: {pages} listing pages for {} hits",
         found.len()
     );
     page.peer.close();
