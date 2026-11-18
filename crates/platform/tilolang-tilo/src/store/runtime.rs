@@ -244,19 +244,27 @@ impl Store for TiloStore {
             .txns
             .remove(&txn.0)
             .ok_or_else(|| invalid("no such transaction"))?;
-        // A migration that found nothing to change still ran: its marker is a change of the
-        // document like any other, and the next open reads it instead of asking again.
-        let migration = inner
-            .migrating
-            .clone()
-            .filter(|(migration, _)| *migration == note.action);
-        // A trigger's run records what it did for its resource in the same change: only the
-        // invocation of the app by itself is one.
-        let triggering = inner.triggering.clone().and_then(|triggering| {
-            let (app, _) = inner.index.get(&triggering.doc)?;
-            (note.invoker == Some(crate::runtime::Actor::App(AppId::from(app.as_str()))))
-                .then_some(triggering)
-        });
+        // What a migration or a trigger did is kept on the change its action ends with: a step
+        // of an action that called another one wrote what it wrote, and the mark comes with the
+        // rest of it, once the action is done.
+        let (migration, triggering) = if note.unfinished {
+            (None, None)
+        } else {
+            // A migration that found nothing to change still ran: its marker is a change of the
+            // document like any other, and the next open reads it instead of asking again.
+            let migration = inner
+                .migrating
+                .clone()
+                .filter(|(migration, _)| *migration == note.action);
+            // A trigger's run records what it did for its resource in the same change: only the
+            // invocation of the app by itself is one.
+            let triggering = inner.triggering.clone().and_then(|triggering| {
+                let (app, _) = inner.index.get(&triggering.doc)?;
+                (note.invoker == Some(crate::runtime::Actor::App(AppId::from(app.as_str()))))
+                    .then_some(triggering)
+            });
+            (migration, triggering)
+        };
         // A migration or a trigger that changed nothing still ran: its mark is a change of the
         // document like any other, and the next open or wake reads it instead of asking again.
         // A trigger whose own document is not among what it wrote — one that only told someone

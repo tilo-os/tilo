@@ -46,6 +46,7 @@ mod link_editor;
 mod links;
 mod make_from;
 mod marks;
+mod migrations;
 mod naming;
 mod note_import;
 mod notebook_order;

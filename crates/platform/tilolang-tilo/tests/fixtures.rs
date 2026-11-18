@@ -227,11 +227,15 @@ impl Replica {
         self.host.sync_from(&self.doc);
     }
 
-    /// Commit what the runtime committed on its own (a press, a created root).
-    pub fn commit(&mut self) {
-        for committed in self.host.take_committed() {
-            self.apply(&committed.action);
+    /// Commit what the runtime committed on its own (a press, a created root), answering how
+    /// many changes it was.
+    pub fn commit(&mut self) -> usize {
+        let committed = self.host.take_committed();
+        let count = committed.len();
+        for entry in committed {
+            self.apply(&entry.action);
         }
+        count
     }
 
     /// Exchange every change with `other`, as sync does.

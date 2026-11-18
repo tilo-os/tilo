@@ -1955,6 +1955,9 @@ impl Inner {
         let seed = format!("{}:{}", txn.0, self.counter).into_bytes();
         self.write(&app, vec![edit.clone()], &seed, &[], Moves::default())?;
         state.edits.push(edit);
+        // The mark is a write of the document, not one its origin derives: the change it is in
+        // is a change of the document, and reaches it even when it is all the change wrote.
+        state.saved = state.saved.saturating_add(1);
         Ok(true)
     }
 
