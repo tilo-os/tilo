@@ -596,6 +596,11 @@ fn interactive(role: ui::a11y::Role) -> bool {
     )
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is a different fact about where the node stands: past the window, \
+              across a sideways scroll, off the device pixels, and in a scroll view"
+)]
 struct Walk<'a> {
     viewport: Rect,
     beyond: bool,
@@ -981,6 +986,10 @@ impl Walk<'_> {
         });
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every check a node gets, read in the order the node is walked"
+    )]
     fn visit(
         &mut self,
         node: &InspectionNode,
