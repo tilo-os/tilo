@@ -3,8 +3,6 @@
 //! same work beside fifty items as beside five hundred.
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
-use std::rc::Rc;
-
 use tilo_app::framework::Chained;
 use tilo_app::prelude::*;
 use tilo_app::resource::DocumentId;
@@ -46,16 +44,11 @@ impl BoardPart {
     }
 }
 
-/// Every card goes into the one part.
 impl Chained for BoardPart {
     type Base = Board;
 
     fn chain() -> DocumentId {
         DocumentId::derived("cards", &DocumentId::workspace_default())
-    }
-
-    fn part_for(_: &Self::Action, _: &[(u64, Rc<Self>)]) -> Result<u64, String> {
-        Ok(0)
     }
 }
 
