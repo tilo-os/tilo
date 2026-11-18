@@ -1,5 +1,6 @@
 //! What an agent tool answers typed: one answer for a call that ran, one
 //! for a call that did not, and the rows a listing and a refusal carry.
+use super::instead::Call;
 use super::render::render_value;
 use super::{ActionDescriptor, Failure, Reply, Value, json};
 use crate::UNTRUSTED;
@@ -116,8 +117,19 @@ fn refused(failure: &Failure, retry_safe: bool) -> Value {
         if let Some(wait) = wait {
             fields.insert("retry_after_ms".into(), wait.into());
         }
+        // What to do next: what the refusal itself says, then the calls that work instead.
+        let mut steps: Vec<Value> = Vec::new();
         if !next.is_empty() {
-            fields.insert("next_steps".into(), json!([next]));
+            steps.push(next.into());
+        }
+        steps.extend(
+            failure
+                .instead
+                .iter()
+                .map(|call| Value::from(call.written())),
+        );
+        if !steps.is_empty() {
+            fields.insert("next_steps".into(), steps.into());
         }
     }
     json!({"status":"failed","error":error})
@@ -359,7 +371,8 @@ pub(super) fn outcome(value: &Value) -> Reply {
             }
             let _ = write!(
                 text,
-                "\ntilo_status {{invocation_id}} says how it went; {{\"cancel\": true}} stops it"
+                "\n{} says how it went; {{\"cancel\": true}} stops it",
+                Call::status(id).written()
             );
             text
         }
@@ -369,7 +382,8 @@ pub(super) fn outcome(value: &Value) -> Reply {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             format!(
-                "pending {id}: not finished yet; tilo_status {{invocation_id}} says how it went"
+                "pending {id}: not finished yet; {} says how it went",
+                Call::status(id).written()
             )
         }
     };

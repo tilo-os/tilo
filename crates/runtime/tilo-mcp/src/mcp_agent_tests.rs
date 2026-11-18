@@ -2407,7 +2407,7 @@ tilo_test_env::scenario! {
             // the actions are.
             assert!(
                 text.contains("has no action explode")
-                    && text.contains("tilo_ls notes/Todo lists them"),
+                    && text.contains(r#"call that works: tilo_ls {"path":"notes/Todo"}"#),
                 "{text}"
             );
             assert!(!text.contains("delete, slow"), "no wall of names: {text}");
@@ -2927,6 +2927,8 @@ mod narrowed;
 mod opening;
 #[path = "mcp_agent_outside_tests.rs"]
 mod outside;
+#[path = "mcp_agent_instead_tests.rs"]
+mod refused;
 #[path = "mcp_runs_tests.rs"]
 mod runs;
 #[path = "mcp_agent_start_tests.rs"]

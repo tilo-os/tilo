@@ -85,6 +85,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         wait_ms: Option<u64>,
     ) -> Result<Value, Failure> {
         self.acted_in(&known.provider, &known.app_id);
+        let arguments = instead::as_declared(&known.descriptor, arguments);
         Box::pin(self.invoke_one(OneCall {
             provider: Addressed {
                 provider: known.provider.clone(),

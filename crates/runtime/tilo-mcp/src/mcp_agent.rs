@@ -32,6 +32,8 @@ use tilo_lock::MutexRecover as _;
 mod answer;
 #[path = "mcp_agent_find.rs"]
 mod find;
+#[path = "mcp_agent_instead.rs"]
+pub(crate) mod instead;
 #[path = "mcp_agent_launch.rs"]
 mod launch;
 use launch::{names_files, opens_a_file, starts_app};
@@ -2025,21 +2027,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let provider = resolved.provider.clone();
         let mut levels = std::mem::take(&mut resolved.levels);
         let Some((owner, reader)) = self.reader(&resolved, &mut levels).await? else {
-            let mut text = format!(
-                "{} has no read action; its actions: {}",
-                resolved.path,
-                list_names(
-                    &resolved
-                        .actions
-                        .iter()
-                        .map(|action| action.address.action.clone())
-                        .collect::<Vec<_>>()
-                )
-            );
-            if !resolved.children.is_empty() {
-                text.push_str("; tilo_ls lists what is inside");
-            }
-            return Ok(Reply::failed(text));
+            let holds = !resolved.children.is_empty();
+            return Ok(instead::not_read(&resolved.path, &resolved.actions, holds));
         };
         // A cursor this tool issued for the rest of a cut answer reads the
         // same page again and answers from where the cut was; any other is
@@ -2263,6 +2252,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if let Some(id) = asked.as_deref() {
             self.watch_invocation_started(id, path);
         }
+        let gave = arguments.clone();
         let answer = Box::pin(self.do_one_value(path, arguments, invocation, wait_ms)).await;
         let answer = match answer {
             Err(failure) => return self.not_done(failure, path, asked.as_deref(), structured),
@@ -2299,7 +2289,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             } => {
                 let mut reply = outcome(&value);
                 if reply.failed && reply.text.contains("invalid_arguments") {
+                    let again = instead::Call::does(&path, &descriptor, &gave, &reply.text);
                     let _ = write!(reply.text, "\n{}", action_page(&path, &descriptor, None));
+                    reply.text.push_str(&instead::said(&[again]));
                 }
                 if let Some(id) = asked.as_deref() {
                     self.watch_invocation_ended(
@@ -2533,7 +2525,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                             .map(answered);
                     }
                     Err(error) => {
-                        return Err(format!("{error}; tilo_ls {} lists them", resolved.path).into());
+                        return Err(instead::no_such_action(
+                            error, &action, &resolved, &arguments,
+                        ));
                     }
                 }
             };
