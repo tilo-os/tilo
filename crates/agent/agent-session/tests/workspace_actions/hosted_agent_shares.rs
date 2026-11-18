@@ -276,6 +276,10 @@ async fn where_a_document_is_shown_and_whose_share_it_is_are_never_the_models_to
     page.peer.close();
 }
 
+/// What a document says changes nothing about a turn's shares.
+#[path = "hosted_planted_words.rs"]
+mod planted_words;
+
 /// A path that names nothing the turn can read is not shown: the reading the turn itself has
 /// decides, and what it answered is told to the model as a failure.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
