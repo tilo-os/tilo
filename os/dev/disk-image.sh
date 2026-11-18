@@ -693,7 +693,7 @@ fi
 # The rest of this script then installs into that tree exactly as into the plain
 # one, and enrols the volume's factors after bootc has written the ESP.
 encrypted_layout() {
-  local disk_bytes reserved plan want key
+  local disk_bytes reserved plan want
   ENC_DISK_ENCRYPT="$SCRIPT_DIR/../usr/libexec/tilo-disk-encrypt"
   ENC_STORE_VOLUME="$SCRIPT_DIR/../usr/libexec/tilo-store-volume"
   [ -x "$ENC_DISK_ENCRYPT" ] && [ -x "$ENC_STORE_VOLUME" ] \
@@ -748,8 +748,7 @@ encrypted_layout() {
   ENC_BOOT_UUID="$(sudo -n blkid -s UUID -o value "$ENC_BOOT_PART")"
   [ -n "$ENC_BOOT_UUID" ] || die "could not read the encrypted install's /boot UUID"
   root_dev="/dev/mapper/$mapper"
-  esp_at="$MNT/boot/efi"
-  ESP_AT="$esp_at"
+  ESP_AT="$MNT/boot/efi"
   # /boot is a partition of its own on the installer's layout, not the ESP.
   BOOT_IS_ESP=no
   [ -d "$ESP_AT" ] || die "the encrypted install has no $ESP_AT"
@@ -1030,7 +1029,9 @@ if [ "$ENCRYPT" = 1 ]; then
   if [ -n "$ENC_STORE_PART" ]; then
     enrol_args+=(--store-part "$ENC_STORE_PART" --store-key-file "$ENC_STORE_KEY")
   fi
-  enc_generation="$(sudo -n cat "$MNT/usr/lib/tilo/generation" 2>/dev/null | tr -d '\r\n ' || true)"
+  enc_generation=""
+  enc_generation_file="$(sudo -n find "$MNT" -maxdepth 8 -path '*/usr/lib/tilo/generation' -print -quit 2>/dev/null || true)"
+  [ -z "$enc_generation_file" ] || enc_generation="$(sudo -n cat "$enc_generation_file" 2>/dev/null | tr -d '\r\n ' || true)"
   case "$enc_generation" in ''|*[!0-9]*) enc_generation="" ;; esac
   if [ -n "$enc_generation" ]; then
     for enc_predictions in "$ESP_AT/tilo-target/predictions" "$MNT/usr/share/tilo/pcr-predictions"; do
