@@ -311,6 +311,17 @@ async fn cleanup(
     admin: &dyn ProviderAdmin,
     updated: agent_provider_config::management::ProviderSnapshot,
 ) {
+    let id = updated.config.profiles[0].id.clone();
+    // A key belongs to the origin it was saved under, so an edit that retargets
+    // the profile is refused while the key is stored.
+    admin
+        .set_api_key(id.clone(), "stored-before-retarget".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        admin.credential_status(id.clone()).await.unwrap(),
+        CredentialStatus::Configured
+    );
     let mut retargeted = updated.config.clone();
     retargeted.profiles[0].endpoint = "http://127.0.0.1:9/v1".into();
     assert_eq!(
@@ -341,6 +352,7 @@ async fn cleanup(
             .kind,
         ErrorKind::PermissionDenied
     );
+    admin.remove_api_key(id).await.unwrap();
     admin
         .set_config(updated.revision, ProviderConfig::default())
         .await
