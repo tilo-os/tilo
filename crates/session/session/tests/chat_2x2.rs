@@ -208,6 +208,73 @@ fn a_direct_message_is_one_notice_that_names_who_wrote() {
         );
     }
     assert_eq!(told.len(), 2, "each message is one notice: {told:?}");
+    // Choosing Open on the notice of her second message opens Chat at that message on his laptop,
+    // as the banner's button does.
+    let second = told
+        .iter()
+        .find(|notice| notice["body"] == json!("did you see?"))
+        .expect("the second message's notice");
+    let before = chat_title(&studio.bob_laptop);
+    assert!(
+        !before.starts_with(&ada_name),
+        "his laptop's Chat does not show their conversation before he chooses: {before:?}"
+    );
+    choose(&studio.bob_laptop, second, "open");
+    // Chat shows their conversation, which the window's title names.
+    let deadline = tilo_test_env::hang_deadline();
+    while !chat_title(&studio.bob_laptop).starts_with(&ada_name) {
+        assert!(
+            Instant::now() < deadline,
+            "choosing the notice never opens the conversation with {ada_name:?}: Chat shows {:?}\n{}",
+            chat_title(&studio.bob_laptop),
+            studio.bob_laptop.diagnostic()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Choose `action` of `notice` on this device, as pressing its button does: the notifications'
+/// own `act`, by the id the state dump lists the notice under.
+fn choose(device: &Device, notice: &Value, action: &str) {
+    let listed = device.ask(&json!({"op": "actions_enumerate", "query": "notification"}));
+    let row = listed["answer"]["actions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| {
+            row["resource"] == json!("session:notifications") && row["operation"] == json!("act")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{} offers no act on its notifications: {listed}",
+                device.label
+            )
+        });
+    let answer = device.act_wait(
+        row["provider"].as_str().expect("a provider"),
+        row["id"].as_str().expect("an action's id"),
+        &json!({"notification": notice["id"], "action": action}),
+    );
+    assert!(
+        answer.get("err").is_none(),
+        "{} chooses {action} on {notice}: {answer}",
+        device.label
+    );
+}
+
+/// The title of this device's Chat window: what it shows, as the session names it.
+fn chat_title(device: &Device) -> String {
+    let windows = device.ask(&json!({"op": "windows"}));
+    windows["answer"]["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|window| window["app_id"] == json!("so.tilo.chat"))
+        .and_then(|window| window["title"].as_str())
+        .map_or_else(
+            || panic!("{} shows no Chat window: {windows}", device.label),
+            str::to_owned,
+        )
 }
 
 /// The notifications this device's session shows now, as its state dump lists them: the banners up

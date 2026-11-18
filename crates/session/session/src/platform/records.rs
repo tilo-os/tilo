@@ -392,18 +392,6 @@ pub trait Records {
         let _ = (app, workspace, record);
         None
     }
-    /// The kind of what `app` keeps in `workspace` (`notes.notebook`), empty when unknown: what
-    /// the workspace's index names first.
-    fn kind(&self, app: &str, workspace: &str) -> String {
-        self.document(app, workspace, "")
-            .and_then(|index| {
-                ui::resource::index::discoverable_references(&index)
-                    .into_iter()
-                    .next()
-            })
-            .map(|checkout| checkout.kind.as_str().to_owned())
-            .unwrap_or_default()
-    }
     /// Everything `workspace` holds here, by app and route; the empty route is the app's own
     /// document of the workspace, its index.
     fn held(&self, workspace: &str) -> Vec<(String, String)> {
