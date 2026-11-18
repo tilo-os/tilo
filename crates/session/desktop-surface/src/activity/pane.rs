@@ -2644,10 +2644,11 @@ fn describe_workspace_changes(
         } else if entry
             .context
             .as_ref()
-            .is_none_or(|context| context.what.is_none())
+            .is_none_or(|context| context.what.is_none() && context.group.is_none())
         {
             // The workspace's own storage keys are not words anyone should read, and a change
-            // that names only who made it says nothing of its own about what it did.
+            // that names only who made it says nothing of its own about what it did. One in a
+            // work session keeps the session's words.
             entry.summary = t("activity-event-updated");
         }
     }
