@@ -72,11 +72,13 @@ paths = [
     "crates/platform/tilo-net-p2p/src/lib.rs",
     "crates/session/client/src/session.rs",
     "crates/session/client/src/session/connect.rs",
+    "crates/session/client/tests/server_restart.rs",
     "crates/session/session/src/sync/client/mod.rs",
     "crates/session/session/src/window_share.rs",
     "crates/system/fs/src/full_replica.rs",
     "crates/system/tilo-auth/Cargo.toml",
     "crates/system/tilo-cli/src/login.rs",
+    "crates/system/tilo-cli/src/mcp.rs",
     "docs/architecture/web-page-actors.md",
     "docs/architecture/workspace.md",
     "docs/device-reach.md",
@@ -516,3 +518,8 @@ words = ["host"]
 paths = ["crates/sdk/ui-core/src/headless/part_row.rs"]
 identifiers = ["host_window_parts", "hosts_window_parts"]
 
+[[allow]]
+reason = "The session tests' support helpers that start and restart a test server, by the names the other session tests import them under."
+words = ["host"]
+identifiers = ["HostSettings", "start_host_serving", "restart_host_relayed"]
+paths = ["crates/session/client/tests/server_restart.rs"]

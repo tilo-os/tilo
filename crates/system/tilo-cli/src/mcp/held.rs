@@ -307,8 +307,9 @@ fn hold_for<E: Enter>(
     // before this process ends: let go of them first, or it finds them still open.
     if let Some(peer) = PEER.get() {
         let releasing = bridge_runtime()?;
+        // The timer is made inside the runtime: one made outside it has no clock to tick on.
         if releasing
-            .block_on(tokio::time::timeout(RELEASING, peer.shutdown()))
+            .block_on(async { tokio::time::timeout(RELEASING, peer.shutdown()).await })
             .is_err()
         {
             tracing::warn!("the workspaces' files did not close in time");

@@ -50,8 +50,9 @@ const ENTERING: Duration = Duration::from_secs(25);
 const STOPPED: &str = "agent-run-stopped";
 /// The longest the agent waits, as it goes, for its session to close: the host
 /// then sees the connection end at once, and takes the agent down, rather than
-/// after the connection's silence runs out.
-const CLOSING: Duration = Duration::from_secs(3);
+/// after the connection's silence ends. A session's endpoint gives its packet relay up to
+/// three seconds to hear it go, and a session entered anew under the same key waits that out.
+const CLOSING: Duration = Duration::from_secs(5);
 
 /// This device in the workspace: the one session every connection shares.
 pub(crate) struct Session {
@@ -254,9 +255,14 @@ impl<E: Enter> Shared<E> {
         if kept(session.device.is_live(), session.stopped().is_some(), fresh) {
             return Some(Arc::clone(session));
         }
-        // Its connection goes before another under the same key dials.
-        session.device.close();
+        // Its connection goes before another under the same key dials: a server keeps one
+        // connection per key, so the two would cut each other off, and the device would stay out
+        // of the workspace for as long as both went on dialing.
+        let peer = session.device.session().clone();
         *held = None;
+        drop(held);
+        peer.close();
+        closed(&peer).await;
         None
     }
 
@@ -268,15 +274,21 @@ impl<E: Enter> Shared<E> {
         };
         let peer = session.device.session().clone();
         drop(session);
-        // The session closes on its own task: the process waits for it rather than ending it
-        // with the runtime, which would leave the host waiting out the connection's silence.
-        let closed = async {
-            while peer.status().phase != tilo_session_client::TransportPhase::Closed {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        };
-        let _ = tokio::time::timeout(CLOSING, closed).await;
+        closed(&peer).await;
     }
+}
+
+/// Once `peer`'s session closed, for at most [`CLOSING`]. The session closes on its own task: the
+/// process waits for it rather than ending it with the runtime, which would leave the server waiting
+/// out the connection's silence, and a new session under the same key waits for it rather than
+/// being cut off by it.
+async fn closed(peer: &tilo_session_client::Link) {
+    let closed = async {
+        while peer.status().phase != tilo_session_client::TransportPhase::Closed {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    let _ = tokio::time::timeout(CLOSING, closed).await;
 }
 
 /// Whether a held session serves on rather than being entered anew: it is `live`, or the person
