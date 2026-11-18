@@ -16,10 +16,8 @@
 
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
-use tilo_action_policy::{
-    Actor, Answer, Change, Grant, Grantee, KindSet, MemberAccess, MemberId, TreePath,
-    WorkspacePolicy,
-};
+use tilo_action_policy::bot::{MODERATION, MODERATION_GRANT, moderation_grant};
+use tilo_action_policy::{Actor, Change, MemberAccess, MemberId, WorkspacePolicy};
 use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Judge, ModerationAgent};
 use tilo_resource::Resource as _;
@@ -31,8 +29,6 @@ use crate::workspaces::{ResourceWrite, Workspaces};
 
 /// The app whose record holds the workspace's reports and decisions.
 use tilo_app_id::apps::CHAT;
-/// The installation id the workspace's moderation agent acts as.
-pub const MODERATION_INSTALLATION: &str = "moderation";
 
 /// Enforces one of the moderation agent's governance changes on `workspace` as
 /// the workspace's root, held to the workspace's policy like a Moderator's own.
@@ -128,11 +124,18 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
     }
 
     /// Read the chat's changes after the cursor and, when one of them filed
-    /// a report (or on the first look), decide every open report.
+    /// a report (or on the first look), decide every open report: while a
+    /// person who governs the workspace has it turned on.
     ///
     /// # Errors
-    /// The chat record could not be read, opened or written.
+    /// The workspace's grants or the chat record could not be read, opened or
+    /// written.
     pub async fn wake(&mut self) -> Result<(), String> {
+        // Turned off, it looks at nothing: the reports wait from where it
+        // left off until a person turns it on again.
+        if !enabled(&self.workspaces, &self.workspace).await? {
+            return Ok(());
+        }
         let Some(bytes) = self.record().await? else {
             return Ok(());
         };
@@ -278,25 +281,9 @@ fn reports_since(
     ))
 }
 
-/// The grant a person gives the workspace's moderation agent when they enable
-/// it: reading and undoable changes in Chat, where it moderates, and nothing
-/// outside it.
-#[must_use]
-pub fn moderation_grant(workspace: &str, person: &str) -> Grant {
-    Grant::new(
-        format!("bot:{MODERATION_INSTALLATION}"),
-        Grantee::bot(MODERATION_INSTALLATION),
-        TreePath::workspace(workspace).app(CHAT),
-        KindSet::READ_UNDOABLE,
-        Answer::Allow,
-        Grantee::person(person.to_owned()),
-    )
-}
-
-/// Enable `workspace`'s moderation agent as the workspace's own person, whose
+/// Turn `workspace`'s moderation agent on as the workspace's own person, whose
 /// device this server holds: write the grant it moderates Chat by into the
-/// workspace's governance. Only a person's decision enables it; where nobody
-/// did, the bot holds nothing and its changes are refused.
+/// workspace's governance, as a person's device turning it on writes it.
 ///
 /// # Errors
 /// The workspace is not governed here, or the grant could not be written.
@@ -319,18 +306,20 @@ pub async fn enable(workspaces: &Workspaces, workspace: &str) -> Result<(), Stri
         .map_err(|error| error.to_string())
 }
 
-/// Whether a person enabled `workspace`'s moderation agent: whether its
-/// governance holds the grant the bot moderates Chat by.
+/// Whether a person who governs `workspace` turned its moderation agent on:
+/// whether its governance holds the grant the agent moderates Chat by
+/// ([`moderation_grant`]).
 ///
 /// # Errors
 /// The workspace is not governed here.
 pub async fn enabled(workspaces: &Workspaces, workspace: &str) -> Result<bool, String> {
-    let id = format!("bot:{MODERATION_INSTALLATION}");
     let grants = workspaces
         .workspace_grants(workspace)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(grants.iter().any(|grant| grant.id.as_str() == id))
+    Ok(grants
+        .iter()
+        .any(|grant| grant.id.as_str() == MODERATION_GRANT))
 }
 
 /// The moderation agent's replica of the workspace's chat, holding the parts of
@@ -344,17 +333,14 @@ fn bot_replica(
 ) -> Result<Replica, String> {
     let grant = moderation_grant(workspace, installer);
     let access = MemberAccess::person(WorkspacePolicy::new(workspace, installer), installer)
-        .acting_as(
-            Actor::Member(MemberId::bot(MODERATION_INSTALLATION)),
-            [grant],
-        );
+        .acting_as(Actor::Member(MemberId::bot(MODERATION)), [grant]);
     let mut replica = Replica::open(
         &AppCatalogue::native(),
         CHAT,
         workspace,
-        &tilo_actions::MemberId::bot(MODERATION_INSTALLATION),
+        &tilo_actions::MemberId::bot(MODERATION),
         ReplicaActor::Bot {
-            installation: MODERATION_INSTALLATION.into(),
+            installation: MODERATION.into(),
             installer: installer.into(),
             access,
         },

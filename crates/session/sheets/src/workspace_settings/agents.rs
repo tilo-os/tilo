@@ -11,7 +11,7 @@ use ui::peniko::Color;
 use ui::tokens::{PresenceHue, Rhythm};
 use ui::widget::{
     Button, ButtonRole, ChipStyle, Column, Container, ControlSize, Dropdown, Element, EmptyState,
-    ListRow, Row, Section, Segment, TextInput, ToggleGroup, Tone,
+    ListRow, Row, Section, Segment, TextInput, Toggle, ToggleGroup, Tone,
 };
 
 use super::general::{button, buttons, caption};
@@ -53,6 +53,20 @@ pub struct Bot {
     pub entry: Option<String>,
     /// Whether it runs yet, and from which version.
     pub detail: String,
+}
+
+/// The moderation agent of the workspace's server, which a person who
+/// governs the workspace turns on or off.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Moderation {
+    pub name: String,
+    /// What it does, in one line.
+    pub detail: String,
+    pub on: bool,
+    /// Whether the person may turn it: only someone who may grant may.
+    pub switchable: bool,
+    /// What the row says of it where it cannot be turned: On or Off.
+    pub state: String,
 }
 
 /// What an agent's answer for one kind of action is, at one app.
@@ -202,6 +216,8 @@ pub struct Agents {
     pub bot_tag: String,
     pub remove_bot: String,
     pub bots: Vec<Bot>,
+    /// The moderation agent, where the workspace's server offers one.
+    pub moderation: Option<Moderation>,
     pub bots_empty: String,
     /// Why the controls do not take input, for someone who may not use them.
     pub footnote: Option<String>,
@@ -225,7 +241,7 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
         groups.push(intro(&agents.intro, Icon::Sparkles));
     }
     groups.push(new_agent(agents, parts));
-    if agents.agents.is_empty() && agents.bots.is_empty() {
+    if agents.agents.is_empty() && agents.bots.is_empty() && agents.moderation.is_none() {
         let (title, detail) = &agents.empty;
         groups.push(Box::new(
             EmptyState::new(title.clone())
@@ -410,7 +426,10 @@ fn bots(agents: &Agents, parts: &Parts) -> Element {
             .with_enabled(agents.manage),
         ]),
     ];
-    if agents.bots.is_empty() {
+    if let Some(moderation) = &agents.moderation {
+        items.push(moderation_row(moderation, parts));
+    }
+    if agents.bots.is_empty() && agents.moderation.is_none() {
         items.push(caption(&agents.bots_empty));
     }
     for bot in &agents.bots {
@@ -437,6 +456,24 @@ fn bots(agents: &Agents, parts: &Parts) -> Element {
         items.push(Box::new(row));
     }
     Box::new(Section::titled(agents.bots_header.clone(), items))
+}
+
+/// The moderation agent's row: what it does, and its switch for someone who may turn it, else
+/// whether it is on.
+fn moderation_row(moderation: &Moderation, parts: &Parts) -> Element {
+    let row = ListRow::new("ws-bots-moderation", moderation.name.clone())
+        .icon(Icon::Shield)
+        .secondary(moderation.detail.clone());
+    if !moderation.switchable {
+        return Box::new(row.value(moderation.state.clone()));
+    }
+    let press = parts.clone();
+    // The switch stands where the workspace's grant does; a press asks the shell to change it.
+    let switch = Toggle::from_state(&ui::LocalState::new(moderation.on))
+        .with_id("ws-bots-moderation-switch")
+        .with_accessible_name(&moderation.name)
+        .on_change(move |on| press.ask(WorkspaceSettingsEffect::SetModeration { on }));
+    Box::new(row.trailing(Box::new(switch)))
 }
 
 /// One agent's review in the roster's place: Back, then each app's
@@ -778,6 +815,14 @@ pub(super) fn sample() -> Agents {
                 detail: "Running".to_owned(),
             },
         ],
+        moderation: Some(Moderation {
+            name: "Moderation".to_owned(),
+            detail: "Answers reports in Chat, and can restrict someone and undo their messages."
+                .to_owned(),
+            on: true,
+            switchable: true,
+            state: "On".to_owned(),
+        }),
         bots_empty: "No bots yet.".to_owned(),
         footnote: None,
         review: None,

@@ -251,6 +251,9 @@ pub struct Holder {
     /// Whether the machine under it is rented from a cloud provider, whose
     /// operator can read what it holds.
     pub cloud: bool,
+    /// Whether it has a moderation agent for the workspace, which a person
+    /// who governs the workspace may turn on.
+    pub moderates: bool,
 }
 
 /// One member's delegation of their own work to a server, as the workspace
@@ -1663,6 +1666,7 @@ impl Engine {
                     },
                     reads: payload.holds_keys,
                     cloud: payload.cloud,
+                    moderates: payload.moderates,
                 })
             })
             .collect();

@@ -728,6 +728,7 @@ so-tilo-workspace-settings-change-revoke-delegation = Deine Arbeit von einem Ser
 so-tilo-workspace-settings-change-set-agent-answer = Eine Art beantworten
 so-tilo-workspace-settings-change-set-agent-model = Das Modell wählen
 so-tilo-workspace-settings-change-set-agent-spend-limit = Das Tageslimit setzen
+so-tilo-workspace-settings-change-set-moderation = Moderation ein- oder ausschalten
 so-tilo-workspace-settings-change-set-role = Eine Rolle ändern
 so-tilo-workspace-settings-change-show-tab = Einen Tab zeigen
 so-tilo-workspace-settings-change-toggle-device = Auf einem Gerät zeigen

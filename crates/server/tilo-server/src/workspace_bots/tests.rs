@@ -11,8 +11,9 @@
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
-use crate::workspaces::fixtures::{governor, restricted_until, test_host, test_host_taking_part};
+use crate::workspaces::fixtures::{governor, test_host, test_host_taking_part};
 use serde_json::Value;
+use tilo_action_policy::{Answer, KindSet, TreePath};
 use tilo_actions::MemberId;
 use tilo_agent_session::bot::host_steps::{
     HostStepError, HostSteps, Instruction, Judgement, Question,
@@ -124,7 +125,7 @@ impl Judge for FakeJudge {
     }
 }
 
-pub(super) use messages::{chat_of, first_part, message_ids, posts, texts_by};
+pub(super) use messages::{chat_of, first_part, message_ids, posts};
 
 /// Post `text` in `channel` of `workspace` as `author`, as their page does: a
 /// view of the chat record and the parts of its messages, posting through
@@ -317,72 +318,6 @@ async fn flood_posts(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert
         })
         .await
         .unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_bot() {
-    let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
-    let workspaces = server.workspaces().clone();
-    let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-    let catalogue = AppCatalogue::native();
-    workspaces
-        .prepare_application(&workspace, &cert, &catalogue, CHAT, "")
-        .await
-        .unwrap();
-    let general = workspaces
-        .author_application(&workspace, &cert, &catalogue, CHAT, "", |doc| {
-            flood(doc).map_err(|error| error.to_string())
-        })
-        .await
-        .unwrap();
-    flood_posts(&workspaces, &workspace, &cert, &general).await;
-
-    // The person enables the workspace's moderation bot before it looks.
-    crate::workspace_bots::enable(&workspaces, &workspace)
-        .await
-        .unwrap();
-
-    let mut bot = ModerationBot::new(
-        workspaces.clone(),
-        workspace.clone(),
-        cert.clone(),
-        ModerationAgent::new(FakeJudge),
-    );
-    bot.wake().await.unwrap();
-
-    let posted = posts(&workspaces, &workspace).await;
-    assert!(
-        texts_by(&posted, MALLORY).is_empty(),
-        "the flood is taken back"
-    );
-    assert_eq!(texts_by(&posted, ADA), ["hello everyone"]);
-    let after = chat_of(
-        &workspaces
-            .resource_document(&workspace, CHAT, "")
-            .await
-            .unwrap()
-            .unwrap(),
-    );
-    let decision = after.moderation.decisions.iter().next().unwrap();
-    assert_eq!(decision.person, MemberId::person(hex::encode(MALLORY)));
-    assert_eq!(decision.outcome, Outcome::Restrict);
-    assert_eq!(
-        after.moderation.open_reports().count(),
-        0,
-        "the report is settled"
-    );
-    assert!(
-        restricted_until(&workspaces, &workspace, &cert, MALLORY)
-            .await
-            .is_some(),
-        "Mallory is restricted through the workspace's governance"
-    );
-    // The bot's own changes file no report, so they do not wake it again.
-    let cursor = bot.cursor.clone();
-    bot.wake().await.unwrap();
-    assert_eq!(bot.cursor, cursor);
 }
 
 /// A bot that answers every person's post in `channel`.

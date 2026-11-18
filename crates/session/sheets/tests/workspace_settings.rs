@@ -680,6 +680,30 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase the_moderation_switch_is_offered_only_to_who_may_turn_it;
+    // Someone who may grant turns the server's moderation agent with its switch;
+    // anyone else reads whether it is on.
+    {
+        let (mut app, state) = mounted("agents");
+        assert!(says(&mut app, "Answers reports in Chat"));
+        press(&mut app, "ws-bots-moderation-switch");
+        assert_eq!(
+            state.take_asked(),
+            [WorkspaceSettingsEffect::SetModeration { on: false }]
+        );
+        let mut settings = staged_settings("agents");
+        let moderation = settings.agents.moderation.as_mut().unwrap();
+        moderation.switchable = false;
+        let (mut app, _) = mounted_with(settings);
+        assert!(
+            !app.harness()
+                .targets()
+                .contains_key("ws-bots-moderation-switch"),
+            "no switch for someone who may not grant"
+        );
+        assert!(says(&mut app, "On"));
+    }
+
     phase an_agent_review_shows_its_answers_model_and_exceptions;
     {
         let mut app = staged("agent-review");

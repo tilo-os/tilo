@@ -697,6 +697,28 @@ fn grantee_is_person(grantee: &Grantee, user: &UserId) -> bool {
     }
 }
 
+/// Turn the moderation agent on the workspace's server on or off, as `actor`: give it the grant it
+/// moderates Chat by ([`tilo_action_policy::bot::moderation_grant`]), or take that grant back.
+///
+/// # Errors
+/// The workspace refused the change, saying why.
+pub fn set_moderation(ws: &mut Workspace, actor: &UserId, on: bool) -> Result<PolicyEdit, Refusal> {
+    use tilo_action_policy::bot::{MODERATION_GRANT, moderation_grant};
+    let change = if on {
+        tilo_action_policy::Change::Grant(moderation_grant(&ws.policy.workspace, actor))
+    } else {
+        tilo_action_policy::Change::Revoke(tilo_action_policy::GrantId::new(MODERATION_GRANT))
+    };
+    ws.govern_all_at(actor, vec![change], tilo_clock::unix_now())
+}
+
+/// Whether the moderation agent on the workspace's server is on: the workspace holds its grant.
+#[must_use]
+pub fn moderates(ws: &Workspace) -> bool {
+    let id = tilo_action_policy::GrantId::new(tilo_action_policy::bot::MODERATION_GRANT);
+    ws.policy.grants.iter().any(|grant| grant.id == id)
+}
+
 /// Revoke every grant naming `agent` , as `actor` .
 pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> PolicyEdit {
     let subject = tilo_action_policy::Grantee::agent(agent);
@@ -2081,5 +2103,71 @@ mod default_app_authority_tests {
                 desktop_policy::UserWorkspaceChoice::PersonalDefault
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod moderation_tests {
+    //! Turning the moderation agent on the workspace's server on and off: its grant, written and
+    //! taken back through the workspace's governance as the person who turns it.
+
+    use super::*;
+    use tilo_action_policy::{ActionKind, Answer, Grantee};
+    use tilo_desktop_model::WorkspaceId;
+
+    const OWNER: &str = "owner-user";
+    const MEMBER: &str = "member-user";
+
+    fn bot_answer(ws: &Workspace, app: &str) -> Answer {
+        ws.subject_authority(Grantee::bot(tilo_action_policy::bot::MODERATION))
+            .decide(
+                &ws.node().app(app),
+                ActionKind::Undoable,
+                &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+            )
+            .answer
+    }
+
+    #[test]
+    fn turning_moderation_on_grants_it_chat_only_and_off_takes_it_back() {
+        let mut ws = Workspace::new(WorkspaceId::from_u128(23), "moderation-test");
+        ws.set_owner(OWNER);
+        assert!(!moderates(&ws));
+        assert_eq!(bot_answer(&ws, tilo_app_id::apps::CHAT), Answer::Deny);
+
+        let edit = set_moderation(&mut ws, &OWNER.to_owned(), true).expect("the owner grants");
+        assert!(!edit.is_empty(), "the grant is a governance change");
+        assert!(moderates(&ws));
+        let id = tilo_action_policy::GrantId::new(tilo_action_policy::bot::MODERATION_GRANT);
+        let held = ws.policy.grants.iter().find(|grant| grant.id == id);
+        assert_eq!(
+            held,
+            Some(&tilo_action_policy::bot::moderation_grant(
+                &ws.policy.workspace,
+                OWNER
+            )),
+            "the grant names the person who turned it on"
+        );
+        assert_eq!(bot_answer(&ws, tilo_app_id::apps::CHAT), Answer::Allow);
+        assert_eq!(bot_answer(&ws, "so.tilo.notes"), Answer::Deny);
+
+        set_moderation(&mut ws, &OWNER.to_owned(), false).expect("the owner revokes");
+        assert!(!moderates(&ws));
+        assert_eq!(bot_answer(&ws, tilo_app_id::apps::CHAT), Answer::Deny);
+    }
+
+    #[test]
+    fn someone_who_may_not_grant_cannot_turn_moderation_on() {
+        let mut ws = Workspace::new(WorkspaceId::from_u128(24), "moderation-test");
+        ws.set_owner(OWNER);
+        set_member_role(
+            &mut ws,
+            &OWNER.to_owned(),
+            &MEMBER.to_owned(),
+            CapRole::Editor,
+        )
+        .expect("the owner adds an editor");
+        assert!(set_moderation(&mut ws, &MEMBER.to_owned(), true).is_err());
+        assert!(!moderates(&ws));
     }
 }

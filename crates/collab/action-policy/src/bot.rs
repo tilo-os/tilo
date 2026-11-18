@@ -66,6 +66,29 @@ pub fn scoped_rules(workspace: &str, rules: &[Rule]) -> Result<Vec<Rule>, BotRul
         .collect()
 }
 
+/// The installation the moderation agent on a workspace's server acts as.
+pub const MODERATION: &str = "moderation";
+
+/// The id of the grant [`moderation_grant`] writes: one per workspace, so
+/// turning moderation off revokes it by name.
+pub const MODERATION_GRANT: &str = "bot:moderation";
+
+/// The grant a person gives the server's moderation agent when they turn it on
+/// in `workspace`: reading and undoable changes in Chat, where reports are
+/// filed and decided, and nothing outside it. `person` is the grantor, a user
+/// root, hex.
+#[must_use]
+pub fn moderation_grant(workspace: &str, person: &str) -> Grant {
+    Grant::new(
+        MODERATION_GRANT,
+        Grantee::bot(MODERATION),
+        TreePath::workspace(workspace).app(tilo_app_id::apps::CHAT),
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        Grantee::person(person.to_owned()),
+    )
+}
+
 #[must_use]
 pub fn grant_prefix(installation: &str) -> String {
     format!("bot:{installation}:")

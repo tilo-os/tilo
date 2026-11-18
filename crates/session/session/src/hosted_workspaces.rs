@@ -553,6 +553,7 @@ mod tests {
             runs_work,
             label: String::new(),
             cloud: false,
+            moderates: false,
             workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).unwrap(),
             endpoint_addr: iroh::EndpointAddr::new(
                 iroh::EndpointId::from_bytes(&cert.device_public_key).unwrap(),

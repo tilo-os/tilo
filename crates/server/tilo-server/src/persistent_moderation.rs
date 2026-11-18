@@ -82,16 +82,6 @@ pub(crate) fn follow_published(
                 if running.contains_key(&workspace) {
                     continue;
                 }
-                // A person decides whether their workspace has a moderation
-                // bot: without their enable it holds no grant and stays off.
-                match tilo_server::workspace_bots::enabled(&workspaces, &workspace).await {
-                    Ok(true) => {}
-                    Ok(false) => continue,
-                    Err(error) => {
-                        tracing::warn!(%workspace, %error, "a public workspace's moderation enable could not be read");
-                        continue;
-                    }
-                }
                 match load(&store, &key_file, model.as_deref()) {
                     Ok(agent) => {
                         let bot = tilo_server::workspace_bots::ModerationBot::new(
@@ -100,6 +90,8 @@ pub(crate) fn follow_published(
                             workspaces.governor().clone(),
                             agent,
                         );
+                        // A person who governs the workspace turns it on.
+                        workspaces.offer_moderation(&workspace).await;
                         running.insert(workspace, tokio::spawn(bot.run()));
                     }
                     Err(error) => {
