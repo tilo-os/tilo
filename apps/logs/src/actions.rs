@@ -51,7 +51,7 @@ pub fn entry_row(entry: &LogEntry) -> LiveRow {
     LiveRow::new(id.clone(), "logs.entry", entry.unit_short())
         .presentation(ResourcePresentation {
             detail: Some(entry.time_hms()),
-            badge: Some(entry.priority.long().to_string()),
+            badge: Some(entry.priority.long()),
             ..Default::default()
         })
         .operation(JournalEffect::SelectEntry { entry_id: id }.bound())
