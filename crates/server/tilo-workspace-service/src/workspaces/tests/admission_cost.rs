@@ -8,14 +8,13 @@ use super::*;
 
 /// One person's device entering `workspace` through its entry, as a page
 /// does: the owner's pre-admission, the challenge, then the proof. `n`
-/// tells this arrival apart from every other. Answers how long the proof
-/// took the host.
+/// tells this arrival apart from every other.
 pub(crate) async fn entry_arrival(
     workspaces: &Workspaces,
     host: &DeviceCert,
     workspace: &str,
     n: u32,
-) -> std::time::Duration {
+) {
     use tilo_server_protocol::workspaces::JoinReply;
     let (_, device_cert) = guest_device();
     let mut id = [0u8; 32];
@@ -35,7 +34,6 @@ pub(crate) async fn entry_arrival(
         .await
         .unwrap();
     id[31] = 1;
-    let proving = std::time::Instant::now();
     let admitted = workspaces
         .admit_proven(
             issued.signed_invitation,
@@ -45,99 +43,10 @@ pub(crate) async fn entry_arrival(
             Some(&token),
         )
         .await;
-    let took = proving.elapsed();
     assert!(
         matches!(admitted, JoinReply::Admitted { .. }),
         "{admitted:?}"
     );
-    took
-}
-
-/// Of one step: how often it ran, its total microseconds, and its total size.
-type Step = (u64, u64, u64);
-
-/// The host's own phase timings (`crate::timing`), summed by step.
-#[derive(Clone, Default)]
-struct Phases(std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Step>>>);
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Phases {
-    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        struct Message(String);
-        impl tracing::field::Visit for Message {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "message" {
-                    self.0 = format!("{value:?}");
-                }
-            }
-        }
-        if event.metadata().target() != "tilo_server::timing" {
-            return;
-        }
-        let mut message = Message(String::new());
-        event.record(&mut message);
-        let mut words = message.0.split_whitespace();
-        if let (Some("TIMING"), Some(step), Some(micros)) =
-            (words.next(), words.next(), words.next())
-            && let Ok(micros) = micros.parse::<u64>()
-        {
-            let size = words.next().and_then(|size| size.parse::<u64>().ok());
-            let mut phases = self.0.lock().unwrap();
-            let entry = phases.entry(step.to_owned()).or_default();
-            entry.0 += 1;
-            entry.1 += micros;
-            entry.2 += size.unwrap_or(0);
-        }
-    }
-}
-
-/// Seed a workspace with `members` arrivals; answers the whole seeding time
-/// and the mean proof time of the last ten.
-async fn seed(members: u32) -> (std::time::Duration, std::time::Duration) {
-    use tracing_subscriber::layer::SubscriberExt as _;
-    let phases = Phases::default();
-    let _timing = tracing::subscriber::set_default(
-        tracing_subscriber::registry().with(phases.clone()).with(
-            tracing_subscriber::filter::Targets::new()
-                .with_target("tilo_server::timing", tracing::Level::DEBUG),
-        ),
-    );
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = test_host(dir.path(), &key, &cert).await;
-    let workspaces = server.workspaces().clone();
-    let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-    let seeding = std::time::Instant::now();
-    let mut last = Vec::new();
-    for n in 0..members {
-        if n + 10 == members {
-            phases.0.lock().unwrap().clear();
-        }
-        let took = entry_arrival(&workspaces, &cert, &workspace, n).await;
-        if n + 10 >= members {
-            last.push(took);
-        }
-    }
-    let seeded = seeding.elapsed();
-    for (step, (count, micros, size)) in phases.0.lock().unwrap().iter() {
-        eprintln!(
-            "HOSTPHASE members={members} {step} x{count} mean {}us size {}",
-            micros / count.max(&1),
-            size / count.max(&1)
-        );
-    }
-    drop(workspaces);
-    server.shutdown().await;
-    let mean = last.iter().sum::<std::time::Duration>() / u32::try_from(last.len()).unwrap();
-    (seeded, mean)
-}
-
-#[tokio::test]
-#[ignore = "a measurement: run with --ignored --nocapture"]
-async fn admission_cost_at_thirty_and_three_hundred_members() {
-    for members in [30, 300] {
-        let (seeded, proof) = seed(members).await;
-        eprintln!("ADMISSION members={members} seeding={seeded:?} proof_last10={proof:?}");
-    }
 }
 
 /// What the host reads of the workspace's governance for each of the last
