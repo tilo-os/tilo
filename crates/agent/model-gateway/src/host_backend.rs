@@ -76,7 +76,7 @@ impl ApiKey {
             "host-model-{}",
             openai::idempotency_key(&[endpoint.as_bytes()])
         );
-        let authorization = ServiceAuthorization::new(SERVICE_NAME, &purpose, endpoint)
+        let authorization = ServiceAuthorization::new(crate::SERVICE_NAME, &purpose, endpoint)
             .map_err(|error| credential_error(&error))?;
         let reference = authorization
             .credential_ref("operator")
