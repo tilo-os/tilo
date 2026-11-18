@@ -239,6 +239,10 @@ pub(super) struct Own {
     /// None when the list could not be read: then its turn is taken no words, since nothing says
     /// whom they would name.
     members: Option<Vec<(tilo_actions::MemberId, String)>>,
+    /// The reply its turn answers with, by the id Chat derives for it: what its model writes
+    /// goes into that reply while it writes, and into no other. None for a turn that answers
+    /// no message.
+    reply: Option<String>,
 }
 
 impl Own {
@@ -277,12 +281,15 @@ fn says_nothing(value: &Value) -> bool {
 /// of the sub-agent that writes in `own`.
 ///
 /// What is no call of a turn (the server's own writes for a sub-agent) and what goes to another
-/// app than Chat is not decided here. Of Chat, a sub-agent's turn is let three actions by its
-/// rules ([`sub::OWN_WRITES`]), and a rule cannot say which conversation a message is in. So
-/// its answer is taken only for the message its turn answers; a question to its person and its
-/// words while it works only in its own conversation, as plain words: under no other message,
-/// with nothing attached, and naming nobody, so that nothing it writes asks another agent or
-/// reaches a member outside its conversation. Anything else of Chat's is refused here as well.
+/// app than Chat is not decided here. Of Chat, a sub-agent's turn is let four actions by its
+/// rules ([`sub::OWN_WRITES`], [`sub::OWN_GROWTH`]), and a rule cannot say which conversation
+/// a message is in. So
+/// its answer is taken only for the message its turn answers, and what its model writes while
+/// it writes only into the reply to that message, in its own conversation and under no name;
+/// a question to its person and its words while it works only in its own conversation, as
+/// plain words: under no other message, with nothing attached, and naming nobody, so that
+/// nothing it writes asks another agent or reaches a member outside its conversation.
+/// Anything else of Chat's is refused here as well.
 pub(super) fn admits(own: &Own, caller: &Caller, request: &InvokeRequest) -> bool {
     let Some(turn) = caller.turn() else {
         return true;
@@ -315,6 +322,15 @@ pub(super) fn admits(own: &Own, caller: &Caller, request: &InvokeRequest) -> boo
         plain && only(&[TO, "text", "answers", "kind", "detail"])
     } else if action == words {
         plain && only(&[TO, "text"])
+    } else if action == sub::OWN_GROWTH {
+        // Chat makes a message of a reply it does not hold yet, in whatever conversation the
+        // call names and under whatever name it gives: so only the reply its turn answers,
+        // where it works, and nothing said beside.
+        own.reply.as_deref().is_some_and(|reply| {
+            said(TO) == Some(own.conversation.as_str())
+                && said("reply") == Some(reply)
+                && only(&[TO, "reply", "event"])
+        })
     } else {
         false
     }
@@ -616,7 +632,9 @@ impl HostAgents {
     /// made, whose turns are not kept to one conversation.
     pub(super) async fn own_of(&self, workspace: &str, turn: &Turn) -> Option<Own> {
         let sub = turn.agent.sub.as_ref()?;
-        Some(self.own_in(workspace, &sub.conversation).await)
+        let mut own = self.own_in(workspace, &sub.conversation).await;
+        own.reply = super::written::reply_of(turn);
+        Some(own)
     }
 
     /// The sub-agent's conversation `conversation`, with the members of `workspace` a name
@@ -638,6 +656,7 @@ impl HostAgents {
         Own {
             conversation: conversation.to_owned(),
             members,
+            reply: None,
         }
     }
 
@@ -1119,6 +1138,7 @@ mod tests {
         let own = |members| Own {
             conversation: "own".to_owned(),
             members,
+            reply: None,
         };
         let kept = own(Some(named([
             (
@@ -1143,6 +1163,91 @@ mod tests {
         assert!(
             !own(None).names_nobody("plain words"),
             "with no list read, no words are taken"
+        );
+    }
+
+    /// A call of a sub-agent's turn to Chat's `action` on its messages, given `said`.
+    fn call(action: &str, said: Map<String, Value>) -> InvokeRequest {
+        InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: format!("{}:{CHAT}:", tilo_agent_session::RESOURCE_PROVIDER),
+                address: tilo_actions::api::ActionAddress {
+                    resource: "chain".to_owned(),
+                    action: action.to_owned(),
+                },
+            },
+            argument: InvokeArgument::Json(said),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        }
+    }
+
+    #[test]
+    fn what_a_sub_agents_model_writes_is_taken_only_for_the_reply_its_turn_answers() {
+        let own = Own {
+            conversation: "own".to_owned(),
+            members: Some(Vec::new()),
+            reply: Some("m_reply_own".to_owned()),
+        };
+        let caller = Caller::agent_turn(
+            "writer",
+            tilo_action_policy::PersonId::from_root([7; 32]),
+            tilo_action_policy::turn::Turn::new(
+                chat::summons::conversation_address(&Id::from_raw("own")),
+                "m1",
+            ),
+        );
+        // What Chat's `stream-output` is given: where, which reply, the words, and whatever
+        // `beside` adds.
+        let said = |to: &str, reply: &str, beside: Option<(&str, Value)>| {
+            let mut said = Map::new();
+            said.insert(TO.to_owned(), json!(to));
+            said.insert("reply".to_owned(), json!(reply));
+            said.insert(
+                "event".to_owned(),
+                json!({"sequence": 1, "event": {"type": "text_delta", "text": "The notes "}}),
+            );
+            if let Some((name, value)) = beside {
+                said.insert(name.to_owned(), value);
+            }
+            said
+        };
+        let taken = |own: &Own, said: Map<String, Value>| {
+            admits(own, &caller, &call(sub::OWN_GROWTH, said))
+        };
+        assert!(
+            taken(&own, said("own", "m_reply_own", None)),
+            "into the reply its turn answers, where it works"
+        );
+        for (what, said) in [
+            (
+                "in its starter's conversation",
+                said("thread", "m_reply_own", None),
+            ),
+            (
+                "into a reply that is not its turn's",
+                said("own", "m_reply_other", None),
+            ),
+            (
+                "under a name of its choosing",
+                said("own", "m_reply_own", Some(("name", json!("Ada")))),
+            ),
+            (
+                "with something said beside",
+                said("own", "m_reply_own", Some(("parent", json!("m1")))),
+            ),
+        ] {
+            assert!(!taken(&own, said), "{what} it is refused");
+        }
+        let answers_none = Own { reply: None, ..own };
+        assert!(
+            !taken(&answers_none, said("own", "m_reply_own", None)),
+            "a turn that answers no message is taken none"
         );
     }
 

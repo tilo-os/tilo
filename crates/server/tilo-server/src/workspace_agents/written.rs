@@ -11,9 +11,11 @@
 //! writes afterwards stands a paragraph below. A reply whose turn ends before its answer
 //! keeps the words that came and says below them why ([`Reply::grown_ends`]).
 //!
-//! Only the reply to a message grows, and only for an agent a person made: a sub-agent's
-//! turn is let three writes in Chat, and this is none of them, so its reply is written once,
-//! at its turn's end. So is the reply of a model whose answers arrive whole.
+//! Only the reply to a message grows: an issue's turn answers with a comment, written once.
+//! A sub-agent's reply grows in the conversation of its own, the one place its turn writes,
+//! and whoever serves that turn takes its model's words for that reply alone
+//! ([`super::sub_agents::admits`]). The reply of a model whose answers arrive whole is
+//! written once, at its turn's end.
 
 use std::sync::Mutex;
 
@@ -73,6 +75,24 @@ impl Writes {
     }
 }
 
+/// The reply `turn` answers with, by the id Chat derives for it: none for an issue's turn,
+/// whose answer is a comment.
+pub(super) fn reply_of(turn: &Turn) -> Option<String> {
+    match &turn.ask {
+        Ask::Message {
+            message, attempt, ..
+        } => Some(
+            chat::chat::reply_id_at(
+                &tilo_resource::Id::from_raw(message),
+                &MemberId::agent(&turn.agent.id.0),
+                *attempt,
+            )
+            .to_string(),
+        ),
+        Ask::Issue { .. } => None,
+    }
+}
+
 /// How far a turn's reply has grown.
 pub(super) struct Written {
     /// None for a reply that does not grow.
@@ -96,26 +116,16 @@ struct Grown {
 
 impl Written {
     /// Where the reply of `turn` grows: nowhere for an issue's turn, whose answer is a
-    /// comment, and nowhere for a sub-agent's.
+    /// comment. A sub-agent's grows in the conversation its item names, the only one its
+    /// turn writes in.
     pub(super) fn of(turn: &Turn) -> Self {
-        let place = match &turn.ask {
-            Ask::Message {
-                message, attempt, ..
-            } if !turn.agent.is_sub() => Some(Place {
-                conversation: asks::conversation_id_of(
-                    &turn.conversation,
-                    &turn.person,
-                    &turn.agent.id.0,
-                ),
-                reply: chat::chat::reply_id_at(
-                    &tilo_resource::Id::from_raw(message),
-                    &MemberId::agent(&turn.agent.id.0),
-                    *attempt,
-                )
-                .to_string(),
-            }),
-            _ => None,
-        };
+        let place = reply_of(turn).map(|reply| Place {
+            conversation: turn.agent.sub.as_ref().map_or_else(
+                || asks::conversation_id_of(&turn.conversation, &turn.person, &turn.agent.id.0),
+                |sub| sub.conversation.clone(),
+            ),
+            reply,
+        });
         Self {
             place,
             grown: Mutex::default(),

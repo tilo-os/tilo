@@ -184,12 +184,22 @@ async fn reads(
     message: &Id,
     words: &str,
 ) -> chat::chat::Message {
+    reads_by(workspaces, workspace, (message, SCOUT), words).await
+}
+
+/// The reply of `agent` to `message` once it reads `words`, whatever its work says.
+async fn reads_by(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    (message, agent): (&Id, &str),
+    words: &str,
+) -> chat::chat::Message {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let part = conversation_part(workspaces, workspace).await;
         let reply = part
             .messages
-            .get(&chat::chat::reply_id(message, &MemberId::agent(SCOUT)));
+            .get(&chat::chat::reply_id(message, &MemberId::agent(agent)));
         if let Some(reply) = reply
             && reply.text == words
         {
@@ -197,7 +207,7 @@ async fn reads(
         }
         assert!(
             Instant::now() < deadline,
-            "the agent's reply to {message} never read {words:?}: it reads {:?}",
+            "the reply of {agent} to {message} never read {words:?}: it reads {:?}",
             reply.map(|reply| reply.text.clone())
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -515,5 +525,105 @@ async fn a_reply_that_grew_on_a_server_that_stopped_gets_its_answer_below() {
     );
     assert_eq!(end_of(&reply), Some(AgentFinish::Complete));
     let _ = person;
+    page.peer.close();
+}
+
+/// A sub-agent's model writes its answer over seconds as well. The words stand in its reply,
+/// in the conversation of its own, while the model is still writing, and none of them stands
+/// in the thread of the agent that started it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sub_agents_reply_grows_in_its_own_conversation() {
+    team!(root, browser, actions, workspaces, workspace, page, person);
+    let ada = themselves(&root, &browser, &workspace);
+    let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
+    let own = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent("writer")]);
+    let (theirs, _lets_go) = writing(
+        &workspaces,
+        &root,
+        [
+            // Its job, then what its starter says to the news of it.
+            vec![Writes("The notes are tidy.")],
+            vec![Writes("Noted.")],
+            // What its person asks it in its own conversation.
+            vec![
+                Writes("Two drafts "),
+                Writes("are left. "),
+                Waits,
+                Writes("I file them next."),
+            ],
+        ],
+    );
+    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    starts(
+        &workspaces,
+        &workspace,
+        &person,
+        ("Writer", "Tidy the notes."),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    let job = caused(&workspaces, &workspace, (own.as_str(), "job"), 1).await[0]
+        .0
+        .clone();
+    agents.look(&workspace).await.unwrap();
+    let done = reply_of(&workspaces, &workspace, &job, "writer").await;
+    assert_eq!(done.text, "The notes are tidy.");
+    agents.look(&workspace).await.unwrap();
+    let news = caused(&workspaces, &workspace, (thread.as_str(), "news"), 1).await[0]
+        .0
+        .clone();
+    agents.look(&workspace).await.unwrap();
+    reply_of(&workspaces, &workspace, &news, SCOUT).await;
+
+    let asked = writes_in(
+        &actions,
+        &workspaces,
+        &workspace,
+        &ada,
+        (own.as_str(), "Where do the notes stand?"),
+    )
+    .await;
+    let going = begin!(agents, workspace);
+    let grown = reads_by(
+        &workspaces,
+        &workspace,
+        (&asked, "writer"),
+        "Two drafts are left.",
+    )
+    .await;
+    assert_eq!(
+        (theirs.waited.load(Ordering::SeqCst), going.is_finished()),
+        (1, false),
+        "its model has not written its last words"
+    );
+    assert_eq!(
+        grown.author,
+        MemberId::agent("writer"),
+        "the sub-agent writes it"
+    );
+    assert_eq!(
+        *conversation_id(&grown),
+        own,
+        "in the conversation of its own"
+    );
+    assert!(
+        chat::summons::unanswered(Some(&grown)),
+        "a reply that grows says its work goes on: {:?}",
+        grown.work
+    );
+    let above = said_there(&workspaces, &workspace, thread.as_str()).await;
+    assert!(
+        above
+            .iter()
+            .all(|(_, message)| !message.text.contains("Two drafts")),
+        "none of its words stands in its starter's thread: {above:?}"
+    );
+
+    theirs.go_on();
+    going.await.unwrap().unwrap();
+    let whole = reply_of(&workspaces, &workspace, &asked, "writer").await;
+    assert_eq!(whole.text, "Two drafts are left. I file them next.");
+    assert_eq!(end_of(&whole), Some(AgentFinish::Complete));
+    assert_eq!(written(&whole).1, Some(AgentFinish::Complete));
     page.peer.close();
 }
