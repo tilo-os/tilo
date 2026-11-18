@@ -2135,14 +2135,17 @@ impl Worker {
             })
             // What this service holds as a document: one another device made and this one
             // keeps only as retained changes (a window's own document, a sealed one it cannot
-            // open) is no data of the app here, and is neither listed nor offered.
+            // open) is no data of the app here, and is neither listed nor offered. A part of a
+            // chain is always kept: a public workspace sends one to this device when its chain
+            // is asked for, and the listing is what asks.
             .filter(|route| {
-                state
-                    .engine
-                    .record(cluster_id, &route.app_id, &route.document)
-                    .ok()
-                    .flatten()
-                    .is_some()
+                is_part(&route.document)
+                    || state
+                        .engine
+                        .record(cluster_id, &route.app_id, &route.document)
+                        .ok()
+                        .flatten()
+                        .is_some()
             })
             .collect()
     }
