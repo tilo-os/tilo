@@ -36,7 +36,6 @@ desktop = [
     "dep:unicode-width",
     "dep:vello",
     "dep:winit",
-    "dep:workspace-hack",
 ]
 # The canned sessions the screenshot scenarios show: development runs,
 # captures and tests only, never a release.
@@ -65,8 +64,6 @@ base64.workspace = true
 tilo-content = { path = "../../crates/system/content", default-features = false }
 
 # The desktop surface's dependencies, on by the `desktop` feature alone.
-# The workspace-hack's native feature set does not build for wasm32.
-workspace-hack = { version = "0.1", optional = true }
 tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process", features = ["native-editor"], optional = true }
 tilo-paths = { workspace = true, optional = true }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -84,6 +81,11 @@ vello = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
 taffy = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
+
+# The workspace hack's native feature set does not build for wasm32, and a page
+# builds this app for it: name the hack where only a native build sees it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # A test raises the OS errors a pty read can fail with.
