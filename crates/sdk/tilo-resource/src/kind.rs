@@ -676,6 +676,17 @@ impl Kinds {
         self.kinds.iter()
     }
 
+    /// Whether `id` is an item a window of `app_id` shows with an `open` of its own
+    /// ([`opens_as_item`]): an item of the app's resource, or one of a part it keeps beside it,
+    /// which publishes its items alike.
+    #[must_use]
+    pub fn opens_as_item(&self, app_id: &str, id: &str) -> bool {
+        self.kinds
+            .iter()
+            .filter(|known| known.app_id() == Some(app_id))
+            .any(|known| known.opens_as_item(id))
+    }
+
     /// The decoders of every type, in one registry: what a host replaying
     /// any of their records needs.
     pub fn registry(&self) -> ActionRegistry {

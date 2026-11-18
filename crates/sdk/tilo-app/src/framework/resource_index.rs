@@ -72,7 +72,7 @@ fn entries_of(kinds: &Kinds, app_id: &str, doc: &Doc) -> Vec<IndexEntry> {
     let Some(root) = kinds.hosted_by(app_id) else {
         return Vec::new();
     };
-    let is_item = |id: &str| root.opens_as_item(id);
+    let is_item = |id: &str| kinds.opens_as_item(app_id, id);
     let mut found = Vec::new();
     for kind in kinds.iter().filter(|kind| kind.app_id() == Some(app_id)) {
         let mut read = doc.clone();
