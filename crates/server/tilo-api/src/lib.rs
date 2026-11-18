@@ -433,7 +433,24 @@ impl Server {
     }
 
     /// Routing, separated from hyper's body type for tests.
+    ///
+    /// A request's work, from its route down through the action API, is a
+    /// future of many kilobytes. It is boxed here, so whoever awaits a request
+    /// holds a pointer: a caller that sends dozens of requests from one
+    /// function, as a client's script does, would otherwise carry every one of
+    /// them in its own state, and in a debug build in its stack frame.
     pub async fn dispatch(
+        self: &Arc<Self>,
+        method: &Method,
+        path: &str,
+        query: &str,
+        headers: &hyper::HeaderMap,
+        body: &[u8],
+    ) -> Reply {
+        Box::pin(self.route(method, path, query, headers, body)).await
+    }
+
+    async fn route(
         self: &Arc<Self>,
         method: &Method,
         path: &str,

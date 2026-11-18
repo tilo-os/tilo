@@ -826,6 +826,18 @@ async fn a_key_operates_web_pages_in_browser_unless_its_person_says_no() {
     assert!(!grant.browser_pages);
 }
 
+/// Awaiting a request costs its caller a pointer, not the request's whole
+/// work: a script of dozens of requests in one function otherwise holds every
+/// one of them, and in a debug build overflows its thread's stack.
+#[test]
+fn a_request_is_a_small_future_for_whoever_awaits_it() {
+    let server = server();
+    let headers = headers(&[]);
+    let request = server.dispatch(&Method::GET, "/health", "", &headers, b"");
+    let size = std::mem::size_of_val(&request);
+    assert!(size <= 256, "a request's future is {size} bytes");
+}
+
 /// The grants page says, beside the keys, which of them ask before each
 /// command in a workspace's machine: it keeps no workspace's setting itself.
 #[test]
