@@ -526,7 +526,17 @@ impl Session {
         let Some((connection_id, generation)) = self.active_query else {
             return false;
         };
-        if self.worker.cancel_query(connection_id, generation) == CancelQueryResult::Requested {
+        // SQLite's interrupt is a flag its statement reads, so a cancel asked
+        // for before the worker starts the statement still stops it. A
+        // server-side cancel can only reach a statement already running.
+        let before_start = self
+            .active_connection()
+            .is_some_and(|profile| profile.engine == crate::model::Engine::Sqlite);
+        if self
+            .worker
+            .cancel_query(connection_id, generation, before_start)
+            == CancelQueryResult::Requested
+        {
             self.cancelled_query = Some((connection_id, generation));
             self.status = RunStatus::Busy(t("db-cancelling"));
             true
@@ -763,9 +773,13 @@ mod tests {
                 "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000) \
              SELECT sum(x) FROM n",
             );
-                tilo_test_env::wait_until("the worker to publish the active SQLite query", || {
-                    s.cancel_in_flight_query()
-                });
+                // Asked for right after the statement was queued, before the
+                // worker has begun it: the flag its statement reads is already
+                // set.
+                assert!(
+                    s.cancel_in_flight_query(),
+                    "a cancel queued behind the statement is taken"
+                );
                 s.block_until_idle();
                 assert!(!s.busy());
                 assert!(

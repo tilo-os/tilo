@@ -1928,25 +1928,40 @@ mod tests {
         let mut harness = mounted(DbClientApp::sampled());
         harness.relayout();
         // A statement that takes long enough to be caught in flight: a
-        // billion rows counted one at a time. It runs through the same
-        // session path the Run action uses.
-        app(&harness).session.run_query(
+        // billion rows counted one at a time, started from the bar as a
+        // person starts it.
+        write_sql(
+            &mut harness,
             "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000) \
              SELECT sum(x) FROM n",
         );
+        let declares = || ui::window_toolbar::declared().expect("the window declares its slots");
+        assert!(
+            declares()
+                .actions
+                .iter()
+                .any(|action| action.id == RUN_QUERY && action.enabled),
+            "the bar offers its execute action before the statement starts: {:?}",
+            declares().actions
+        );
+        harness.press_window_part(ToolbarEvent::Action {
+            id: RUN_QUERY.into(),
+        });
+        harness.relayout();
+        // A `WITH` statement may write, so the bar's execute action asks
+        // first; Enter confirms the statement a person means to execute.
+        chord(&mut harness, "Enter");
         harness.relayout();
         assert!(
-            harness.wait_until(tilo_test_env::hang_bound(), |harness| {
-                app(harness).session.busy()
+            harness.wait_until(tilo_test_env::hang_bound(), |_| {
+                declares()
+                    .actions
+                    .iter()
+                    .any(|action| action.id == CANCEL_QUERY)
             }),
-            "the statement is in flight"
+            "Cancel takes Run's place while a statement runs"
         );
-        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
-        assert!(
-            bar.actions.iter().any(|action| action.id == CANCEL_QUERY),
-            "Cancel takes Run's place while a statement runs: {:?}",
-            bar.actions
-        );
+        let bar = declares();
         assert!(
             !bar.actions
                 .iter()
@@ -1954,6 +1969,7 @@ mod tests {
             "no disabled Run is left beside it: {:?}",
             bar.actions
         );
+        assert!(app(&harness).session.busy(), "the statement is in flight");
 
         harness.press_window_part(ToolbarEvent::Action {
             id: CANCEL_QUERY.into(),
