@@ -181,7 +181,11 @@ impl Timeline {
                     (m.clone(), self.versions)
                 }
             };
-            if let Some(parent) = &m.parent {
+            // A reply that says nothing is no part of its message's thread: the message's
+            // row is measured and painted as one that has none ([`model::stands`]).
+            if let Some(parent) = &m.parent
+                && model::stands(messages, m)
+            {
                 let thread = self.threads.entry(parent.clone()).or_default();
                 *thread = thread.rotate_left(5) ^ fingerprint;
             }

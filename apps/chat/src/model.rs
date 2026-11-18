@@ -326,6 +326,25 @@ impl Message {
             .iter()
             .any(tilo_reference::Attached::is_chip)
     }
+
+    /// Whether a conversation shows nothing of it: a reply its agent ended without a word
+    /// and with nothing to show for its work ([`AgentWork::left_nothing`]), carrying nothing
+    /// else. A turn leaves such a reply under a message when what its person wrote next
+    /// takes the turn along: the answer stands under their newest words, and this one is
+    /// passed over wherever messages are shown or counted ([`stands`]). It stays in the
+    /// conversation as it was written.
+    pub fn says_nothing(&self) -> bool {
+        self.work.as_ref().is_some_and(AgentWork::left_nothing)
+            && self.text.trim().is_empty()
+            && self.body.is_empty()
+            && self.attachments.is_empty()
+            && self.reactions.is_empty()
+            && self.share.is_none()
+            && self.question.is_none()
+            && self.view.is_none()
+            && !self.edited
+            && !self.pinned
+    }
 }
 
 /// What an agent in this workspace has done with a message addressed to it.
@@ -573,6 +592,21 @@ impl AgentWork {
             .is_some_and(|stream| stream.finish.is_some())
             || self.state.finished()
     }
+
+    /// Whether it ended with nothing to show for it: complete or applied, with no operation
+    /// dispatched and no provider output. A reply shows nothing of such work; any other end,
+    /// a step, or work still going is something a reply says.
+    pub fn left_nothing(&self) -> bool {
+        self.stream.is_none()
+            && self.trace.is_empty()
+            && matches!(
+                self.state,
+                AgentWorkState::Done { .. }
+                    | AgentWorkState::ProviderFinished {
+                        outcome: crate::agent_stream::AgentFinish::Complete
+                    }
+            )
+    }
 }
 
 impl AgentWorkState {
@@ -641,10 +675,16 @@ pub struct MessageGroup {
 /// render inside the thread panel. Without it, as a direct conversation shows
 /// them, a reply stands where it was written, in time order among the
 /// messages around it, and groups like any other message.
+///
+/// A reply that says nothing forms no group and breaks none ([`stands`]): the messages
+/// either side of it group as if it were not between them.
 pub fn group_messages(messages: &[Message], threads: bool) -> Vec<MessageGroup> {
     let mut groups: Vec<MessageGroup> = Vec::new();
     for (i, m) in messages.iter().enumerate() {
         if threads && !m.is_top_level() {
+            continue;
+        }
+        if !stands(messages, m) {
             continue;
         }
         let extend = groups.last().is_some_and(|g| {
@@ -675,11 +715,21 @@ pub fn group_messages(messages: &[Message], threads: bool) -> Vec<MessageGroup> 
     groups
 }
 
-/// Number of replies whose `parent` is `parent_id`.
+/// Whether `m` stands in what a conversation shows and counts: every message but a reply
+/// that says nothing ([`Message::says_nothing`]). Such a reply stands only where a message
+/// that says something answers it, so that what answers it has its place.
+pub fn stands(messages: &[Message], m: &Message) -> bool {
+    !m.says_nothing()
+        || messages
+            .iter()
+            .any(|other| other.parent.as_deref() == Some(m.id.as_str()) && !other.says_nothing())
+}
+
+/// Number of replies whose `parent` is `parent_id`, of those that stand ([`stands`]).
 pub fn reply_count(messages: &[Message], parent_id: &str) -> usize {
     messages
         .iter()
-        .filter(|m| m.parent.as_deref() == Some(parent_id))
+        .filter(|m| m.parent.as_deref() == Some(parent_id) && stands(messages, m))
         .count()
 }
 
@@ -688,7 +738,10 @@ pub fn reply_count(messages: &[Message], parent_id: &str) -> usize {
 pub fn thread_members(messages: &[Message], parent_id: &str) -> Vec<MemberId> {
     let mut seen: Vec<MemberId> = Vec::new();
     for m in messages {
-        if m.parent.as_deref() == Some(parent_id) && !seen.contains(&m.author) {
+        if m.parent.as_deref() == Some(parent_id)
+            && stands(messages, m)
+            && !seen.contains(&m.author)
+        {
             seen.push(m.author.clone());
         }
     }
@@ -836,6 +889,103 @@ mod tests {
                     thread_members(&msgs, "a"),
                     vec![MemberId::person("u2"), MemberId::person("u3")]
                 );
+            }
+        }
+
+        phase a_reply_that_says_nothing_forms_no_group_and_counts_as_no_reply;
+        {
+            // The reply a turn leaves when what its person wrote next takes the turn along: by
+            // their agent, under their message, ended complete with no word and no step.
+            let left = |id: &str, parent: &str, ts: i64| Message {
+                author: MemberId::agent("tide"),
+                text: String::new(),
+                work: Some(AgentWork::new(
+                    AgentWorkState::ProviderFinished {
+                        outcome: crate::agent_stream::AgentFinish::Complete,
+                    },
+                    ts,
+                )),
+                ..msg(id, "u1", ts, Some(parent))
+            };
+            let said = |id: &str, parent: &str, ts: i64| Message {
+                text: "Done.".into(),
+                ..left(id, parent, ts)
+            };
+            let msgs = vec![
+                msg("a", "u1", 0, None),
+                left("ra", "a", 5),
+                msg("b", "u1", 60, None),
+                said("rb", "b", 90),
+            ];
+            // A direct conversation: their two messages are one group, and the answer follows.
+            let groups = group_messages(&msgs, false);
+            assert_eq!(
+                groups
+                    .iter()
+                    .map(|group| group.message_indices.clone())
+                    .collect::<Vec<_>>(),
+                vec![vec![0, 2], vec![3]],
+                "the reply left forms no group and breaks none"
+            );
+            // A channel: the thread under their first message holds no reply and nobody.
+            assert_eq!(reply_count(&msgs, "a"), 0);
+            assert_eq!(thread_members(&msgs, "a"), Vec::new());
+            assert_eq!(reply_count(&msgs, "b"), 1);
+            // What stands: a reply that did something, one at work, one whose model failed,
+            // and one that a message with words answers.
+            let step = AgentStep {
+                id: "s1".into(),
+                sequence: 0,
+                resource: "tasks.workspace".into(),
+                label: "Add task".into(),
+                outcome: AgentStepOutcome::Applied,
+            };
+            let with = |work: AgentWork| Message {
+                work: Some(work),
+                ..left("ra", "a", 5)
+            };
+            let failed = AgentWorkState::ProviderFinished {
+                outcome: crate::agent_stream::AgentFinish::Failed,
+            };
+            for (case, stands) in [
+                (
+                    "it did something",
+                    with(AgentWork::new(AgentWorkState::Taken, 5).with_trace(vec![step.clone()])),
+                ),
+                ("it is at work", with(AgentWork::new(AgentWorkState::Taken, 5))),
+                ("its model failed", with(AgentWork::new(failed, 5))),
+            ] {
+                let msgs = vec![msg("a", "u1", 0, None), stands];
+                assert_eq!(reply_count(&msgs, "a"), 1, "{case}");
+                assert_eq!(group_messages(&msgs, false).len(), 2, "{case}");
+            }
+            let answered = vec![
+                msg("a", "u1", 0, None),
+                left("ra", "a", 5),
+                msg("c", "u2", 10, Some("ra")),
+            ];
+            assert_eq!(group_messages(&answered, false).len(), 3);
+            assert_eq!(reply_count(&answered, "a"), 1);
+            // Work left nothing where it ended complete or applied with no step; any other
+            // end, a step, or work still going is something to show.
+            let complete = AgentWorkState::ProviderFinished {
+                outcome: crate::agent_stream::AgentFinish::Complete,
+            };
+            let applied = AgentWorkState::Done { did: String::new() };
+            assert!(AgentWork::new(complete.clone(), 5).left_nothing());
+            assert!(AgentWork::new(applied, 5).left_nothing());
+            assert!(!AgentWork::new(complete, 5).with_trace(vec![step]).left_nothing());
+            for state in [
+                AgentWorkState::Taken,
+                AgentWorkState::Refused,
+                AgentWorkState::ProviderFinished {
+                    outcome: crate::agent_stream::AgentFinish::Cancelled,
+                },
+                AgentWorkState::ProviderFinished {
+                    outcome: crate::agent_stream::AgentFinish::Truncated,
+                },
+            ] {
+                assert!(!AgentWork::new(state.clone(), 5).left_nothing(), "{state:?}");
             }
         }
 

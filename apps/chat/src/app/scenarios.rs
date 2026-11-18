@@ -122,6 +122,14 @@ impl ChatApp {
                 self.right_flap.snap(true);
                 self.call = CallState::default();
             }
+            "agent-went-on" => {
+                // The conversation with the person's agent, as their own window shows it:
+                // replies stand among the messages, and no thread is open.
+                self.active_channel = crate::resource::went_on_conversation().to_string();
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+            }
             "thread-narrow" => {
                 self.thread_open = Some("m_concept".into());
                 self.right_flap.snap(true);
