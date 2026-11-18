@@ -2346,6 +2346,15 @@ impl RootPublishes for ResourceRoot {
         if let Some(item) = self.storage.chain_item(id) {
             return Some(item);
         }
+        // The chain itself is its head part's resource and the chain's own
+        // verbs, as the tree carries it: never the whole publication, which
+        // holds every item the chain keeps.
+        if let Some(mut head) = self.storage.chain_head(id) {
+            if self.stages.opens() {
+                offer_item_open(self.resource.opens_as_item, &mut head);
+            }
+            return Some(head);
+        }
         // A change from another window or member may not have reached
         // this view yet: an item it removed is gone, one it made is there.
         if let Some(mut published) = find(&[self.current_publication(doc)], id) {
