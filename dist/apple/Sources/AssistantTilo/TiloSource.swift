@@ -245,7 +245,13 @@ public final class TiloSource: AssistantSource {
             soughtOwn = false
             try engine.pair(with: link.url)
         } catch {
-            throw SourceProblem.refused("This link does not lead into \(engine.settings.origin)")
+            // Of a link it refuses the app says where the link is from, by name and port, and
+            // nothing else: what the link carries to pair with is shown, kept and written nowhere.
+            let site = engine.settings.origin
+            guard let from = EngineAddress.pairingElsewhere(link.url, of: engine.settings) else {
+                throw SourceProblem.refused(AssistantWords.pairsNothing.said(["site": site]))
+            }
+            throw SourceProblem.refused(AssistantWords.codeFromElsewhere.said(["from": from, "site": site]))
         }
     }
 

@@ -65,4 +65,27 @@ public enum EngineAddress {
         else { return nil }
         return URL(string: "\(settings.origin)/app/#\(workspace)/\(chat)?\(pieces[1])")
     }
+
+    /// The site a pairing link is from, where that is another Tilo site than this app's: the
+    /// name and port it leads to, and nothing else of the link. Nil for a link this app pairs
+    /// with, and for one that would pair nowhere.
+    ///
+    /// A link is another site's pairing link when it would pair here were it this site's: its
+    /// path, its query and what follows its `#` are judged by `pairing` under this site's
+    /// origin, so what a pairing link looks like is said in one place. What is written so is
+    /// only judged and never opened: a link of another site stays refused. It is for telling a
+    /// person where the code they scanned is from. Where the two sites differ only in http and
+    /// https, the name carries which, so that the two do not read the same.
+    public static func pairingElsewhere(_ link: URL, of settings: ShellSettings) -> String? {
+        guard pairing(link, of: settings) == nil, link.user(percentEncoded: true) == nil,
+              let from = SitePolicy.origin(of: link), from != settings.origin
+        else { return nil }
+        var written = settings.origin + link.path(percentEncoded: true)
+        if let query = link.query(percentEncoded: true) { written += "?\(query)" }
+        if let route = link.fragment(percentEncoded: true) { written += "#\(route)" }
+        guard let here = URL(string: written), pairing(here, of: settings) != nil else { return nil }
+        // An origin is `scheme://name[:port]`: the name and port are what follows its two slashes.
+        func name(_ origin: String) -> String { String(origin.drop { $0 != "/" }.dropFirst(2)) }
+        return name(from) == name(settings.origin) ? from : name(from)
+    }
 }
