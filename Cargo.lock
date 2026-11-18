@@ -17440,7 +17440,6 @@ dependencies = [
  "tilo-app-package",
  "tilo-automation",
  "tilo-caps",
- "tilo-device-identity",
  "tilo-files",
  "tilo-headless-schema",
  "tilo-history",
