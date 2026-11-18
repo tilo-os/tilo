@@ -442,5 +442,59 @@ final class TiloConnectionsTests: XCTestCase {
         XCTAssertEqual(after, 2)
         XCTAssertEqual(cards.first?.state, .connected)
     }
+
+    /// A service that says its name and where its person signs in, at another address.
+    private static let grove = "{address: 'https://grove.example/mcp', name: 'Grove', needsSignIn: true, signInAt: 'accounts.grove.example'}"
+
+    func testTheAssistantViewListsHerConnectionsNewestFirstAndFollowsWhatSheDoesOnACard() async throws {
+        try await start()
+        var seen = Supervision()
+        let supervision = Task { for await now in self.source.supervision() { seen = now } }
+        defer { supervision.cancel() }
+        let three = "['find_trees', 'count_trees', 'plant_tree'].map(name => ({name, description: '', readOnly: false, asks: true, changed: false, schema: {}}))"
+        try await enter("""
+            window.connections.push(window.kept('c1', 'https://old.example/mcp', {name: '', addedAtMs: 1794000000000, commands: \(three)}));
+            window.connections.push(window.kept('c2', 'https://orchard.example/mcp'))
+            """)
+        try await until("her connections are listed") { seen.connections.count == 2 }
+        // Newest first, each with when it was added and how many commands it offers. A service
+        // that gives itself no name is called by the site of its address.
+        XCTAssertEqual(seen.connections, [
+            Supervision.Connection(id: "c2", name: "Orchard Tools", added: Date(timeIntervalSince1970: 1_794_900_000), commands: 1),
+            Supervision.Connection(id: "c1", name: "old.example", added: Date(timeIntervalSince1970: 1_794_000_000), commands: 3),
+        ])
+        // A service she adds from its card is listed with no other way in. While nobody is
+        // signed in to it, its line says that.
+        try await inPage("propose('p1', \(Self.grove))")
+        try await until("the card is there") { self.cards.count == 1 }
+        let offer = try card()
+        _ = try await source.authenticate(offer.id)
+        try await until("the service she added is listed first, as one nobody is signed in to") {
+            seen.connections.map(\.name) == ["Grove", "Orchard Tools", "old.example"] && seen.connections.first?.needsSignIn == true
+        }
+        let returned = try XCTUnwrap(URL(string: "so.tilo.assistant:/signed-in?code=made-up&state=s-1"))
+        try await source.signedIn(offer.id, at: returned)
+        try await until("its line counts its commands") {
+            seen.connections.first == Supervision.Connection(id: "c3", name: "Grove", added: Date(timeIntervalSince1970: 1_794_900_000), commands: 1)
+        }
+        // Signing out forgets them.
+        await source.signOut()
+        try await until("nothing is listed") { seen.connections.isEmpty }
+        XCTAssertNil(source.connected.listed)
+    }
+
+    func testAServiceSheTookOutAgainWithNotNowLeavesTheList() async throws {
+        try await start()
+        var seen = Supervision()
+        let supervision = Task { for await now in self.source.supervision() { seen = now } }
+        defer { supervision.cancel() }
+        try await enter("propose('p1', \(Self.grove))")
+        let offer = try card()
+        _ = try await source.authenticate(offer.id)
+        try await until("the service is listed as one nobody is signed in to") { seen.connections.map(\.needsSignIn) == [true] }
+        try await source.decline(offer.id)
+        try await until("the list is empty again") { seen.connections.isEmpty }
+        XCTAssertEqual(source.connected.listed, [])
+    }
 }
 #endif

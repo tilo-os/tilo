@@ -135,6 +135,7 @@
 "logins" = "Logins";
 "login-line" = "{name} · typed {date}";
 "login-used" = "{name} · typed {date} · {used}";
+"connection-sign-in" = "{name} · added {date} · sign-in needed";
 "used-today" = "used today";
 "used-yesterday" = "used yesterday";
 "used-on" = "used {date}";

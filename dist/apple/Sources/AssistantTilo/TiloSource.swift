@@ -1846,11 +1846,12 @@ public final class TiloSource: AssistantSource {
                     actsAlone: !(event["permits"]?.array ?? []).isEmpty, isOn: event["on"]?.bool ?? true)
             })
         }
-        // The services they connected by their address: how each one's card in a conversation
-        // stands (Connections.swift).
+        // The services they connected by their address: the assistant view's line of each, and
+        // how each one's card in a conversation stands (Connections.swift).
         let awaited = connected.awaited
-        if let listed = await answered(&unanswered, { try await self.engine.connections() }), connected.heard(listed, for: awaited) {
-            await look()
+        if let listed = await answered(&unanswered, { try await self.engine.connections() }) {
+            seen.connections = Connected.lines(of: listed, site: TiloSource.placeName)
+            if connected.heard(listed, for: awaited) { await look() }
         }
         return unanswered
     }

@@ -315,6 +315,8 @@ goes to the person's server as what a protected field holds, and to nobody else.
 keeps no state of its own: it stands by the question and by the person's connections as
 their server lists them, which the app asks on the way in, after its own calls, and once
 more when a card says their server added a service that the list as last read does not hold.
+The assistant view's "Connections" shows that same list, newest first: each service by its
+own name, when it was added and how many commands it offers, or that nobody is signed in to it.
 
 **Which agent is the assistant, and the first time.** When its device gets in, the app asks
 the workspace's server, as the person on this device, which agents the workspace keeps

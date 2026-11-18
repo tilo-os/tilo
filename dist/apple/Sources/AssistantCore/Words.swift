@@ -55,6 +55,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case messagesToday = "messages-today", tokensToday = "tokens-today", ofLimit = "of-limit", spentToday = "spent-today"
     case notCounted = "not-counted"
     case connections, connectionLine = "connection-line", logins, loginLine = "login-line", loginUsed = "login-used"
+    case connectionSignIn = "connection-sign-in"
     case usedToday = "used-today", usedYesterday = "used-yesterday", usedOn = "used-on"
     case managerLine = "manager-line", moreCount = "more-count", open
     case hasLearned = "has-learned", whereItWorks = "where-it-works", workspaces, worksInThis = "works-in-this", ownWorkspace = "own-workspace"
@@ -223,6 +224,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .logins: "Logins"
         case .loginLine: "{name} · typed {date}"
         case .loginUsed: "{name} · typed {date} · {used}"
+        case .connectionSignIn: "{name} · added {date} · sign-in needed"
         case .usedToday: "used today"
         case .usedYesterday: "used yesterday"
         case .usedOn: "used {date}"
