@@ -6365,6 +6365,7 @@ image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/host/payload.json", "/target/publish/host/signature", "/target/publish/host/dry-run.pub", "/target/publish/host/bundle.json"]
 on = ["dispatch"]
+heavy = true
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -6376,6 +6377,7 @@ needs = ["image-host", "sign-host", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/host/receipt.json"]
 on = ["dispatch"]
+heavy = true
 id_token = ["registry.tilo.so"]
 
 # The release path rehearsed with no credentials: the image is signed with a throwaway key and
@@ -6386,9 +6388,11 @@ id_token = ["registry.tilo.so"]
 name = "host-release-rehearsal"
 run = "set -euo pipefail\nwork=/target/host-release-rehearsal\nrm -rf \"$work\"\nmkdir -p \"$work/image\" \"$work/registry\"\ncp /target/publish/host/image.oci.tar /target/publish/host/digest /target/publish/host/rpms-source \"$work/image/\"\nexport T_REF=tag:v0.0.0\nexport TILO_PUBLISH_DRY_RUN=$work/registry\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-host \"$work/image\"\nbash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-host \"$work/image\" '0.0.0' 'sha-{commit}' 'final:latest'\n"
 needs = ["image-host", "test-image-host", "signing-tools"]
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 requires = ["arch=x86_64"]
 outputs = ["/target/host-release-rehearsal/**"]
 on = ["dispatch"]
+heavy = true
 
 
 # The server image proves itself by booting: the machine serves (the hosted-VM
