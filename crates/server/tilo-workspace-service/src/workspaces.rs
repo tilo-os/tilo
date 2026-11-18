@@ -348,6 +348,12 @@ struct GovernedWorkspace {
     /// back from its file counts as having withdrawn something until it next
     /// starts over.
     since_base: SinceBase,
+    /// Where the workspace's own document stood when this holder last
+    /// published a change of it, or opened it. The replica moves past it
+    /// between commits, as the workspace's link takes in a member's change or
+    /// writes this holder's own checkpoints of the documents it covers, and the
+    /// next commit publishes those changes with its own ([`Self::commit_held`]).
+    published_heads: Option<Vec<automerge::ChangeHash>>,
     /// This host's sessions to the workspace's other holders
     /// ([`Workspaces::dial_holders`]).
     holders: holding::Holders,
@@ -525,6 +531,7 @@ impl GovernedWorkspace {
         (publications, receipts): (appended::Appended<Publication>, Receipts),
         device: Option<&DeviceKeys>,
     ) -> Result<Self, String> {
+        let published_heads = peer.workspace_heads();
         Ok(Self {
             admissions: admissions::Admissions::open(&path)
                 .map_err(|error| format!("admissions: {error}"))?,
@@ -551,6 +558,7 @@ impl GovernedWorkspace {
             asking: std::collections::BTreeSet::new(),
             rebased: false,
             since_base: SinceBase::Withdrew,
+            published_heads,
             holders: holding::Holders::default(),
         })
     }
@@ -672,6 +680,33 @@ impl GovernedWorkspace {
         Ok(answer)
     }
 
+    /// What `replica` took in or wrote since this holder last published a
+    /// change of the workspace's own document, as one publication: a member's
+    /// change its link admitted, or this holder's checkpoints of the documents
+    /// it covers. It goes out ahead of the change being committed, which builds
+    /// on it: a holder reaching this one only over a session is sent nothing
+    /// else of it, and would hold every later change back for its history.
+    fn published_since(&self, replica: &StatePeer) -> Result<Option<Publication>, String> {
+        let Some(published) = &self.published_heads else {
+            return Ok(None);
+        };
+        if replica.workspace_heads().as_ref() == Some(published) {
+            return Ok(None);
+        }
+        let changes = replica.workspace_changes_since(published);
+        if changes.is_empty() {
+            return Ok(None);
+        }
+        publication(
+            &neighbour_wire::NeighbourMsg::SyncResp {
+                changes,
+                workspace: replica.workspace_id().to_owned(),
+            },
+            false,
+        )
+        .map(Some)
+    }
+
     /// Commit a governance change of `candidate`: sign it as the workspace's next
     /// generation, append its publication, and persist it with the
     /// collaboration state `state` derives from the committed workspace, all in
@@ -779,6 +814,7 @@ impl GovernedWorkspace {
             record.published = 0;
         } else {
             let diffing = crate::timing::start();
+            record.outgoing.extend(self.published_since(replica)?);
             let messages = durable_messages(&mut candidate, replica, (key, now), generation)?;
             for message in messages.iter().filter(|message| for_members(message)) {
                 if change == Change::Other && withdraws(message) {
@@ -803,6 +839,7 @@ impl GovernedWorkspace {
             self.record = prior;
             return Err(error);
         }
+        self.published_heads = candidate.workspace_heads();
         *replica = candidate;
         self.rebased |= rebased;
         self.since_base = since_base;
