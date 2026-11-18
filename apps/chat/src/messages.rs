@@ -819,7 +819,15 @@ impl ChatPart {
         // A question for a secret says what is asked for and where it
         // belongs before its person is shown a field.
         if kind.as_deref() == Some(crate::question::SECRET) {
-            crate::secret_ask::Asked::read(detail.as_ref()).map_err(Refusal::new)?;
+            // A refusal writes out the arguments that work, with what was given.
+            crate::secret_ask::Asked::read(detail.as_ref()).map_err(|why| {
+                Refusal::new(crate::secret_ask::call_that_works(
+                    why,
+                    channel.as_str(),
+                    text.as_str(),
+                    detail.as_ref(),
+                ))
+            })?;
         }
         let question = Question::asked(person, kind, answers.unwrap_or_default(), detail)?;
         let id = cx.id();
