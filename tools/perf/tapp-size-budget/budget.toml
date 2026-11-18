@@ -155,7 +155,7 @@ x86_64 = 1835008
 aarch64 = 1441792
 
 [apps."so.tilo.file-explorer"]
-x86_64 = 3145728
+x86_64 = 3014656
 aarch64 = 2883584
 
 [apps."so.tilo.firewall"]
