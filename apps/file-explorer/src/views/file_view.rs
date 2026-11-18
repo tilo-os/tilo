@@ -1264,9 +1264,6 @@ fn accessible_entry_description(entry: &Entry) -> String {
         });
     }
 
-    if entry.is_conflict() {
-        facts.push(t("files-a11y-version-conflict"));
-    }
     facts.join(". ")
 }
 
@@ -1462,7 +1459,6 @@ mod tests {
             content_hash: None,
             document_id: None,
             availability: None,
-            history: None,
             app: None,
             rich_metadata: None,
             observed: None,
@@ -1859,7 +1855,6 @@ mod tests {
             content_hash: None,
             document_id: None,
             availability: None,
-            history: None,
             app: None,
             rich_metadata: None,
             observed: None,
@@ -1935,7 +1930,6 @@ mod tests {
             content_hash: None,
             document_id: None,
             availability: None,
-            history: None,
             app: None,
             rich_metadata: None,
             observed: None,
@@ -2441,52 +2435,8 @@ mod tests {
             &serde_json::json!({"state": "known", "reachable": 2, "durable": 1}),
             false,
         ));
-        entries[1].history = Some(conflicted_history());
 
         entries
-    }
-
-    fn conflicted_history() -> fs_protocol::HistoryProjectionV1 {
-        let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
-        let other = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
-        fs_protocol::HistoryProjectionV1::parse_xattr(
-            &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "total_versions": 2,
-                "versions_truncated": false,
-                "heads": [current, other],
-                "versions": [{
-                    "id": other,
-                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                    "parents": [],
-                    "actor": {"person": vec![1; 32], "device": vec![2; 32]},
-                    "timestamp_ms": 9,
-                    "content_hash": vec![3; 32],
-                    "metadata_hash": vec![4; 32],
-                    "provenance": "Edit"
-                }, {
-                    "id": current,
-                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                    "parents": [other],
-                    "actor": {"person": vec![6; 32], "device": vec![7; 32]},
-                    "timestamp_ms": 10,
-                    "content_hash": vec![5; 32],
-                    "metadata_hash": vec![8; 32],
-                    "provenance": "Edit"
-                }],
-                "conflicts_truncated": false,
-                "conflicts": [{
-                    "id": "c0d4e23f-c7cb-4ded-a427-b32cf9da9343",
-                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                    "versions": [other, current],
-                    "status": "Open",
-                    "resolution": null
-                }]
-            }))
-            .unwrap(),
-        )
-        .expect("the projected history is well formed")
     }
 
     fn assert_description_has_every_fact(description: Option<&str>) {
@@ -2496,7 +2446,6 @@ mod tests {
             "Available offline",
             "Kept offline",
             "Kept on other devices",
-            "Has a version conflict",
         ] {
             assert!(
                 description.contains(fact),

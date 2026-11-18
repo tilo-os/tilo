@@ -248,65 +248,8 @@ history-sync-remote-waiting = Changes from others arrive when your edit finishes
 history-sync-owner-closed = The document's connection closed. Reconnect to receive changes from others.
 
 # File history in the History host.
-history-files-select-file = Select a file with versioned history
-history-files-choose-parent = Choose which earlier version to compare with
-history-files-no-earlier = No earlier version
-history-files-checking-compensation = File: { $file }
 
     Checking the file again
-history-files-refresh-activity = Refresh activity
-history-files-check-restore = Check restore result
-history-files-retry-restore = Retry same restore
-history-files-redo-restore = Redo file restore…
-history-files-undo-restore = Undo file restore…
-history-files-revert-change = Revert change
-history-files-current-unavailable = The current version can't be read
-history-files-current-revision = Current version: { $revision }
-history-files-live-updates = The file has changed since. The version you picked stays
-history-files-before-parent = Compare with version { $revision }
-history-files-showing-parent = Comparing with version { $revision }
-history-files-created = Created
-history-files-edited = Edited
-history-files-renamed = Renamed
-history-files-moved = Moved
-history-files-deleted = Deleted
-history-files-restored = Restored
-history-files-conflict-resolved = Conflict resolved
-history-files-change = { $action } { $file }
-history-files-unknown-author = Unknown author
-history-files-author = Author { $identity }
-history-files-loading = Loading file history
-history-files-loading-version = Loading the version
-history-files-checking-permissions = Checking permissions…
-history-files-earlier-pending = An earlier restore hasn't finished. Check its result
-history-files-submitting = Restoring…
-history-files-version-count = { $count ->
-        [one] { $count } version
-       *[other] { $count } versions
-    }
-history-files-binding-changed = This window now shows another file. Open History again
-history-files-unavailable-host = This file has no history here
-history-files-historical-version = Earlier version
-history-files-foreign-response = That history answer is for another file. Try again
-history-files-restore-explainer = Restoring makes a new version; the ones before it stay in history
-history-files-foreign-review = That review is for another file. Try again
-history-files-invalid-result = Couldn't tell whether the restore ran. Check the file's history
-history-files-not-visible = This file is no longer visible
-history-files-error-stale = The file's history changed. Refresh, then try this version again
-history-files-error-missing-version = This version is no longer available
-history-files-error-invalid = Couldn't read this file's history
-history-files-error-unavailable = File history is temporarily unavailable
-history-files-error-too-large = This version is too large to show
-history-files-error-no-content = This version has no content to show
-history-files-outcome-applied = Restored version { $revision }. The file shows its current content
-history-files-outcome-unchanged = The file already matches this version. Nothing was restored
-history-files-outcome-pending = The restore hasn't finished. Check its result, or try again
-history-files-outcome-review = The file changed. Refresh the review; the version you picked stays selected
-history-files-outcome-read-only = This file is read-only, so it can't be restored
-history-files-outcome-pending-writes = Save your edits before restoring. Nothing you typed is lost
-history-files-outcome-unsupported-owner = This app can't restore this file's content
-history-files-outcome-unavailable = The restore may not have happened. Check the file's history before trying again
-history-files-outcome-invalid = That restore didn't run. Try again
 
 close-title = Close document
 close-unsaved = Save your changes before closing?
@@ -993,6 +936,7 @@ window-search-replace-options = Find options and replace
 history-panel-title = History
 history-panel-selected-changes = { $count } changes
 history-mode-restore-change = Restore just this change
+history-folder-restore = Restore this version
 history-panel-name = Name these changes
 history-preview-after = Earlier version, read-only
 history-preview-before = Before this change, read-only
@@ -1336,14 +1280,3 @@ settings-text-assistance = Spelling and text
 
 # One change to a file, described from what the content diff shows: no model
 # is involved, so these are the words a row shows by default.
-history-file-added-line = Added a line to { $file }
-history-file-added-lines = Added { $lines } lines to { $file }
-history-file-added-line-quote = { $sentence }: { $line }
-history-file-changed-line = Changed a line in { $file }
-history-file-changed-lines = Changed { $lines } lines in { $file }
-history-file-removed-line = Removed a line from { $file }
-history-file-removed-lines = Removed { $lines } lines from { $file }
-history-file-added-binary = Added { $file }, { $size }
-history-file-removed-binary = Removed { $file }, { $size }
-history-file-replaced-binary = Replaced { $file }, { $before } before and { $after } now
-history-file-changed = Changed { $file }

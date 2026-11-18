@@ -38,8 +38,7 @@ pub mod descriptions;
 pub mod detail;
 pub mod digest;
 pub mod facets;
-pub mod file_changes;
-/// A folder's own changes, read from the tree record that holds its files' versions.
+/// A folder's own changes, read from the documents of the tree its files are.
 pub mod folder;
 pub mod groups;
 mod log;

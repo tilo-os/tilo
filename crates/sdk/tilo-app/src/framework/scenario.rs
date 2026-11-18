@@ -23,7 +23,6 @@ use std::rc::Rc;
 
 use tilo_resource::{Doc, Invoke, Resource};
 use ui_core::history_mode::HistoryDefinition;
-use ui_core::history_mode::checked_files::FileHistorySource;
 
 use super::surface::ResourceSelection;
 
@@ -70,10 +69,6 @@ pub(crate) struct Run {
     pub(crate) private: bool,
     /// A view another app's window embeds, not a window of its own.
     pub(crate) embedded: bool,
-    /// The file whose history History shows beside the resource's, for an
-    /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY),
-    /// and the History scope the root observations it under.
-    pub(crate) file_history: Option<(FileHistorySource, &'static HistoryDefinition)>,
     /// The folder History lists, for an app that declares
     /// [`ResourceApp::FOLDER_HISTORY`](super::ResourceApp::FOLDER_HISTORY): filled with the
     /// workspace's tree once the root's storage is open, and observed by the root under
@@ -152,7 +147,6 @@ impl Run {
             launched: Rc::default(),
             private: false,
             embedded: false,
-            file_history: None,
             folder_history: None,
             people: super::People::new(None),
             opener: None,
@@ -170,15 +164,6 @@ impl Run {
     /// This run as a view another app's window embeds, when `embedded`.
     pub(crate) fn in_embedded(mut self, embedded: bool) -> Self {
         self.embedded = embedded;
-        self
-    }
-
-    /// This run, showing the history of the file `file_history` names.
-    pub(crate) fn showing_file_history(
-        mut self,
-        file_history: Option<(FileHistorySource, &'static HistoryDefinition)>,
-    ) -> Self {
-        self.file_history = file_history;
         self
     }
 
@@ -201,7 +186,6 @@ impl Run {
             launched: Rc::default(),
             private: false,
             embedded: false,
-            file_history: None,
             folder_history: None,
             people: super::People::new(None),
             opener: None,
@@ -511,7 +495,6 @@ fn capture_run(fixtures: Fixtures) -> Run {
         launched: Rc::default(),
         private: false,
         embedded: false,
-        file_history: None,
         folder_history: None,
         people: super::People::new(None),
         opener: None,

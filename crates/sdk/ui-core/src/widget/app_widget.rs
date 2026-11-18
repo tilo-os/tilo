@@ -1968,7 +1968,7 @@ mod component_adapter {
         > {
             self.in_root(|root| {
                 Ok(crate::history_mode::capability::history_registration(root)?
-                    .filter(crate::history_mode::HistoryRegistration::is_checked_files_only))
+                    .filter(crate::history_mode::HistoryRegistration::is_folder_only))
             })
             .unwrap_or(Ok(None))
         }

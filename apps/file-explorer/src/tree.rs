@@ -82,7 +82,10 @@ impl ResourceApp for FilesTreeShell {
     /// The folder this window shows: every file's changes in it, as one list, read from
     /// the tree record its rows are.
     const FOLDER_HISTORY: Option<ui::framework::FolderHistory> =
-        Some(ui::framework::FolderHistory { title: "Folder" });
+        Some(ui::framework::FolderHistory {
+            title: "Folder",
+            beside_resource: false,
+        });
 
     fn view(cx: &mut ViewCx<FilesWindow>) -> Element {
         Box::new(TreeBrowser::new(cx))
@@ -134,6 +137,8 @@ struct HeldChunk {
     /// The revision the nodes were last read at; `None` before the first read.
     revision: Option<u64>,
     nodes: BTreeMap<String, TreeEntry>,
+    /// Who last changed each of its nodes, as its changes name them.
+    writers: HashMap<String, (String, ui::tilo_actions::ActionContext)>,
 }
 
 impl Held {
@@ -184,6 +189,7 @@ impl Held {
                             record,
                             revision: None,
                             nodes: BTreeMap::new(),
+                            writers: HashMap::new(),
                         },
                     );
                 }
@@ -203,6 +209,10 @@ impl Held {
                 tree.nodes.remove(id);
             }
             held.nodes = state.nodes.clone();
+            held.writers = held
+                .record
+                .read(ui::history_source::folder::last_change_by_node)
+                .unwrap_or_default();
             tree.nodes.extend(
                 held.nodes
                     .iter()
@@ -418,7 +428,7 @@ impl TreeBrowser {
                 ui::carry_out::save(carried.clone());
             });
         }
-        if let Some(author) = self.author_of(node) {
+        if let Some(author) = self.author_of(id, node) {
             // Who made it as its own cell: the person's face and name, and what wrote
             // for them as a chip wearing the agent mark and its own colour. The hover
             // names the agent, its session, the computer and the folder. Never one line
@@ -474,39 +484,14 @@ impl TreeBrowser {
         }))
     }
 
-    /// The author of `node`'s newest version, as the folder's versions resource
-    /// it: the person whose device signed it, and the agent that wrote for them
-    /// when one did. `None` for a node the tree holds no version of.
-    fn author_of(&self, node: &TreeEntry) -> Option<ui::HistoryAuthor> {
+    /// Who last changed the node `id`, as the change names them: the person, or the agent
+    /// that wrote for them. `None` for a node no named change of its chunk acted on.
+    fn author_of(&self, id: &str, node: &TreeEntry) -> Option<ui::HistoryAuthor> {
         let document_id = node.document_id?;
-        // A file's versions are in the document of the chunk its resource id names.
+        // A node's changes are in the document of the chunk its document id names.
         let chunk = self.tree.as_ref()?.chunk(document_id.chunk())?;
-        let (version, attribution) = chunk
-            .record
-            .read(|doc| fs_protocol::history::latest(doc, document_id))??;
-        let registry = self.people.registry();
-        let folder = node
-            .parent
-            .as_deref()
-            .filter(|parent| *parent != ROOT_ID)
-            .map(|parent| {
-                let held = self.tree.as_ref().map(Held::tree);
-                let path = match held {
-                    Some(tree) => Self::path_of(tree, parent),
-                    None => String::new(),
-                };
-                format!("/{path}")
-            });
-        registry.resolve_attributed_file_actor_in(
-            version.actor.person.as_bytes(),
-            version.actor.device.as_bytes(),
-            attribution
-                .as_ref()
-                .map(|attributed| &attributed.attribution),
-            ui::history_source::WriterPlace {
-                folder: folder.as_deref(),
-            },
-        )
+        let (actor, context) = chunk.writers.get(id)?;
+        Some(self.people.registry().resolve_entry(actor, Some(context)))
     }
 
     /// What carrying the entry `id` out of the workspace takes: the file

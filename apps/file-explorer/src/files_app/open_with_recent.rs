@@ -378,7 +378,6 @@ pub(super) fn recent_entries_of(paths: &[PathBuf]) -> Vec<Entry> {
                 content_hash: None,
                 document_id: None,
                 availability: None,
-                history: None,
                 app: None,
                 rich_metadata: None,
                 observed: host_fs::ObservedObject::from_metadata(&meta),

@@ -25,9 +25,4 @@ fn unavailable_projection_never_reports_a_successful_control_write() {
     assert_eq!(std::fs::read(&path).unwrap(), b"local document");
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     assert_eq!(crate::model::read_sync_state(&path), None);
-    let history = crate::framework_history::MountedFileHistory::open(&path);
-    assert!(matches!(
-        history,
-        Err(error) if error.kind() == std::io::ErrorKind::Unsupported
-    ));
 }

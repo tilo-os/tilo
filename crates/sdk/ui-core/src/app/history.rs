@@ -178,7 +178,7 @@ impl App {
             document: crate::doc::settle_mark(&self.state.doc),
             narrow: width < 600.0,
         };
-        let mut walked = self
+        let walked = self
             .layout
             .walks
             .history
@@ -213,7 +213,6 @@ impl App {
             // Nothing they read moved since the last walk found them at rest.
             crate::history_mode::embedded::SurfacesWalk {
                 found: walked.as_ref().is_some_and(|walk| walk.embedded),
-                due: walked.as_mut().and_then(|walk| walk.due.take()),
                 ..Default::default()
             }
         };
@@ -237,7 +236,6 @@ impl App {
             root_valid,
             surfaces,
             needed: found.needed,
-            due: found.due,
         });
         if !nested
             && !invalid

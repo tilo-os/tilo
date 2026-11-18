@@ -7,18 +7,21 @@
 //!
 //! A tree is kept in chunks, each a record of its own ([`fs_protocol::tree`]): its own record
 //! holds the root's identity and lists the chunks, and each chunk holds the nodes whose record
-//! ids name it, versions included. History reads them all, opening a chunk as the tree lists
-//! it, and reads its changes again only when one of the records moves.
+//! ids name it. History reads every chunk's changes, opening a chunk as the tree lists it, and
+//! reads them again only when one of the records moves. Undo and Restore of a row are
+//! History's own verbs on the chunk's record, which syncs to every device holding the tree as
+//! any change of it does: the device whose disk holds the file writes the content back.
 
 use std::rc::Rc;
 
-use fs_protocol::files::TreeChunk;
+use fs_protocol::files::{FileDocumentId, TreeChunk};
 use fs_protocol::tree::{
     FILES_APP, FilesTree, Tree, TreeChunks, chunk_document_id, document_id, listed_chunks,
 };
 use ui_core::automerge::AutoCommit;
 use ui_core::history_mode::folder::{FolderHistorySource, FolderVersions};
-use ui_core::history_source::folder::FolderRecords;
+use ui_core::history_source::folder::{FolderChange, FolderRecords};
+use ui_core::history_source::verbs::HistoryEdit;
 
 use super::People;
 use super::settings::ViewStorage;
@@ -50,9 +53,26 @@ impl WorkspaceFolder {
 }
 
 impl FolderVersions for WorkspaceFolder {
-    fn folder_entries(&self) -> Vec<ui_core::HistoryEntry> {
+    fn folder_changes(&self, file: Option<FileDocumentId>) -> Vec<FolderChange> {
         let authors = self.people.registry();
-        ui_core::history_source::folder::entries(self, &authors)
+        ui_core::history_source::folder::changes(self, &authors, file)
+    }
+
+    /// Decided as a call that may take back anything the tree takes: undo and restore write
+    /// whatever the change they act on wrote.
+    fn apply(&self, chunk: TreeChunk, edit: HistoryEdit, node: Option<&str>) -> Result<(), String> {
+        let record = self
+            .record(chunk)
+            .ok_or("the folder's record is not open here")?;
+        if !fs_protocol::file_action::verbs::ALL
+            .iter()
+            .all(|verb| record.may(verb))
+        {
+            return Err("you may not change the workspace's files".to_owned());
+        }
+        record
+            .apply_history(edit, node)
+            .map_err(|error| error.to_string())
     }
 
     /// The revision of every record the folder is, combined: History reads the changes again

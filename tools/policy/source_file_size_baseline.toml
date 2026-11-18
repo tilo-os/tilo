@@ -12,7 +12,7 @@
 "apps/contacts/src/app/tests.rs" = 5000
 "apps/ebook/src/app.rs" = 9000
 "apps/ebook/src/app/interaction_tests.rs" = 5500
-"apps/file-explorer/src/files_app.rs" = 8500
+"apps/file-explorer/src/files_app.rs" = 8000
 "apps/file-explorer/src/files_app/tests.rs" = 6000
 "apps/imager/src/app.rs" = 5500
 "apps/imager/src/setup/destination/installer_app.rs" = 4000

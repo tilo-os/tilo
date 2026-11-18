@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{EffectAnswer, Effected, FileHistory, Publishes, ResourceApp, ViewCx};
+use ui::framework::{EffectAnswer, Effected, Publishes, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{
@@ -918,10 +918,12 @@ impl ResourceApp for FileExplorerShell {
     const TITLE_KEY: &'static str = "files-app-title";
     const ICON: Option<&'static str> = Some("file-explorer");
     const ARGUMENTS: usize = 1;
-    const FILE_HISTORY: Option<FileHistory> = Some(FileHistory {
-        title: "Selected file",
-        preview: crate::framework_history::preview,
-    });
+    /// The workspace's folder: History lists its changes, or the selected file's.
+    const FOLDER_HISTORY: Option<ui::framework::FolderHistory> =
+        Some(ui::framework::FolderHistory {
+            title: "Files",
+            beside_resource: true,
+        });
     /// The person's own workspace tree: the resource the filesystem daemon
     /// writes as files are created, renamed, moved and deleted, and the one
     /// the person's other devices and a shared workspace's members hold. The
@@ -1184,7 +1186,7 @@ fn files_view(cx: &ViewCx<FileExplorer>, mut window: FileExplorerWidget) -> Elem
 }
 
 fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
-    if let Some(source) = cx.file_history() {
+    if let Some(source) = cx.folder_history() {
         files.show_file_history_in(source);
     }
     if let Some(argument) = cx.launch_arguments().first() {

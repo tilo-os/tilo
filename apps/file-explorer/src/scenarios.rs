@@ -272,29 +272,6 @@ fn write_history(workspace: &Path) -> std::io::Result<PathBuf> {
     make_dir(workspace)?;
     let path = workspace.join("Launch brief.md");
     write_file(&path, b"# Launch brief\n\nCurrent plan\n")?;
-    let older = "11111111-1111-4111-8111-111111111111";
-    let current = "22222222-2222-4222-8222-222222222222";
-    let history = serde_json::to_vec(&serde_json::json!({
-        "schema_version": 1,
-        "document_id": "launch-brief-record",
-        "total_versions": 2,
-        "versions_truncated": false,
-        "heads": [current],
-        "versions": [
-            {"id": older, "document_id": "launch-brief-record", "parents": [],
-             "actor": {"person": vec![1; 32], "device": vec![2; 32]},
-             "timestamp_ms": 1_788_300_000_000_u64, "content_hash": vec![3; 32],
-             "metadata_hash": vec![4; 32], "provenance": "Create"},
-            {"id": current, "document_id": "launch-brief-record", "parents": [older],
-             "actor": {"person": vec![5; 32], "device": vec![6; 32]},
-             "timestamp_ms": 1_788_386_400_000_u64, "content_hash": vec![7; 32],
-             "metadata_hash": vec![8; 32], "provenance": "Edit"}
-        ],
-        "conflicts_truncated": false,
-        "conflicts": []
-    }))
-    .map_err(std::io::Error::other)?;
-    mark(&path, fs_protocol::HISTORY_XATTR, &history);
     mark(&path, fs_protocol::SYNC_XATTR, b"local");
     Ok(workspace.to_path_buf())
 }

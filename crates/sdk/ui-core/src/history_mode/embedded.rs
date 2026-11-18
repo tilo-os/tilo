@@ -105,8 +105,6 @@ pub(crate) struct SurfacesWalk {
     pub(crate) needed: bool,
     /// The tree holds any History surface.
     pub(crate) found: bool,
-    /// The earliest moment a surface asks for a refresh on its own (`HistoryHost::next_refresh`).
-    pub(crate) due: Option<(crate::background::Background, crate::time::Instant)>,
 }
 
 /// [`needs_refresh`], and what else the walk found ([`SurfacesWalk`]).
@@ -119,11 +117,6 @@ pub(crate) fn surfaces_need_refresh(
     let mut walk = SurfacesWalk::default();
     crate::history_mode::capability::visit_framework_history(root, &mut |history, live| {
         walk.found = true;
-        if let Some((background, at)) = history.next_refresh()
-            && walk.due.as_ref().is_none_or(|(_, due)| at < *due)
-        {
-            walk.due = Some((background, at));
-        }
         let width = if history.get_rect().width() > 0.0 {
             history.get_rect().width()
         } else {

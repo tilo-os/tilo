@@ -1298,17 +1298,7 @@ impl AppComponent {
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        self.register_history_of(definition, None, None)
-    }
-    /// Register presentation for this component's document, as [`Self::register_document_history`], and
-    /// for the files of the mounted filesystem it shows: every checked-file scope reads the file
-    /// `files` names.
-    pub fn register_document_and_file_history(
-        &mut self,
-        definition: &'static crate::history_mode::HistoryDefinition,
-        files: crate::history_mode::checked_files::FileHistorySource,
-    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        self.register_history_of(definition, Some(files), None)
+        self.register_history_of(definition, None)
     }
 
     /// Register presentation for the folder this component's window shows, as
@@ -1320,7 +1310,7 @@ impl AppComponent {
         definition: &'static crate::history_mode::HistoryDefinition,
         folder: crate::history_mode::folder::FolderHistorySource,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        self.register_history_of(definition, None, Some(folder))
+        self.register_history_of(definition, Some(folder))
     }
     /// Open History at `entry` when the window starts, as a window replaying
     /// a recording opens at its first step. Refused before History is
@@ -1342,7 +1332,6 @@ impl AppComponent {
     fn register_history_of(
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
-        files: Option<crate::history_mode::checked_files::FileHistorySource>,
         folder: Option<crate::history_mode::folder::FolderHistorySource>,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         use crate::history_mode::{
@@ -1363,13 +1352,6 @@ impl AppComponent {
                         reason,
                     })
                 }
-                HistoryPresentation::CheckedFiles { .. } => match &files {
-                    Some(source) => Ok(HistorySourceRegistration::CheckedFiles {
-                        scope: scope.key,
-                        source: source.clone(),
-                    }),
-                    None => Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner),
-                },
                 HistoryPresentation::Folder => match &folder {
                     Some(source) => Ok(HistorySourceRegistration::FolderFiles {
                         scope: scope.key,

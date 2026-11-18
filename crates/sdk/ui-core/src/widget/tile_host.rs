@@ -718,9 +718,7 @@ impl TileHost {
                         reason,
                     })
                 }
-                HistoryPresentation::CheckedFiles { .. } | HistoryPresentation::Folder => {
-                    Err(HistoryRegistrationError::UnsupportedOwner)
-                }
+                HistoryPresentation::Folder => Err(HistoryRegistrationError::UnsupportedOwner),
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.install_history_registration(HistoryRegistration::new(definition, sources)?);

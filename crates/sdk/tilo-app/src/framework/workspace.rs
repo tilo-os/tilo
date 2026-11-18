@@ -521,6 +521,48 @@ impl<P: Resource> WorkspaceResource<P> {
         }
     }
 
+    /// Apply History's verb `edit` (undo a step, restore a version) to the record as the
+    /// window's person: one change, through the executor every action goes through, naming
+    /// `item` as what it acted on. The caller decides first whether the grants let them.
+    ///
+    /// # Errors
+    /// History's verb refused, or the record cannot be changed right now.
+    pub fn apply_history(
+        &self,
+        edit: super::history::HistoryEdit,
+        item: Option<&str>,
+    ) -> Result<(), ActionError> {
+        let encoded = tilo_actions::EncodedAction {
+            type_id: super::history::EDIT_TYPE.to_owned(),
+            payload: serde_json::to_vec(&edit)
+                .map_err(|error| ActionError::Refused(error.to_string()))?,
+        };
+        let action = super::history::ResourceHistoryEdit::<P>::new(edit);
+        let shared = &self.shared;
+        let invoker = ActionInvoker::member(shared.me.clone());
+        let actor = invoker.acting.by.actor_bytes();
+        let mut context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
+            .with_app(shared.owner, shared.app_title)
+            .with_invoker(invoker)
+            .with_change(action.change_kind());
+        context.item = item.map(|item| tilo_actions::ActionItem {
+            id: item.to_owned(),
+            label: item.to_owned(),
+        });
+        let edited = shared.record.try_edit(true, |doc| {
+            let writer = ui_core::history_source::authors::device_actor(&actor, doc.get_actor());
+            tilo_actions::apply_local_with_context(doc, &action, encoded, Some(&writer), context)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        });
+        let result = match edited {
+            Ok(result) => result.map_err(ActionError::Refused),
+            Err(unavailable) => Err(ActionError::Refused(unavailable.to_string())),
+        };
+        shared.refresh();
+        result
+    }
+
     /// Refuse `action` unless the workspace's grants let the window's person do it: a verb as
     /// [`Self::may`] decides it, a field edit at the field it changes. What a caller from
     /// outside asks for passes here before it is applied.

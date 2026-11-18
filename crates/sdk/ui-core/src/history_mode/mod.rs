@@ -20,9 +20,7 @@ pub(crate) fn note_news() {
 
 pub(crate) mod api;
 pub mod capability;
-pub mod checked_files;
 pub mod coverage;
-mod files_session;
 pub mod folder;
 pub mod preview;
 pub mod restore;

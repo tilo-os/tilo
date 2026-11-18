@@ -1,9 +1,6 @@
-use super::{
-    FilesState, conflict_strategy_label, merge_supported_path, short_fingerprint, short_uuid,
-    tidy_menu,
-};
+use super::{FilesState, tidy_menu};
 use crate::command::FileCommand;
-use crate::i18n::{arg, t, t_args};
+use crate::i18n::t;
 use crate::model::SortBy;
 use std::path::PathBuf;
 
@@ -229,106 +226,8 @@ impl FilesState {
                         Some(FileCommand::ShowAvailability),
                     ));
                 }
-                if entry.history.is_some() {
+                if entry.document_id.is_some() {
                     spec.push((t("files-version-history"), Some(FileCommand::ShowHistory)));
-                    if let Some(version_id) = entry.history.as_ref().and_then(|history| {
-                        history.versions.iter().rev().find_map(|version| {
-                            (!history.heads.contains(&version.id) && version.content_hash.is_some())
-                                .then_some(version.id)
-                        })
-                    }) {
-                        spec.push((
-                            t("files-restore-previous"),
-                            Some(FileCommand::RestoreVersion { version_id }),
-                        ));
-                    }
-                    if let (Some(history), Some(current_hash)) =
-                        (entry.history.as_ref(), entry.content_hash)
-                    {
-                        for conflict in history.open_conflicts() {
-                            let members = conflict
-                                .versions
-                                .iter()
-                                .filter_map(|id| {
-                                    history.versions.iter().find(|version| version.id == *id)
-                                })
-                                .collect::<Vec<_>>();
-                            let current = members
-                                .iter()
-                                .copied()
-                                .filter(|version| {
-                                    version.content_hash.map(|hash| hash.0) == Some(current_hash)
-                                })
-                                .collect::<Vec<_>>();
-                            if current.len() != 1 {
-                                continue;
-                            }
-                            let Some(current_version) = current.first() else {
-                                continue;
-                            };
-                            let current_id = current_version.id;
-                            spec.push((String::new(), None));
-                            spec.push((
-                                t_args(
-                                    "files-resolve-keep-current",
-                                    &[arg("conflict", short_uuid(conflict.id))],
-                                ),
-                                Some(FileCommand::ResolveConflict {
-                                    conflict_id: conflict.id,
-                                    strategy: fs_protocol::ConflictStrategy::KeepCurrent,
-                                    version_id: current_id,
-                                }),
-                            ));
-                            for other in members
-                                .into_iter()
-                                .filter(|version| version.id != current_id)
-                            {
-                                let other_id = other.id;
-                                spec.push((
-                                    t_args(
-                                        "files-resolve-use-other",
-                                        &[
-                                            arg("conflict", short_uuid(conflict.id)),
-                                            arg("device", short_fingerprint(&other.actor.device.0)),
-                                        ],
-                                    ),
-                                    Some(FileCommand::ResolveConflict {
-                                        conflict_id: conflict.id,
-                                        strategy: fs_protocol::ConflictStrategy::UseOther,
-                                        version_id: other_id,
-                                    }),
-                                ));
-                                if merge_supported_path(&entry.path) {
-                                    spec.push((
-                                        format!(
-                                            "{} ({})",
-                                            t("files-merge-review-menu"),
-                                            short_fingerprint(&other.actor.device.0),
-                                        ),
-                                        Some(FileCommand::ReviewConflictMerge {
-                                            conflict_id: conflict.id,
-                                            version_id: other_id,
-                                            other_device: other.actor.device.0,
-                                        }),
-                                    ));
-                                }
-                                spec.push((
-                                    format!(
-                                        "{} ({})",
-                                        conflict_strategy_label(
-                                            fs_protocol::ConflictStrategy::KeepBoth,
-                                        ),
-                                        short_fingerprint(&other.actor.device.0),
-                                    ),
-                                    Some(FileCommand::ResolveConflict {
-                                        conflict_id: conflict.id,
-                                        strategy: fs_protocol::ConflictStrategy::KeepBoth,
-                                        version_id: other_id,
-                                    }),
-                                ));
-                            }
-                        }
-                    }
                 }
             }
             return tidy_menu(spec);
