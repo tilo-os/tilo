@@ -18,7 +18,7 @@ struct ChangeWait {
 }
 
 /// Who waits for a change of one workspace, and when each wait ends ([`MAX_REMOTE_WAIT`] after it
-/// began). One landing answers both what a watch reads of the records and of who is in the
+/// began). One landing answers both what a watch reads of the documents and of who is in the
 /// workspace: the roster its governance names is one of its records, and the caller reads what it
 /// follows again either way. Whom a landing answers is decided where the workspace's policy is
 /// at hand ([`Worker::wake_watchers`]): until then, where the writes landed is kept here.
