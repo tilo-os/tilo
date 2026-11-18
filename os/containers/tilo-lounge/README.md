@@ -65,6 +65,7 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_HOLD_FOR` | none | the workspaces of other people this host holds whoever's they are, when an owner has the host governing one hand it over (`tilo workspace hosts add`): `anyone`, or their ids, comma-separated. Without it the host holds those of the people it let in |
 | `TILO_WORKSPACES_CALL_OWN_NETWORK` | off | `1` lets the server call addresses on its own network, not only the public internet: a model provider a person names, and the site of another server an owner has keep a workspace. For servers that share one network, as a local stack's do; never on a public server |
 | `TILO_WORKSPACES_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
+| `TILO_WORKSPACES_SERVER_ORIGINS_ALSO` | none | comma-separated origins a front publishes this same server at besides `TILO_WORKSPACES_SERVER_ORIGIN` (a second name for it, on another network). The server makes an agent's setup code for a page that came by any origin it was told, and refuses one whose link names an origin it was not told, whatever a request calls the server |
 | `TILO_WORKSPACES_SERVER_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
 | `TILO_WORKSPACES_LIVE` | `0.0.0.0:9782` | the address the packet relay binds, as the ingress forwards to it |
 | `TILO_WORKSPACES_LIVE_ORIGIN` | the address it bound | the `https://host[:port]` origin devices dial the packet relay at |

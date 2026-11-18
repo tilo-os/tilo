@@ -75,6 +75,16 @@ pub struct WebArgs {
     /// `--web-plain` bind a non-loopback address.
     #[arg(long = "public-origin", value_name = "ORIGIN", requires = "web_plain")]
     pub public_origin: Option<String>,
+    /// Another origin a proxy publishes this server at, beside
+    /// `--public-origin` (a front that hands a second name on to the same
+    /// listener); repeatable. An agent's setup code is made for a page that
+    /// came by any of them, and for no name the server was not told here.
+    #[arg(
+        long = "public-origin-also",
+        value_name = "ORIGIN",
+        requires = "public_origin"
+    )]
+    pub public_origins_also: Vec<String>,
     /// Take WebTransport sessions, how pages reach this host, at this UDP
     /// address instead of beside the HTTPS listener: for a deployment whose
     /// HTTPS arrives through a proxy that carries no UDP.
@@ -708,7 +718,10 @@ pub async fn serve(
     }
     name_apple_push(server, args);
     let web = server
-        .serve_web(web_config(args, listen, state_root))
+        .serve_web_also_at(
+            web_config(args, listen, state_root),
+            args.public_origins_also.clone(),
+        )
         .await
         .context("start the browser listener")?;
     tracing::info!(origin = %web.origin, allowed = ?args.allowed_origins, "serving browsers");
@@ -1046,7 +1059,10 @@ pub async fn dev(
         .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 9443)));
     name_apple_push(server, &web_args);
     let web = server
-        .serve_web(web_config(&web_args, listen, &state))
+        .serve_web_also_at(
+            web_config(&web_args, listen, &state),
+            web_args.public_origins_also.clone(),
+        )
         .await
         .context("start the browser listener")?;
     announce(
@@ -1392,7 +1408,10 @@ pub async fn workspace(
     let server = &hosted.server;
     name_apple_push(server, &args.web);
     let web = server
-        .serve_web(web_config(&args.web, listen, &state))
+        .serve_web_also_at(
+            web_config(&args.web, listen, &state),
+            args.web.public_origins_also.clone(),
+        )
         .await
         .context("start the browser listener")?;
     println!(
@@ -1472,6 +1491,48 @@ mod tests {
         );
         announce_web_entry(&mut cfg, &parse(&["--web-entry", "https://app.example/"]));
         assert_eq!(cfg.web_entry.as_deref(), Some("https://app.example/"));
+    }
+
+    #[test]
+    fn another_published_origin_is_named_beside_the_public_one_and_repeats() {
+        #[derive(clap::Parser)]
+        struct Command {
+            #[command(flatten)]
+            web: WebArgs,
+        }
+        let parse = |args: &[&str]| {
+            <Command as clap::Parser>::try_parse_from(
+                std::iter::once("workspace").chain(args.iter().copied()),
+            )
+            .map(|command| command.web.public_origins_also)
+        };
+        assert_eq!(parse(&[]).unwrap(), Vec::<String>::new());
+        let published = [
+            "--web-plain",
+            "127.0.0.1:0",
+            "--public-origin",
+            "http://127.0.0.1:24500",
+        ];
+        let also = [
+            "--public-origin-also",
+            "https://tilo.wifi.example:24500",
+            "--public-origin-also",
+            "https://lounge.example",
+        ];
+        assert_eq!(
+            parse(&[published, also].concat()).unwrap(),
+            ["https://tilo.wifi.example:24500", "https://lounge.example"]
+        );
+        assert!(
+            parse(&[
+                "--web-plain",
+                "127.0.0.1:0",
+                "--public-origin-also",
+                "https://tilo.wifi.example:24500"
+            ])
+            .is_err(),
+            "a second name stands beside a first"
+        );
     }
 
     async fn endpoint() -> iroh::endpoint::Endpoint {

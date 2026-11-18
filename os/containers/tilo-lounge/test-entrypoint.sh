@@ -106,12 +106,14 @@ grep -Fqx -- "$work/state/lounge/avatars" "$work/args" || fail "the avatars are 
 # host advertises the address it bound.
 grep -Fqx -- --packet-relay-url "$work/args" && fail "a published relay URL was announced without one set"
 grep -Fqx -- --owner "$work/args" && fail "an owner was named without one in the environment"
+grep -Fqx -- --public-origin-also "$work/args" && fail "another origin of the server was named without one set"
 
 # Every setting of a populated deployment reaches the host, and replaces the
 # default it shares a flag with.
 lounge \
   TILO_WORKSPACES_NAME=Lounge \
   TILO_WORKSPACES_SITE_ORIGINS='https://tilo.sh, https://tilo.so' \
+  TILO_WORKSPACES_SERVER_ORIGINS_ALSO='https://eu1.wifi.example:9780, https://lounge.example/' \
   TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
   TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
   TILO_WORKSPACES_SEED_APPS='so.tilo.chat,so.tilo.board' \
@@ -147,6 +149,8 @@ pair() {
 pair --web 127.0.0.1:0 || fail "the HTTPS listener setting did not reach the host"
 pair --web-plain 0.0.0.0:9880 || fail "the plain listener setting did not reach the host"
 pair --public-origin https://eu1.tilo.sh || fail "the public origin did not reach the host"
+pair --public-origin-also https://eu1.wifi.example:9780 || fail "the second origin did not reach the server"
+pair --public-origin-also https://lounge.example/ || fail "the third origin did not reach the server"
 pair --packet-relay 0.0.0.0:9881 || fail "the packet relay's bind address did not reach the host"
 pair --packet-relay-url https://live.eu1.tilo.sh || fail "the published relay URL did not reach the host"
 pair --http 0.0.0.0:8890 || fail "the routes listener setting did not reach the host"

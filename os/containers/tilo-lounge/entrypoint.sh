@@ -50,6 +50,13 @@
 # TILO_WORKSPACES_WEB at the public origin, which only a host with no ingress
 # reaches.
 #
+# A front that publishes this same server under a second name (its name on
+# another network, beside the ingress's) is named here. The server takes a
+# name it was not told for another server, and refuses the setup code a page
+# that came by that name asks for its person's agent:
+#   TILO_WORKSPACES_SERVER_ORIGINS_ALSO  the other origins the server is reached
+#                                   under, comma-separated
+#
 # Every workspace this host keeps gives each person who asks workspaces of
 # their own, governed here beside the Lounge, keeping between them as many
 # gigabytes per person as the operator says:
@@ -88,6 +95,7 @@ TILO_WORKSPACES_ROOT_FILE TILO_WORKSPACES_OPERATOR_SOCKET
 TILO_WORKSPACES_PERSON_STORAGE_GB TILO_WORKSPACES_IROH_LISTEN TILO_WORKSPACES_HOLD_FOR TILO_WORKSPACES_CALL_OWN_NETWORK TILO_WORKSPACES_OWNERS
 TILO_WORKSPACES_STATE
 TILO_WORKSPACES_WEB_ENTRY TILO_WORKSPACES_SITE_ORIGINS TILO_WORKSPACES_SERVER_ORIGIN
+TILO_WORKSPACES_SERVER_ORIGINS_ALSO
 TILO_WORKSPACES_SERVER_PLAIN TILO_WORKSPACES_LIVE TILO_WORKSPACES_LIVE_ORIGIN TILO_WORKSPACES_WEB
 TILO_WORKSPACES_TLS_CERT TILO_WORKSPACES_TLS_KEY
 TILO_WORKSPACES_LINK TILO_WORKSPACES_LINK_ORIGIN
@@ -261,6 +269,7 @@ while [ -n "$refound" ]; do
   esac
 done
 set -- "$@" $(comma_flags "${TILO_WORKSPACES_SITE_ORIGINS:-}" --allowed-origin)
+set -- "$@" $(comma_flags "${TILO_WORKSPACES_SERVER_ORIGINS_ALSO:-}" --public-origin-also)
 if [ -n "${TILO_WORKSPACES_FEEDBACK_CHANNEL:-}" ]; then
   set -- "$@" --feedback-channel "$TILO_WORKSPACES_FEEDBACK_CHANNEL"
 fi

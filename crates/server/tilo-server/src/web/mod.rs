@@ -335,8 +335,10 @@ pub(crate) fn stand_in_for(
     stand_in::kept(&stand_ins_dir(state_root), user)
 }
 
-/// Checks the published origins against the listeners they front.
-fn checked_origins(config: &WebConfig) -> Result<(), String> {
+/// Checks the published origins against the listeners they front. `also` are
+/// the other origins whoever keeps this server says it is reached under: each
+/// an origin as the public one is, beside which it stands.
+fn checked_origins(config: &WebConfig, also: &[String]) -> Result<(), String> {
     if config.public_origin.is_none()
         && config
             .plain_listen
@@ -352,6 +354,19 @@ fn checked_origins(config: &WebConfig) -> Result<(), String> {
     }) {
         return Err(
             "a public origin is an https:// origin (or an http:// one on this machine) published for the plain listener".into(),
+        );
+    }
+    if !also.is_empty() && config.public_origin.is_none() {
+        return Err(
+            "another origin this server is reached under stands beside its public origin, which is not set".into(),
+        );
+    }
+    if !also
+        .iter()
+        .all(|origin| tilo_net::Url::parse(origin).is_ok_and(|url| tilo_net::secure_origin(&url)))
+    {
+        return Err(
+            "another origin this server is reached under is an https:// origin (or an http:// one on this machine)".into(),
         );
     }
     Ok(())
@@ -437,13 +452,35 @@ impl Server {
     ///
     /// Returns [`ServerError::Iroh`] (the transport error kind) when the
     /// certificate cannot be loaded or an address cannot be bound.
+    pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, ServerError> {
+        self.serve_web_also_at(config, Vec::new()).await
+    }
+
+    /// [`Self::serve_web`] for a server that is reached under more origins
+    /// than the one it publishes: `also` are the others (a front that hands
+    /// a second name on to the same listener), named at its start by whoever
+    /// keeps it. A setup code's pairing link may name one of them as it may
+    /// name the published origin; a name the server was not told stays
+    /// another server, whatever a request says of itself.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::serve_web`], and when one of `also` is no origin a server
+    /// is published at, or stands beside no published origin.
     #[expect(
         clippy::too_many_lines,
         reason = "one bring-up of every browser-facing part, each started where it reads"
     )]
-    pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, ServerError> {
+    pub async fn serve_web_also_at(
+        &self,
+        config: WebConfig,
+        also: Vec<String>,
+    ) -> Result<WebHandle, ServerError> {
         let failed = |message: String| ServerError::Iroh(format!("web listener: {message}"));
-        checked_origins(&config).map_err(failed)?;
+        checked_origins(&config, &also).map_err(failed)?;
+        if !also.is_empty() {
+            tracing::info!(origins = ?also, "this server is also reached under these origins");
+        }
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
         let (tcp, udp) = bind_listeners(&config).map_err(|error| failed(error.to_string()))?;
         let addr = tcp
@@ -506,7 +543,11 @@ impl Server {
                 tilo_clock::unix_now_ns(),
             ),
             site: config.site.as_deref().and_then(Site::new),
-            login_codes: Arc::new(kept_login_codes(self.state_root(), public_origin.clone())),
+            login_codes: Arc::new(kept_login_codes(
+                self.state_root(),
+                public_origin.clone(),
+                also,
+            )),
             stand_ins: Arc::new(stand_in::StandIns::new(stand_ins_dir(self.state_root()))),
             wait_list: config.wait_list.clone(),
         });
@@ -1128,12 +1169,14 @@ fn refused(code: StatusCode, message: &str) -> Response<Body> {
 fn kept_login_codes(
     state_root: &std::path::Path,
     public_origin: Option<String>,
+    also: Vec<String>,
 ) -> login_codes::LoginCodes {
     login_codes::LoginCodes::kept(
         public_origin,
         state_root.join("login-codes.json"),
         tilo_clock::unix_now_ms(),
     )
+    .reached_also_at(also)
 }
 
 fn code_refused(refusal: &login_codes::Refusal) -> Response<Body> {
