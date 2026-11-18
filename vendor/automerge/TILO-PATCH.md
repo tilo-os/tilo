@@ -567,3 +567,26 @@ that do not fit them, answer `None` and load as before. The marked spots are
 `TILO(load-in-slices)` in `automerge.rs`, `autocommit.rs` and
 `storage/document.rs`. Pinned by
 `crates/doc/tilo-automerge/tests/load_in_slices.rs`.
+
+# Tilo patch: a text made in a batch is made with its marks
+
+A new record's texts and a document's new paragraphs are made in one batch
+(`batch_create_object`), but each mark over them (who wrote a text, a bold
+run, a link) was a `mark` after it: two inserts, each a query for its
+anchor and a splice of every op column. A record with a few marked texts
+paid more for its marks than for the rest of it.
+
+`hydrate::Text::with_mark` adds a mark, with how it expands, to a text
+being made, and the batch writes the marks with the text
+(`BatchInsertion::splice_marked_text`): the same ops `mark` would add, one
+after another once the text is written, under the same keys (each anchor
+found as `OpSet::query_insert_at` finds it, sticky anchors included) and in
+the same op-set order, with the ids those calls would give them, after the
+text's letters. A mark's ends must fall between the text's elements; the
+batch checks every text's marks before it makes any op
+(`check_written_marks`), so a refused batch leaves nothing half written. The
+marked spots are `TILO(batched-marks)` in `transaction/inner.rs` and
+`hydrate/text.rs`. Pinned by `tests/batch_marks.rs`: random texts with
+marks of every expand kind save byte for byte as the same text marked
+after; edits and marks made alongside merge alike; a rolled back batch
+leaves the document as it was. Upstreamable.

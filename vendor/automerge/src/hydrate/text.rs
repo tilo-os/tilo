@@ -1,5 +1,6 @@
 use std::{collections::HashMap, fmt::Display};
 
+use crate::marks::{ExpandMark, Mark};
 use crate::{text_value::ConcreteTextValue, PatchAction, ScalarValue, TextEncoding};
 
 use super::HydrateError;
@@ -8,6 +9,9 @@ use super::HydrateError;
 pub struct Text {
     value: ConcreteTextValue,
     marks: HashMap<String, ScalarValue>,
+    /// TILO(batched-marks): the marks a batch that makes this text writes
+    /// over it ([`Text::with_mark`]).
+    written_marks: Vec<(Mark, ExpandMark)>,
 }
 
 impl std::fmt::Debug for Text {
@@ -15,6 +19,7 @@ impl std::fmt::Debug for Text {
         f.debug_struct("Text")
             .field("value", &self.value.make_string())
             .field("marks", &self.marks)
+            .field("written_marks", &self.written_marks)
             .finish()
     }
 }
@@ -65,7 +70,26 @@ impl Text {
         Self {
             value: ConcreteTextValue::new(text.as_ref(), text_encoding),
             marks: Default::default(),
+            written_marks: Vec::new(),
         }
+    }
+
+    /// TILO(batched-marks): this text with `mark` over it, as
+    /// `Transactable::mark` with `expand` would set it once the text is
+    /// written. A batch that makes the text (`batch_create_object` and the
+    /// calls sharing it) writes its marks with it, in the order they were
+    /// added, as the same marks set one after another on the new text. Each
+    /// mark's start and end must fall between elements of the text, within
+    /// it. Reading a document never fills these in.
+    #[must_use]
+    pub fn with_mark(mut self, mark: Mark, expand: ExpandMark) -> Self {
+        self.written_marks.push((mark, expand));
+        self
+    }
+
+    /// TILO(batched-marks): the marks [`Text::with_mark`] added.
+    pub fn written_marks(&self) -> &[(Mark, ExpandMark)] {
+        &self.written_marks
     }
 }
 
@@ -86,6 +110,7 @@ impl From<ConcreteTextValue> for Text {
         Self {
             value,
             marks: Default::default(),
+            written_marks: Vec::new(),
         }
     }
 }
