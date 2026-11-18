@@ -84,6 +84,8 @@ pub(crate) fn install() {
         resource_document,
         record_since,
         record_heads,
+        ask_resource,
+        resource_answer,
         reads_alone: crate::browser::Mount::answer_reads_alone,
         content,
         permit,
@@ -154,6 +156,13 @@ pub(crate) struct Joined {
     /// The heads each record stood at when the workspace last delivered it, as the page read it:
     /// where a reader of the page's records starts to ask what changed since.
     read_heads: HashMap<(String, String), Vec<[u8; 32]>>,
+    /// The resources a reader on this page named that it held none of, as wire `(app, document)`:
+    /// each is asked of the workspace as one a window opens is, so it arrives and its changes
+    /// follow though no mount ever opens it.
+    read_wanted: HashSet<(String, String)>,
+    /// What the workspace answered of a resource it sent this page none of: it holds none of
+    /// it, or it is another person's own. Let go once the resource lands here.
+    read_answers: HashMap<(String, String), WorkspaceAnswer>,
     /// Records whose read waits for the page's record worker to verify them
     /// (`crate::record_verify`), and how many verifications had finished
     /// then: once more have, they are read again.
@@ -242,6 +251,8 @@ pub(crate) fn open(
         local_value: None,
         delivered: HashMap::new(),
         read_heads: HashMap::new(),
+        read_wanted: HashSet::new(),
+        read_answers: HashMap::new(),
         verifying: (BTreeSet::new(), 0),
         authored: 0,
         moderates: Arc::default(),
@@ -455,6 +466,34 @@ pub(crate) fn record_heads(
             .map(ui::automerge::ChangeHash)
             .collect(),
     )
+}
+
+/// Ask peer `id`'s workspace for `wire` of `app`, which a reader on this page named and the page
+/// holds none of: by the command a window's open of it sends, once, so the workspace sends what
+/// it holds of it and every change to it from then on. What the workspace answered of one it
+/// sent none of; `None` while the document or the answer is on its way.
+pub(crate) fn ask_resource(id: u32, app: &str, wire: &str) -> Option<WorkspaceAnswer> {
+    let joined = replica_of(id)?;
+    // A read is answered on a mount's own pass: a replication busy elsewhere is asked on the next.
+    let mut joined = joined.try_borrow_mut().ok()?;
+    let key = (app.to_owned(), wire.to_owned());
+    if let Some(answer) = joined.read_answers.get(&key) {
+        return Some(*answer);
+    }
+    if joined.read_wanted.insert(key) {
+        joined.open_read_wanted();
+    }
+    None
+}
+
+/// What peer `id`'s workspace answered of `wire` of `app` when it sent this page none of it.
+pub(crate) fn resource_answer(id: u32, app: &str, wire: &str) -> Option<WorkspaceAnswer> {
+    let joined = replica_of(id)?;
+    let joined = joined.try_borrow().ok()?;
+    joined
+        .read_answers
+        .get(&(app.to_owned(), wire.to_owned()))
+        .copied()
 }
 
 /// The role the workspace last answered the person of peer `id` holds, as
@@ -1200,6 +1239,12 @@ impl Joined {
                 ResourceReading::Captured { heads, .. } | ResourceReading::Changes { heads, .. },
             ) = &read
             {
+                // It is here: what the workspace answered while it sent none of it stands no
+                // longer, and a mount whose reader named it answers that reader now.
+                self.read_answers.remove(&key);
+                if self.read_wanted.contains(&key) {
+                    woken.extend(self.mounts.keys().copied());
+                }
                 self.read_heads.insert(key, heads.clone());
             }
             let applied = match read {
@@ -1224,6 +1269,7 @@ impl Joined {
         }
         for (route, answer) in opened {
             self.workspace_answered(&route, answer, &mut woken);
+            self.reader_answered(&route, answer, &mut woken);
         }
         self.wakes(woken, content_arrived)
     }
@@ -1739,6 +1785,7 @@ impl Joined {
         if !self.ready {
             return;
         }
+        self.open_read_wanted();
         let mut outgoing: Vec<Pending> = Vec::new();
         let mut opening: Vec<DocumentRoute> = Vec::new();
         for (&id, mounted) in &mut self.mounts {
@@ -1843,6 +1890,49 @@ impl Joined {
             }
         }
         self.send_desktop();
+    }
+
+    /// Ask the workspace for each resource a reader on this page named that it was not asked
+    /// for yet, as one a window opens is asked for, once the workspace is ready to be asked.
+    fn open_read_wanted(&mut self) {
+        if !self.ready {
+            return;
+        }
+        let wanted: Vec<(String, String)> = self
+            .read_wanted
+            .iter()
+            .filter(|key| !self.asked.contains(*key))
+            .cloned()
+            .collect();
+        for (app, wire) in wanted {
+            let route = self.route(&app, &wire);
+            if self
+                .peer
+                .send(Cmd::OpenDocumentAt(self.workspace, route))
+                .is_err()
+            {
+                return;
+            }
+            self.asked.insert((app, wire));
+        }
+    }
+
+    /// The workspace answered `route` and sent none of it: a reader on this page that named it
+    /// is answered so, on the pass this wakes its mount for.
+    fn reader_answered(
+        &mut self,
+        route: &DocumentRoute,
+        answer: WorkspaceAnswer,
+        woken: &mut HashSet<u64>,
+    ) {
+        if route.cluster_id != self.uuid {
+            return;
+        }
+        let key = (route.app_id.clone(), route.document.clone());
+        if self.read_wanted.contains(&key) {
+            woken.extend(self.mounts.keys().copied());
+        }
+        self.read_answers.insert(key, answer);
     }
 
     /// The records windows opened that are not here and that this page has
