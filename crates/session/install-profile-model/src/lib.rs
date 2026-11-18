@@ -3,6 +3,8 @@
 //! rules, so the Imager refuses exactly what the installer would ask to
 //! repair.
 
+pub mod plan;
+
 /// Purpose changes defaults, never the OS image or collaboration authority.
 pub const PURPOSES: [&str; 2] = ["computer", "server"];
 

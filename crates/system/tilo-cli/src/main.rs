@@ -38,6 +38,7 @@ mod health;
 mod hosted;
 mod identity;
 mod login;
+mod machine;
 mod mcp;
 mod migrate;
 mod nouns;
@@ -265,6 +266,17 @@ enum Cmd {
     Server {
         #[command(subcommand)]
         cmd: server::ServerCmd,
+    },
+    /// Machines you prepared to install, and how they reach them.
+    #[command(after_help = "Examples:\n  tilo machine add --name cupboard\n  \
+                      tilo machine add --os os --name spare-laptop --disk largest\n  \
+                      tilo machine list\n  tilo machine show 3f2b1c00d4e5f60718293a4b5c6d7e8f\n\n\
+                      A plan's choices are made here or left open; an open choice is answered \
+                      from your own devices against the machine's real hardware. The token an \
+                      installation enrolls with is written to a file, never printed.")]
+    Machine {
+        #[command(subcommand)]
+        cmd: machine::MachineCmd,
     },
     /// Keys to your hosted workspaces, for your code and its agents.
     #[command(
@@ -596,7 +608,7 @@ fn command_here(here: Here) -> clap::Command {
                 // A computer logged in as one of the person's devices tells of its folders.
                 "status" => !(here.system || login::logged_in()),
                 // Its servers are reached as the device it enrolled them with.
-                "server" => !login::logged_in(),
+                "server" | "machine" => !login::logged_in(),
                 "rollback" => !here.system,
                 "update" => !(here.apps || here.system),
                 "agent" => {
@@ -1187,6 +1199,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Action { cmd } => Ok(desktop::run_action(cmd, &spelling)),
         Cmd::Actions { filter } => Ok(list_actions(filter, &spelling)),
         Cmd::Server { cmd } => server::serve(cmd),
+        Cmd::Machine { cmd } => machine::serve(cmd),
         Cmd::Complete { what, prefix } => Ok(desktop::complete(
             what,
             prefix.as_deref().unwrap_or_default(),

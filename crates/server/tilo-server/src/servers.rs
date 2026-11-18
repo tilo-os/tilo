@@ -37,6 +37,7 @@ use crate::workspaces::Workspaces;
 
 pub mod applied;
 pub mod device;
+pub mod plan;
 pub mod policy;
 
 /// The admin workspace's record of the person's servers.
@@ -99,6 +100,9 @@ pub struct Server {
     /// The machine itself: its hostname, the drives it uses and how its
     /// network interfaces are set up ([`device::DeviceConfig`]).
     pub device: device::DeviceConfig,
+    /// What an installation plans this machine to be, before it exists, and
+    /// from what it was installed afterwards ([`plan::Pending`]).
+    pub plan: plan::Pending,
 }
 
 /// How a server holds one workspace.
@@ -130,6 +134,14 @@ impl Servers {
             .filter(|server| !server.retired)
     }
 
+    /// The planned machine whose single-use token is named by `nonce`.
+    #[must_use]
+    pub fn planned_by_nonce(&self, nonce: &str) -> Option<(&Id, &Server)> {
+        self.servers
+            .iter()
+            .find(|(_, server)| server.plan.planned() && server.plan.nonce == nonce)
+    }
+
     fn server(&mut self, device: &Id) -> Result<&mut Server, Refusal> {
         self.servers
             .get_mut(device)
@@ -150,6 +162,100 @@ impl Server {
 
 #[resource(kind = "tilo.servers", read_content = Servers::read_document)]
 impl Servers {
+    /// Plan a machine that is not installed yet: enter it under the plan's id
+    /// ([`plan`]) with the nonce of the single-use token its medium or rescue
+    /// command carries, so the machine is recognised when it enrolls and the
+    /// person's devices see it waiting. A plan already there keeps what it
+    /// holds and takes the new choices and revision.
+    #[action(external)]
+    pub fn plan_machine(
+        &mut self,
+        plan: String,
+        label: String,
+        nonce: String,
+        expires_at_ns: u64,
+        destination: String,
+        disk: String,
+        open: String,
+    ) -> Result<(), Refusal> {
+        let plan = validate_hex32(&plan, "a plan is named by its 16-byte id")?;
+        let label = validate_label(&label)?;
+        let nonce = validate_hex32(&nonce, "a token is named by its 16-byte nonce")?;
+        if !install_profile_model::plan::DESTINATIONS.contains(&destination.as_str()) {
+            return Err(Refusal::new("a plan installs Tilo OS or Tilo Server"));
+        }
+        install_profile_model::plan::DiskRule::decode(&disk).map_err(Refusal::new)?;
+        let open = validate_open_choices(&open)?;
+        let id = Id::from_raw(plan.clone());
+        match self.servers.get_mut(&id) {
+            Some(server) => {
+                server.plan.destination = destination;
+                server.plan.disk = disk;
+                server.plan.open = open;
+                server.plan.revision = server.plan.revision.saturating_add(1);
+                server.plan.nonce = nonce;
+                server.plan.expires_at_ns = expires_at_ns;
+                plan::PLANNED.clone_into(&mut server.plan.status);
+            }
+            None => {
+                self.servers.push(
+                    id,
+                    Server {
+                        label,
+                        plan: plan::Pending {
+                            status: plan::PLANNED.to_owned(),
+                            plan,
+                            nonce,
+                            expires_at_ns,
+                            destination,
+                            disk,
+                            open,
+                            revision: 1,
+                        },
+                        ..Server::default()
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The machine that enrolled with the token `nonce` is installing: its
+    /// plan becomes its entry, under its device key, keeping the name and the
+    /// machine configuration the plan was written with.
+    #[action(external)]
+    pub fn begin_install(&mut self, device: String, nonce: String) -> Result<(), Refusal> {
+        let device = Id::from_raw(device);
+        validate_device(&device)?;
+        let nonce = validate_hex32(&nonce, "a token is named by its 16-byte nonce")?;
+        let plan = self
+            .planned_by_nonce(&nonce)
+            .map(|(id, _)| id.clone())
+            .ok_or_else(|| Refusal::new("no planned machine answers that token"))?;
+        if self.servers.contains(&device) {
+            return Err(Refusal::new("that device already has an entry"));
+        }
+        let mut entry = self
+            .servers
+            .remove(&plan)
+            .ok_or_else(|| Refusal::new("no planned machine answers that token"))?;
+        plan::INSTALLING.clone_into(&mut entry.plan.status);
+        self.servers.push(device, entry);
+        Ok(())
+    }
+
+    /// The machine finished installing: its entry is the server's from now on,
+    /// and its plan says what it was installed from.
+    #[action(external)]
+    pub fn finish_install(&mut self, device: Id) -> Result<(), Refusal> {
+        let server = self.server(&device)?;
+        if server.plan.status != plan::INSTALLING {
+            return Err(Refusal::new("that server is not installing"));
+        }
+        plan::INSTALLED.clone_into(&mut server.plan.status);
+        Ok(())
+    }
+
     /// Take a server into the person's servers, named `label` and dialled at
     /// `endpoint` (its own address, JSON). A server already there keeps its
     /// configuration and takes its new address, which changes as it is
@@ -487,6 +593,36 @@ fn validate_device(device: &Id) -> Result<(), Refusal> {
         .ok()
         .filter(|()| device.as_str() == hex::encode(key))
         .ok_or_else(|| Refusal::new("a server is named by its device key"))
+}
+
+/// `text` as a 16-byte id in lowercase hex, or `wrong`.
+fn validate_hex32(text: &str, wrong: &'static str) -> Result<String, Refusal> {
+    (text.len() == 32
+        && text
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+    .then(|| text.to_owned())
+    .ok_or_else(|| Refusal::new(wrong))
+}
+
+/// The open choices `text` lists, comma separated and trimmed, or why it is
+/// not a list of choices a plan may leave open.
+fn validate_open_choices(text: &str) -> Result<String, Refusal> {
+    let mut names = Vec::new();
+    for name in text
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        if !install_profile_model::plan::OPEN_CHOICES.contains(&name) {
+            return Err(Refusal::new("a plan leaves open one of its own choices"));
+        }
+        if names.contains(&name) {
+            return Err(Refusal::new("a plan lists each open choice once"));
+        }
+        names.push(name);
+    }
+    Ok(names.join(","))
 }
 
 /// `endpoint` as a server's address, spelled as its own endpoint advertises

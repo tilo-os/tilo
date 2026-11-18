@@ -7767,6 +7767,7 @@ name = "install-profile-model"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -18358,6 +18359,7 @@ dependencies = [
  "futures-util",
  "hex",
  "http-body-util",
+ "install-profile-model",
  "iroh",
  "iroh-base",
  "iroh-blobs",
@@ -21580,6 +21582,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "install-profile-model",
  "iroh",
  "iroh-base",
  "iroh-relay",

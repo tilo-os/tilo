@@ -715,6 +715,7 @@ paths = [
     "crates/server/tilo-server/src/enroll_transport.rs",
     "crates/server/tilo-server/src/enroll_transport_tests.rs",
     "crates/server/tilo-server/src/enroll_tests.rs",
+    "crates/system/tilo-cli/src/server.rs",
 ]
 
 [[allow]]

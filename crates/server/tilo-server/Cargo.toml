@@ -137,6 +137,9 @@ tilo-content = { path = "../../system/content", default-features = false }
 zeroize.workspace = true
 blake3.workspace = true
 hex.workspace = true
+# A planned machine's disk rule and open choices are the installer's own
+# model, so a plan the person's devices write is one the installer reads.
+install-profile-model = { path = "../../session/install-profile-model" }
 # A server's rollback floor moves by approvals the person's floor key signs.
 tilo-rollback = { path = "../../system/tilo-rollback" }
 # How this boot's system volume opened, as early boot noted it.
