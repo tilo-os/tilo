@@ -12,17 +12,34 @@ const H: u32 = 760;
 /// The current match's rects on screen.
 fn current_match(wp: &Editor) -> Vec<Rect> {
     let (block, start, end) = wp.find.active_match().cloned().expect("a match is current");
-    let anchor = tilo_actions::InteractionAnchor::Text {
-        region: "body".into(),
-        ranges: vec![tilo_actions::InteractionTextRange {
-            block,
-            start: u64::try_from(start).expect("a small offset"),
-            end: u64::try_from(end).expect("a small offset"),
-        }],
-    };
     let transform = wp.content_transform(Affine::IDENTITY);
-    wp.semantic_text_rects(&anchor, transform, wp.zoom_viewport)
-        .expect("the match is laid out")
+    let content_clip = transform.inverse().transform_rect_bbox(wp.zoom_viewport);
+    let mut rects = Vec::new();
+    for l in wp.laid.iter().filter(|l| l.id == block) {
+        let Some((_, layout)) = wp.layout_cache.get(&l.id) else {
+            continue;
+        };
+        let (start, end) = (
+            l.shown(char_to_byte(&l.text, start)),
+            l.shown(char_to_byte(&l.text, end)),
+        );
+        let band = l
+            .clip
+            .map_or(content_clip, |clip| clip.intersect(content_clip));
+        for (x0, y0, x1, y1) in layout.selection_rects(start, end) {
+            let rect = Rect::new(
+                l.text_x + f64::from(x0),
+                l.layout_y + f64::from(y0),
+                l.text_x + f64::from(x1),
+                l.layout_y + f64::from(y1),
+            )
+            .intersect(band);
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                rects.push(rect);
+            }
+        }
+    }
+    rects
         .into_iter()
         .map(|rect| transform.transform_rect_bbox(rect))
         .collect()
