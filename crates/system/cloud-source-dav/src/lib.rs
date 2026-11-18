@@ -179,6 +179,7 @@ impl DavSource {
             timeout: Duration::from_secs(30 * 60),
             connect_timeout: Some(Duration::from_secs(10)),
             redirects: tilo_dav::Redirects::Refuse,
+            ..tilo_dav::Options::default()
         })
         // The HTTP client could not be built at all; it never reached a
         // server, which is the same failure mode as a refused connection.

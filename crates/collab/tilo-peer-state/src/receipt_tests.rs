@@ -1910,7 +1910,10 @@ fn guest_write_under(
     let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
         panic!("the guest's write is a document write")
     };
-    envelope.governance = governance.iter().map(collab_types::governance_head).collect();
+    envelope.governance = governance
+        .iter()
+        .map(collab_types::governance_head)
+        .collect();
     collab_types::sign_op(envelope, key).unwrap();
     message
 }
@@ -2063,6 +2066,113 @@ fn a_withdrawal_stops_the_servers_work_whatever_time_a_write_names() {
         }
     }
     assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+}
+
+/// The server's second write of `value`, naming `at` as its time, written under
+/// the governance whose heads are `governance`.
+fn server_write_under(
+    peer: &StatePeer,
+    key: &SigningKey,
+    value: &str,
+    invoker: tilo_actions::ActionInvoker,
+    at: std::time::SystemTime,
+    governance: &[[u8; 32]],
+) -> NeighbourMsg {
+    let mut message = server_write_stamped(peer, key, 2, value, invoker, at);
+    let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
+        panic!("the server's write is a document write")
+    };
+    envelope.governance = governance
+        .iter()
+        .map(collab_types::governance_head)
+        .collect();
+    collab_types::sign_op(envelope, key).unwrap();
+    message
+}
+
+/// A withdrawn server's write that names governance its receiver does not
+/// hold is held: what the receiver has not heard of may be what lets its
+/// writer. Nothing of it is taken in meanwhile. Once that governance is there
+/// the write is decided against all of it and refused, as the same work is at
+/// once where it names no governance: the withdrawal stands, also where the
+/// governance that came raised the member.
+#[test]
+fn a_withdrawn_servers_write_under_governance_its_receiver_lacks_is_held_then_refused() {
+    let second = std::time::Duration::from_secs(1);
+    let (mut peer, guest_key, guest) = workspace_with(Role::Editor);
+    let (owner_key, owner) = owner();
+    let (server_key, server) = named_server(&mut peer, &owner_key);
+    let device = server.device_public_key;
+    let invoker = || the_servers_invoker(&hex::encode(guest.user_public_key), device);
+    let first = delegating(&guest_key, guest.user_public_key, device, APP);
+    let given = peer
+        .workspace_mut()
+        .author_work_delegation(&first, &guest_key, now());
+    assert_eq!(given, Ok(true), "the member delegates");
+    let stood = server_write(&peer, &server_key, 1, "before the withdrawal", invoker());
+    receive(&mut peer, &server, stood).unwrap();
+    assert_eq!(value(&peer), "\"before the withdrawal\"");
+    let withdrawn_at = now() + second;
+    let withdrawn = peer.workspace_mut().revoke_work_delegation(
+        &device,
+        &guest.user_public_key,
+        &guest_key,
+        withdrawn_at,
+    );
+    assert_eq!(withdrawn, Ok(true), "the member withdraws");
+    let after = withdrawn_at + second;
+    let live = || TransportOrigin::ServerDelta(device);
+
+    // The governor raises the member where the copy has not heard of it:
+    // governance the copy lacks, and none that takes anything from the member.
+    let mut governor = peer.clone();
+    governor
+        .governance_mut()
+        .set_member_role(guest.user_public_key, Role::Moderator, &owner_key, now())
+        .unwrap();
+    let lacked = governor.governance().heads();
+
+    // The setup tells a refusal from a hold: the server's work after the
+    // withdrawal that names no governance is refused at once.
+    let plain = server_write_stamped(&peer, &server_key, 2, "plain", invoker(), after);
+    let (taken, answer) = handed(&peer, live(), &plain, after, "plain");
+    assert!(
+        !taken && answer != "taken in",
+        "work after the withdrawal is refused at once: {answer}"
+    );
+
+    // The same work under governance the copy lacks is held, and nothing of
+    // it is taken in.
+    let named = server_write_under(&peer, &server_key, "named", invoker(), after, &lacked);
+    let mut copy = peer.clone();
+    let before = value(&copy);
+    let held = copy
+        .receive_from(live(), named, after)
+        .expect("held, not refused, while its governance is not there");
+    assert!(
+        held.deferred,
+        "it waits for the governance it names: {held:?}"
+    );
+    assert_eq!(value(&copy), before, "nothing of it is taken in");
+
+    // The governance arrives: the held write is decided against all of it.
+    let arrived = copy
+        .receive_from(
+            TransportOrigin::ServerDelta(owner.device_public_key),
+            governor.workspace_message(),
+            after,
+        )
+        .expect("the governor's change is taken in");
+    assert_eq!(
+        (arrived.rejected, arrived.deferred),
+        (1, false),
+        "the held write is refused once its governance is there and waits no longer: {arrived:?}"
+    );
+    assert_eq!(
+        value(&copy),
+        before,
+        "the withdrawn server's work is not taken in under the governance that came"
+    );
 }
 
 /// A member's work on a server, taken back: the member delegated, the server

@@ -244,6 +244,14 @@ pub const UNTRUSTED_CONTENT_TAG: &str = "content:untrusted";
 /// requiring confirmation (see [`ActionContract::advertised_confirmation`]).
 pub const ARGUMENT_RISK_TAG: &str = "confirmation:by-argument";
 
+/// [`ActionContract::tags`] entry of an action that carries its resource's
+/// other actions (a generic typed edit, a group of edits) and is no verb of
+/// its own: what it does is what it carries. Whoever decides for such an
+/// action or words it for a person reads the actions it carries; a lasting
+/// permission is for the action that asked, never for what carried it. See
+/// [`ActionSpec::carrying`](crate::ActionSpec::carrying).
+pub const CARRIER_TAG: &str = "carries:actions";
+
 /// The parameter of a generic field edit that carries the edit.
 pub const FIELD_EDIT_PARAM: &str = "edit";
 
@@ -1026,6 +1034,13 @@ impl ActionContract {
     /// own data. See [`UNTRUSTED_CONTENT_TAG`].
     pub fn carries_untrusted_content(&self) -> bool {
         self.tags.iter().any(|tag| tag == UNTRUSTED_CONTENT_TAG)
+    }
+
+    /// Whether the action carries its resource's other actions and is no
+    /// verb of its own. See [`CARRIER_TAG`].
+    #[must_use]
+    pub fn carries_actions(&self) -> bool {
+        self.tags.iter().any(|tag| tag == CARRIER_TAG)
     }
 
     /// The outside capabilities the action hands an effect to

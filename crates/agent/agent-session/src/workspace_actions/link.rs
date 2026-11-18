@@ -319,8 +319,10 @@ pub struct AskedInTurn {
     /// The invocation as the person reviews it.
     pub draft: tilo_actions::Draft,
     /// What is asked, by the names the system gave it: what an answer of
-    /// always would let stand.
-    pub asked: Asked,
+    /// always would let stand. `None` offers no such answer: the invocation
+    /// carries its resource's other actions, and an always is for the action
+    /// that asked, never for what carried it.
+    pub asked: Option<Asked>,
     /// The action and the thing it is on, in the system's own words. The
     /// workspace's name is the server's to add.
     pub words: Words,

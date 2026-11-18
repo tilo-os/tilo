@@ -348,6 +348,8 @@ pub(super) struct About {
     pub(super) record: String,
     /// The document the action acts on.
     pub(super) route: DocumentRoute,
+    /// What the call carries, where it carries its resource's other actions.
+    pub(super) carries: super::carried::Carries,
 }
 
 /// The question the person is put about `request`, which `caller` asks the
@@ -373,18 +375,21 @@ pub(super) fn question(
         .filter(|title| *title != agent)
         .unwrap_or_default();
     let contract = &about.descriptor.contract;
+    // What is asked about is what would be done: for a call that carries other actions,
+    // those, by their own names.
+    let draft = about.draft();
     Ok(ConfirmationQuestion {
         id,
         device_label: agent,
         agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
         workspace: workspace.to_owned(),
         title,
-        action_label: about.descriptor.action_label.clone(),
+        arguments: draft.summary(),
+        action_label: draft.action_label,
         resource_label: about.record.clone(),
-        arguments: tilo_actions::Draft::render(&about.descriptor, &about.arguments).summary(),
         risk: contract.risk.name().to_owned(),
         kind: contract.kind.to_string(),
-        undoable: contract.can_be_undone(),
+        undoable: draft.undoable,
     })
 }
 
@@ -905,13 +910,14 @@ impl Worker {
     }
 
     /// What the person is asked about running `descriptor` with `arguments`
-    /// on the record at `route` ([`About`]).
+    /// on the record at `route`, which carries `carries` ([`About`]).
     pub(super) fn about(
         &self,
         workspace_id: WorkspaceId,
         route: &DocumentRoute,
         descriptor: &tilo_actions::ActionDescriptor,
         arguments: serde_json::Map<String, serde_json::Value>,
+        carries: super::carried::Carries,
     ) -> About {
         About {
             record: self
@@ -920,6 +926,7 @@ impl Worker {
             descriptor: descriptor.clone(),
             arguments,
             route: route.clone(),
+            carries,
         }
     }
 
@@ -1019,7 +1026,14 @@ impl Worker {
                 return Err(Outcome::Rejected(own_word_refused()));
             }
             Err(tilo_actions::api::ApiError::ConfirmationRequired) => {
-                let about = self.about(workspace_id, route, &descriptor, arguments);
+                // What it carries is read by the names its resource offers this caller.
+                let carries = super::carried::read(&descriptor, &arguments, |action| {
+                    held.held.app.descriptor(&tilo_actions::ActionAddress::new(
+                        target.address.resource.as_str(),
+                        action,
+                    ))
+                });
+                let about = self.about(workspace_id, route, &descriptor, arguments, carries);
                 return Err(self.waits_for_person(request.invocation, about));
             }
             Err(error) => return Err(super::api_outcome(&error)),

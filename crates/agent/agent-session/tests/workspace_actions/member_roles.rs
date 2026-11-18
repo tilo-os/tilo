@@ -1260,3 +1260,8 @@ async fn a_members_hand_over_that_failed_leaves_nothing_the_owner_writes_on() {
         "the member reads the workspace's agents: the two that were saved"
     );
 }
+
+// What a member is answered by the role the workspace's own governance holds stands below this
+// fixture too.
+#[path = "held_roles.rs"]
+mod held_roles;

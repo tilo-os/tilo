@@ -120,6 +120,7 @@
         },
         "tags": [
           "audience:agents",
+          "carries:actions",
           "confirmation:by-argument"
         ]
       },
@@ -172,6 +173,7 @@
         },
         "tags": [
           "audience:agents",
+          "carries:actions",
           "confirmation:by-argument"
         ]
       },

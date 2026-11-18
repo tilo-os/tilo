@@ -17,7 +17,7 @@ pub use reqwest::{StatusCode, Url};
 
 use crate::body::{PropName, propfind_body};
 use crate::multistatus::{self, Limits, Multistatus, XmlError};
-use crate::request::XML_CONTENT_TYPE;
+use crate::request::{Asked, XML_CONTENT_TYPE};
 pub use crate::request::{Credentials, Depth, Options, Precondition, Redirects};
 
 pub enum Body {
@@ -50,7 +50,14 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Build(error) | Self::Transport(error) => fmt::Display::fmt(error, f),
+            // A name the client's own look-up refused: its words say why
+            // nothing was sent.
+            Self::Build(error) | Self::Transport(error) => {
+                match tilo_net::http::refused_by_lookup(error) {
+                    Some(why) => f.write_str(&why),
+                    None => fmt::Display::fmt(error, f),
+                }
+            }
             Self::Read(error) => fmt::Display::fmt(error, f),
             Self::TooLarge => f.write_str("DAV response exceeds the size limit"),
             Self::Xml(error) => fmt::Display::fmt(error, f),
@@ -66,13 +73,20 @@ pub struct DavClient {
     http: Client,
     credentials: Option<Arc<Credentials>>,
     redirects: Redirects,
+    /// The look-up every connection asks, where one was given
+    /// ([`Options::lookup`]).
+    asked: Option<Asked>,
 }
 
 impl DavClient {
     /// # Errors
     /// If the TLS/HTTP stack cannot be initialised.
     pub fn new(options: &Options) -> Result<Self, Error> {
-        let mut builder = tilo_net::http::blocking_client().timeout(options.timeout);
+        let builder = match &options.lookup {
+            Some(lookup) => tilo_net::http::blocking_client_looking(Arc::clone(lookup)),
+            None => tilo_net::http::blocking_client(),
+        };
+        let mut builder = builder.timeout(options.timeout);
         if let Some(timeout) = options.connect_timeout {
             builder = builder.connect_timeout(timeout);
         }
@@ -86,6 +100,7 @@ impl DavClient {
             http: builder.build().map_err(Error::Build)?,
             credentials: None,
             redirects: options.redirects,
+            asked: options.lookup.clone().map(Asked),
         })
     }
 
@@ -95,6 +110,7 @@ impl DavClient {
             http: self.http.clone(),
             credentials: Some(Arc::new(credentials)),
             redirects: self.redirects,
+            asked: self.asked.clone(),
         }
     }
 
@@ -113,7 +129,7 @@ impl DavClient {
             .header("Depth", depth.header())
             .header(CONTENT_TYPE, XML_CONTENT_TYPE)
             .body(propfind_body(props));
-        send(request)
+        self.sent(request)
     }
 
     pub fn report(
@@ -127,11 +143,11 @@ impl DavClient {
             .header("Depth", depth.header())
             .header(CONTENT_TYPE, XML_CONTENT_TYPE)
             .body(body);
-        send(request)
+        self.sent(request)
     }
 
     pub fn get(&self, url: impl IntoUrl) -> Result<DavResponse, Error> {
-        send(self.request(Method::GET, url))
+        self.sent(self.request(Method::GET, url))
     }
 
     pub fn put(
@@ -145,7 +161,7 @@ impl DavClient {
         if let Some(content_type) = content_type {
             request = request.header(CONTENT_TYPE, content_type);
         }
-        send(apply(request, precondition))
+        self.sent(apply(request, precondition))
     }
 
     pub fn delete(
@@ -153,11 +169,11 @@ impl DavClient {
         url: impl IntoUrl,
         precondition: Precondition<'_>,
     ) -> Result<DavResponse, Error> {
-        send(apply(self.request(Method::DELETE, url), precondition))
+        self.sent(apply(self.request(Method::DELETE, url), precondition))
     }
 
     pub fn mkcol(&self, url: impl IntoUrl) -> Result<DavResponse, Error> {
-        send(self.request(method(b"MKCOL"), url))
+        self.sent(self.request(method(b"MKCOL"), url))
     }
 
     /// `MOVE` to `destination`; `overwrite: false` sends `Overwrite: F`.
@@ -172,7 +188,7 @@ impl DavClient {
             .request(method(b"MOVE"), url)
             .header("Destination", destination.as_str())
             .header("Overwrite", if overwrite { "T" } else { "F" });
-        send(apply(request, precondition))
+        self.sent(apply(request, precondition))
     }
 
     /// `GET` of `range` (a half-open byte range; the whole resource when
@@ -192,7 +208,7 @@ impl DavClient {
                 format!("bytes={}-{}", range.start, range.end.saturating_sub(1)),
             );
         }
-        send(apply(request, precondition))
+        self.sent(apply(request, precondition))
     }
 
     /// Any method with extra headers and a body. For protocol extensions
@@ -218,7 +234,7 @@ impl DavClient {
                 .header(CONTENT_LENGTH, len)
                 .body(reqwest::blocking::Body::sized(reader, len)),
         };
-        send(apply(request, precondition))
+        self.sent(apply(request, precondition))
     }
 
     fn request(&self, method: Method, url: impl IntoUrl) -> RequestBuilder {
@@ -232,6 +248,21 @@ impl DavClient {
             }
             None => request,
         }
+    }
+
+    /// Send `request`. Where this client was given a look-up, the address
+    /// the request's URL writes out is asked of it first: a connection asks
+    /// it for a name, and looks no written-out address up.
+    fn sent(&self, request: RequestBuilder) -> Result<DavResponse, Error> {
+        let Some(asked) = &self.asked else {
+            return send(request);
+        };
+        let (http, request) = request.build_split();
+        let request = request.map_err(Error::Transport)?;
+        asked.of(request.url()).map_err(Error::Read)?;
+        http.execute(request)
+            .map(|inner| DavResponse { inner })
+            .map_err(Error::Transport)
     }
 }
 
@@ -509,5 +540,41 @@ mod tests {
             drop(closed);
             assert!(matches!(client().get(url), Err(Error::Transport(_))));
         }
+    }
+
+    /// A client given the one judge's look-up connects to nothing of this
+    /// machine: not by a name that answers with it at the connection's own
+    /// look-up, and not by its address written into the URL, which no
+    /// connection looks up. Each refusal is said in the judge's words.
+    #[test]
+    fn a_client_given_the_judges_lookup_connects_to_nothing_of_this_machine() {
+        let inside = Responder::silent();
+        let judged = DavClient::new(&Options {
+            lookup: Some(tilo_net::address::public_only(
+                tilo_net::address::system_lookup(),
+            )),
+            ..Options::default()
+        })
+        .unwrap();
+        for url in [
+            format!("http://localhost:{}/dav/", inside.port()),
+            format!("http://127.0.0.1:{}/dav/", inside.port()),
+            format!("http://[::1]:{}/dav/", inside.port()),
+        ] {
+            let refused = judged.get(url.as_str()).unwrap_err();
+            assert!(
+                refused
+                    .to_string()
+                    .contains("answers with an address of this machine or its network"),
+                "{url}: {refused}"
+            );
+        }
+        inside.assert_untouched();
+
+        // What the test counts is seen: a client given no look-up reaches a
+        // server of this machine by its name.
+        let open = Responder::start(vec![Reply::status(200)]);
+        let reached = client().get(format!("http://localhost:{}/dav/", open.port()));
+        assert_eq!(reached.unwrap().status(), StatusCode::OK);
     }
 }
