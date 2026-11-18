@@ -253,7 +253,7 @@ impl App {
     pub fn broadcast_status(
         &mut self,
         workspace: crate::presence::PresenceKey,
-        status: Option<&crate::live_collaboration::LiveStatus>,
+        status: Option<&collab_types::presence::LiveStatus>,
     ) -> bool {
         if !matches!(workspace, crate::presence::PresenceKey::Workspace { .. }) {
             return false;
@@ -265,7 +265,7 @@ impl App {
                     status.text.clone(),
                     matches!(
                         status.origin,
-                        crate::live_collaboration::StatusOrigin::Inferred { .. }
+                        collab_types::presence::StatusOrigin::Inferred { .. }
                     ),
                 )
             },

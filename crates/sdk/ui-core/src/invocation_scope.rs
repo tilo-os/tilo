@@ -335,7 +335,7 @@ impl ResourceInvocationScope {
         if lease.owner_token().is_none() {
             return Err("required invocation has no concrete final-owner ownership token".into());
         }
-        if owner.broker_route().as_ref() != Some(&lease.route()) {
+        if owner.broker_route().as_ref() != Some(lease.route()) {
             return Err("invocation belongs to a different canonical record route".into());
         }
         let (store, checkout) = owner.store_checkout();
@@ -345,7 +345,7 @@ impl ResourceInvocationScope {
         let provenance = store
             .invocation_provenance(&checkout.id)
             .map_err(|error| error.to_string())?;
-        if provenance.borrow().route.as_ref() != Some(&lease.route()) {
+        if provenance.borrow().route.as_ref() != Some(lease.route()) {
             return Err(
                 "canonical invocation provenance was not registered before construction".into(),
             );
@@ -610,7 +610,7 @@ impl ResourceInvocationScope {
 
     /// The canonical record route construction verified against the owner.
     pub(crate) fn route(&self) -> &RouteSpec {
-        &self.lease.route()
+        self.lease.route()
     }
 
     /// Irreversibly retire this job and all derived worker-effect ownership. Cancellation grants no
@@ -848,7 +848,7 @@ impl InvocationProvenance {
         hashes: Vec<ChangeHash>,
         lease: &PublishedInvocationLease,
     ) -> Result<(), String> {
-        if self.route.as_ref() != Some(&lease.route()) {
+        if self.route.as_ref() != Some(lease.route()) {
             return Err("contribution route mismatch".into());
         }
         for hash in hashes {

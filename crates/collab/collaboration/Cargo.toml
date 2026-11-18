@@ -62,6 +62,7 @@ zeroize.workspace = true
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 tilo-actions = { version = "0.1.0", path = "../actions" }
+tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 # A document's history as versions, and what the schema genesis is: the
 # steps undo reads (`history_source`).
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }

@@ -155,7 +155,7 @@ impl EmbeddedApp {
             // As in a window of its own: a change of an outside authority
             // the app's permissions follow wakes it to show it.
             let _entry = app.enter_wake_scope();
-            crate::permissions::wake_on_outside_change(crate::wake::WakeHandle::new());
+            crate::permissions::wake_loop_on_outside_change(crate::wake::WakeHandle::new());
         }
         Ok(Self {
             app: Box::new(app),

@@ -2698,6 +2698,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-action-policy",
  "tilo-actions",
  "tilo-app-id",
  "tilo-app-state",
@@ -18269,6 +18270,7 @@ dependencies = [
 name = "tilo-clock"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "tilo-test-env",
  "web-time",
 ]
@@ -19175,6 +19177,8 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "chat",
+ "collab-types",
+ "collaboration",
  "durable-store",
  "ed25519-dalek 3.0.0",
  "hex",
@@ -19185,6 +19189,7 @@ dependencies = [
  "tilo-app-state",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-content",
  "tilo-feedback",
  "tilo-resource",
  "tilo-test-env",
@@ -21404,6 +21409,7 @@ dependencies = [
  "chat",
  "clap",
  "collab-types",
+ "collaboration",
  "crc32fast",
  "discord",
  "ed25519-dalek 3.0.0",
@@ -22451,6 +22457,7 @@ dependencies = [
  "tilo-appearance",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-clock",
  "tilo-content",
  "tilo-content-blocker",
  "tilo-content-device",
@@ -23157,6 +23164,7 @@ dependencies = [
  "calendar",
  "chat",
  "collab-types",
+ "collaboration",
  "ed25519-dalek 3.0.0",
  "futures",
  "getrandom 0.4.3",

@@ -234,7 +234,6 @@ pub mod latin_chord;
 pub mod launch;
 pub mod lift;
 pub mod live_activity;
-pub mod live_collaboration;
 pub mod local_identity;
 pub mod local_state;
 pub mod math;
@@ -540,6 +539,10 @@ pub use widget::history_group::{
 pub use widget::name_field::{NameField, NameFieldOutcome};
 // Re-exported so an app reaches the whole history stack through `tilo_ui::`
 // without knowing the module layout.
+pub use collab_types::presence::{
+    Availability, CallPresence, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,
+    PresenceVisibility, StatusOrigin, StatusSharing,
+};
 pub use history_source::groups as history_groups;
 pub use history_source::sentence::{
     AuthorParts, acting_line, attribution_hover, author_line, author_parts, author_spoken,
@@ -551,10 +554,6 @@ pub use history_source::{
     HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource, compare_entries,
     deterministic_narrative, heads_for_entry, human_label, validate_narrative,
     version_index_for_entry,
-};
-pub use live_collaboration::{
-    Availability, CallPresence, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,
-    PresenceVisibility, StatusOrigin, StatusSharing,
 };
 pub use widget::history::author_face;
 // Undoing a run of changes that never reached anybody's undo stack — a

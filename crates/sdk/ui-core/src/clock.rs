@@ -7,30 +7,7 @@ pub use tilo_formats::TimeStyle;
 /// 30 June 2026, 10:42.
 pub const CAPTURE_LOCAL_TIME: (i16, i8, i8, i8, i8) = (2026, 6, 30, 10, 42);
 
-/// The current local date and time.
-#[must_use]
-pub fn local_now() -> jiff::Zoned {
-    jiff::Timestamp::try_from(crate::time::to_std(crate::time::wall()))
-        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
-        .to_zoned(jiff::tz::TimeZone::system())
-}
-
-/// Today's local date.
-#[must_use]
-pub fn today() -> jiff::civil::Date {
-    local_now().date()
-}
-
-/// The instant `local` names in the person's zone: the earlier one where the clocks went back,
-/// none where they skipped it.
-#[must_use]
-pub fn instant_of(local: jiff::civil::DateTime) -> Option<jiff::Timestamp> {
-    let local = jiff::tz::TimeZone::system().to_ambiguous_timestamp(local);
-    if matches!(local.offset(), jiff::tz::AmbiguousOffset::Gap { .. }) {
-        return None;
-    }
-    local.earlier().ok()
-}
+pub use tilo_clock::local::{instant_of, now as local_now, today};
 
 /// Pin the wall clock to [`CAPTURE_LOCAL_TIME`] in the local time zone for
 /// the rest of the process. The launcher calls this before it builds an app

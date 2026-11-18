@@ -364,6 +364,7 @@ fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
 tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc" }
 # Version history, stamped commits and replay of any document.
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["local"] }
 # Every catalogue and text index is a tantivy index through the shared
 # search layer.
 tilo-search = { version = "0.1.0", path = "../search" }

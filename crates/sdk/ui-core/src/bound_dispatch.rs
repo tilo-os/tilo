@@ -1799,13 +1799,7 @@ fn internal_refusal(code: &str) -> Option<&'static str> {
     })
 }
 
-/// The refusal of an invocation the presence may not take.
-pub(crate) fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::ApiError {
-    tilo_actions::ApiError::Unavailable {
-        code: "permission_denied".into(),
-        reason: format!("you may not {} here", action.label.to_lowercase()),
-    }
-}
+pub(crate) use ::collaboration::permissions::denied;
 
 /// The one resource `binding` publishes for the document's `request`ed history action, and that
 /// action's name: a keyboard undo or redo reaches a document that declares its history through the

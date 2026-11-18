@@ -227,7 +227,7 @@ pub struct PermissionContext {
 
 /// Inert directory cache identity. It cannot make a permission decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DirectoryPermissionObservation {
+pub struct DirectoryPermissionObservation {
     user: MemberId,
     acting: Acting,
     sandbox: Vec<CapOverride>,
@@ -247,7 +247,7 @@ impl PermissionContext {
             acting,
             sandbox,
             access: Arc::new(access),
-            now: crate::time::try_unix_now(),
+            now: tilo_clock::try_unix_now(),
             policy_time: None,
             action_authority: None,
             once_spender: None,
@@ -494,7 +494,7 @@ impl PermissionContext {
     /// This launch's permissions with its participation changed: an
     /// author's (`writable`, the workspace's Editor) or a viewer's, as the
     /// workspace's grants now say
-    /// ([`crate::workspace_sync::WorkspaceSync::writable`]). Only for
+    /// (the workspace sync's `writable`). Only for
     /// the permissions a workspace launch made from its participation, the
     /// person a Viewer or an Editor and nothing bounding them; anything else
     /// (an owner's own app, a delegation) is `None` and stays as it is. The
@@ -536,7 +536,7 @@ impl PermissionContext {
     /// The host's view of an app's action authority announces its own
     /// changes ([`outside_changed`]), as does a clock that cannot be read
     /// when it can be again.
-    pub(crate) fn next_change_in(&self) -> Option<std::time::Duration> {
+    pub fn next_change_in(&self) -> Option<std::time::Duration> {
         let sampler = self.policy_time.as_ref()?;
         let now = (sampler.0)().ok()?;
         let after = |grants: &mut dyn Iterator<Item = &policy::Grant>| {
@@ -574,7 +574,7 @@ impl PermissionContext {
 
     /// Compare the current policy meaning, not callback allocation or elapsed
     /// seconds. Sampling is fallible; no cached/empty observation replaces failure.
-    pub(crate) fn directory_observation(&self) -> Result<DirectoryPermissionObservation, String> {
+    pub fn directory_observation(&self) -> Result<DirectoryPermissionObservation, String> {
         let now = match &self.policy_time {
             Some(sampler) => Some((sampler.0)()?),
             None => self.now,
@@ -616,7 +616,7 @@ impl PermissionContext {
     pub fn at_current_time(&self) -> Result<Self, String> {
         let now = match &self.policy_time {
             Some(sampler) => (sampler.0)()?,
-            None => crate::time::try_unix_now().ok_or("execution time unavailable")?,
+            None => tilo_clock::try_unix_now().ok_or("execution time unavailable")?,
         };
         Ok(self.clone().at_unix_time(now))
     }
@@ -1207,9 +1207,11 @@ thread_local! {
 /// follow ([`outside_changed`]).
 static OUTSIDE_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// What to call when an outside authority changes: each answers whether it still wants to hear.
+type OutsideWaker = Box<dyn Fn() -> bool + Send>;
+
 /// The loops to wake when an outside authority changes.
-static OUTSIDE_WAKES: std::sync::Mutex<Vec<crate::wake::WakeHandle>> =
-    std::sync::Mutex::new(Vec::new());
+static OUTSIDE_WAKES: std::sync::Mutex<Vec<OutsideWaker>> = std::sync::Mutex::new(Vec::new());
 
 /// Moves on with every change of any [`SharedPermissions`] on this thread,
 /// and with every change of an outside authority they follow.
@@ -1228,27 +1230,19 @@ pub fn shared_revision() -> u64 {
 /// is derived again.
 pub fn outside_changed() {
     OUTSIDE_REVISION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    let wakes: Vec<_> = {
-        let mut wakes = OUTSIDE_WAKES
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        wakes.retain(crate::wake::WakeHandle::is_active);
-        wakes.clone()
-    };
-    for wake in wakes {
-        wake.wake();
-    }
+    OUTSIDE_WAKES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|wake| wake());
 }
 
-/// Wake `wake` whenever an outside authority permissions follow changes,
-/// for as long as its scope is open.
-#[cfg(feature = "native")]
-pub(crate) fn wake_on_outside_change(wake: crate::wake::WakeHandle) {
-    let mut wakes = OUTSIDE_WAKES
+/// Call `wake` whenever an outside authority permissions follow changes, until it answers that it
+/// no longer wants to hear (a loop whose scope closed).
+pub fn wake_on_outside_change(wake: impl Fn() -> bool + Send + 'static) {
+    OUTSIDE_WAKES
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    wakes.retain(crate::wake::WakeHandle::is_active);
-    wakes.push(wake);
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(Box::new(wake));
 }
 
 impl SharedPermissions {
@@ -1416,8 +1410,15 @@ impl std::fmt::Debug for LivePermissions {
 }
 
 mod action_authority;
-pub mod capability;
 use action_authority::ActionAuthoritySampler;
+
+/// The refusal of an invocation the presence may not take.
+pub fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::ApiError {
+    tilo_actions::ApiError::Unavailable {
+        code: "permission_denied".into(),
+        reason: format!("you may not {} here", action.label.to_lowercase()),
+    }
+}
 
 /// The shared admission ([`tilo_action_policy::admit`]) as a window's API
 /// takes it, the decision a broker takes for a caller: `asker` is who the
@@ -1442,7 +1443,7 @@ pub fn admit_in_window(
         asker,
     );
     match admitted {
-        Err(_) => Err(crate::bound_dispatch::denied(action)),
+        Err(_) => Err(denied(action)),
         Ok(tilo_action_policy::Admission::AsksFirst) if !confirmed => {
             Err(tilo_actions::ApiError::ConfirmationRequired)
         }

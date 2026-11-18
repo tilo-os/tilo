@@ -105,6 +105,7 @@ pub mod history_source;
 pub mod invocation_scope;
 pub mod local_document_action;
 pub mod local_identity;
+pub mod permissions;
 pub mod portable_storage;
 pub mod resource;
 pub mod state;

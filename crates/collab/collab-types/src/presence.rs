@@ -12,6 +12,7 @@ mod payload;
 mod said;
 mod shell;
 mod shown;
+mod status;
 
 pub use crate::member::{Member, Person, joined_at_from_packed};
 pub use call::CallPresence;
@@ -35,3 +36,7 @@ pub use shell::{
     MAX_ACTIVITY_BYTES, ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow,
 };
 pub use shown::{Shown, ShownFocus, ShownLayout, ShownPoint, ShownWave, ShownWindow};
+pub use status::{
+    INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, PresenceVisibility, StatusOrigin,
+    StatusSharing,
+};

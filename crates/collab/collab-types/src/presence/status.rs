@@ -2,9 +2,7 @@
 //! *where*. Inference is deliberately local and transient; only the resulting short status is fit for
 //! publication, and a manual status always wins.
 
-use crate::time::{Duration, SystemTime};
-
-pub use collab_types::presence::{Availability, CallPresence, IDLE_AFTER};
+use web_time::{Duration, SystemTime};
 
 /// Automatic summaries go stale quickly.
 pub const INFERRED_STATUS_TTL: Duration = Duration::from_secs(5 * 60);
@@ -133,6 +131,7 @@ impl PresenceVisibility {
 #[cfg(test)]
 mod presence_choice_tests {
     use super::*;
+    use crate::presence::{Availability, IDLE_AFTER};
 
     tilo_test_env::scenario! {
         fn presence_and_availability_follow_the_workspace_and_the_person;

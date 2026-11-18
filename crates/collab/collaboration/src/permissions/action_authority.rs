@@ -58,7 +58,7 @@ impl PermissionContext {
     /// changes announces it (`permissions::outside_changed`), so what was
     /// derived from it is derived again.
     #[must_use]
-    pub(crate) fn with_action_authority(
+    pub fn with_action_authority(
         mut self,
         app_id: String,
         sample: Arc<dyn Fn() -> Result<PermissionContext, String> + Send + Sync>,

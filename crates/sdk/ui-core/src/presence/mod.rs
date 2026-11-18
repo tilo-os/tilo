@@ -435,7 +435,7 @@ pub struct PresenceCtx {
     acting_for: HashMap<MemberId, MemberId>,
     /// Short workspace-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
-    statuses: HashMap<MemberId, crate::live_collaboration::LiveStatus>,
+    statuses: HashMap<MemberId, collab_types::presence::LiveStatus>,
     /// Broker-authenticated semantic activity, keyed by invocation. Unlike
     /// pointer/caret presence this never pretends an action caller has an
     /// input device: applications may project its stable resource anchor to
@@ -1843,14 +1843,14 @@ impl PresenceCtx {
                     } else if text.chars().count() <= crate::MAX_STATUS_CHARS {
                         self.statuses.insert(
                             uid,
-                            crate::live_collaboration::LiveStatus {
+                            collab_types::presence::LiveStatus {
                                 text,
                                 origin: if automatic {
-                                    crate::live_collaboration::StatusOrigin::Inferred {
+                                    collab_types::presence::StatusOrigin::Inferred {
                                         generator: "remote-local-model".into(),
                                     }
                                 } else {
-                                    crate::live_collaboration::StatusOrigin::Manual
+                                    collab_types::presence::StatusOrigin::Manual
                                 },
                                 updated_at: crate::time::wall(),
                             },
@@ -1930,18 +1930,18 @@ impl PresenceCtx {
         &self,
         user: &MemberId,
         now: SystemTime,
-    ) -> Option<&crate::live_collaboration::LiveStatus> {
+    ) -> Option<&collab_types::presence::LiveStatus> {
         let status = self.statuses.get(user)?;
         match status.origin {
-            crate::live_collaboration::StatusOrigin::Manual => Some(status),
-            crate::live_collaboration::StatusOrigin::Inferred { .. }
+            collab_types::presence::StatusOrigin::Manual => Some(status),
+            collab_types::presence::StatusOrigin::Inferred { .. }
                 if now
                     .duration_since(status.updated_at)
                     .is_ok_and(|age| age <= crate::INFERRED_STATUS_TTL) =>
             {
                 Some(status)
             }
-            crate::live_collaboration::StatusOrigin::Inferred { .. } => None,
+            collab_types::presence::StatusOrigin::Inferred { .. } => None,
         }
     }
 }

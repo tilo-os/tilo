@@ -10,6 +10,35 @@ use time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The clock types under `std::time`'s names, for signatures that need one;
 /// times are read through [`now`] and [`wall`].
+/// The clock as a person reads it: [`local::now`] is the wall clock in the system's time zone.
+#[cfg(feature = "local")]
+pub mod local {
+    /// The current local date and time.
+    #[must_use]
+    pub fn now() -> jiff::Zoned {
+        jiff::Timestamp::try_from(crate::to_std(crate::wall()))
+            .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+            .to_zoned(jiff::tz::TimeZone::system())
+    }
+
+    /// Today's local date.
+    #[must_use]
+    pub fn today() -> jiff::civil::Date {
+        now().date()
+    }
+
+    /// The instant `local` names in the system's zone: the earlier one where the clocks went
+    /// back, none where they skipped it.
+    #[must_use]
+    pub fn instant_of(local: jiff::civil::DateTime) -> Option<jiff::Timestamp> {
+        let local = jiff::tz::TimeZone::system().to_ambiguous_timestamp(local);
+        if matches!(local.offset(), jiff::tz::AmbiguousOffset::Gap { .. }) {
+            return None;
+        }
+        local.earlier().ok()
+    }
+}
+
 pub mod time {
     pub use crate::imp::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
 }
