@@ -406,3 +406,7 @@ async fn a_message_kept_from_an_agent_is_answered_by_its_id_as_one_that_does_not
     );
     page.peer.close();
 }
+
+/// Every other way an agent comes to what Chat keeps, each asked by a test of its own.
+#[path = "chat_read_sweep.rs"]
+mod sweep;
