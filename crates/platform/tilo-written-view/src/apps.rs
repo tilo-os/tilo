@@ -133,6 +133,12 @@ impl App {
             None => record.clone(),
         }
     }
+
+    /// What the app answered a read of one of its documents with, `held`, as the reading a view
+    /// reads of the type `ty`.
+    pub(crate) fn reading_as(&self, ty: &str, held: &Json) -> Json {
+        normal(&self.meta, ty, held)
+    }
 }
 
 /// The app id `id` as a view can write its parts: a name in a view holds letters, digits and `_`,

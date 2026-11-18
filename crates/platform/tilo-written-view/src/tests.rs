@@ -22,33 +22,41 @@ struct TestWorkspace(Rc<RefCell<Held>>);
 
 #[derive(Default)]
 struct Held {
-    records: BTreeMap<String, (u64, Json)>,
+    records: BTreeMap<(String, String), (u64, Json)>,
     refused: Vec<String>,
     /// Reads waiting for their record to change.
-    waiting: Vec<String>,
-    answers: Vec<(String, Read)>,
+    waiting: Vec<(String, String)>,
+    answers: Vec<(String, String, Read)>,
     invoked: Vec<(String, String, String, Map<String, Json>)>,
     /// Every app a read was asked of.
     asked: Vec<String>,
 }
 
 impl TestWorkspace {
-    /// The app `app` wrote `record`: every read waiting on it answers.
-    fn write(&self, app: &str, record: Json) {
+    /// The app `app` wrote `written`, what it keeps for the workspace: every read waiting on it
+    /// answers.
+    fn write(&self, app: &str, written: Json) {
+        self.write_named(app, "", written);
+    }
+
+    /// The app `app` wrote `written` into its document `name`: every read waiting on it answers.
+    fn write_named(&self, app: &str, name: &str, written: Json) {
         let mut held = self.0.borrow_mut();
+        let key = (app.to_owned(), name.to_owned());
         let revision = held
             .records
-            .get(app)
+            .get(&key)
             .map_or(1, |(revision, _)| revision.saturating_add(1));
         held.records
-            .insert(app.to_owned(), (revision, record.clone()));
-        if let Some(at) = held.waiting.iter().position(|waiting| waiting == app) {
+            .insert(key.clone(), (revision, written.clone()));
+        if let Some(at) = held.waiting.iter().position(|waiting| *waiting == key) {
             held.waiting.remove(at);
             held.answers.push((
-                app.to_owned(),
+                key.0,
+                key.1,
                 Read::Record {
                     revision: revision.to_string(),
-                    value: record,
+                    value: written,
                 },
             ));
         }
@@ -64,14 +72,15 @@ impl TestWorkspace {
 }
 
 impl Workspace for TestWorkspace {
-    fn read(&mut self, app: &str, after: Option<String>) {
+    fn read(&mut self, app: &str, document: &str, after: Option<String>) {
         let mut held = self.0.borrow_mut();
         held.asked.push(app.to_owned());
+        let key = (app.to_owned(), document.to_owned());
         if held.refused.iter().any(|refused| refused == app) {
-            held.answers.push((app.to_owned(), Read::Refused));
+            held.answers.push((key.0, key.1, Read::Refused));
             return;
         }
-        let answer = match held.records.get(app) {
+        let answer = match held.records.get(&key) {
             Some((revision, value)) if after.as_deref() != Some(&revision.to_string()) => {
                 Some(Read::Record {
                     revision: revision.to_string(),
@@ -85,12 +94,12 @@ impl Workspace for TestWorkspace {
             _ => None,
         };
         match answer {
-            Some(answer) => held.answers.push((app.to_owned(), answer)),
-            None => held.waiting.push(app.to_owned()),
+            Some(answer) => held.answers.push((key.0, key.1, answer)),
+            None => held.waiting.push(key),
         }
     }
 
-    fn take_read(&mut self) -> Vec<(String, Read)> {
+    fn take_read(&mut self) -> Vec<(String, String, Read)> {
         std::mem::take(&mut self.0.borrow_mut().answers)
     }
 
@@ -542,4 +551,34 @@ fn what_such_a_view_asks_is_sent_to_the_app_under_its_own_id() {
         (WRITER, "word-processor.document", "append-paragraph")
     );
     assert_eq!(arguments.get("text"), Some(&json!("More")));
+}
+
+/// One document of the word processor, by the id the tool that wrote into it answered with.
+const LETTER: &str = "uuid:763bf780-d13e-4512-b745-ba00b8f1eaf9";
+
+#[test]
+fn a_view_reads_one_document_of_an_app_named_by_its_id_and_follows_it() {
+    let source =
+        format!("view letter() {{\n    text(@word_processor.Document:{LETTER}.body.text)\n}}");
+    let workspace = TestWorkspace::default();
+    // What the app keeps for the workspace holds other words: the view names the letter.
+    workspace.write(WRITER, written(&["Of the workspace"]));
+    workspace.write_named(WRITER, LETTER, written(&["Dear Ada,"]));
+    let (mut surface, state) = shown_reading(&source, ada(), &["word_processor"], &workspace);
+    surface.turn();
+    assert!(
+        workspace.0.borrow().asked.iter().any(|app| app == WRITER),
+        "the document is asked of its app: {:?}",
+        texts(&surface)
+    );
+    assert_eq!(
+        texts(&surface),
+        ["Dear Ada,"],
+        "the view shows the document it names"
+    );
+
+    workspace.write_named(WRITER, LETTER, written(&["Dear Ada,", "the tide is in."]));
+    surface.turn();
+    assert_eq!(texts(&surface), ["Dear Ada,\nthe tide is in."]);
+    assert!(state.refused().is_empty());
 }

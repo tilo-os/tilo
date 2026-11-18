@@ -658,6 +658,14 @@ impl Lexer<'_> {
         self.pos += 1;
         let id_start = self.pos;
         self.doc_chars();
+        // A document a person made is named `uuid:` and its uuid: the id goes on past that colon.
+        if self.slice(id_start, self.pos) == "uuid"
+            && self.at(0) == Some(b':')
+            && self.at(1).is_some_and(|b| b.is_ascii_hexdigit())
+        {
+            self.pos += 1;
+            self.id_chars();
+        }
         // An item of a document is written `doc/item`; a `/field:item` step names its last item.
         while self.at(0) == Some(b'/') && self.step_follows() {
             self.pos += 1;
@@ -975,5 +983,18 @@ mod tests {
             "notes"
         );
         assert_eq!(reference("@todo.TodoList:01J8ZK4T.items").id, "01J8ZK4T");
+    }
+
+    /// A document a person made is named `uuid:` and its uuid: the id goes on past that colon,
+    /// and a field read after it stays a field read.
+    #[test]
+    fn a_document_named_by_its_uuid_is_one_reference() {
+        let lit =
+            reference("@word_processor.Document:uuid:763bf780-d13e-4512-b745-ba00b8f1eaf9.body");
+        assert_eq!(lit.app, "word_processor");
+        assert_eq!(lit.ty, "Document");
+        assert_eq!(lit.id, "uuid:763bf780-d13e-4512-b745-ba00b8f1eaf9");
+        // A reference whose id only begins like one is read as before.
+        assert_eq!(reference("@todo.TodoList:uuid.items").id, "uuid");
     }
 }
