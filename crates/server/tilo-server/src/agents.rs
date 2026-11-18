@@ -901,6 +901,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
     ) -> Result<Option<serde_json::Value>, String> {
         let PackagedCall {
             app,
+            kind,
             document,
             package,
             action,
@@ -924,6 +925,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                 workspaces.governor(),
                 tilo_workspace_service::workspaces::PackagedAction {
                     app,
+                    kind,
                     document,
                     package,
                     action,

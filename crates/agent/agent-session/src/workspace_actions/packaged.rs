@@ -137,6 +137,7 @@ impl Worker {
                 caller,
                 PackagedCall {
                     app: &route.app_id,
+                    kind: &resource.kind,
                     document: &route.document,
                     package,
                     action: &target.address.action,
