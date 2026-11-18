@@ -603,6 +603,7 @@ impl StatePeer {
             gathering: super::compaction_set::Gathering::default(),
             workspace_host: false,
             own_device: None,
+            refused_base: None,
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(
