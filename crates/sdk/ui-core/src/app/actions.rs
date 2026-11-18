@@ -1651,18 +1651,11 @@ impl App {
         {
             return Err(crate::bound_dispatch::own_device_refusal());
         }
-        if kind == tilo_actions::OperationKind::View
-            && !crate::invocation_scope::view_operation_permitted(
-                actor,
-                &self.collaboration.local_author,
-                &resolved.contract,
-            )
-        {
-            return Err(tilo_actions::ApiError::Unavailable {
-                code: "private_view".into(),
-                reason: "A member cannot move this presence's private focus or viewport; use Follow or Reveal explicitly".into(),
-            });
-        }
+        crate::invocation_scope::check_shown_here(
+            actor,
+            &self.collaboration.local_author,
+            resolved,
+        )?;
         // Every locally initiated external effect or asynchronous document job
         // crosses the same broker
         // admission as an agent invocation before the handler touches the

@@ -242,6 +242,38 @@ pub fn view_operation_permitted(
                 .is_some_and(|invoker| invoker.acting.by == *actor && invoker.presence.is_some()))
 }
 
+/// Refuse `spec` for `actor` when it only changes what the person at this
+/// device sees and `actor` is someone else: a view of their window
+/// ([`view_operation_permitted`]), or an effect that opens a form or shows a
+/// place ([`tilo_actions::ActionContract::only_shows`]). An agent or another
+/// member never moves this person's screen; they invoke the action that does
+/// the work, with its arguments.
+pub(crate) fn check_shown_here(
+    actor: &tilo_actions::Actor,
+    local_author: &tilo_actions::MemberId,
+    spec: &tilo_actions::ActionSpec,
+) -> Result<(), tilo_actions::ApiError> {
+    let private = match spec.kind {
+        tilo_actions::OperationKind::View => {
+            !view_operation_permitted(actor, local_author, &spec.contract)
+        }
+        tilo_actions::OperationKind::Effect => {
+            spec.contract.only_shows() && actor.member_id() != Some(local_author)
+        }
+        tilo_actions::OperationKind::Document => false,
+    };
+    if private {
+        return Err(tilo_actions::ApiError::Unavailable {
+            code: "private_view".into(),
+            reason: format!(
+                "{} changes only what the person at this device sees; only they invoke it",
+                spec.label
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Inert declaration retained by the actual host at original admission. This is not authority, and is
 /// never decoded from a caller's wire request.
 #[derive(Clone, Debug, PartialEq, Eq)]
