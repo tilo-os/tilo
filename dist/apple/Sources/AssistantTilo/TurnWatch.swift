@@ -9,8 +9,10 @@ import TiloLive
 /// own words where it takes a step (`did`, and what it is `about`); a row for each step it
 /// took (`trace`: the step's label, its resource, how it ended); and what its model gave of
 /// its thinking (`stream.reasoning`). All of a step's words are read from there, none is
-/// written here. Chat keeps no time of a step, so a step's time is this device's own: from
-/// when it first saw the step going to when it saw it ended. A step it never saw going has none.
+/// written here. A step's time is what Chat keeps with its row (`took_ms`: from the call
+/// handed to its tool to its answer). Where a row keeps none, the time is this device's own:
+/// from when it first saw the step going to when it saw it ended, and a step it never saw
+/// going has none.
 struct TurnWatch {
     private struct Seen {
         var began: Date
@@ -33,6 +35,8 @@ struct TurnWatch {
         var sequence: Double
         var words: String
         var outcome: Message.Turn.Step.Outcome
+        /// How long the step took, where Chat keeps it with the row.
+        var took: TimeInterval?
     }
 
     private var seen: [String: Seen] = [:]
@@ -74,7 +78,7 @@ struct TurnWatch {
             var times = known.steps[row.id] ?? Times(from: ended ? nil : now)
             if ended, times.took == nil, let from = times.from { times.took = now.timeIntervalSince(from) }
             known.steps[row.id] = times
-            steps.append(.init(id: row.id, words: row.words, took: times.took, outcome: row.outcome))
+            steps.append(.init(id: row.id, words: row.words, took: row.took ?? times.took, outcome: row.outcome))
         }
         seen[piece] = known
         return Message.Turn(now: known.now, began: known.began, steps: steps)
@@ -95,7 +99,8 @@ struct TurnWatch {
             default: .going
             }
             return Row(id: id, sequence: row["sequence"]?.number ?? 0,
-                       words: said(row["label"]?.string ?? "", about: row["resource"]?.string ?? ""), outcome: how)
+                       words: said(row["label"]?.string ?? "", about: row["resource"]?.string ?? ""), outcome: how,
+                       took: how == .going ? nil : row["took_ms"]?.number.map { max(0, $0) / 1000 })
         }
         .sorted { ($0.sequence, $0.id) < ($1.sequence, $1.id) }
     }
