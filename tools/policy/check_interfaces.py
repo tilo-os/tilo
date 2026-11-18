@@ -37,6 +37,13 @@ sources do not define must be a known standard type or be listed under
 ``[opaque]`` with what it is, so nothing on the wire goes unexamined by
 accident.
 
+``words`` names constant lists of strings in the code (``file:CONST``, as
+``version_const`` is named) that both sides hold alike though no type carries
+them: the keywords a declared shape may use travel inside a string, and a
+side that does not know a word refuses what the other wrote with it. A list
+is written like an enum, a line for each word, so a word added or gone needs
+a higher version; a list recorded for the first time is a new type.
+
 ``json_roots`` names roots the interface carries as JSON although its
 ``encoding`` is a compact format: a socket can carry two protocols, and this
 check judges every root by the interface's encoding either way, since the
@@ -542,6 +549,9 @@ class Spec:
     # judges them by the interface's encoding like every other root, and a check of what
     # a compact encoding allows reads this to leave them out.
     json_roots: list[str] = field(default_factory=list)
+    # Constant lists of strings both sides hold alike though no type carries them,
+    # each `file:CONST`: written into the schema a line a word.
+    words: list[str] = field(default_factory=list)
 
 
 def load_spec(path: Path) -> tuple[Spec, dict[str, str]]:
@@ -557,12 +567,13 @@ def load_spec(path: Path) -> tuple[Spec, dict[str, str]]:
         serves=bool(data.get("served_to_apps", False)),
         path=path,
         json_roots=list(data.get("json_roots", [])),
+        words=list(data.get("words", [])),
     )
     if spec.encoding not in ENCODINGS:
         raise InterfaceError(f"{path}: encoding must be one of {', '.join(ENCODINGS)}")
     # A file listed twice would read every type it defines twice, and the schema
     # would blame the code for defining it more than once.
-    for listed in ("sources", "roots", "json_roots"):
+    for listed in ("sources", "roots", "json_roots", "words"):
         names = getattr(spec, listed)
         twice = sorted({name for name in names if names.count(name) > 1})
         if twice:
@@ -730,8 +741,34 @@ def rust_schema(spec: Spec, root: Path = ROOT) -> dict[str, str]:
 
 
 
+def word_list(entry: str, root: Path = ROOT) -> tuple[str, list[str]]:
+    """A constant list of strings in the code, named `file:CONST` as
+    `version_const` is: its name and its words."""
+    file, _, const = entry.partition(":")
+    text = (root / file).read_text()
+    found = re.search(
+        rf"\bconst\s+{re.escape(const)}\s*:\s*&\s*\[\s*&\s*str\s*\]\s*=\s*&\s*\[(.*?)\]\s*;",
+        text,
+        re.S,
+    )
+    if not found:
+        raise InterfaceError(f"{file} declares no `const {const}: &[&str]`")
+    body = re.sub(r"//[^\n]*", "", found.group(1))
+    words = re.findall(r'"((?:[^"\\]|\\.)*)"', body)
+    if not words:
+        raise InterfaceError(f"{file}: `const {const}` lists no word")
+    return const, words
+
+
 def schema_of(spec: Spec, root: Path = ROOT) -> dict[str, str]:
     schema = rust_schema(spec, root) if spec.roots else {}
+    # A word list is written like an enum, a line for the list and one for each
+    # word, so a word added or gone is judged as a message added or gone is.
+    for entry in spec.words:
+        const, words = word_list(entry, root)
+        schema[const] = "words"
+        for word in words:
+            schema[f"{const}::{word}"] = "word"
     return dict(sorted(schema.items()))
 
 
@@ -993,7 +1030,11 @@ def schema_at(revision: str, rel: str, root: Path = ROOT) -> tuple[dict, int, di
         target.write_text(text)
         try:
             spec, committed = load_spec(target)
-            wanted = {*spec.sources, spec.version_const.partition(":")[0]}
+            wanted = {
+                *spec.sources,
+                spec.version_const.partition(":")[0],
+                *(entry.partition(":")[0] for entry in spec.words),
+            }
             for source in wanted:
                 content = at_revision(root, revision, source)
                 if content is None:
