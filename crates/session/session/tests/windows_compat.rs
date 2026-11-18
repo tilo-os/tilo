@@ -1089,7 +1089,6 @@ impl KeptRig {
         let ending = Rc::new(std::cell::Cell::new(tilo_app_launch::Teardown::Logout));
         let asked = Rc::clone(&ending);
         let mut session = crate::common::headless(Options {
-            collab: false,
             launch: Some(Rc::clone(&apps)),
             launches: Arc::clone(&launches),
             state: Some(state.to_path_buf()),

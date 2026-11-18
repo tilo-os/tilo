@@ -270,10 +270,11 @@ fn one_window(app: &str, label: &str) -> Layout {
 }
 
 /// A session on the shell this device saved, starting `apps` when its windows are asked for. `None`
-/// : a session that starts nothing at all.
+/// : a session that starts nothing at all. It takes part in the peer network as the desktop does:
+/// the workspaces it makes are founded on its own workspace service, and a session without one
+/// writes no layout to come back to.
 fn session_keeping(state: &Path, apps: Option<Rc<Apps>>) -> Session {
     crate::common::headless(Options {
-        collab: false,
         apps: apps
             .as_ref()
             .map(|apps| Rc::clone(apps) as Rc<dyn AppActions>),
@@ -287,7 +288,6 @@ fn session_keeping(state: &Path, apps: Option<Rc<Apps>>) -> Session {
 /// in place, and ends its apps only when the login does.
 fn session_restarted(state: &Path) -> Session {
     crate::common::headless(Options {
-        collab: false,
         state: Some(state.to_path_buf()),
         teardown: Box::new(tilo_session::restart::teardown),
         ..Options::default()

@@ -208,7 +208,6 @@ impl Rig {
         let ending = Rc::new(Cell::new(Teardown::Logout));
         let asked = Rc::clone(&ending);
         let mut session = crate::common::headless(Options {
-            collab: false,
             apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
             launch: Some(Rc::clone(&apps)),
             state: Some(self.device.state.clone()),
