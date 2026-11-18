@@ -682,6 +682,10 @@ async fn listening(
             network: Some((actor.clone(), events.clone())),
             link: founding_link,
             actions: actions.get().map(DeviceActions::action_service),
+            // A link into a workspace this device holds is dialled from anywhere, so the relays the
+            // session set aside are woken for it: one the session was given none of is reached at
+            // its own address, and waits for nothing.
+            reachability: (!deferred_relays.is_empty()).then(|| reachability.clone()),
         }));
     }
     if ready.send(Ok((publisher, addr, reachability))).is_err() {

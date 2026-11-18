@@ -1222,3 +1222,11 @@ reason = "The framework's `RunMode` says how a window is shown: live, a capture,
 words = ["run"]
 identifiers = ["RunMode"]
 paths = ["apps/weather/src/app.rs"]
+
+[[allow]]
+reason = "iroh's packet relay: where a desktop's endpoint is reached, woken when a link into a workspace held here is handed out, so the link names an address another network dials."
+words = ["relay"]
+paths = [
+    "crates/session/session/src/sync/client/network.rs",
+    "crates/session/session/src/sync/client/own_service.rs",
+]

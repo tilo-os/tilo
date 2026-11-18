@@ -182,6 +182,8 @@ pub(crate) fn found_alone(engine: &Arc<Engine>) {
             engine: Arc::downgrade(engine),
             network: None,
             actions: None,
+            // This endpoint is this process's alone: it holds nothing back, and names no relay.
+            reachability: None,
         })),
         Err(error) => {
             tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
@@ -206,6 +208,11 @@ pub(super) struct Founding {
     /// The session's device action service, which asks a workspace held elsewhere of its holder:
     /// `None` while this device takes part in no peer network.
     pub(super) actions: Option<ActionService>,
+    /// What holds this device's relays back, when the session set any aside: an invitation this
+    /// device hands out needs an address another network reaches, so making one wakes them
+    /// ([`tilo_endpoint_reachability::Reachability::need`]). `None` when no relay waits behind the
+    /// session's endpoint, whose own address is as good as it gets then.
+    pub(super) reachability: Option<tilo_endpoint_reachability::Reachability>,
 }
 
 impl tilo_session_client::engine::Founder for Founding {
@@ -253,6 +260,14 @@ impl tilo_session_client::engine::Founder for Founding {
     ) -> Option<tilo_session_client::engine::ServiceAnswer> {
         let engine = self.engine.upgrade()?;
         let named = workspace.to_string();
+        // An invitation a person hands out names where this device is reached, so whoever redeems it
+        // dials it from any network: the desktop's relays are held back until something needs them,
+        // and making a link is that need. The service signs the address the endpoint has when it
+        // answers, so the ask wakes the relays and gives them their wait to name one first.
+        let reached = (action == tilo_action_policy::roles::governance::INVITE)
+            .then_some(self.reachability.as_ref())
+            .flatten()
+            .map(|reachability| (reachability.clone(), self.endpoint.clone()));
         let request = governance_request(&named, action, arguments);
         // The service holds a workspace this device is the holder of: it shares this device's key,
         // and answers it here as it answers every other member's device.
@@ -260,13 +275,19 @@ impl tilo_session_client::engine::Founder for Founding {
             let cert = &self.identity.device_cert;
             let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key)
                 .in_workspace(named);
-            let invoked = self
-                .service
-                .get()?
-                .workspaces()
-                .device_actions()
-                .invoke(&caller, request);
+            let service = self.service.get()?;
             return Some(Box::pin(async move {
+                if let Some((reachability, endpoint)) = reached {
+                    reachability.need(
+                        tilo_endpoint_reachability::Need::Session,
+                        Some("an invitation is made"),
+                    );
+                    let _ = tilo_endpoint_reachability::await_relay(&endpoint).await;
+                }
+                let invoked = service
+                    .workspaces()
+                    .device_actions()
+                    .invoke(&caller, request);
                 match invoked.await {
                     Some(Ok(receipt)) => settled(receipt.status),
                     Some(Err(error)) => Err(error.to_string()),
