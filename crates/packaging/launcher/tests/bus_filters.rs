@@ -992,6 +992,11 @@ struct SecretPortal {
 
 #[zbus::interface(name = "org.freedesktop.portal.Secret")]
 impl SecretPortal {
+    #[zbus(property, name = "version")]
+    fn version(&self) -> u32 {
+        1
+    }
+
     async fn retrieve_secret(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -1009,7 +1014,8 @@ impl SecretPortal {
             .unwrap()
             .trim_start_matches(':')
             .replace('.', "_");
-        let token = String::try_from(options["handle_token"].try_clone().unwrap()).unwrap();
+        let token =
+            String::try_from(options.get("handle_token").unwrap().try_clone().unwrap()).unwrap();
         let handle = format!("/org/freedesktop/portal/desktop/request/{sender}/{token}");
         connection
             .emit_signal(
@@ -1044,7 +1050,16 @@ fn sandboxed_secret_step() {
                 b"kept across launches",
                 tilo_secrets::PutOptions::default(),
             )
-            .map(|()| "stored".to_owned()),
+            .map(|()| {
+                // Sealed in the app's directory, with no key beside it.
+                let dir = std::env::var("XDG_DATA_HOME").unwrap() + "/tilo-secrets";
+                let files: Vec<_> = std::fs::read_dir(dir)
+                    .unwrap()
+                    .map(|entry| std::fs::read(entry.unwrap().path()).unwrap())
+                    .collect();
+                let sealed = files.len() == 1 && !files[0].windows(8).any(|w| w == b"kept acr");
+                format!("stored, sealed: {sealed}")
+            }),
         "get" => store.get_blocking("token").map(|secret| {
             secret.map_or_else(
                 || "missing".to_owned(),
@@ -1061,7 +1076,7 @@ fn sandboxed_secret_step() {
 
 /// A real sandboxed launch of an app granted the Secret portal stores a secret, and a second
 /// launch reads it back: sealed in the app's own directory under the key the portal hands it,
-/// never in plain text there. An app not granted the portal is refused by the bus proxy and
+/// with no key file beside it. An app not granted the portal is refused by the bus proxy and
 /// stores nothing.
 #[test]
 fn a_sandboxed_app_keeps_its_secrets_across_launches() {
@@ -1116,41 +1131,7 @@ fn a_sandboxed_app_keeps_its_secrets_across_launches() {
     );
     assert_eq!(asked.load(Ordering::SeqCst), 0, "the portal never saw it");
 
-    assert_eq!(step("secrets", "put"), "stored");
+    assert_eq!(step("secrets", "put"), "stored, sealed: true");
     assert_eq!(step("secrets", "get"), "kept across launches");
     assert_eq!(asked.load(Ordering::SeqCst), 2, "each launch asks once");
-
-    let mut sealed = Vec::new();
-    let mut pending = vec![data.path().to_owned()];
-    while let Some(next) = pending.pop() {
-        for entry in std::fs::read_dir(next).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "secret") {
-                sealed.push(path);
-            }
-        }
-    }
-    assert_eq!(sealed.len(), 1, "one sealed secret in the app's directory");
-    let bytes = std::fs::read(&sealed[0]).unwrap();
-    assert!(
-        !bytes
-            .windows(b"kept across launches".len())
-            .any(|window| window == b"kept across launches"),
-        "the secret is sealed"
-    );
-    assert!(
-        sealed[0]
-            .parent()
-            .unwrap()
-            .read_dir()
-            .unwrap()
-            .all(|entry| entry
-                .unwrap()
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "secret")),
-        "no key lies beside the secrets"
-    );
 }

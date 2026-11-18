@@ -13,7 +13,6 @@ pub enum Label {
     MigrationPackage,
     InviteRedemption,
     SecretVault,
-    PortalSecretStore,
     PasswordBackup,
     GroupMlsState,
     GroupContent,
@@ -58,7 +57,7 @@ pub enum Label {
 }
 
 impl Label {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 28] = [
         Self::ServerEnrollOffer,
         Self::ServerEnrollRequest,
         Self::ServerEnrollResponse,
@@ -67,7 +66,6 @@ impl Label {
         Self::MigrationPackage,
         Self::InviteRedemption,
         Self::SecretVault,
-        Self::PortalSecretStore,
         Self::PasswordBackup,
         Self::GroupMlsState,
         Self::GroupContent,
@@ -102,7 +100,6 @@ impl Label {
             Self::MigrationPackage => "tilo-seal/v1/migration-package",
             Self::InviteRedemption => "tilo-seal/v1/invite-redemption",
             Self::SecretVault => "tilo-seal/v1/secret-vault",
-            Self::PortalSecretStore => "tilo-seal/v1/portal-secret-store",
             Self::PasswordBackup => "tilo-seal/v1/password-backup",
             Self::GroupMlsState => "tilo-seal/v1/channel-mls-state",
             Self::GroupContent => "tilo-seal/v1/channel-content",

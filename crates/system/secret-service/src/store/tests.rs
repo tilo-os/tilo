@@ -585,39 +585,26 @@ tilo_test_env::scenario! {
         let dir = tempfile::tempdir().unwrap();
         let keys = Switch::new(7);
         let store = store_at(dir.path(), &keys);
-        let one = store.sandbox_secret("so.tilo.notes", None).unwrap();
+        let one = store.sandbox_secret("so.tilo.notes").unwrap();
         assert_eq!(
             *one,
             *store_at(dir.path(), &keys)
-                .sandbox_secret("so.tilo.notes", None)
+                .sandbox_secret("so.tilo.notes")
                 .unwrap()
         );
-        assert_ne!(*one, *store.sandbox_secret("so.tilo.chat", None).unwrap());
-        assert!(store.sandbox_secret("", None).is_err());
-        assert!(store.sandbox_secret("a/b", None).is_err());
-
-        assert_eq!(
-            *store
-                .sandbox_secret("so.tilo.adopt", Some(&[9; 32]))
-                .unwrap(),
-            [9; 32]
-        );
-        assert_eq!(
-            *store
-                .sandbox_secret("so.tilo.adopt", Some(&[1; 32]))
-                .unwrap(),
-            [9; 32]
-        );
+        assert_ne!(*one, *store.sandbox_secret("so.tilo.chat").unwrap());
+        assert!(store.sandbox_secret("").is_err());
+        assert!(store.sandbox_secret("a/b").is_err());
 
         let id = CallerId::sandbox("so.tilo.notes").unwrap();
         assert!(store.apps().unwrap().iter().any(|row| row.id == id));
         store.set_access(&id, Access::Revoked).unwrap();
         assert!(matches!(
-            store.sandbox_secret("so.tilo.notes", None),
+            store.sandbox_secret("so.tilo.notes"),
             Err(StoreError::Revoked)
         ));
         store.forget_app(&id).unwrap();
-        assert_ne!(*one, *store.sandbox_secret("so.tilo.notes", None).unwrap());
+        assert_ne!(*one, *store.sandbox_secret("so.tilo.notes").unwrap());
     }
 }
 

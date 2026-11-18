@@ -72,7 +72,7 @@ doc = false
 "arrayvec-0_7_6" = { package = "arrayvec", version = "^0.7.6", default-features = false, features = ["default", "std"] }
 "as-raw-xcb-connection-1_0_1" = { package = "as-raw-xcb-connection", version = "^1.0.1", default-features = false, features = ["alloc", "default"] }
 "ash-0_38_0_1_3_281" = { package = "ash", version = "^0.38.0+1.3.281", default-features = false, features = ["debug", "default", "libloading", "loaded", "std"] }
-"ashpd-0_13_13" = { package = "ashpd", version = "^0.13.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
+"ashpd-0_13_13" = { package = "ashpd", version = "^0.13.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 "asn1-rs-0_7_1" = { package = "asn1-rs", version = "^0.7.1", default-features = false, features = ["datetime", "default", "std", "time"] }
 "assistant" = { path = "../../../apps/assistant", default-features = false, features = ["samples"] }
 "async-broadcast-0_7_2" = { package = "async-broadcast", version = "^0.7.2", default-features = false, features = [] }
@@ -1648,7 +1648,7 @@ doc = false
 "arrayvec-0_7_6" = { package = "arrayvec", version = "^0.7.6", default-features = false, features = ["default", "std"] }
 "as-raw-xcb-connection-1_0_1" = { package = "as-raw-xcb-connection", version = "^1.0.1", default-features = false, features = ["alloc", "default"] }
 "ash-0_38_0_1_3_281" = { package = "ash", version = "^0.38.0+1.3.281", default-features = false, features = ["debug", "default", "libloading", "loaded", "std"] }
-"ashpd-0_13_13" = { package = "ashpd", version = "^0.13.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
+"ashpd-0_13_13" = { package = "ashpd", version = "^0.13.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 "asn1-rs-0_7_1" = { package = "asn1-rs", version = "^0.7.1", default-features = false, features = ["datetime", "default", "std", "time"] }
 "asn1-rs-derive-0_6_0" = { package = "asn1-rs-derive", version = "^0.6.0", default-features = false, features = [] }
 "asn1-rs-impl-0_2_0" = { package = "asn1-rs-impl", version = "^0.2.0", default-features = false, features = [] }

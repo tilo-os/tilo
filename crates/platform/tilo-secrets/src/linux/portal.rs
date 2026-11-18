@@ -3,23 +3,18 @@
 //! for this app. The sandbox lets an app reach that portal when its manifest grants `secrets`,
 //! and never the Secret Service itself. The key lives only in this process.
 
-use std::collections::HashMap;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use ashpd::desktop::secret::{RetrieveOptions, Secret as SecretPortal};
 use tilo_seal::{Context, Label};
-use zbus::blocking::{Connection, Proxy};
-use zbus::zvariant::{Fd, OwnedObjectPath, OwnedValue, Value};
 use zeroize::Zeroizing;
 
-use super::{on_bus, unavailable};
+use super::on_bus;
 use crate::files::FileStore;
 use crate::{Protection, Secret, SecretBackend, SecretError};
 
-const PORTAL: &str = "org.freedesktop.portal.Desktop";
-const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 /// Where the store lies under the app's directory.
 const STORE_DIR: &str = ".local/share/tilo-secrets";
 /// A master secret is a key's worth of bytes; a longer answer is not one.
@@ -48,6 +43,7 @@ impl PortalStore {
         if let Some(store) = &*opened {
             return Ok(store.clone());
         }
+        // Held while asking, so concurrent first uses ask the portal once.
         let master = on_bus(retrieve_master_secret)?;
         let key = tilo_seal::web::derive_key(
             &master,
@@ -57,6 +53,7 @@ impl PortalStore {
         .map_err(|error| SecretError::Failed(format!("the portal's secret: {error}")))?;
         let store = Arc::new(FileStore::with_key(&self.dir, key)?);
         *opened = Some(store.clone());
+        drop(opened);
         Ok(store)
     }
 }
@@ -81,51 +78,23 @@ impl SecretBackend for PortalStore {
 }
 
 /// Ask the portal for this app's master secret: it writes the secret into a pipe this process
-/// passes, then answers on the request object named by our token.
+/// passes, then answers.
 fn retrieve_master_secret() -> Result<Zeroizing<Vec<u8>>, SecretError> {
-    let connection = Connection::session().map_err(unavailable)?;
-    let sender = connection
-        .unique_name()
-        .ok_or_else(|| SecretError::Unavailable("no name on the session bus".into()))?
-        .trim_start_matches(':')
-        .replace('.', "_");
-    static ASKED: AtomicU32 = AtomicU32::new(0);
-    let asked = ASKED.fetch_add(1, Ordering::Relaxed);
-    let token = format!("tilo_secrets_{}_{asked}", std::process::id());
-    let handle = format!("{PORTAL_PATH}/request/{sender}/{token}");
-    let request = Proxy::new(
-        &connection,
-        PORTAL,
-        handle.as_str(),
-        "org.freedesktop.portal.Request",
-    )
-    .map_err(unavailable)?;
-    // Subscribed before the call, so the answer cannot pass unseen.
-    let mut responses = request.receive_signal("Response").map_err(unavailable)?;
-    let portal = Proxy::new(
-        &connection,
-        PORTAL,
-        PORTAL_PATH,
-        "org.freedesktop.portal.Secret",
-    )
-    .map_err(unavailable)?;
+    let portal_failed =
+        |error: ashpd::Error| SecretError::Unavailable(format!("Secret portal: {error}"));
     let (mut read, write) = std::io::pipe()
         .map_err(|error| SecretError::Failed(format!("a pipe for the secret: {error}")))?;
-    let options = HashMap::from([("handle_token", Value::from(token.as_str()))]);
-    let _: OwnedObjectPath = portal
-        .call("RetrieveSecret", &(Fd::from(&write), options))
-        .map_err(unavailable)?;
+    tilo_rt::app()
+        .block_on(async {
+            let portal = SecretPortal::new().await?;
+            portal
+                .retrieve(&write, RetrieveOptions::default())
+                .await?
+                .response()
+        })
+        .map_err(|error| SecretError::Unavailable(error.to_string()))?
+        .map_err(portal_failed)?;
     drop(write);
-    let response = responses
-        .next()
-        .ok_or_else(|| SecretError::Unavailable("the Secret portal did not answer".into()))?;
-    let (code, _): (u32, HashMap<String, OwnedValue>) = response
-        .body()
-        .deserialize()
-        .map_err(|error| SecretError::Failed(format!("the Secret portal's answer: {error}")))?;
-    if code != 0 {
-        return Err(SecretError::Denied);
-    }
     let mut secret = Zeroizing::new(Vec::new());
     (&mut read)
         .take(MAX_SECRET_BYTES)

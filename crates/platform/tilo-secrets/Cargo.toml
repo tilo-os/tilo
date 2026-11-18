@@ -40,6 +40,8 @@ rustix = { workspace = true, features = ["process"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio = { workspace = true, features = ["net"] }
 zbus = { workspace = true, features = ["tokio", "blocking-api"] }
+# A sandboxed app's key comes from the Secret portal.
+ashpd = { workspace = true, features = ["secret"] }
 
 # The login Keychain's generic passwords.
 [target.'cfg(target_os = "macos")'.dependencies]

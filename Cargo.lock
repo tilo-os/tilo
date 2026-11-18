@@ -20931,7 +20931,6 @@ dependencies = [
  "tilo-paths",
  "tilo-power-mgmt",
  "tilo-resource",
- "tilo-seal",
  "tilo-secrets",
  "tilo-service",
  "tilo-test-env",
@@ -21507,6 +21506,7 @@ dependencies = [
 name = "tilo-secrets"
 version = "0.1.0"
 dependencies = [
+ "ashpd",
  "hex",
  "js-sys",
  "libc",
