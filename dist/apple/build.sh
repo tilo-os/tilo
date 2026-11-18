@@ -184,6 +184,28 @@ stamp() {
   [ -z "$shown" ] || plist -c "Set :TiloApp $shown" "$1"
 }
 
+# Let a bundle through to a site on this computer that is served by plain http, and to nothing
+# else by plain http. Inside a bundle the system refuses plain http to a name with a dot in
+# it, so an app built for http://tilo.localhost:24520 could not load its own site. A build for
+# such a site names exactly that name in its Info.plist ($1) as the one the system lets
+# through: no name under it, and no other. An address cannot be named there, so a build for
+# one (http://127.0.0.1:24520) says that plain http is let through to what is local, the
+# narrowest the system has for an address. A build for an https site says nothing of it and
+# is held to https everywhere.
+transport() { # Info.plist
+  local named="${site#http://}"
+  [[ "$site" == http://* ]] || return 0
+  named="${named%:*}"
+  plist -c "Add :NSAppTransportSecurity dict" "$1"
+  if [[ "$named" =~ ^[0-9.]+$ ]]; then
+    plist -c "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true" "$1"
+  else
+    plist -c "Add :NSAppTransportSecurity:NSExceptionDomains dict" \
+      -c "Add :NSAppTransportSecurity:NSExceptionDomains:$named dict" \
+      -c "Add :NSAppTransportSecurity:NSExceptionDomains:$named:NSExceptionAllowsInsecureHTTPLoads bool true" "$1"
+  fi
+}
+
 # Name the sites whose passkeys the app may use: in the rights its signature claims ($1), and
 # in its Info.plist ($3), where the app's own check reads them. Only as far as its
 # provisioning profile ($2, decoded; empty for none) lets it: a signature that claims what its
@@ -496,6 +518,7 @@ build_assistant_mac() {
   stamp "$contents/Info.plist"
   # The site whose page is the app's way to Tilo: the app is a device of its person there.
   plist -c "Set :TiloSite $site" "$contents/Info.plist"
+  transport "$contents/Info.plist"
   cp -R "$assistant/en.lproj" "$contents/Resources/"
   faces "$contents/Resources/Fonts"
   for size in 16 32 128 256 512; do

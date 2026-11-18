@@ -278,6 +278,31 @@ final class BuildTests: XCTestCase {
         ])
     }
 
+    // MARK: A site on this computer, by plain http
+
+    /// Inside a bundle the system refuses plain http to a name with a dot in it, so a Mac app
+    /// built for a Tilo on this computer could not load its own site. Such a build names
+    /// exactly its site's name as the one the system lets through by plain http, and nothing
+    /// else. A build for an https site names nothing, and is held to https everywhere.
+    func testAMacBuildForAPlainHttpSiteOnThisComputerIsLetThroughToThatSiteAloneAndAnHttpsBuildToNone() throws {
+        let named = try build("mac", ["TILO_SHELL_SITE": "http://tilo.localhost:24520"])
+        XCTAssertEqual(try named.info("Contents/")["TiloSite"] as? String, "http://tilo.localhost:24520")
+        XCTAssertEqual(try named.info("Contents/")["NSAppTransportSecurity"] as? NSDictionary,
+                       ["NSExceptionDomains": ["tilo.localhost": ["NSExceptionAllowsInsecureHTTPLoads": true]]] as NSDictionary)
+        let bare = try build("mac", ["TILO_SHELL_SITE": "http://localhost"])
+        XCTAssertEqual(try bare.info("Contents/")["NSAppTransportSecurity"] as? NSDictionary,
+                       ["NSExceptionDomains": ["localhost": ["NSExceptionAllowsInsecureHTTPLoads": true]]] as NSDictionary)
+        // An address cannot be named: what the system has for one, and no name beside it.
+        let address = try build("mac", ["TILO_SHELL_SITE": "http://127.0.0.1:24520"])
+        XCTAssertEqual(try address.info("Contents/")["NSAppTransportSecurity"] as? NSDictionary,
+                       ["NSAllowsLocalNetworking": true] as NSDictionary)
+        for site in ["https://tilo.sh", "https://tilo.wifi.example:24520"] {
+            let secure = try build("mac", ["TILO_SHELL_SITE": site])
+            XCTAssertEqual(try secure.info("Contents/")["TiloSite"] as? String, site)
+            XCTAssertNil(try secure.info("Contents/")["NSAppTransportSecurity"], site)
+        }
+    }
+
     // MARK: Told, and the profile does not grant it
 
     func testAPhoneBuildToldToWhoseProfileGrantsNoPushIsAsOneNotToldAndSaysWhy() throws {
