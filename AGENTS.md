@@ -99,5 +99,9 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
   lint-head's wide lint), and fast-forwards `main` to it when nothing fails that
   `main` does not already fail; when something new fails it names the check and
   the commit, and `main` stays where it was.
+- `main` moves only through `tools/integrate.sh`. The pre-push hook refuses an
+  agent's push that sends `main` a commit `integration` does not hold. A fix
+  for a red `main` goes the same way: push the one fix to `integration`, then
+  `tools/integrate.sh` moves `main` as soon as that fix passes.
 - After your change lands, watch CI on `main`; fix what you broke.
 - App packaging is affected-only; full image builds stay explicit or scheduled.
