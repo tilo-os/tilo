@@ -51,7 +51,10 @@
 #                                while the app is closed", says what that takes at Apple.
 #   TILO_APPLE_NOTICE_PROFILE    the profile of that extension in the iPhone app (default: the
 #                                app's). The Mac app's extension carries none.
-#   TILO_VERSION                 the version (default dist/VERSION)
+#   TILO_VERSION                 the version, which is the release's name (default
+#                                dist/VERSION). The build number beside it is no word of
+#                                the environment: it is the number of commits the commit
+#                                that is built stands on.
 #   DEVELOPER_DIR                the Xcode to build with, when it is not the selected one
 set -euo pipefail
 
@@ -174,10 +177,33 @@ fill() {
   sed -e "s/__NAME__/$name/g" -e "s/__PROGRAM__/$program/g" -e "s/__ID__/$id/g" -e "s/__TEAM__/$team/g" "$1" > "$2"
 }
 
-# Write what a build knows into a bundle's Info.plist: the version and the signing team, and
-# for an app the site it opens and what it shows there.
+# Which build this is, asked of the commit that is built and set by no hand. The version is
+# the release's name, and many builds are of one release. The build number is the number of
+# commits the built commit stands on: every later head of main reads a higher one, so two
+# builds are told apart wherever a version is shown with its build, as in the Mac's About
+# window. The commit's own name is kept beside the two, and a tree that differs from its
+# commit says that it does. A tree that cannot say its commit builds nothing.
+build=""
+commit=""
+built_from() {
+  [ -z "$build" ] || return 0
+  commit="$(git -C "$repo" rev-parse --short=11 HEAD 2>/dev/null)" \
+    || die "a build says which commit it is of, and $repo is no git checkout"
+  [ "$(git -C "$repo" rev-parse --is-shallow-repository)" = false ] \
+    || die "a build's number counts the commits under $commit, and this checkout holds only some of them: git fetch --unshallow"
+  build="$(git -C "$repo" rev-list --count HEAD)"
+  [ -z "$(git -C "$repo" status --porcelain)" ] || commit="$commit+changes"
+  say "version $version ($build), built from $commit"
+}
+
+# Write what a build knows into a bundle's Info.plist: the version, the build number and the
+# commit it is of, and the signing team, and for an app the site it opens and what it shows
+# there.
 stamp() {
-  plist -c "Set :CFBundleShortVersionString $version" -c "Set :CFBundleVersion $version" "$1"
+  built_from
+  plist -c "Set :CFBundleShortVersionString $version" -c "Set :CFBundleVersion $build" "$1"
+  plist -c "Delete :TiloCommit" "$1" >/dev/null 2>&1 || true
+  plist -c "Add :TiloCommit string $commit" "$1"
   [ -z "$team" ] || plist -c "Set :TiloTeam $team" "$1"
   [ "${2:-}" = app ] || return 0
   plist -c "Set :TiloSite $site" -c "Set :TiloAlone $alone" "$1"
@@ -725,6 +751,10 @@ print(found[0] if found else "")
 
 command="${1:-}"
 [ $# -eq 0 ] || shift
+# A build says which build it is before anything is compiled for it.
+case "$command" in
+  mac | iphone | simulator) built_from ;;
+esac
 case "$command" in
   test)
     (cd "$here" && xcrun swift test --scratch-path "$out/swiftpm-mac")

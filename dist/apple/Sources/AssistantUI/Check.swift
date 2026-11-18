@@ -12,6 +12,16 @@ public enum AssistantCheck {
         CommandLine.arguments.contains("--check")
     }
 
+    /// Which build a bundle says it is: the release's name, the build number beside it as the
+    /// Mac's About window shows the two, and the commit it was built from. `build.sh` writes
+    /// all three from the commit it builds; a bundle that names no commit says so.
+    public static func build(info: [String: Any]) -> String {
+        let version = info["CFBundleShortVersionString"] as? String ?? "?"
+        let number = info["CFBundleVersion"] as? String ?? "?"
+        let commit = info["TiloCommit"] as? String ?? ""
+        return "version \(version) (\(number)), built from \(commit.isEmpty ? "a commit it does not name" : commit)"
+    }
+
     /// Say the facts and end. `source` names what the app's views get everything from.
     @MainActor
     public static func run(source: String) -> Never {
@@ -24,9 +34,8 @@ public enum AssistantCheck {
             print("CHECK note \(fact)")
         }
         let info = Bundle.main.infoDictionary ?? [:]
-        let version = info["CFBundleShortVersionString"] as? String ?? "?"
         say(Bundle.main.bundleIdentifier != nil,
-            "the app is \(AssistantWords.appName), \(Bundle.main.bundleIdentifier ?? "in no bundle"), version \(version)")
+            "the app is \(AssistantWords.appName), \(Bundle.main.bundleIdentifier ?? "in no bundle"), \(build(info: info))")
         let team = info["TiloTeam"] as? String ?? ""
         note(team.isEmpty ? "signed by nobody" : "signed by team \(team)")
         #if os(macOS)
