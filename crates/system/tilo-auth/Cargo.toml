@@ -31,6 +31,11 @@ path = "tests/daemon.rs"
 required-features = ["service"]
 
 [[test]]
+name = "peer_enrol"
+path = "tests/peer_enrol.rs"
+required-features = ["service"]
+
+[[test]]
 name = "attestation"
 path = "tests/attestation.rs"
 required-features = ["service"]
@@ -59,10 +64,12 @@ service = [
     "dep:tilo-ask-password",
     "dep:tilo-clock",
     "dep:tilo-files",
+    "dep:tilo-identity",
     "dep:tilo-nm",
     "dep:tilo-rollback",
     "dep:tilo-seal",
     "dep:tilo-unlock-protocol",
+    "dep:tilo-user-identity",
     "dep:tokio",
     "dep:unicode-normalization",
 ]
@@ -98,6 +105,10 @@ tilo-ask-password = { path = "../ask-password", optional = true }
 # When this boot's volume opened, in the note the booted system reads.
 tilo-clock = { path = "../../platform/tilo-clock", optional = true }
 tilo-files = { path = "../../platform/tilo-files", optional = true }
+# This device's fleet of the person's devices, and the device's own key:
+# whom to ask for an enrolment when this device holds no root.
+tilo-identity = { path = "../../runtime/tilo-identity", optional = true }
+tilo-user-identity = { path = "../../collab/tilo-user-identity", optional = true }
 # Where NetworkManager keeps an unlock network's saved connection.
 tilo-nm = { path = "../tilo-nm", optional = true }
 # The TPM and cryptsetup are driven through tilo-rollback's runner, sealing
@@ -116,7 +127,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }
 
 [lints]
 workspace = true

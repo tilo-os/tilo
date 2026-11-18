@@ -26,6 +26,14 @@
 //! sibling → boot:   SiblingFrame::Released(Release) | Denied | Refused(reason)
 //! ```
 //!
+//! # Enrolment
+//!
+//! A device without the person's root enrols its boot key by asking one of
+//! their devices that holds it, over [`ENROL_ALPN`]: one framed
+//! [`EnrolRequest`] in, one framed [`EnrolReply`] out. The device that holds
+//! the root asks the person first, then certifies the key exactly as a
+//! session on the enrolling device would.
+//!
 //! # Wire ABI
 //!
 //! Signed and bound values are `blake3::derive_key(context, postcard(view))`
@@ -63,6 +71,12 @@ pub use wire::{
 
 /// ALPN of the boot-time unlock exchange. Frozen wire ABI.
 pub const UNLOCK_ALPN: &[u8] = b"tilo-device-unlock/1";
+/// ALPN of the enrolment a device without the person's root asks a device
+/// that holds it for: one framed [`EnrolRequest`] in, one framed
+/// [`EnrolReply`] out, on one bidirectional stream. The connection is bound
+/// to the asking device's fleet key, which is the key the certificate names.
+/// Frozen wire ABI.
+pub const ENROL_ALPN: &[u8] = b"tilo-device-enrol/1";
 /// The enrolment socket, relative to the session user's `$XDG_RUNTIME_DIR`.
 ///
 /// `tilo-disk-encrypt enrol --sibling` connects here (as root or as the

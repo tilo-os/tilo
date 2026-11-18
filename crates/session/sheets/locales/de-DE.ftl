@@ -555,6 +555,10 @@ network-agent-risk-something = etwas Unwiderrufliches tun
 network-device-unlock-title = { $device } entsperren?
 network-device-unlock-detail = Es startet gerade und bittet dich um die Hälfte seines Datenträgerschlüssels, die dieses Gerät für es hält, für { $slot }. Vergleiche den Code oben mit dem auf seinem Startbildschirm.
 network-device-unlock-allow = Schlüssel freigeben
+network-device-enrol-title = Entsperren für { $device } einrichten?
+network-device-enrol-detail = Es entsperrt seine Festplatte beim Start mit Hilfe dieses Geräts.
+network-device-enrol-unattended = Danach startet es, ohne dich erneut zu fragen.
+network-device-enrol-allow = Einrichten
 
 ## Wie die Ressource jeder Karte heißt, nach ihrer Art benannt, mit
 ## Bindestrichen statt Punkten (`power.session` ist `power-session`). Der

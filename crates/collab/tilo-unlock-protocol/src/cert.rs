@@ -268,11 +268,18 @@ pub struct EnrolResponse {
     pub siblings: Vec<SiblingContact>,
 }
 
-/// The service's answer on the enrolment socket.
+/// The service's answer on the enrolment socket, and to another of the
+/// person's devices that asks over [`crate::ENROL_ALPN`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EnrolReply {
     /// Enrolled; the half now replicates to the siblings listed.
     Enrolled(Box<EnrolResponse>),
     /// Not enrolled, with a reason for the person.
     Refused(String),
+    /// This device does not hold the person's root, so it cannot certify the
+    /// key: another of their devices must. The asking device moves on to
+    /// another.
+    NotKeyHolder,
+    /// The person refused the enrolment, or nobody answered in time.
+    Denied,
 }

@@ -4,11 +4,14 @@
 //! 1. Draw the device half, the sibling half and a boot-only key pair.
 //! 2. Add a key slot opened by the key the two halves derive, authorised by an
 //!    existing secret of the volume.
-//! 3. Hand the sibling half and the boot key's public half to the sibling
-//!    service on this device ([`Registrar`]). It certifies the boot key with
-//!    the person's identity, seals the sibling half to the person's
-//!    secret-sync key and replicates it to their other devices, and answers
-//!    with the certificate and the devices that hold the half.
+//! 3. Hand the sibling half and the boot key's public half to a device of the
+//!    person that holds their root ([`Registrar`]): the session on this
+//!    machine, or, on a machine that holds none of it, one of their devices
+//!    over the peer network ([`PeerRegistrar`]), which asks them first. It
+//!    certifies the boot key with the person's identity, seals the sibling
+//!    half to the person's secret-sync key and replicates it to their other
+//!    devices, and answers with the certificate and the devices that hold the
+//!    half.
 //! 4. Store the token: the certificate, those devices, and the device half,
 //!    boot key and chosen unlock networks, sealed to the TPM where there is
 //!    one and otherwise in the clear.
@@ -32,14 +35,19 @@ use crate::luks::{self, Authority};
 use crate::tpm::{self, Sealing};
 use anyhow::{Context, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
+use iroh::endpoint::{Endpoint, presets};
+use iroh::{RelayMap, RelayMode};
+use iroh_base::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_rollback::exec::Runner;
 use tilo_rollback::policy::Workspace;
 use tilo_unlock_protocol::{
-    ENROL_SOCKET, EnrolReply, EnrolRequest, EnrolResponse, Half, SlotId, decode_frame,
-    derive_slot_key, encode_frame, frame_len,
+    APPROVAL_TIMEOUT_NS, ENROL_ALPN, ENROL_SOCKET, EnrolReply, EnrolRequest, EnrolResponse, Half,
+    SlotId, decode_frame, derive_slot_key, encode_frame, frame_len,
 };
+use tilo_user_identity::IdentityPaths;
 
 /// Where the enrolment is described for Settings, without secrets.
 pub const STATE_DIR: &str = "/var/lib/tilo/sibling-unlock";
@@ -64,9 +72,11 @@ pub struct Args {
     /// wired links only. Needs no passphrase and no signed-in session.
     #[arg(long)]
     pub replace_networks: bool,
-    /// The signed-in person whose session registers the enrolment with
-    /// their devices (its `tilo-session/device-unlock.sock`). Without it the
-    /// one session that serves the socket is used.
+    /// The person whose session registers the enrolment with their devices
+    /// (its `tilo-session/device-unlock.sock`), and whose identity directory
+    /// names the devices this one asks when it holds no root of theirs.
+    /// Without it the one session that serves the socket is used, and this
+    /// process's own account when none does.
     #[arg(long)]
     pub session_uid: Option<u32>,
     /// Refuse enrollment unless the device factor can be sealed to the TPM.
@@ -84,7 +94,48 @@ pub struct Args {
 /// Hands an [`EnrolRequest`] to the sibling service.
 pub trait Registrar {
     /// Registers the request and returns the certificate and siblings.
-    fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse>;
+    fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse, NotEnrolled>;
+}
+
+/// Why a registrar did not enrol this device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotEnrolled {
+    /// This device does not hold the person's root: another of their devices
+    /// must sign the enrolment.
+    NotKeyHolder,
+    /// The person refused the enrolment, or did not answer in time.
+    Denied,
+    /// Not enrolled, with a reason for the person.
+    Failed(String),
+}
+
+impl std::fmt::Display for NotEnrolled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotKeyHolder => formatter.write_str(
+                "this device does not hold the person's root, and none of their other devices \
+                 could enrol it",
+            ),
+            Self::Denied => formatter.write_str("your device refused the enrolment"),
+            Self::Failed(reason) => formatter.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for NotEnrolled {}
+
+impl From<EnrolReply> for NotEnrolled {
+    fn from(reply: EnrolReply) -> Self {
+        match reply {
+            EnrolReply::Enrolled(response) => Self::Failed(format!(
+                "the enrolment answered with a certificate for {} instead of replying",
+                hex::encode(response.cert.device_public_key)
+            )),
+            EnrolReply::NotKeyHolder => Self::NotKeyHolder,
+            EnrolReply::Denied => Self::Denied,
+            EnrolReply::Refused(reason) => Self::Failed(reason),
+        }
+    }
 }
 
 /// The sibling service in the person's session, over its unix socket
@@ -116,29 +167,291 @@ impl SessionRegistrar {
 }
 
 impl Registrar for SessionRegistrar {
-    fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse> {
+    fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse, NotEnrolled> {
         use std::io::{Read as _, Write as _};
+        // No session is running here to ask: another of the person's devices
+        // is, over the peer network.
+        if !self.0.exists() {
+            return Err(NotEnrolled::NotKeyHolder);
+        }
         let mut stream = std::os::unix::net::UnixStream::connect(&self.0)
-            .with_context(|| format!("could not reach your session at {}", self.0.display()))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(120)))?;
-        let frame =
-            zeroize::Zeroizing::new(encode_frame(request).map_err(|error| anyhow!("{error}"))?);
+            .with_context(|| format!("could not reach your session at {}", self.0.display()))
+            .map_err(|error| NotEnrolled::Failed(format!("{error:#}")))?;
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(120)))
+            .map_err(|error| NotEnrolled::Failed(error.to_string()))?;
+        let frame = zeroize::Zeroizing::new(
+            encode_frame(request).map_err(|error| NotEnrolled::Failed(error.to_string()))?,
+        );
         stream
             .write_all(&frame)
-            .context("your session stopped reading")?;
+            .context("your session stopped reading")
+            .map_err(|error| NotEnrolled::Failed(format!("{error:#}")))?;
         let mut prefix = [0_u8; 4];
         stream
             .read_exact(&mut prefix)
-            .context("your session did not answer")?;
-        let mut body = vec![0_u8; frame_len(prefix).map_err(|error| anyhow!("{error}"))?];
+            .context("your session did not answer")
+            .map_err(|error| NotEnrolled::Failed(format!("{error:#}")))?;
+        let mut body =
+            vec![0_u8; frame_len(prefix).map_err(|error| NotEnrolled::Failed(error.to_string()))?];
         stream
             .read_exact(&mut body)
-            .context("your session's answer was cut short")?;
-        match decode_frame(&body).map_err(|error| anyhow!("{error}"))? {
+            .context("your session's answer was cut short")
+            .map_err(|error| NotEnrolled::Failed(format!("{error:#}")))?;
+        let reply = decode_frame(&body).map_err(|error| NotEnrolled::Failed(error.to_string()))?;
+        match reply {
             EnrolReply::Enrolled(response) => Ok(*response),
-            EnrolReply::Refused(reason) => bail!("your devices refused the enrolment: {reason}"),
+            reply => Err(reply.into()),
         }
     }
+}
+
+/// Asks the session on this device first, and the person's other devices over
+/// the peer network when it holds no root: one enrolment flow, whichever side
+/// can sign it.
+struct Choosing(Vec<Box<dyn Registrar>>);
+
+impl Registrar for Choosing {
+    fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse, NotEnrolled> {
+        let mut unable = None;
+        for registrar in &self.0 {
+            match registrar.register(request) {
+                Ok(response) => return Ok(response),
+                // This device cannot sign it; another might.
+                Err(NotEnrolled::NotKeyHolder) => unable = Some(NotEnrolled::NotKeyHolder),
+                // The person answered, or something went wrong: asking again elsewhere would ask
+                // them the same question twice or hide the reason.
+                Err(error) => return Err(error),
+            }
+        }
+        Err(unable.unwrap_or_else(|| {
+            NotEnrolled::Failed("no device of yours could enrol the unlock".into())
+        }))
+    }
+}
+
+/// The person's devices, asked over the peer network: for a machine that holds
+/// no root of its own, such as a desktop that joined the identity or a server
+/// with no session.
+///
+/// Each is dialled at [`ENROL_ALPN`] as this device's own key; the one that
+/// holds the root asks its person, then certifies the boot key. A device that
+/// does not hold the root says so and the next is asked.
+pub struct PeerRegistrar {
+    /// This device's fleet key: the endpoint dials as it, and the certificate
+    /// it asks for names it.
+    device: SigningKey,
+    /// The person's other personal devices, in the fleet's order.
+    devices: Vec<[u8; 32]>,
+    /// The relays that reach them, when the caller knows them; `None` uses the
+    /// peer network's default.
+    relays: Option<RelayMap>,
+}
+
+impl PeerRegistrar {
+    /// This device as a peer-network client, asking `devices` in turn.
+    #[must_use]
+    pub fn new(device: SigningKey, devices: Vec<[u8; 32]>, relays: Option<RelayMap>) -> Self {
+        Self {
+            device,
+            devices,
+            relays,
+        }
+    }
+
+    /// This device's own key and the person's other devices, read from the
+    /// identity this machine was bound with and the fleet `session_uid`'s
+    /// identity directory holds. `relays` reaches them when the caller knows
+    /// the network; `None` uses the peer network's default.
+    pub fn find(session_uid: Option<u32>, relays: Option<RelayMap>) -> Result<Self> {
+        let paths = identity_paths();
+        let device = tilo_user_identity::persist::load_device_key(&paths)
+            .map_err(|error| anyhow!("this device's key: {error}"))?;
+        let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+            .map_err(|error| anyhow!("this device's certificate: {error}"))?;
+        if cert.device_public_key != device.verifying_key().to_bytes() {
+            bail!("this device's key is not the one its certificate names");
+        }
+        let store = DeviceFleetStore::at(identity_dir(session_uid)?, paths);
+        let fleet = store
+            .load(&hex::encode(cert.user_public_key))
+            .map_err(|error| anyhow!("your devices: {error}"))?;
+        let devices: Vec<[u8; 32]> = fleet
+            .personal_devices(&cert.user_public_key, tilo_clock::unix_now_ns())
+            .into_iter()
+            .filter(|key| key != &cert.device_public_key)
+            .collect();
+        if devices.is_empty() {
+            bail!("none of your other devices can enrol this one");
+        }
+        Ok(Self::new(device, devices, relays))
+    }
+
+    /// Dial, ask, and read the answer, on this device's endpoint.
+    async fn ask(&self, request: &EnrolRequest) -> Result<EnrolResponse, NotEnrolled> {
+        let frame = encode_frame(request)
+            .map_err(|error| NotEnrolled::Failed(format!("the request: {error}")))?;
+        let endpoint = self
+            .endpoint()
+            .await
+            .map_err(|error| NotEnrolled::Failed(format!("no peer-network endpoint: {error:#}")))?;
+        let mut unable = None;
+        for key in &self.devices {
+            match self.ask_one(&endpoint, key, &frame).await {
+                Ok(response) => {
+                    endpoint.close().await;
+                    return Ok(response);
+                }
+                Err(NotEnrolled::NotKeyHolder) => unable = Some(NotEnrolled::NotKeyHolder),
+                Err(error) => unable = Some(error),
+            }
+        }
+        endpoint.close().await;
+        Err(unable.unwrap_or(NotEnrolled::NotKeyHolder))
+    }
+
+    async fn ask_one(
+        &self,
+        endpoint: &Endpoint,
+        key: &[u8; 32],
+        frame: &[u8],
+    ) -> Result<EnrolResponse, NotEnrolled> {
+        let addr = self.address(key)?;
+        let connection = tokio::time::timeout(DIAL_FOR, endpoint.connect(addr, ENROL_ALPN))
+            .await
+            .map_err(|_| NotEnrolled::Failed("no answer".into()))?
+            .map_err(|error| NotEnrolled::Failed(error.to_string()))?;
+        let asked = async {
+            let (mut send, mut recv) = connection
+                .open_bi()
+                .await
+                .map_err(|error| NotEnrolled::Failed(error.to_string()))?;
+            send.write_all(frame)
+                .await
+                .map_err(|error| NotEnrolled::Failed(error.to_string()))?;
+            let mut prefix = [0_u8; 4];
+            recv.read_exact(&mut prefix)
+                .await
+                .map_err(|error| NotEnrolled::Failed(error.to_string()))?;
+            let mut body = vec![
+                0_u8;
+                frame_len(prefix)
+                    .map_err(|error| NotEnrolled::Failed(error.to_string()))?
+            ];
+            recv.read_exact(&mut body)
+                .await
+                .map_err(|error| NotEnrolled::Failed(error.to_string()))?;
+            decode_frame::<EnrolReply>(&body)
+                .map_err(|error| NotEnrolled::Failed(error.to_string()))
+        };
+        // The person is asked on their device, and may take their time: the
+        // sibling side's own answering window bounds it.
+        let reply = tokio::time::timeout(DECIDE_FOR, asked)
+            .await
+            .map_err(|_| NotEnrolled::Failed("the device took too long to answer".into()))??;
+        connection.close(0u32.into(), b"done");
+        match reply {
+            EnrolReply::Enrolled(response) => Ok(*response),
+            reply => Err(reply.into()),
+        }
+    }
+
+    async fn endpoint(&self) -> Result<Endpoint> {
+        let builder = match &self.relays {
+            Some(relays) => {
+                Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Custom(relays.clone()))
+            }
+            // The peer network's own relays and names, as early boot reaches a
+            // sibling it was not given an address for.
+            None => Endpoint::builder(presets::N0),
+        };
+        builder
+            .secret_key(iroh::SecretKey::from_bytes(&self.device.to_bytes()))
+            .bind_addr((std::net::Ipv4Addr::UNSPECIFIED, 0))
+            .context("this machine's endpoint address")?
+            .bind()
+            .await
+            .context("bind this machine's endpoint")
+    }
+
+    fn address(&self, key: &[u8; 32]) -> Result<EndpointAddr, NotEnrolled> {
+        let id = EndpointId::from_bytes(key)
+            .map_err(|error| NotEnrolled::Failed(format!("a device key: {error}")))?;
+        let mut addr = EndpointAddr::new(id);
+        if let Some(url) = self
+            .relays
+            .as_ref()
+            .and_then(|relays| relays.urls::<Vec<_>>().into_iter().next())
+        {
+            addr = addr.with_relay_url(url);
+        }
+        Ok(addr)
+    }
+}
+
+impl Registrar for PeerRegistrar {
+    fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse, NotEnrolled> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| NotEnrolled::Failed(format!("no async runtime: {error}")))?;
+        runtime.block_on(self.ask(request))
+    }
+}
+
+/// How long one device is given to accept the connection.
+const DIAL_FOR: std::time::Duration = std::time::Duration::from_secs(20);
+/// How long a device may take to put the request to its person.
+const DECIDE_FOR: std::time::Duration =
+    std::time::Duration::from_secs(APPROVAL_TIMEOUT_NS / 1_000_000_000 + 60);
+
+/// This device's identity paths, with the test and development root override
+/// the session's own reads ([`tilo_identity::provisioning::collaboration_identity_paths`]).
+fn identity_paths() -> IdentityPaths {
+    std::env::var_os("TILO_IDENTITY_ROOT")
+        .filter(|value| !value.is_empty())
+        .map_or_else(IdentityPaths::default_system, IdentityPaths::under)
+}
+
+/// The identity directory whose device fleet names the person's devices: the
+/// named account's, or this process's own.
+fn identity_dir(session_uid: Option<u32>) -> Result<PathBuf> {
+    if let Some(uid) = session_uid {
+        return Ok(home_of(uid)?.join(tilo_identity::local_person::IDENTITY_DIR_IN_HOME));
+    }
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(xdg).join("tilo/identity"));
+    }
+    let home = std::env::var_os("HOME").context("this account has no home directory")?;
+    Ok(PathBuf::from(home).join(tilo_identity::local_person::IDENTITY_DIR_IN_HOME))
+}
+
+/// The home directory of account `uid`.
+fn home_of(uid: u32) -> Result<PathBuf> {
+    let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    // The largest home directory Linux accepts; getpwuid_r reports what it needs.
+    let mut buffer = vec![0_u8; 4096];
+    // SAFETY: the buffer and the entry pointers are valid for the call, and the
+    // returned entry points into `buffer`, which outlives the reads below.
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            entry.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &raw mut result,
+        )
+    };
+    if status != 0 || result.is_null() {
+        bail!("this device has no account {uid}");
+    }
+    // SAFETY: a non-null result points at the initialized `entry`.
+    let entry = unsafe { entry.assume_init() };
+    // SAFETY: the home pointer is a NUL-terminated string inside `buffer`.
+    let home = unsafe { std::ffi::CStr::from_ptr(entry.pw_dir) };
+    let home = home.to_str().context("this account's home is not UTF-8")?;
+    Ok(PathBuf::from(home))
 }
 
 /// What Settings shows about an enrolment.
@@ -328,7 +641,7 @@ pub fn run(args: &Args, machine: Machine<'_>) -> Result<()> {
     if args.replace_networks {
         return replace_networks(machine.runner, &args.device, networks);
     }
-    let registrar = SessionRegistrar::find(args.session_uid)?;
+    let registrar = registrars(args.session_uid)?;
     let existing = existing_passphrase(&args.device, args.key_file.as_deref())?;
     enrol(
         machine,
@@ -339,6 +652,27 @@ pub fn run(args: &Args, machine: Machine<'_>) -> Result<()> {
         sealing,
         args.unattended,
     )
+}
+
+/// This machine's registrars in the order they are asked: its own session,
+/// then the person's devices over the peer network. A machine that holds no
+/// root reaches the same devices either way.
+fn registrars(session_uid: Option<u32>) -> Result<Choosing> {
+    let mut candidates: Vec<Box<dyn Registrar>> = Vec::new();
+    match SessionRegistrar::find(session_uid) {
+        Ok(session) => candidates.push(Box::new(session)),
+        Err(error) if session_uid.is_some() => return Err(error),
+        Err(_) => {}
+    }
+    match PeerRegistrar::find(session_uid, None) {
+        Ok(peer) => candidates.push(Box::new(peer)),
+        Err(error) => {
+            if candidates.is_empty() {
+                return Err(error);
+            }
+        }
+    }
+    Ok(Choosing(candidates))
 }
 
 fn enrollment_sealing(available: Sealing, require_tpm: bool) -> Result<Sealing> {

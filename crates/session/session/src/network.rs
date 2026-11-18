@@ -2,10 +2,10 @@
 //!
 //! The actor is the transport, and what some of its APIs ask is the
 //! session's business: another of the person's devices asking for its
-//! disk-unlock half, an agent's question for its person on a workspace host,
-//! a member's device at another peer protocol version. Each is served
-//! here by the part of the session that owns it, installed once before the
-//! actor starts ([`install`]).
+//! disk-unlock half or for this device to enrol its own, an agent's question
+//! for its person in a workspace, a member's device at another peer protocol
+//! version. Each is served here by the part of the session that owns it,
+//! installed once before the actor starts ([`install`]).
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -13,14 +13,18 @@ use std::sync::{Arc, Mutex};
 use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
 use iroh::endpoint::Connection;
-use tilo_network_actor::services::{self, ApproversOf, DeviceUnlock, PeerVersion, Services};
+use tilo_network_actor::services::{
+    self, ApproversOf, DeviceEnrol, DeviceUnlock, PeerVersion, Services,
+};
 use tilo_service::Questions;
 
 mod approvers;
 mod unlock;
 
 pub(crate) use approvers::KIND as AGENT_QUESTION;
-pub(crate) use unlock::{KIND as DEVICE_UNLOCK, UnlockQuestion, slot_name};
+pub(crate) use unlock::{
+    ENROL_KIND as DEVICE_ENROL, EnrolQuestion, KIND as DEVICE_UNLOCK, UnlockQuestion, slot_name,
+};
 
 /// A member's device heard at another peer protocol version: one of the two devices must
 /// update before the two work together again.
@@ -65,6 +69,7 @@ pub(crate) fn install(
     let installed = services::install(Services {
         peer_version: peer_versions(updates),
         device_unlock: device_unlock(unlocking.clone()),
+        device_enrol: device_enrol(unlocking.clone()),
         approvers: approvers(questions),
     });
     if installed {
@@ -78,6 +83,14 @@ fn device_unlock(unlocking: Arc<unlock::Unlock>) -> DeviceUnlock {
     Arc::new(move |connection: Connection| {
         let unlocking = Arc::clone(&unlocking);
         tokio::spawn(unlocking.serve(connection));
+    })
+}
+
+/// Another of the person's devices holds no root and asks this one to enrol its boot key.
+fn device_enrol(unlocking: Arc<unlock::Unlock>) -> DeviceEnrol {
+    Arc::new(move |connection: Connection| {
+        let unlocking = Arc::clone(&unlocking);
+        tokio::spawn(unlocking.serve_enrol(connection));
     })
 }
 

@@ -764,6 +764,7 @@ fn compose(question: &Question) -> Option<Composed> {
         crate::network::AGENT_QUESTION => agent_question(&question.handle, details)?,
         crate::step_questions::KIND => step_question(&question.handle, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
+        crate::network::DEVICE_ENROL => device_enrol(&question.handle, details)?,
         crate::network_reach::KIND => reach(&question.handle, &who, details)?,
         _ => return None,
     };
@@ -975,6 +976,22 @@ fn device_unlock(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     );
     dialog.code = Some(asked.approval_code);
     dialog.confirm_label = word("network-device-unlock-allow");
+    Some((dialog, Plan::Confirm))
+}
+
+/// Another of the person's devices asks this one to sign the key it unlocks its disk with. The
+/// person allows it to enrol, or refuses; one that asked to start without being asked again says so.
+fn device_enrol(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: crate::network::EnrolQuestion = serde_json::from_value(details).ok()?;
+    let mut dialog = review(
+        handle,
+        words("network-device-enrol-title", &[("device", &asked.device)]),
+        word("network-device-enrol-detail"),
+    );
+    if asked.unattended {
+        dialog.caution = Some(word("network-device-enrol-unattended"));
+    }
+    dialog.confirm_label = word("network-device-enrol-allow");
     Some((dialog, Plan::Confirm))
 }
 
@@ -1760,6 +1777,29 @@ mod tests {
             assert_eq!(one.detail, "1 copy, to the printer you choose.");
         }
 
+        phase another_devices_enrolment_names_it_and_its_unattended_choice;
+        {
+            let enrol = |unattended| {
+                sheet(
+                    crate::network::DEVICE_ENROL,
+                    serde_json::to_value(crate::network::EnrolQuestion {
+                        device: "The phone".into(),
+                        unattended,
+                    })
+                    .unwrap(),
+                )
+            };
+            let shown = enrol(false);
+            assert!(shown.dialog.title.contains("The phone"));
+            assert!(!shown.dialog.detail.contains("network-device"));
+            assert!(shown.dialog.caution.is_none());
+            assert!(matches!(shown.plan, Plan::Confirm));
+            assert_eq!(
+                enrol(true).dialog.caution.as_deref(),
+                Some("It will then start without asking you again.")
+            );
+        }
+
         phase an_agents_question_shows_its_agent_action_and_risk;
         {
             let shown = agent_question();
@@ -1808,6 +1848,7 @@ mod tests {
             assert!(!shown.dialog.detail.contains("network-device"));
             assert!(matches!(shown.plan, Plan::Confirm));
         }
+
     }
 
     fn agent_question() -> Composed {
