@@ -876,10 +876,6 @@ impl CollabTransport for BrokerTransport {
         self.state.publication_result().is_err()
     }
 
-    fn publication_outcome(&self) -> Option<DocumentPublicationError> {
-        self.state.publication_result().err()
-    }
-
     fn refused_change(&self) -> Option<String> {
         self.state.refused_change()
     }
