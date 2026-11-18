@@ -64,6 +64,9 @@ public final class AssistantModel {
     /// Whether the person's Tilo answers and does not let this device in. The window then
     /// offers the way in where it would say that Tilo cannot be reached.
     public private(set) var joinStops = false
+    /// When this device was approved, where it then stopped before it got in: the way in goes
+    /// on from there, and nothing is paired a second time. Nil where no approved join waits.
+    public private(set) var joinApproved: Date?
     public private(set) var subAgents: [SubAgent] = []
     public private(set) var tasks: [AssistantTask] = []
     public private(set) var automations: [Automation] = []
@@ -174,6 +177,7 @@ public final class AssistantModel {
         follow(source.supervision()) { $0.supervision = $1 }
         follow(source.sinceLeft()) { $0.sinceLeft = $1 }
         follow(source.joinStops()) { $0.joinStops = $1 }
+        follow(source.joinApproved()) { $0.joinApproved = $1 }
         listen(.main)
     }
 
@@ -195,6 +199,7 @@ public final class AssistantModel {
         supervision = await first(source.supervision()) ?? Supervision()
         sinceLeft = await first(source.sinceLeft()) ?? nil
         joinStops = await first(source.joinStops()) ?? false
+        joinApproved = await first(source.joinApproved()) ?? nil
         for chat in [Chat.main] + subAgents.map({ Chat.subAgent($0.id) }) {
             guard let change = await first(source.conversation(chat)) else { continue }
             var conversation = Conversation()
@@ -709,6 +714,13 @@ public final class AssistantModel {
             return
         }
         Task { await self.call { try await self.source.pair(with: link) } }
+    }
+
+    /// Go on as the device that was approved: its person's press on Try again at the way in.
+    /// Nothing is paired; what a call said before is said no more.
+    public func goOn() {
+        problem = nil
+        Task { await self.source.goOn() }
     }
 
     public func signOut() {

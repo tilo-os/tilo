@@ -171,6 +171,15 @@ public final class TiloEngine: NSObject {
     private var moves = 0
     /// The page in the view was loaded to pair, and has not been loaded again since.
     private var pairs = false
+    /// The workspace a pairing was let into: the page that pairs got past its join, which it
+    /// does once a device where its person is signed in approved this one. From then on the
+    /// store holds a device of that person's, whatever stops the page afterwards. Nil until
+    /// then, and again once the engine is asked for another page or its page is put away.
+    public private(set) var letInto: String?
+    /// The page that pairs was heard on its own way in since it was asked for: at its load or
+    /// its join, or asking. Only such a page says that the pairing was let in: a page of the
+    /// try before, which may stand in the view for a moment longer, says nothing of this one.
+    private var pairingHeard = false
     /// The leave whose last ask of the page is still out: the page stays until it answered.
     private var lingering: Int?
     private var leaves = 0
@@ -254,6 +263,7 @@ public final class TiloEngine: NSObject {
         wanted = nil
         wantedWorkspace = nil
         pairs = false
+        letInto = nil
         lingering = nil
         var isIn = false
         if case .open = state { isIn = true }
@@ -520,6 +530,8 @@ public final class TiloEngine: NSObject {
         stops = 0
         moves = 3
         pairs = pairing
+        letInto = nil
+        pairingHeard = false
         wanted = address
         wantedWorkspace = workspace
         state = .arriving("load")
@@ -624,6 +636,12 @@ public final class TiloEngine: NSObject {
 
     private func stand(entry: String, arrival: String, code: String, status: String, failure: String, refusal: String,
                        connection: String, route: String, mounted: Bool, ask: PairingAsk?) {
+        // The page that pairs is past its join: it was let in, and its store holds the device
+        // that was approved. Held before anything that may stop the page is taken.
+        if pairs {
+            if ask != nil || (entry.isEmpty && ["load", "join"].contains(arrival)) { pairingHeard = true }
+            if pairingHeard, letInto == nil, TiloEngine.letIn(entry: entry, arrival: arrival) { letInto = wantedWorkspace }
+        }
         // A server that turns an open page's session away leaves that page as it was, with a
         // card over it, and the page names the refusal on its root. What it shows is no longer
         // what its server holds, so it is no page that is in: it is loaded again, as one that
@@ -755,6 +773,14 @@ public final class TiloEngine: NSObject {
             guard !Task.isCancelled, self.state == .arriving("load") else { return }
             self.stopped(why)
         }
+    }
+
+    /// Whether a page says that it got past its join: it is in, or it was let in and cannot draw
+    /// (`data-entry`), or its arrival stands at a step behind the join (`data-arrival`,
+    /// web/arrival.mjs: fetch, compile, join, open, draw). A page that stopped at its join, or
+    /// that its site refused, says neither.
+    static func letIn(entry: String, arrival: String) -> Bool {
+        ["open", "unsupported"].contains(entry) || ["open", "draw"].contains(arrival)
     }
 
     /// A try ended without getting in. `onItsPage`: on the site's own page, which said that its

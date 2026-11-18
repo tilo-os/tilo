@@ -36,6 +36,18 @@ public protocol AssistantSource: Sendable {
     /// way in shows these below it. Nil where the page shows none, and while no end is said.
     func pairingEndedDetails() -> AsyncStream<String?>
 
+    /// When a device where the person is signed in approved this one, for a device that then
+    /// stopped before it got in, whatever stopped it: its page, its site, the network, or the
+    /// app's own end. It is kept across launches, and the app goes on as the device that was
+    /// approved: nothing is paired a second time. Nil where no approved join waits to get in,
+    /// and again once the device is in, another link is taken or it is signed out. The way in
+    /// says it in the place of what a first pairing promises.
+    func joinApproved() -> AsyncStream<Date?>
+
+    /// Go on as the device that was approved (`joinApproved()`): its page is asked for again.
+    /// `session()` says how it goes on, and `pairingEnded()` what stopped it where it stops.
+    func goOn() async
+
     /// Pair this device with a link that "Pair a new device" made on a device where the person is
     /// signed in: scanned as a code, or pasted. `session()` says how it goes on.
     func pair(with link: PairingLink) async throws
@@ -218,6 +230,9 @@ extension AssistantSource {
     /// A source whose pairings end with no sentence of Tilo's has none to say.
     public func pairingEnded() -> AsyncStream<String?> { AsyncStream { $0.yield(nil) } }
     public func pairingEndedDetails() -> AsyncStream<String?> { AsyncStream { $0.yield(nil) } }
+    /// A source that keeps no approved join has none to go on with.
+    public func joinApproved() -> AsyncStream<Date?> { AsyncStream { $0.yield(nil) } }
+    public func goOn() async {}
     public func setup() -> AsyncStream<Setup> { AsyncStream { $0.yield(.ready) } }
     public func makeAssistant() async throws {}
     public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {

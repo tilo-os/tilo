@@ -26,6 +26,8 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         public var pairingEnded: String?
         /// The technical details Tilo's page offers under that sentence, where it shows them.
         public var pairingEndedDetails: String?
+        /// When this device was approved, where it then stopped before it got in.
+        public var joinApproved: Date?
         /// What stands between the person and a first answer.
         public var setup: Setup = .ready
         /// The models a provider offers once it is linked.
@@ -46,6 +48,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private let reachNow = Broadcast<Reach>(.reachable)
     private let endedNow: Broadcast<String?>
     private let endedDetailsNow: Broadcast<String?>
+    private let approvedNow: Broadcast<Date?>
     private let agents: Broadcast<[SubAgent]>
     private let taskList: Broadcast<[AssistantTask]>
     private let automationList: Broadcast<[Automation]>
@@ -73,6 +76,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         sessionNow = Broadcast(content.session)
         endedNow = Broadcast(content.pairingEnded)
         endedDetailsNow = Broadcast(content.pairingEndedDetails)
+        approvedNow = Broadcast(content.joinApproved)
         agents = Broadcast(content.subAgents)
         taskList = Broadcast(content.tasks)
         automationList = Broadcast(content.automations)
@@ -127,6 +131,12 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         sessionNow.set(.signedOut)
     }
 
+    /// As if this device had been approved then and had stopped before it got in, or as if
+    /// no approved join waited any more.
+    public func set(joinApproved: Date?) {
+        approvedNow.set(joinApproved)
+    }
+
     public func set(_ agent: SubAgent) {
         agents.change { list in
             if let index = list.firstIndex(where: { $0.id == agent.id }) { list[index] = agent }
@@ -163,12 +173,22 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     public func reach() -> AsyncStream<Reach> { reachNow.stream() }
     public func pairingEnded() -> AsyncStream<String?> { endedNow.stream() }
     public func pairingEndedDetails() -> AsyncStream<String?> { endedDetailsNow.stream() }
+    public func joinApproved() -> AsyncStream<Date?> { approvedNow.stream() }
+
+    /// The device that was approved is on its way in again: what stopped it is said no more.
+    public func goOn() async {
+        guard approvedNow.current != nil else { return }
+        endedNow.set(nil)
+        endedDetailsNow.set(nil)
+        sessionNow.set(.pairing)
+    }
 
     public func pair(with link: PairingLink) async throws {
         await known()
         // Another link is taken: what the last pairing ended with is said no more.
         endedNow.set(nil)
         endedDetailsNow.set(nil)
+        approvedNow.set(nil)
         guard pairsAs != nil, reachNow.current == .reachable else { throw SourceProblem.unreachable }
         // Where something is asked first, the pairing goes on once the person answered.
         if let pairingAsk {
@@ -187,6 +207,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         guard let person = pairsAs else { return }
         sessionNow.set(.pairing)
         if let pairingCode { sessionNow.set(.confirming(code: pairingCode)) }
+        approvedNow.set(nil)
         sessionNow.set(.signedIn(person))
     }
 

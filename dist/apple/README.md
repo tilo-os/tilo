@@ -351,6 +351,21 @@ what "Sign out of this device" does. Nothing of the device is given up before th
 nothing presses for the person. `WorkspaceGoneTests` checks the engine and the source,
 `WayInOfferedTests` the window.
 
+**A device that was approved and stopped before it got in.** A pairing can stop after a device
+where the person is signed in approved it: the page that was let in cannot draw, its join
+stops, its site goes away, or the app is ended. The store then holds the device that was
+approved, and an app that stood at its plain way in at its next start led its person to pair
+a second time and to meet the same stop. The engine holds the workspace a pairing was let into
+from the moment its page is past its join (`TiloEngine.letInto`, `letIn(entry:arrival:)`).
+`TiloSource` keeps it with its time (`TiloLiveApproved`) until the device is its person's,
+another link is taken, it is signed out or its workspace is gone, and at its next start opens
+that workspace as the device the store is, with nothing to pair with
+(`AssistantSource.joinApproved()`, `goOn()`). The way in then says that the device was
+approved and when, says what stopped in the page's own sentence with its technical details
+under it, and offers Try again first, which goes on as that device. Pairing afresh stays
+beside it, also while a try is in work: no count of seconds ends one. `ApprovedJoinTests`
+checks the engine and the source across the app's starts, `WayInApprovedTests` the window.
+
 **The provider step.** While no provider of the person's has a key, the main chat says so
 and offers the step: the person picks a provider and types a key of their own into the
 protected field, the one field of the app a secret is typed into (`ProtectedField`), and
