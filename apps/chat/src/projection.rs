@@ -239,7 +239,7 @@ impl ChatProjection for Chat {
     /// How far `user` read `channel`.
     fn read_mark(&self, channel: &str, user: &MemberId) -> crate::parts::ReadMark {
         self.read
-            .get(crate::chat::member_marks(user).as_str())
+            .get(crate::chat::member_slot(user).as_str())
             .and_then(|marks| marks.get(channel))
             .copied()
             .unwrap_or_default()

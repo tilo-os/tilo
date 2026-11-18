@@ -13,6 +13,7 @@ use crate::chat::{Category, Chat, Conversation, Message, Revision, chat};
 use crate::messages::{Messages, chat_messages};
 use crate::model::{ChannelKind, EditEntry};
 use crate::parts::ChatMessages;
+use crate::projection::ChatProjection as _;
 
 /// Deterministic "now" for the demo so a screenshot is stable: 2026-06-30
 /// 10:40 UTC, just before the capture clock's 10:42.

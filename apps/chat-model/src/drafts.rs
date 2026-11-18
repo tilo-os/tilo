@@ -91,10 +91,14 @@ impl ChatDrafts {
     }
 }
 
-/// The words of an unsent draft a conversation's row carries: the first of
-/// them, on one line.
+/// The line a conversation's row carries for unsent words ("Draft: see you at
+/// 8"): the first of them, said to be a draft, in the person's language.
 pub fn line(text: &str) -> Option<String> {
-    preview(text)
+    let preview = preview(text)?;
+    Some(format!(
+        "{}: {preview}",
+        tilo_resource::word!("chat-draft-label").read()
+    ))
 }
 
 /// The most of a draft the row shows.

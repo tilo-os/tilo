@@ -129,6 +129,7 @@ members = [
     "apps/camera-model-wasm",
     "apps/chat",
     "apps/chat-model",
+    "apps/chat-model-wasm",
     "apps/discord",
     "apps/discord-model",
     "apps/moderation-model",

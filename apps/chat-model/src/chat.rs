@@ -147,7 +147,7 @@ pub struct Chat {
     /// ([`Chat::direct_id`]).
     #[model(readonly)]
     pub channels: Collection<Conversation>,
-    /// Each person's read mark per channel, under [`member_marks`]: how far
+    /// Each person's read mark per channel, under [`member_slot`]: how far
     /// into the chain of message parts they have read it.
     pub read: BTreeMap<String, BTreeMap<String, crate::parts::ReadMark>>,
     /// Reviewed feedback filed in a channel, under its submission's id.
@@ -161,7 +161,7 @@ pub struct Chat {
     #[model(readonly)]
     pub files: WorkspaceFiles,
     /// What each agent keeps of a conversation it answers in, by the conversation's id and then
-    /// under the agent's [`member_marks`]: the summary its turns are told in place of the
+    /// under the agent's [`member_slot`]: the summary its turns are told in place of the
     /// messages they are no longer told as written ([`crate::recall`]). Kept here and not with
     /// the messages, so a device that holds only the newest part still has it. Written only by
     /// [`Chat::keep_summary`].
@@ -277,7 +277,7 @@ pub struct Triage {
 }
 /// The key the resource keeps `member`'s read marks under.
 #[must_use]
-pub fn member_marks(member: &MemberId) -> Id {
+pub fn member_slot(member: &MemberId) -> Id {
     Id::from_raw(tilo_resource::text::author_mark(member))
 }
 /// Who an action is by; refused without one, since a report or a read mark
@@ -810,7 +810,7 @@ impl Chat {
             part: i64::try_from(part).unwrap_or(i64::MAX),
             seen: i64::from(seen),
         };
-        let marks = self.read.entry(member_marks(&me).to_string()).or_default();
+        let marks = self.read.entry(member_slot(&me).to_string()).or_default();
         let mark = marks.entry(channel.to_string()).or_default();
         if *mark < read {
             *mark = read;
@@ -858,7 +858,7 @@ impl Chat {
             .summaries
             .entry(conversation.to_string())
             .or_default()
-            .entry(member_marks(&me).to_string())
+            .entry(member_slot(&me).to_string())
             .or_default();
         if !kept.text.is_empty() && through_ts < kept.through_ts {
             return Ok(());

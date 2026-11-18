@@ -21,7 +21,7 @@ pub mod parts;
 
 pub use chat::{
     CHAT_CHANNEL, Category, ChannelPlace, Chat, Conversation, PeopleNames, Summary, VOICE_CHANNEL,
-    WorkspaceFiles, author, conversation_entry, member_marks, seconds, unnamed_label,
+    WorkspaceFiles, author, conversation_entry, member_slot, seconds, unnamed_label,
 };
 pub use drafts::ChatDrafts;
 pub use effects::ChatEffect;
