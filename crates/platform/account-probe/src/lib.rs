@@ -15,6 +15,8 @@ use web_time::Duration;
 use tilo_dav::{Credentials, DavClient, Depth, StatusCode, props};
 use tokio::time::timeout;
 
+#[cfg(test)]
+mod dav_reach_tests;
 pub mod imap;
 pub mod mail_servers;
 mod smtp;
