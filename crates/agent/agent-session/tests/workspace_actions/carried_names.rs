@@ -131,6 +131,16 @@ fn own<'a>(
     })
 }
 
+/// Whether `action` is listed as one its caller may not take, rather than as one that cannot
+/// be done now.
+fn refused_by_grant(action: &tilo_actions::ActionDescriptor) -> bool {
+    matches!(
+        &action.contract.availability,
+        tilo_actions::Availability::Unavailable { code, .. }
+            if code == tilo_actions::Availability::NOT_ALLOWED
+    )
+}
+
 /// A caller is named, in what a carrier takes, no edit their own call of it through that
 /// carrier is then refused as not theirs.
 ///
@@ -247,7 +257,9 @@ async fn a_carrier_names_no_edit_its_caller_is_then_refused() {
                             continue;
                         }
                         let lacks = match own(&offered, carrier, &id) {
-                            Some(action) if action.contract.availability.is_available() => continue,
+                            // Listed, and theirs: what the app says cannot be done now (no tag to
+                            // delete yet) is still theirs to call.
+                            Some(action) if !refused_by_grant(action) => continue,
                             Some(_) => "listed as not allowed",
                             None => "not listed",
                         };
