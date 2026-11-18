@@ -20,12 +20,3 @@ x86_64 = 65536
 # since (agents starting sub-agents, 70e04742b00) brings it to 4,562,944.
 [apps."so.tilo.chat"]
 x86_64 = 131072
-
-# The agent's turn carries its agent's instruction and keeps the
-# conversation's summary (4adaff16c29), showing on the canvas is a tool of
-# its own (e6ffaafb1fd), and the first turn says how a day is written:
-# 1,379,840 bytes (134c7754a31~1, run r32fb406ca9) to 1,423,872 (4e025301e7a,
-# run r62e3522bf1), named code +58 KB, of it tilo_agent +30 KB, std +9 KB and
-# chrono +5 KB.
-[apps."so.tilo.agent"]
-x86_64 = 65536
