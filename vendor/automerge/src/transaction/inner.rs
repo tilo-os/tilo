@@ -168,6 +168,8 @@ impl TransactionInner {
         }
         doc.update_history(&change);
         doc.remove_unused_actors(true);
+        // TILO(local-change): what reads it back next takes it as built.
+        doc.keep_local(change);
         hash
     }
 
@@ -725,6 +727,9 @@ impl TransactionInner {
                     inserted_width
                 }
                 SpliceType::List(values) => {
+                    for value in &values {
+                        check_written_marks(value, doc.text_encoding())?;
+                    }
                     let num_values = values.len();
                     let mut queue: VecDeque<(ObjMeta, &hydrate::Value)> = VecDeque::new();
 
@@ -1321,6 +1326,8 @@ impl TransactionInner {
             _ => Err(AutomergeError::InvalidOp(parent.typ)),
         }?;
 
+        check_written_marks(value, doc.text_encoding())?;
+
         // Determine the ObjType for the root of the value being inserted
         let root_obj_type = match value {
             hydrate::Value::Map(_) => ObjType::Map,
@@ -1374,6 +1381,9 @@ impl TransactionInner {
         patch_log: &mut PatchLog,
         value: &hydrate::Map,
     ) -> Result<(), AutomergeError> {
+        for (_, child) in value.iter() {
+            check_written_marks(&child.value, doc.text_encoding())?;
+        }
         let root_meta = ObjMeta {
             id: crate::types::ObjId::root(),
             typ: ObjType::Map,
@@ -1475,6 +1485,11 @@ struct BatchInsertion<'a> {
     patch_log: &'a mut PatchLog,
     pending_start: usize,
     insert_pos: usize,
+    /// TILO(batched-marks): runs of `pending` that sit in the op set in
+    /// another order than they were made (a text's letters with the marks
+    /// over them): the run's first index, and the op-set order of its ops,
+    /// as offsets from it.
+    reordered: Vec<(usize, Vec<usize>)>,
 }
 
 impl<'a> BatchInsertion<'a> {
@@ -1491,6 +1506,7 @@ impl<'a> BatchInsertion<'a> {
             patch_log,
             pending_start,
             insert_pos: start_pos,
+            reordered: Vec::new(),
         }
     }
 
@@ -1548,11 +1564,168 @@ impl<'a> BatchInsertion<'a> {
         SpliceResult { inserted_width }
     }
 
+    /// TILO(batched-marks): a text made holding `text_str`, with `marks`
+    /// over it, each as `TransactionInner::mark` would set it on the text
+    /// once written, one after another: the same ops, under the same keys,
+    /// in the same order in the op set. They are made as the letters, then
+    /// each mark's begin and end, so they get the ids those calls would give
+    /// them, after the letters'; every op's position is the one it would
+    /// have been inserted at, so a rollback takes them out as it would
+    /// those.
+    ///
+    /// A mark's anchor is where `OpSet::query_insert_at` puts it: after the
+    /// letter before its index (or at the head), then past any mark anchors
+    /// there that hold on to what is typed beside them (a begin expanding
+    /// before, an end not expanding after), unless they close a mark begun
+    /// in between.
+    fn splice_marked_text(
+        &mut self,
+        container: ObjMeta,
+        text_str: &str,
+        marks: &[(Mark, ExpandMark)],
+    ) -> Result<SpliceResult, AutomergeError> {
+        #[derive(Clone, Copy)]
+        enum Elem {
+            Letter,
+            Begin { expand: bool },
+            End { expand: bool, begin: usize },
+        }
+        let encoding = self.doc.text_encoding();
+        let first = self.inner.pending.len();
+        let base = self.next_pos();
+        let SpliceResult { inserted_width } =
+            self.splice_text(container, 0, ElemId::head(), text_str, None);
+        let letters = self.inner.pending.len() - first;
+        // `ends[i]`: the width of the letters up to and with letter `i`.
+        let mut ends = Vec::with_capacity(letters);
+        let mut width = 0;
+        for op in &self.inner.pending[first..] {
+            width += op.bld.width(SequenceType::Text, encoding);
+            ends.push(width);
+        }
+        let mut elems = vec![Elem::Letter; letters];
+        // The op-set order, as offsets from `first`.
+        let mut order: Vec<usize> = (0..letters).collect();
+        // Where the op made with offset `at` sits in `order`.
+        let position = |order: &[usize], at: usize| order.iter().position(|&o| o == at);
+        for (mark, expand) in marks {
+            if mark.start > mark.end || mark.end > inserted_width {
+                return Err(AutomergeError::InvalidIndex(mark.end));
+            }
+            if mark.start == mark.end && *expand == ExpandMark::None {
+                // As `TransactionInner::mark`: a mark between two letters
+                // that takes in neither is nothing.
+                continue;
+            }
+            let mut anchors = [None; 2];
+            for (side, index) in [mark.start, mark.end].into_iter().enumerate() {
+                let begin = anchors[0];
+                // The letter before `index`, or the head.
+                let (mut key, mut from) = match index.checked_sub(1) {
+                    None => (None, 0),
+                    Some(_) => {
+                        let letter = ends
+                            .binary_search(&index)
+                            .map_err(|_| AutomergeError::InvalidIndex(index))?;
+                        let at = position(&order, letter).unwrap_or(0);
+                        (Some(letter), at + 1)
+                    }
+                };
+                let mut found: Vec<usize> = Vec::new();
+                while let Some(&at) = order.get(from) {
+                    match elems[at] {
+                        Elem::Letter => break,
+                        Elem::End { begin, .. } if found.contains(&begin) => {
+                            let j = found.iter().position(|&f| f == begin).unwrap_or(0);
+                            found.truncate(j);
+                        }
+                        Elem::Begin { expand: true } | Elem::End { expand: false, .. } => {
+                            found.push(at);
+                        }
+                        _ => {}
+                    }
+                    from += 1;
+                }
+                if let Some(&sticky) = found.last() {
+                    key = Some(sticky);
+                }
+                let mut at = key.and_then(|k| position(&order, k)).map_or(0, |p| p + 1);
+                if let Some(begin) = begin.filter(|_| side == 1) {
+                    // The end of a mark over nothing goes right after its
+                    // begin, and no end goes before it.
+                    let after = position(&order, begin).unwrap_or(0) + 1;
+                    if mark.start == mark.end || at < after {
+                        key = Some(begin);
+                        at = after;
+                    }
+                }
+                let elemid = key.map_or(ElemId::head(), |k| {
+                    ElemId(self.inner.pending[first + k].id())
+                });
+                let (action, elem) = if side == 0 {
+                    (
+                        OpType::MarkBegin(expand.before(), mark.old_data()),
+                        Elem::Begin {
+                            expand: expand.before(),
+                        },
+                    )
+                } else {
+                    (
+                        OpType::MarkEnd(expand.after()),
+                        Elem::End {
+                            expand: expand.after(),
+                            begin: begin.unwrap_or(0),
+                        },
+                    )
+                };
+                let offset = self.inner.pending.len() - first;
+                let op = TxOp::insert(
+                    self.inner.next_id(),
+                    container,
+                    base + at,
+                    index,
+                    action,
+                    elemid,
+                );
+                self.inner.pending.push(op);
+                elems.push(elem);
+                order.insert(at, offset);
+                anchors[side] = Some(offset);
+            }
+            if self.patch_log.is_active() {
+                self.patch_log.mark(
+                    container.id,
+                    mark.start,
+                    mark.end - mark.start,
+                    &mark.clone().into_mark_set(),
+                );
+            }
+        }
+        if order.len() > letters {
+            self.reordered.push((first, order));
+        }
+        Ok(SpliceResult { inserted_width })
+    }
+
     fn finish(self) {
         let new_ops = &self.inner.pending[self.pending_start..];
-        if !new_ops.is_empty() {
-            self.doc.ops_mut().splice(self.insert_pos, new_ops);
+        if new_ops.is_empty() {
+            return;
         }
+        if self.reordered.is_empty() {
+            self.doc.ops_mut().splice(self.insert_pos, new_ops);
+            return;
+        }
+        let pending = &self.inner.pending;
+        let mut ordered: Vec<&TxOp> = Vec::with_capacity(new_ops.len());
+        let mut at = self.pending_start;
+        for (start, order) in &self.reordered {
+            ordered.extend(&pending[at..*start]);
+            ordered.extend(order.iter().map(|offset| &pending[start + offset]));
+            at = start + order.len();
+        }
+        ordered.extend(&pending[at..]);
+        self.doc.ops_mut().splice(self.insert_pos, &ordered);
     }
 }
 
@@ -1566,6 +1739,48 @@ fn value_to_op_type(value: &hydrate::Value) -> (Option<ObjType>, OpType) {
         hydrate::Value::List(_) => (Some(ObjType::List), OpType::Make(ObjType::List)),
         hydrate::Value::Text(_) => (Some(ObjType::Text), OpType::Make(ObjType::Text)),
         hydrate::Value::Scalar(s) => (None, OpType::Put(s.clone())),
+    }
+}
+
+/// TILO(batched-marks): whether every mark a text in `value` is made with
+/// starts and ends between its elements, within it, checked before a batch
+/// makes any op: a batch that stopped halfway would leave ops of the
+/// transaction out of the document.
+fn check_written_marks(
+    value: &hydrate::Value,
+    encoding: TextEncoding,
+) -> Result<(), AutomergeError> {
+    match value {
+        hydrate::Value::Map(map) => map
+            .iter()
+            .try_for_each(|(_, child)| check_written_marks(&child.value, encoding)),
+        hydrate::Value::List(list) => list
+            .iter()
+            .try_for_each(|child| check_written_marks(&child.value, encoding)),
+        hydrate::Value::Text(text) if !text.written_marks().is_empty() => {
+            let text_str = text.to_string();
+            let mut edges = vec![0];
+            let mut width = 0;
+            let mut add = |element: &str| {
+                width += encoding.width(element);
+                edges.push(width);
+            };
+            match encoding {
+                TextEncoding::GraphemeCluster => text_str.graphemes(true).for_each(&mut add),
+                _ => text_str
+                    .char_indices()
+                    .for_each(|(at, c)| add(&text_str[at..at + c.len_utf8()])),
+            }
+            for (mark, _) in text.written_marks() {
+                for index in [mark.start, mark.end] {
+                    if mark.start > mark.end || edges.binary_search(&index).is_err() {
+                        return Err(AutomergeError::InvalidIndex(index));
+                    }
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
 
@@ -1629,7 +1844,11 @@ fn batch_bfs(
             }
             (ObjType::Text, hydrate::Value::Text(text)) => {
                 let text_str = text.to_string();
-                batch.splice_text(container_meta, 0, ElemId::head(), &text_str, None);
+                if text.written_marks().is_empty() {
+                    batch.splice_text(container_meta, 0, ElemId::head(), &text_str, None);
+                } else {
+                    batch.splice_marked_text(container_meta, &text_str, text.written_marks())?;
+                }
             }
             _ => {
                 return Err(AutomergeError::InvalidOp(container_meta.typ));

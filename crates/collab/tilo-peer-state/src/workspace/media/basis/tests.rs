@@ -93,7 +93,7 @@ tilo_test_env::scenario! {
         }
         let mut invalid = revocation(&root, 1);
         invalid.signature[0] ^= 1;
-        assert_eq!(basis(&doc, &[invalid]), Err(MediaPolicyError::Binding));
+        assert_eq!(basis(&doc, &[invalid]), Err(MediaPolicyError::Revocation));
     }
 
     phase media_basis_matches_original_malformed_container_conflict_and_certificate_rejections;
@@ -179,8 +179,8 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         doc.commit();
-        assert_eq!(historical_basis(&doc, &[]), Err(MediaPolicyError::Binding));
-        assert_eq!(basis(&doc, &[]), Err(MediaPolicyError::Binding));
+        assert_eq!(historical_basis(&doc, &[]), Err(MediaPolicyError::Identity));
+        assert_eq!(basis(&doc, &[]), Err(MediaPolicyError::Identity));
     }
 
     phase media_basis_refuses_a_revocation_from_another_root;
@@ -190,9 +190,9 @@ tilo_test_env::scenario! {
         let extra = revocation(&foreign, 1);
         assert_eq!(
             historical_basis(&doc, std::slice::from_ref(&extra)),
-            Err(MediaPolicyError::Binding)
+            Err(MediaPolicyError::Revocation)
         );
-        assert_eq!(basis(&doc, &[extra]), Err(MediaPolicyError::Binding));
+        assert_eq!(basis(&doc, &[extra]), Err(MediaPolicyError::Revocation));
     }
 
     phase media_basis_hashes_the_delegation_an_older_row_carries;
@@ -273,16 +273,16 @@ fn historical_basis(
             .map_err(|_| MediaPolicyError::Malformed)?;
         let device = canonical_key(&key)?;
         if device != row.device_cert.device_public_key {
-            return Err(MediaPolicyError::Binding);
+            return Err(MediaPolicyError::Identity);
         }
         tilo_user_identity::verify_device_cert(&row.device_cert)
-            .map_err(|_| MediaPolicyError::Binding)?;
+            .map_err(|_| MediaPolicyError::Identity)?;
         let mut admissions = BTreeSet::new();
         for proof in row.admission.iter().chain(&row.admissions) {
             if proof.device_public_key != device
                 || proof.user_public_key != row.device_cert.user_public_key
             {
-                return Err(MediaPolicyError::Binding);
+                return Err(MediaPolicyError::Identity);
             }
             admissions.insert(canonical_bytes(proof).map_err(|_| MediaPolicyError::Malformed)?);
         }
@@ -293,19 +293,21 @@ fn historical_basis(
         }
         for entry in row.revocations {
             if entry.user_public_key != row.device_cert.user_public_key {
-                return Err(MediaPolicyError::Binding);
+                return Err(MediaPolicyError::Revocation);
             }
             revocations.push(entry);
         }
         certificates.insert(device, row.device_cert.user_public_key);
         rows.insert(device, (row.device_cert, admissions, delegations));
     }
-    if !certificates.values().any(|root| *root == owner_key)
-        || roster
-            .iter()
-            .any(|device| !certificates.contains_key(device))
+    if !certificates.values().any(|root| *root == owner_key) {
+        return Err(MediaPolicyError::OwnerUnadmitted);
+    }
+    if let Some(device) = roster
+        .iter()
+        .find(|device| !certificates.contains_key(*device))
     {
-        return Err(MediaPolicyError::Binding);
+        return Err(MediaPolicyError::NamesNobody(*device));
     }
     revocations.extend_from_slice(extra_revocations);
     // RevocationList keeps the earliest entry. Sorting canonical encodings makes
@@ -319,7 +321,7 @@ fn historical_basis(
                 .get(&entry.revoked_device_public_key)
                 .is_some_and(|root| *root != entry.user_public_key)
         {
-            return Err(MediaPolicyError::Binding);
+            return Err(MediaPolicyError::Revocation);
         }
         encoded.insert(
             canonical_bytes(&entry).map_err(|_| MediaPolicyError::Malformed)?,
@@ -330,7 +332,7 @@ fn historical_basis(
     for entry in encoded.into_values() {
         verified
             .insert(entry)
-            .map_err(|_| MediaPolicyError::Binding)?;
+            .map_err(|_| MediaPolicyError::Revocation)?;
     }
     let revocations = verified
         .iter()

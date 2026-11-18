@@ -195,10 +195,18 @@ class PrePushLintTests(unittest.TestCase):
                                   {"name": "fixture-native", "kind": None, "path": "native"}]})
         return json.dumps({"packages": packages})
 
-    def environment(self, page=True, status=0, sleep=0, drop_in=False, unformatted=False) -> dict:
-        """The hook's environment: only the stubs, never this machine's toolchain."""
+    def environment(self, page=True, status=0, sleep=0, drop_in=False, unformatted=False,
+                    agent=False) -> dict:
+        """The hook's environment: only the stubs, never this machine's toolchain.
+
+        `agent` pushes as a coding agent does, whose shell says so in its environment.
+        """
         env = dict(os.environ)
         env.pop("CARGO", None)
+        for marker in ("AI_AGENT", "CLAUDECODE"):
+            env.pop(marker, None)
+        if agent:
+            env["AI_AGENT"] = "1"
         env["PATH"] = os.pathsep.join(
             [str(self.bin), *(entry for entry in env["PATH"].split(os.pathsep)
                                if not any(os.access(Path(entry) / tool, os.X_OK)
@@ -211,10 +219,12 @@ class PrePushLintTests(unittest.TestCase):
         return env
 
     def push(self, head=None, remote_oid=None, ref="refs/heads/main", cwd=None, wide=False,
-             **environment):
+             also=(), **environment):
         """Run the hook as Git would, with the ref lines it writes for a push.
 
-        `wide` runs the lint t's lint-head runs on main instead, over the same refs.
+        `wide` runs the lint t's lint-head runs on main instead, over the same refs. `also`
+        names more refs the same push sends the head to, as tools/integrate.sh sends it to
+        integration and main at once.
         """
         self.log.unlink(missing_ok=True)
         remote_oid = self.base if remote_oid is None else remote_oid
@@ -224,7 +234,8 @@ class PrePushLintTests(unittest.TestCase):
         return subprocess.run(
             command, cwd=cwd,
             capture_output=True, text=True, env=self.environment(**environment), timeout=HANG_BOUND,
-            input=f"{ref} {head or self.head()} {ref} {remote_oid}\n",
+            input=f"{ref} {head or self.head()} {ref} {remote_oid}\n" + "".join(
+                f"{other} {head or self.head()} {other} {'0' * 40}\n" for other in also),
         )
 
     def calls(self, prefix="start"):
@@ -296,6 +307,32 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(self.calls(), [])
         self.assertEqual(self.push(ref="refs/heads/integration").returncode, 0,
                          "a push that fast-forwards integration goes through")
+
+    def test_an_agent_moves_main_only_to_what_integration_holds(self):
+        # main fast-forwards only to a commit integration has: an agent that sends main a commit
+        # of its own is told where it goes instead, and nothing is compiled for it.
+        self.write("native/src/lib.rs", LIB.format(answer=64))
+        self.commit("feat: answer 64")
+        result = self.push(agent=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("main moves only to what integration holds", result.stderr)
+        self.assertIn("tools/integrate.sh", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_integrate_moves_main_and_integration_together(self):
+        # tools/integrate.sh sends the tested commit to integration and main in one push.
+        self.write("native/src/lib.rs", LIB.format(answer=65))
+        self.commit("feat: answer 65")
+        result = self.push(agent=True, also=("refs/heads/integration",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.calls(), "the main side of the push was not linted")
+
+    def test_a_person_pushing_main_by_hand_is_not_held_to_integration(self):
+        self.write("native/src/lib.rs", LIB.format(answer=66))
+        self.commit("feat: answer 66")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("integration holds", result.stderr)
 
     def test_a_push_main_has_moved_past_is_refused_before_anything_is_compiled(self):
         # The remote reports main's head when the push begins; a push that does not contain it

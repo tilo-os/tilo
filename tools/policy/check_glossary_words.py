@@ -380,7 +380,12 @@ def judge_staged() -> int:
         if recount:
             # What counts may have changed. A count rises by what this commit
             # itself makes count: the index against HEAD's tree as HEAD counted it.
-            head_total = head_counts()
+            try:
+                head_total = head_counts()
+            except tomllib.TOMLDecodeError:
+                # HEAD's exceptions do not parse (a commit repairs them): nothing at HEAD
+                # can be counted as HEAD counted it, so nothing counts as newly counted.
+                head_total = total
             grown = Counter({word: total[word] - head_total[word] for word in words})
         for word in words:
             # A word new to the glossary starts at its count. Any other keeps

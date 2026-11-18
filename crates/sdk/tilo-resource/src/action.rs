@@ -1307,6 +1307,7 @@ fn apply_operation(
         crate::footprint::check_edits(shape, &edits, &operation.writes())
             .map_err(refusal_refused)?;
     }
+    crate::apply_cache::begin_storing();
     match (&kept, &dirty) {
         (Some(kept), Some(dirty)) => {
             (record.write_changed)(current.as_ref(), kept.as_ref(), doc, dirty)
@@ -1315,6 +1316,7 @@ fn apply_operation(
     }
     .map_err(model_refused)?;
     index(doc)?;
+    crate::apply_cache::seal_stored(doc);
     // Kept once all it wrote is written: the next action finds this one's
     // change by its size, or, inside a transaction still open, starts from
     // the record exactly as it was written.
@@ -1502,6 +1504,7 @@ mod held {
             crate::footprint::check_edits_of(record.shape, &edits, &footprints)
                 .map_err(refusal_refused)?;
         }
+        crate::apply_cache::begin_storing();
         match (&base, &dirty) {
             (Some(base), Some(dirty)) => {
                 (record.write_changed)(current.as_ref(), base.as_ref(), doc, dirty)
@@ -1512,6 +1515,7 @@ mod held {
         if units {
             crate::footprint::index(doc, record.shape).map_err(super::automerge_refused)?;
         }
+        crate::apply_cache::seal_stored(doc);
         // The next action of its type in the same transaction starts from it as written.
         crate::apply_cache::keep_open((record.kind)(), current, doc);
         Ok(())

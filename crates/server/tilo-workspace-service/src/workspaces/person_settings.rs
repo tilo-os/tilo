@@ -283,13 +283,13 @@ impl Workspaces {
         Ok(certificate.user_public_key)
     }
 
-    /// The person whose own model `caller` asks: the person on a device of
-    /// theirs ([`Self::asking_person`]), or the agent their own computer
-    /// holds its session as, acting for them. A computer the person paired
-    /// keeps one session with this server, which its programs share as that
-    /// computer's agent: its apps' model turns come through it, asked of the
-    /// person's model as a page's are. A key minted for an agent or a script
-    /// is no device of theirs and is answered nothing.
+    /// The person whose own model `caller` asks. A computer logged in as the person acts as
+    /// them, and anything running under their user there can read its device key anyway: the
+    /// person on a device of theirs ([`Self::asking_person`]) and the agent such a computer
+    /// hands its own session to (its apps, the person's own agent) ask the person's model.
+    /// An agent a grant admitted (a key minted for it, a hosted or invited agent) is answered
+    /// nothing here: it uses the person's model only as far as its grant says, on the turns
+    /// the server works for it.
     pub(super) fn asking_for_model(
         caller: &Caller,
         certificate: Option<&DeviceCert>,
@@ -299,6 +299,11 @@ impl Workspaces {
             return Ok(person);
         }
         workspace_id.ok_or(ActionCallError::UnknownAction)?;
+        // Handed the session of the device it connects through, not admitted by a delegation
+        // of its own.
+        if !caller.is_session_delegated() {
+            return Err(ActionCallError::UnknownAction);
+        }
         let acting = caller.acting();
         let (Some(_), Some(person)) = (acting.agent_id(), acting.acted_for_person()) else {
             return Err(ActionCallError::UnknownAction);
@@ -307,6 +312,8 @@ impl Workspaces {
             .ok()
             .and_then(|key| key.try_into().ok())
             .ok_or(ActionCallError::UnknownAction)?;
+        // That device is a computer of the person's own: no key minted for an agent, no
+        // server's key, no stand-in.
         let own_computer = certificate.is_some_and(|certificate| {
             certificate.user_public_key == person
                 && !certificate.capabilities.server_key

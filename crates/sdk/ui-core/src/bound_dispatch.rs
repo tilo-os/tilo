@@ -2488,11 +2488,15 @@ pub fn minted_items(
     envelope: &tilo_actions::ActionEnvelope,
     before: &[ChangeHash],
 ) -> Vec<(String, String)> {
+    // Each map key the changes write, with the object it is first written in.
     let mut stored = std::collections::HashMap::new();
     for change in doc.get_changes(before) {
-        for op in change.decode().operations {
-            if let automerge::legacy::Key::Map(key) = op.key {
-                stored.entry(key).or_insert(op.obj);
+        let Some(touches) = doc.committed_document().change_touches(&change) else {
+            continue;
+        };
+        for (obj, key) in touches.writes {
+            if let Some(key) = key {
+                stored.entry(key).or_insert(obj);
             }
         }
     }
@@ -2516,11 +2520,11 @@ pub fn minted_items(
     let made: Vec<(String, String)> = ids
         .into_iter()
         .filter_map(|id| {
-            let obj = doc.import_obj(&stored.get(id.as_str())?.to_string()).ok()?;
-            automerge::ReadDoc::get(&*doc, &obj, id.as_str())
+            let obj = stored.get(id.as_str())?;
+            automerge::ReadDoc::get(&*doc, obj, id.as_str())
                 .ok()
                 .flatten()?;
-            let path = tilo_resource::collection::path_to(&*doc, &obj)?;
+            let path = tilo_resource::collection::path_to(&*doc, obj)?;
             Some((id, path.join("/")))
         })
         .collect();

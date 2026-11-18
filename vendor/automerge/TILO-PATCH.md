@@ -567,3 +567,47 @@ that do not fit them, answer `None` and load as before. The marked spots are
 `TILO(load-in-slices)` in `automerge.rs`, `autocommit.rs` and
 `storage/document.rs`. Pinned by
 `crates/doc/tilo-automerge/tests/load_in_slices.rs`.
+
+# Tilo patch: a text made in a batch is made with its marks
+
+A new record's texts and a document's new paragraphs are made in one batch
+(`batch_create_object`), but each mark over them (who wrote a text, a bold
+run, a link) was a `mark` after it: two inserts, each a query for its
+anchor and a splice of every op column. A record with a few marked texts
+paid more for its marks than for the rest of it.
+
+`hydrate::Text::with_mark` adds a mark, with how it expands, to a text
+being made, and the batch writes the marks with the text
+(`BatchInsertion::splice_marked_text`): the same ops `mark` would add, one
+after another once the text is written, under the same keys (each anchor
+found as `OpSet::query_insert_at` finds it, sticky anchors included) and in
+the same op-set order, with the ids those calls would give them, after the
+text's letters. A mark's ends must fall between the text's elements; the
+batch checks every text's marks before it makes any op
+(`check_written_marks`), so a refused batch leaves nothing half written. The
+marked spots are `TILO(batched-marks)` in `transaction/inner.rs` and
+`hydrate/text.rs`. Pinned by `tests/batch_marks.rs`: random texts with
+marks of every expand kind save byte for byte as the same text marked
+after; edits and marks made alongside merge alike; a rolled back batch
+leaves the document as it was. Upstreamable.
+
+# Tilo patch: read back the change just made, and where a change writes
+
+Everything that follows a local write reads the change it just made: the
+view of the record refreshes from what it touched, the write answers the
+items it made, a worker hands the change on. `get_change_by_hash` and
+`get_changes` built that change again from the op set each time, and each
+reader decoded every operation into a legacy op (an actor id cloned per
+object, key and predecessor, a string per inserted character) only to learn
+which objects and keys it touched. The document now keeps the change it last
+made locally as the transaction built it (`Automerge::local`), and hands it
+back for its hash, or as the changes since the version it was made on while
+it is the only head. `Automerge::change_touches(change)` names where a change
+the document holds writes, read from the operations' object, key and action
+columns alone (`iter_touches`): each object once per map key it writes there
+(`None` for a position in a list or text), and each object it makes with
+where it makes it, as ids of this document. The marked spots are
+`TILO(local-change)` and `TILO(touches)` in `automerge.rs`,
+`transaction/inner.rs`, `change.rs`, `storage/change.rs` and
+`storage/change/change_op_columns.rs`. Pinned by
+`crates/doc/tilo-automerge/tests/change_touches.rs`.

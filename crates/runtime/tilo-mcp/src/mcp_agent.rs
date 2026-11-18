@@ -1972,21 +1972,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let provider = resolved.provider.clone();
         let mut levels = std::mem::take(&mut resolved.levels);
         let Some((owner, reader)) = self.reader(&resolved, &mut levels).await? else {
-            let mut text = format!(
-                "{} has no read action; its actions: {}",
-                resolved.path,
-                list_names(
-                    &resolved
-                        .actions
-                        .iter()
-                        .map(|action| action.address.action.clone())
-                        .collect::<Vec<_>>()
-                )
-            );
-            if !resolved.children.is_empty() {
-                text.push_str("; tilo_ls lists what is inside");
+            // A read its caller's rules keep off their directory is theirs to be refused: the
+            // app still publishes one, and the host answers whether this turn may read it.
+            if let Some(refused) = self.refused_read_answer(&resolved).await? {
+                return Ok(refused);
             }
-            return Ok(Reply::failed(text));
+            return Ok(no_read_action(&resolved));
         };
         // A cursor this tool issued for the rest of a cut answer reads the
         // same page again and answers from where the cut was; any other is
@@ -2046,6 +2037,51 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             args.max_chars,
         ));
         Ok(if outside { reply.labelled() } else { reply })
+    }
+
+    /// The answer a caller whose rules keep a read off their directory is given: the app's
+    /// refusal as not permitted, when it publishes a read of the target to others.
+    async fn refused_read_answer(&self, resolved: &Resolved) -> Result<Option<Reply>, String> {
+        let Some(node) = resolved.node.as_ref() else {
+            return Ok(None);
+        };
+        Ok(self
+            .refused_read(&resolved.provider, &node.id)
+            .await?
+            .map(|why| Reply::failed(format!("not_permitted: {why}"))))
+    }
+
+    /// Why the app's own read of the resource `resource` at `provider` is not this caller's,
+    /// when the caller's rules keep it off their directory and the host refuses it as not
+    /// permitted; `None` when the app offers no read there either.
+    async fn refused_read(&self, provider: &str, resource: &str) -> Result<Option<String>, String> {
+        let call = OneCall {
+            provider: Addressed {
+                provider: provider.to_owned(),
+                app_id: None,
+            },
+            workspace: false,
+            revision: None,
+            resource: resource.to_owned(),
+            action: "read".to_owned(),
+            arguments: serde_json::Map::new(),
+            invocation_id: None,
+            wait_ms: Some(DEFAULT_WAIT_MS),
+        };
+        match Box::pin(self.invoke_one(call)).await {
+            Err(why)
+                if matches!(
+                    why.host,
+                    Some(
+                        tilo_actions::remote::ActionCallError::NotPermitted
+                            | tilo_actions::remote::ActionCallError::Refused { .. }
+                    )
+                ) =>
+            {
+                Ok(Some(why.to_string()))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// The action that reads `resolved`, and the id of the resource that
@@ -2747,6 +2783,26 @@ mod level;
 #[path = "mcp_agent_resolved.rs"]
 pub(super) mod resolved;
 use resolved::{Resolution, ResolvedAction};
+
+/// The answer to a read of `resolved` when it publishes no read action: the actions it has, and
+/// where to look inside it.
+fn no_read_action(resolved: &Resolved) -> Reply {
+    let mut text = format!(
+        "{} has no read action; its actions: {}",
+        resolved.path,
+        list_names(
+            &resolved
+                .actions
+                .iter()
+                .map(|action| action.address.action.clone())
+                .collect::<Vec<_>>()
+        )
+    );
+    if !resolved.children.is_empty() {
+        text.push_str("; tilo_ls lists what is inside");
+    }
+    Reply::failed(text)
+}
 
 #[cfg(test)]
 #[path = "mcp_agent_tests.rs"]

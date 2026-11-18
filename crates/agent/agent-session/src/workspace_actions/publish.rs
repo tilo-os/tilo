@@ -522,10 +522,15 @@ impl Worker {
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
+    ///
+    /// An open of an app (`opens`) is not one of the changes it writes: the
+    /// app opens though the workspace refuses what it wrote to its document on
+    /// opening, and that refusal is the change's, reported as it is.
     pub(super) fn saved(
         &mut self,
         workspace_id: WorkspaceId,
         outcome: Performed,
+        opens: bool,
     ) -> (Performed, Option<Unsaved>) {
         if outcome.is_err() {
             return (outcome, None);
@@ -533,12 +538,11 @@ impl Worker {
         let routes: HashSet<DocumentRoute> =
             self.handed.values().flatten().map(Written::route).collect();
         self.wrote.extend(routes.iter().cloned());
-        let (outcome, mut unsaved) = match self.saving(workspace_id) {
-            Saving::Saved => return (outcome, None),
-            Saving::Failed(reason) => (Err(Outcome::Failed(unsaved_failure(reason))), None),
-            Saving::Refused(reason) => (Err(Outcome::Failed(refused_failure(reason))), None),
-            Saving::Pending(unsaved) => (outcome, Some(unsaved)),
-        };
+        let saving = self.saving(workspace_id);
+        if matches!(saving, Saving::Saved) {
+            return (outcome, None);
+        }
+        let (outcome, mut unsaved) = settled(outcome, saving, opens);
         let holders: HashSet<DocumentRoute> =
             routes.iter().map(|route| self.holder_of(route)).collect();
         let made: Vec<_> = self
@@ -924,11 +928,51 @@ fn unsaved_failure(message: String) -> ActionFailure {
 /// Why an action whose change the workspace refused for good failed, in the
 /// workspace's words. Asked again, the same change is refused again, so it is
 /// not retryable, and the invocation keeps the failure for whoever follows it.
+/// `outcome`, an action's whose writes stand as `saving` says: failed where
+/// they were not saved, except that an open of an app (`opens`) opened though
+/// the workspace refused what the app wrote on opening; and with what is
+/// still on its way to be saved.
+fn settled(outcome: Performed, saving: Saving, opens: bool) -> (Performed, Option<Unsaved>) {
+    match saving {
+        Saving::Saved => (outcome, None),
+        Saving::Failed(reason) => (Err(Outcome::Failed(unsaved_failure(reason))), None),
+        Saving::Refused(reason) if opens => {
+            tracing::warn!(
+                %reason,
+                "workspace actions: an app opened; what it wrote to its document on opening is not saved"
+            );
+            (outcome, None)
+        }
+        Saving::Refused(reason) => (Err(Outcome::Failed(refused_failure(reason))), None),
+        Saving::Pending(unsaved) => (outcome, Some(unsaved)),
+    }
+}
+
 fn refused_failure(message: String) -> ActionFailure {
     ActionFailure {
         code: "write_refused".into(),
         message,
         details: None,
         retryable: false,
+    }
+}
+
+#[cfg(test)]
+mod settled_tests {
+    use super::{ActionOutput, Outcome, Saving, settled};
+
+    /// An app opens though the workspace refuses what it wrote to its document on
+    /// opening; any other action whose change is refused fails with it.
+    #[test]
+    fn an_app_opens_though_what_it_wrote_on_opening_is_refused() {
+        let refused = || Saving::Refused("the server did not save the change: refused".into());
+        let (opened, unsaved) = settled(Ok((ActionOutput::default(), None)), refused(), true);
+        assert!(opened.is_ok(), "the open is answered as done");
+        assert!(unsaved.is_none(), "nothing waits to be saved");
+        let (changed, _) = settled(Ok((ActionOutput::default(), None)), refused(), false);
+        assert!(
+            matches!(changed, Err(Outcome::Failed(failure)) if failure.code == "write_refused"),
+            "a refused change fails its action"
+        );
     }
 }

@@ -75,5 +75,16 @@ pub(super) struct LogRef<'a> {
     pub(super) administration: &'a [AdministrationRecord],
 }
 
+/// Why the workspace kept at `path` under the state directory `dir` does not open: its own words,
+/// which say what to do with the directory when the state is of a format this build does not read,
+/// and the directory they mean.
+pub(super) fn unopened(path: &std::path::Path, dir: &std::path::Path, error: &str) -> String {
+    format!(
+        "{}: record: {error} (the state directory is {})",
+        path.display(),
+        dir.display()
+    )
+}
+
 #[cfg(test)]
 mod tests;

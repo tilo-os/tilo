@@ -61,6 +61,10 @@ name = "batch_insert"
 path = "tests/batch_insert.rs"
 
 [[test]]
+name = "batch_marks"
+path = "tests/batch_marks.rs"
+
+[[test]]
 name = "block_tests"
 path = "tests/block_tests.rs"
 

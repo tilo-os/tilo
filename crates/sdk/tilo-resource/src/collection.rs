@@ -756,7 +756,7 @@ pub(crate) fn store_in_order(
     doc: &mut Doc,
     slot: Slot<'_>,
     items: &[(&Id, &dyn Stores)],
-    order_only: bool,
+    (order_only, shared): (bool, &SharedAt<'_>),
     quarantined: &dyn Fn(&Id) -> bool,
 ) -> Result<(), ModelError> {
     let map = slot.object(doc, ObjType::Map)?;
@@ -774,12 +774,30 @@ pub(crate) fn store_in_order(
         .map(|entry| (&entry.id, entry.key.as_str()))
         .collect();
     let keys = order_keys(items.iter().map(|(id, _)| *id), &by_id);
-    for ((id, item), key) in items.iter().zip(keys) {
-        put_entry(doc, &map, id, key, order_only, &|doc, slot| {
-            item.store_to(doc, slot)
+    for (index, ((id, item), key)) in items.iter().zip(keys).enumerate() {
+        let new = !by_id.contains_key(id);
+        put_entry(doc, &map, id, key, order_only, &|doc, value| {
+            item.store_to(doc, value)?;
+            if new {
+                note_stored(value, &|| shared(index));
+            }
+            Ok(())
         })?;
     }
     Ok(())
+}
+
+/// The item at a position as its collection shares it, when it reads back as
+/// it is written ([`Entries::shared_at`]); `None` for one that does not.
+pub(crate) type SharedAt<'a> = dyn Fn(usize) -> Option<Box<dyn Any>> + 'a;
+
+/// The item `shared` gives was just stored whole as `value`, an entry's:
+/// kept for the reader that follows this write
+/// ([`crate::apply_cache::note_stored`]).
+fn note_stored(value: Slot<'_>, shared: &dyn Fn() -> Option<Box<dyn Any>>) {
+    if let Slot::Key(entry, _) = value {
+        crate::apply_cache::note_stored(entry, shared);
+    }
 }
 
 /// The order key each of `ids` is stored under, given the keys `stored`
@@ -1635,6 +1653,13 @@ pub(crate) trait Entries {
     fn release(&mut self, id: &Id);
     /// Only a whole write stores the collection as it now is.
     fn needs_whole_write(&self) -> bool;
+    /// The item at `at` as this collection shares it: an `Arc` of it, with
+    /// how to copy it.
+    fn shared_at(&self, at: usize) -> Option<Box<dyn Any>>;
+    /// Put `stored`, an item as [`Self::shared_at`] gave it, at `at` or
+    /// appended, as `entry`: its id and order key. Whether it was one of this
+    /// collection's items.
+    fn put_shared(&mut self, at: Option<usize>, entry: (Id, String), stored: &dyn Any) -> bool;
 }
 
 impl<T: 'static> Entries for Collection<T> {
@@ -1737,6 +1762,50 @@ impl<T: 'static> Entries for Collection<T> {
     fn needs_whole_write(&self) -> bool {
         self.whole_write
     }
+
+    /// Only from a collection that can copy what it shares: the one taking it
+    /// must be able to copy it before changing it.
+    fn shared_at(&self, at: usize) -> Option<Box<dyn Any>> {
+        let entry = self.items.get(at)?;
+        let copy = *self.copier.0.get()?;
+        Some(Box::new((Arc::clone(&entry.item), copy)))
+    }
+
+    fn put_shared(
+        &mut self,
+        at: Option<usize>,
+        (id, order): (Id, String),
+        stored: &dyn Any,
+    ) -> bool {
+        let Some((item, copy)) = stored.downcast_ref::<(Arc<T>, fn(&T) -> T)>() else {
+            return false;
+        };
+        // Shared from here on: copied before it is changed.
+        let _ = self.copier.0.set(*copy);
+        let item = Arc::clone(item);
+        if let Some(entry) = at.and_then(|at| self.items.get_mut(at)) {
+            entry.item = item;
+            entry.key = Some(order);
+        } else {
+            self.items.push(Entry {
+                id,
+                key: Some(order),
+                item,
+            });
+            self.index.reset();
+        }
+        true
+    }
+}
+
+/// The item at `at` of `entries`, of the type `item`, as they share it, when it
+/// reads back as it is written: an item holding rich text reads back as the
+/// document's own structure, and is read.
+fn shared_item(item: &ModelTable, entries: &dyn Entries, at: usize) -> Option<Box<dyn Any>> {
+    if item.has_ops {
+        return None;
+    }
+    entries.shared_at(at)
 }
 
 /// What `Collection<T>`'s table reaches into one with.
@@ -2012,7 +2081,11 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
         for (id, item) in &held {
             items.push((*id, item as &dyn Stores));
         }
-        store_in_order(doc, slot, &items, order_only(desc.item), &|id| {
+        let shared = |at: usize| {
+            let at = entries.find(held.get(at)?.0)?;
+            shared_item(desc.item, entries, at)
+        };
+        store_in_order(doc, slot, &items, (order_only(desc.item), &shared), &|id| {
             entries.is_quarantined(id)
         })
     },
@@ -2075,9 +2148,13 @@ pub static COLLECTION_OPS: ModelOps = ModelOps {
                     }
                     _ => false,
                 },
-                store: &|at_now, doc, slot| match now.item_at(at_now) {
-                    Some(value) => (item.ops.store)(item, value, doc, slot),
-                    None => Ok(()),
+                store: &|at_now, doc, into| {
+                    let Some(value) = now.item_at(at_now) else {
+                        return Ok(());
+                    };
+                    (item.ops.store)(item, value, doc, into)?;
+                    note_stored(into, &|| shared_item(item, now, at_now));
+                    Ok(())
                 },
                 changed: &|at_now, at_was, doc, entry, dirty| match (
                     now.item_at(at_now),
@@ -2398,6 +2475,18 @@ fn refresh_entries(
             }
             // A new item, or one whose entry was replaced.
             Touched::Fresh { entry, order } => {
+                // Stored by the write this follows: taken as it was written.
+                let shared = crate::apply_cache::take_stored(&entry, &mut |stored| {
+                    entries.put_shared(position, (item_id.clone(), order.clone()), stored)
+                });
+                if shared {
+                    entries.release(&item_id);
+                    if position.is_none() {
+                        entries.changed();
+                    }
+                    reorder = true;
+                    continue;
+                }
                 let slot = crate::model::get_slot(doc, &entry, VALUE).located(key)?;
                 let mut merged = false;
                 let mut fill = |into: &mut dyn Any| -> Result<(), ModelError> {

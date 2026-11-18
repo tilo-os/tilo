@@ -405,6 +405,12 @@ async fn no_agent_reads_or_changes_a_persons_key() {
             ),
         ] {
             let verb = asking.0;
+            // The agent her own computer hands its session to asks her model as that computer
+            // does ([`the_person_and_their_own_computers_agent_ask_their_model`]); her keys
+            // are no agent's either way.
+            if verb == person_models::ASK && agent.is_session_delegated() {
+                continue;
+            }
             let refused = ask_as(&host, workspace_id, &ada, agent, asking).await;
             assert!(
                 matches!(refused, Err(ActionCallError::UnknownAction)),
@@ -513,12 +519,12 @@ async fn a_pages_ask_is_answered_as_the_model_writes_it() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let (workspace, workspace_id, actions_here) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let said = "one two three four five six seven eight";
     workspaces.answer_models_with(ScriptedProvider::answering([Reply::text(said)]));
     let provider = link(
-        &host,
+        &actions_here,
         workspace_id,
         &ada,
         ("Google", "https://models.example.com/v1", ADA_KEY),
@@ -528,7 +534,7 @@ async fn a_pages_ask_is_answered_as_the_model_writes_it() {
         .offer_models_for(&ada.user_public_key, &provider, &["gemini-main"])
         .unwrap();
     ask_own(
-        &host,
+        &actions_here,
         workspace_id,
         &ada,
         person_models::SET_DEFAULT,
@@ -537,7 +543,7 @@ async fn a_pages_ask_is_answered_as_the_model_writes_it() {
     .await
     .unwrap();
 
-    let actions = host.in_workspace_as(workspace_id, &ada);
+    let actions = actions_here.in_workspace_as(workspace_id, &ada);
     let her = super::tests::caller(&ada);
     let mut request = super::tests::request(
         "",
@@ -891,5 +897,64 @@ async fn a_vault_items_key_the_provider_does_not_take_leaves_the_kept_key_in_use
     );
     for key in [KEPT_KEY, ITEM_KEY, UNKNOWN_KEY] {
         assert!(!reason.contains(key) && !view.to_string().contains(key));
+    }
+}
+
+/// A computer logged in as the person acts as them: the person on it, and the agent it hands
+/// its own session to (its apps, the person's own agent), ask the person's model.
+#[tokio::test]
+async fn the_person_and_their_own_computers_agent_ask_their_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, _) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let laptop = super::tests::caller(&ada);
+    let own_agent = laptop
+        .clone()
+        .delegated_to(tilo_actions::remote::device_agent_id(
+            &ada.user_public_key,
+            "Claude Code",
+        ));
+    for (who, asking) in [("the person", laptop), ("her own agent", own_agent)] {
+        assert_eq!(
+            Workspaces::asking_for_model(&asking, Some(&ada), Some(workspace_id)),
+            Ok(ada.user_public_key),
+            "{who} asks her model"
+        );
+    }
+}
+
+/// An agent a grant admitted uses the person's model only as far as its grant says: asking
+/// it directly answers nothing, whether a delegation admitted it on a device of the person's
+/// or a key was minted for it.
+#[tokio::test]
+async fn an_agent_a_grant_admitted_does_not_ask_the_persons_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, _) = governed(workspaces).await;
+    let granted_device = admit(workspaces, &workspace, &owner, 2).await;
+    let granted = Caller::delegated_agent(
+        "careful",
+        granted_device.user_public_key,
+        granted_device.device_public_key,
+    );
+    let mut key_cert = admit(workspaces, &workspace, &owner, 3).await;
+    key_cert.capabilities.agent = Some(tilo_user_identity::AgentScope::AllWorkspaces);
+    let keyed = super::tests::caller(&key_cert).delegated_to(tilo_action_policy::key_agent_id(
+        &key_cert.device_public_key,
+    ));
+    for (who, asking, certificate) in [
+        ("an agent a delegation admitted", granted, &granted_device),
+        ("an agent a key was minted for", keyed, &key_cert),
+    ] {
+        assert_eq!(
+            Workspaces::asking_for_model(&asking, Some(certificate), Some(workspace_id)),
+            Err(ActionCallError::UnknownAction),
+            "{who} is answered nothing"
+        );
     }
 }

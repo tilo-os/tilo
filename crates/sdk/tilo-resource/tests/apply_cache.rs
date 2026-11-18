@@ -696,3 +696,24 @@ fn the_action_after_a_group_starts_from_what_the_group_wrote() {
     assert_eq!(live.heads(), cold.heads(), "the replayed actions differ");
     assert_eq!(live.state().unwrap(), cold.state().unwrap());
 }
+
+/// The view that follows a group takes the items the group stored as they were written: it
+/// reads none of them back, holds what reading the whole document holds, and follows the
+/// changes after it as it follows any other.
+#[test]
+fn the_view_after_a_group_takes_the_items_it_stored() {
+    let mut live = seeded(50);
+    let members: Vec<tilo_resource::Invoke<Checklist>> = (0..20)
+        .map(|n| Checklist::ADD.with(format!("bulk {n}")))
+        .collect();
+    live.apply(tilo_resource::Invoke::group(members)).unwrap();
+    let (followed, (loads, _)) = counted(|| live.live().unwrap().clone());
+    assert_eq!(loads, 0, "the view reads none of the group's tasks back");
+    assert_eq!(followed, live.state().unwrap());
+    assert_eq!(followed.tasks.len(), 70);
+
+    let added = followed.tasks.ids().last().unwrap().clone();
+    live.apply(Checklist::TOGGLE.with(added.clone())).unwrap();
+    live.apply(Checklist::MOVE_TASK.with((added, 0))).unwrap();
+    assert_eq!(live.live().unwrap().clone(), live.state().unwrap());
+}

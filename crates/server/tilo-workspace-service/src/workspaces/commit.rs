@@ -33,6 +33,7 @@ pub(super) fn prepare_governance(
 ) -> Result<(), String> {
     peer.governance_mut()
         .reconcile_administrator_grants(key, now)?;
+    peer.governance_mut().drop_names_of_nobody(key, now)?;
     peer.media_mut().reconcile_media_governance(key, now)?;
     peer.media().validate_media_governance_for_publication()
 }

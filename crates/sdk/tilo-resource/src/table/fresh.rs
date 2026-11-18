@@ -57,8 +57,8 @@ pub(super) fn fresh_fields(
 }
 
 /// Write the fields of `desc` that `value` holds into a map made at `at` just
-/// now: the map made holding every field that can be, its texts marked as
-/// their writer's, then each other field stored into it.
+/// now: the map made holding every field that can be (its texts marked as
+/// their writer's), then each other field stored into it.
 pub(super) fn store_made(
     desc: &ResourceDesc,
     value: &dyn Any,
@@ -66,9 +66,7 @@ pub(super) fn store_made(
     at: Slot<'_>,
 ) -> Result<(), ModelError> {
     let (fields, later) = fresh_fields(desc, value, automerge::ReadDoc::text_encoding(doc))?;
-    let made = automerge::hydrate::Value::Map(fields);
-    let obj = at.make(doc, &made)?;
-    crate::text::mark_made(doc, &obj, &made)?;
+    let obj = at.make(doc, &automerge::hydrate::Value::Map(fields))?;
     for index in later {
         let field = desc
             .fields

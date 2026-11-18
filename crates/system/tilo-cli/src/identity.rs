@@ -192,6 +192,10 @@ pub struct Asked {
     pub client: String,
     pub grant_key: [u8; 32],
     pub server_key: bool,
+    /// What the key reaches: `all` of the person's workspaces, or one workspace's id.
+    pub scope: String,
+    /// Whether the key operates web pages in Browser without asking each time.
+    pub pages: bool,
     pub expires_at_ns: Option<u64>,
 }
 
@@ -229,25 +233,53 @@ pub fn asked(location: &str) -> Result<Asked> {
         client: query.get("client").cloned().unwrap_or_default(),
         grant_key: key("grant_key")?,
         server_key: query.get("grant_kind").map(String::as_str) == Some("server_key"),
+        scope: query
+            .get("grant_scope")
+            .cloned()
+            .unwrap_or_else(|| "all".to_owned()),
+        pages: query.get("grant_pages").map(String::as_str) == Some("1"),
         expires_at_ns,
     })
 }
 
 /// The proof and the grant certificate `person` answers `asked` with, as
-/// the page posts them back: `pending`, `proof` and `grant`.
+/// the page posts them back: `pending`, `proof` and `grant`. A key for all of
+/// the person's workspaces is a server key; one for a single workspace is an
+/// agent's grant for that workspace, as their Tilo certifies it on its sign-in
+/// card: narrower than what this computer approves already.
 ///
 /// # Errors
-/// A key for one workspace, which the person approves in their Tilo, or a
-/// certificate that does not sign.
+/// A scope that is neither `all` nor a workspace id, a key for one workspace
+/// that names no expiry, or a certificate that does not sign.
 pub fn answer(person: &Person, asked: &Asked) -> Result<Vec<(&'static str, String)>> {
-    if !asked.server_key {
-        bail!("this computer approves keys for all your workspaces; approve this one in your Tilo");
+    let scope = tilo_user_identity::AgentScope::parse(&asked.scope).with_context(|| {
+        format!(
+            "the key asks to reach {}, which is no workspace",
+            asked.scope
+        )
+    })?;
+    let capabilities = match scope {
+        tilo_user_identity::AgentScope::AllWorkspaces if asked.server_key => {
+            DeviceCapabilities::server_key_grant()
+        }
+        tilo_user_identity::AgentScope::Workspace(_) if asked.server_key => {
+            bail!("a server key reaches all your workspaces")
+        }
+        scope => {
+            if asked.expires_at_ns.is_none() {
+                bail!(
+                    "a key for one workspace lasts until a time it names, and this one names none"
+                );
+            }
+            DeviceCapabilities::agent_grant(scope)
+        }
     }
+    .with_browser_pages(asked.pages);
     let mut grant = DeviceCert {
         user_public_key: person.root.verifying_key().to_bytes(),
         device_public_key: asked.grant_key,
         device_label: tilo_server_client::sign_in::grant_label(&asked.client, &asked.audience),
-        capabilities: DeviceCapabilities::server_key_grant(),
+        capabilities,
         issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
         expires_at_ns: asked.expires_at_ns,
         signature: [0; 64],
@@ -443,8 +475,41 @@ mod tests {
         tilo_user_identity::verify_device_cert(&grant).unwrap();
         assert_eq!(grant.device_public_key, [9; 32]);
         assert_eq!(grant.capabilities, DeviceCapabilities::server_key_grant());
-        // A key for one workspace is the person's to approve in their Tilo.
-        let one = asked(&location.replace("&grant_kind=server_key", "")).unwrap();
-        assert!(answer(&person, &one).is_err());
+        // A key for one workspace is narrower than a server key: this computer approves it too,
+        // as the person's Tilo certifies it, an agent's grant for that workspace until the time
+        // it names.
+        let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
+        let until_ms = tilo_clock::unix_now_ns() / 1_000_000 + 3_600_000;
+        let one = asked(
+            &location
+                .replace("&grant_kind=server_key", "&grant_pages=1")
+                .replace("grant_scope=all", &format!("grant_scope={workspace}"))
+                .replace("grant_expires=never", &format!("grant_expires={until_ms}")),
+        )
+        .unwrap();
+        assert!(!one.server_key);
+        let form = answer(&person, &one).unwrap();
+        let grant: DeviceCert = decoded(&form[2].1);
+        tilo_user_identity::verify_device_cert(&grant).unwrap();
+        assert_eq!(
+            grant.capabilities,
+            DeviceCapabilities::agent_grant(
+                tilo_user_identity::AgentScope::parse(workspace).unwrap()
+            )
+            .with_browser_pages(true)
+        );
+        assert_eq!(grant.expires_at_ns, Some(until_ms * 1_000_000));
+        // A server key reaches all workspaces, never one; a key for one lasts until a time.
+        let narrowed =
+            asked(&location.replace("grant_scope=all", &format!("grant_scope={workspace}")))
+                .unwrap();
+        assert!(answer(&person, &narrowed).is_err());
+        let endless = asked(
+            &location
+                .replace("&grant_kind=server_key", "")
+                .replace("grant_scope=all", &format!("grant_scope={workspace}")),
+        )
+        .unwrap();
+        assert!(answer(&person, &endless).is_err());
     }
 }

@@ -296,7 +296,8 @@ mod work;
 
 pub use crate::anonymize::AnonymizeError;
 pub use crate::automerge::{
-    Automerge, LoadInSlices, LoadOptions, OnPartialLoad, SaveOptions, StringMigration,
+    Automerge, ChangeTouches, LoadInSlices, LoadOptions, OnPartialLoad, SaveOptions,
+    StringMigration,
 };
 pub use author::Author;
 pub use autocommit::AutoCommit;

@@ -1937,7 +1937,7 @@ tilo_test_env::scenario! {
         .unwrap();
         assert!(
             error.contains("this state is from an older format")
-                && error.contains("start fresh with a new state directory"),
+                && error.contains("move the state directory aside"),
             "a version this build does not read is said plainly: {error}"
         );
         assert_eq!(bytes, unchanged);

@@ -193,6 +193,9 @@ class Push(NamedTuple):
     behind: list[str] = []
     # Pushes that would rewrite integration: its head on the remote is not part of what is sent.
     rewrites: list[str] = []
+    # The heads this push sends to main, and to integration.
+    main_heads: list[str] = []
+    integration_heads: list[str] = []
 
 
 def git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -232,11 +235,18 @@ def pushed(root: Path, lines: Iterable[str]) -> Push:
     unnamed: list[str] = []
     behind: list[str] = []
     rewrites: list[str] = []
+    main_heads: list[str] = []
+    integration_heads: list[str] = []
     for line in lines:
         parts = line.split()
         if len(parts) != 4:
             continue
         ref, head, remote_ref, remote_oid = parts
+        if set(head) != ZERO_OID:
+            if remote_ref == MAIN_REF:
+                main_heads.append(head)
+            elif remote_ref == INTEGRATION_REF:
+                integration_heads.append(head)
         if (remote_ref == INTEGRATION_REF and set(remote_oid) != ZERO_OID
                 and not contains(root, head, remote_oid)):
             rewrites.append(remote_oid)
@@ -256,7 +266,32 @@ def pushed(root: Path, lines: Iterable[str]) -> Push:
         comparisons.append((start, head))
         tips.append(head)
         files |= changed
-    return Push(files, comparisons, tips, unnamed, behind, rewrites)
+    return Push(files, comparisons, tips, unnamed, behind, rewrites, main_heads,
+                integration_heads)
+
+
+# Set in the environment of a coding agent's shell. A push to main from one is held to the rule
+# that main only fast-forwards to what integration holds; a person pushing by hand is not.
+AGENT_MARKERS = ("AI_AGENT", "CLAUDECODE")
+
+
+def unintegrated(root: Path, remote: str, push: Push) -> str | None:
+    """A head this push sends to main that integration does not hold, if any.
+
+    main moves only to a commit integration already has: tools/integrate.sh pushes the tested
+    commit to both in one atomic push, so it is in this push's own integration head. A push
+    that sends main alone is checked against the remote's integration as it stands now.
+    """
+    if not push.main_heads:
+        return None
+    integrations = list(push.integration_heads)
+    if not integrations:
+        listed = git(root, "ls-remote", remote, INTEGRATION_REF)
+        integrations = [line.split()[0] for line in listed.stdout.splitlines() if line.strip()]
+    for head in push.main_heads:
+        if not any(contains(root, integration, head) for integration in integrations):
+            return head
+    return None
 
 
 def rust_changes(files: set[str]) -> set[str]:
@@ -828,6 +863,13 @@ def main(argv: list[str]) -> int:
         say(f"pre-push: integration is at {push.rewrites[0][:12]}, which this push does not contain, "
             "so it would drop the commits after it, which are other people's work. Fetch, rebase "
             "or merge onto origin/integration, and push again")
+        return 1
+    if any(os.environ.get(marker) for marker in AGENT_MARKERS) and (
+            head := unintegrated(root, options.remote, push)):
+        say(f"pre-push: {head[:12]} is not on integration, and main moves only to what "
+            "integration holds. Push your work to origin/integration; tools/integrate.sh tests it "
+            "once and moves main. For a fix to a red main, push the one fix to integration and "
+            "run tools/integrate.sh: it moves main as soon as that fix passes")
         return 1
     if push.behind:
         say(f"pre-push: main is at {push.behind[0][:12]} now, which this push does not contain, so "

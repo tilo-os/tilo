@@ -49,8 +49,9 @@ struct StagedBlock {
 }
 
 impl StagedBlock {
-    /// The block as the tree the op-by-op path would have built.
-    fn into_value(self, encoding: TextEncoding) -> hydrate::Value {
+    /// The block as the tree the op-by-op path would have built, its text made
+    /// with `marks` over it as they would be set on it once written.
+    fn into_value(self, encoding: TextEncoding, marks: Vec<StagedMark>) -> hydrate::Value {
         let attrs: HashMap<String, hydrate::Value> = self
             .attrs
             .into_iter()
@@ -64,7 +65,15 @@ impl StagedBlock {
         block.insert(BLOCK_KIND, hydrate::Value::scalar(self.kind));
         block.insert(BLOCK_ATTRS, hydrate::Value::Map(attrs.into()));
         if let Some(text) = &self.text {
-            block.insert(BLOCK_TEXT, hydrate::Value::text(encoding, text));
+            let made = marks
+                .into_iter()
+                .fold(hydrate::Text::new(encoding, text), |made, m| {
+                    made.with_mark(
+                        Mark::new(m.name, m.value, m.start, m.end),
+                        ExpandMark::After,
+                    )
+                });
+            block.insert(BLOCK_TEXT, hydrate::Value::Text(made));
         }
         hydrate::Value::Map(block.into())
     }
@@ -341,7 +350,9 @@ impl DocMut<'_> {
     }
 }
 
-/// Write staged blocks as one batch object each, then apply the marks as local operations.
+/// Write staged blocks as one batch object each, the marks over a block's
+/// text made with it, then apply the other marks (on blocks written before the
+/// scope) as local operations.
 ///
 /// # Panics
 ///
@@ -353,22 +364,47 @@ impl DocMut<'_> {
 )]
 fn write_as_ops(doc: &mut AutoCommit, blocks: Vec<StagedBlock>, marks: Vec<StagedMark>) {
     let encoding = doc.text_encoding();
-    let marked: HashSet<(&ObjId, &str)> = marks
+    // A batch counts a mark's ends in the document's units; staged marks count
+    // characters, which only code points count as.
+    let lengths: HashMap<(&ObjId, &str), usize> = blocks
+        .iter()
+        .filter(|_| encoding == TextEncoding::UnicodeCodePoint)
+        .filter(|b| b.text.is_some())
+        .map(|b| ((&b.container, b.id.as_str()), b.text_len))
+        .collect();
+    let mut made: HashMap<(ObjId, String), Vec<StagedMark>> = HashMap::new();
+    let mut after = Vec::new();
+    for m in marks {
+        match lengths.get(&(&m.container, m.block.as_str())) {
+            Some(&len) if m.start <= m.end && m.end <= len => made
+                .entry((m.container.clone(), m.block.clone()))
+                .or_default()
+                .push(m),
+            _ => after.push(m),
+        }
+    }
+    let marked: HashSet<(&ObjId, &str)> = after
         .iter()
         .map(|m| (&m.container, m.block.as_str()))
         .collect();
     let mut written: HashMap<(ObjId, String), ObjId> = HashMap::new();
     for block in blocks {
         let key = (block.container.clone(), block.id.clone());
+        let marks = made.remove(&key).unwrap_or_default();
         let obj = doc
-            .batch_create_object(&key.0, key.1.as_str(), &block.into_value(encoding), false)
+            .batch_create_object(
+                &key.0,
+                key.1.as_str(),
+                &block.into_value(encoding, marks),
+                false,
+            )
             .expect("staged block container resolves");
         if marked.contains(&(&key.0, key.1.as_str())) {
             written.insert(key, obj);
         }
     }
     let mut texts: HashMap<(ObjId, String), Option<ObjId>> = HashMap::new();
-    for m in marks {
+    for m in after {
         let key = (m.container.clone(), m.block.clone());
         let text = texts
             .entry(key.clone())

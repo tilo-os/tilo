@@ -645,6 +645,7 @@ web_env() {
     "TILO_WEB_HOME_ENTRY=$server_origin/peer/v1/directory/$workspace/" \
     TILO_WEB_HOME_FEEDBACK=c_feedback \
     "TILO_WEB_DIRECTORY=$server_origin/peer/v1/directory" \
+    "TILO_WEB_API=$api_origin" \
     "TILO_WEB_SHELF=http://127.0.0.1:$plain_port" \
     "TILO_RELEASES_ORIGIN=http://127.0.0.1:$releases_port/tilo-cli"
 }

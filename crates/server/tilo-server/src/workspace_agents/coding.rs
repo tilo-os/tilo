@@ -434,7 +434,8 @@ impl super::HostAgents {
         self.sub_began(&scope.workspace, &turn).await;
         let from_starter = turn.line.as_ref().is_some_and(|line| line.from_starter);
         let began = turn.ask.clone();
-        let (outcome, told_job) = self.work_coding(scope, &mut turn, &mut reply, going).await;
+        let (outcome, told_job) =
+            Box::pin(self.work_coding(scope, &mut turn, &mut reply, going)).await;
         let ended = reply.finished(&outcome).await;
         if matches!(outcome, Outcome::Cancelled) {
             // Its person stopped it: what it asked them and still waits is taken back.

@@ -733,12 +733,13 @@ reason = "t's name for this check and the image it tests, the console of the VM 
 words = ["host", "run", "record", "slot", "subject"]
 paths = ["tools/ci/host-assurance.sh"]
 
-[[allow]]
 # The server OS image's established names: Containerfile.host, image-host,
 # test-image-host, host-binaries, host-build.sh, host-base.sh and
 # host-assurance-x86_64. They name the machine running workspaces' VMs, which
 # the glossary calls the server now, and the names are what the tree's checks
 # and files already answer to; renaming them is a tree-wide change of its own.
+
+[[allow]]
 reason = "The server OS image's established file and check names."
 words = ["host"]
 paths = [
@@ -920,3 +921,9 @@ paths = [
     "crates/system/tilo-auth/src/sibling/enrol.rs",
     "crates/system/tilo-auth/tests/peer_enrol.rs",
 ]
+
+[[allow]]
+reason = "A call's failure names the host's own error beside its text (`Failure::host`): this file tells a policy refusal from a call the app cannot answer."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_agent.rs"]

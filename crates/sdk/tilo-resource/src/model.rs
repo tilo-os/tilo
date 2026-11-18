@@ -110,8 +110,8 @@ impl ModelError {
 pub enum Fresh {
     /// Nothing: the key stays absent, as for an absent `Option`.
     Nothing,
-    /// This value, made with the map. A text in it is a `String` field's, and
-    /// is marked as its writer's once made, as [`Model::store`] marks it.
+    /// This value, made with the map. A text in it is made with the marks
+    /// [`Model::store`] would set on it (a `String` field's author).
     Value(automerge::hydrate::Value),
     /// Written by [`Model::store`] once the map is made.
     Store,
@@ -1559,9 +1559,11 @@ impl Model for String {
         }
         Ok(())
     }
-    /// Its text, marked as its writer's once made.
+    /// Its text, made marked as its writer's.
     fn fresh(&self, encoding: automerge::TextEncoding) -> Fresh {
-        Fresh::Value(automerge::hydrate::Value::text(encoding, self))
+        Fresh::Value(automerge::hydrate::Value::Text(crate::text::authored(
+            encoding, self,
+        )))
     }
     #[inline(never)]
     fn stores_as(&self, before: &Self) -> bool {

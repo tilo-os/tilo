@@ -24,6 +24,8 @@ use std::time::Duration;
 
 use crate::api::{self, Client, Reach};
 
+mod key_api;
+
 const MAX_ANSWER: usize = 64 * 1024 * 1024;
 
 #[derive(Subcommand)]
@@ -1956,7 +1958,7 @@ async fn ask_key(asked: &KeyAsk<'_>) -> Result<Value> {
         expires_in,
         browser_pages,
     } = *asked;
-    let api = api::api_url(api);
+    let api = key_api::key_api(api).await?;
     let http = tilo_net::Client::new();
     let asked = http
         .post(format!("{api}/keys/new"))
@@ -2045,6 +2047,7 @@ pub fn arguments(args: &[String]) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use std::sync::Arc;
 

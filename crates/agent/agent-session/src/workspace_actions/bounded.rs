@@ -25,7 +25,7 @@
 
 use super::{
     ActionCallError, Arc, Caller, ConfinedReplica, Confirmation, DocumentMutation, DocumentRoute,
-    HashMap, HashSet, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome, Seed, Worker,
+    HashMap, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome, Seed, Worker,
     WorkspaceId, WorkspaceState, reads,
 };
 use tilo_actions::InvocationUpdate;
@@ -219,23 +219,41 @@ pub(super) fn own_word_refused() -> ActionCallError {
     }
 }
 
-/// The node below the workspace a change writing at `keys` (storage keys, top
-/// down) of a document of `app` acts at: its comments or reactions when it
-/// writes inside them, wherever a model keeps them; else the field the action
-/// that wrote it is declared below (`#[action(field = ...)]`: filing a report
-/// is a comment, whose app keeps it where its own footprint says), else the
-/// document.
-fn written_node(app: &str, keys: &[String], declared: Option<&str>) -> TreePath {
-    let record = TreePath::root().app(app);
-    let inside = |field: &str| keys.iter().any(|key| key == field);
-    if inside(policy::roles::COMMENTS_FIELD) {
-        record.field(policy::roles::COMMENTS_FIELD)
-    } else if inside(policy::roles::REACTIONS_FIELD) {
-        record.field(policy::roles::REACTIONS_FIELD)
-    } else if let Some(field) = declared {
-        record.field(field)
-    } else {
-        record
+/// Where below a document a write at storage keys (top down) lands, as far as
+/// access tells writes apart: inside its comments or reactions, wherever a
+/// model keeps them, or anywhere else.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Lands {
+    Comments,
+    Reactions,
+    Elsewhere,
+}
+
+impl Lands {
+    fn of(keys: &[String]) -> Self {
+        let inside = |field: &str| keys.iter().any(|key| key == field);
+        if inside(policy::roles::COMMENTS_FIELD) {
+            Self::Comments
+        } else if inside(policy::roles::REACTIONS_FIELD) {
+            Self::Reactions
+        } else {
+            Self::Elsewhere
+        }
+    }
+
+    /// The node below the workspace a write of a document of `app` that lands
+    /// here acts at: its comments or reactions; else the field the action that
+    /// wrote it is declared below (`#[action(field = ...)]`: filing a report is
+    /// a comment, whose app keeps it where its own footprint says), else the
+    /// document.
+    fn node(self, app: &str, declared: Option<&str>) -> TreePath {
+        let document = TreePath::root().app(app);
+        match (self, declared) {
+            (Self::Comments, _) => document.field(policy::roles::COMMENTS_FIELD),
+            (Self::Reactions, _) => document.field(policy::roles::REACTIONS_FIELD),
+            (Self::Elsewhere, Some(field)) => document.field(field),
+            (Self::Elsewhere, None) => document,
+        }
     }
 }
 
@@ -299,13 +317,17 @@ pub(super) fn refused_writes(
     (written, confirmed): (Option<WrittenKeys>, bool),
 ) -> Result<Vec<TreePath>, String> {
     let mut refused = Vec::new();
-    let mut seen = HashSet::new();
     let written = written.unwrap_or_else(|| written_keys(before, mutation));
+    // Each place a write lands is answered once, however many keys land there.
+    let mut lands: Vec<Lands> = Vec::new();
     for keys in written? {
-        let node = written_node(app, &keys, declared);
-        if !seen.insert(node.clone()) {
-            continue;
+        let at = Lands::of(&keys);
+        if !lands.contains(&at) {
+            lands.push(at);
         }
+    }
+    for at in lands {
+        let node = at.node(app, declared);
         match permissions.answer(&node, ActionKind::Undoable) {
             Answer::Allow => {}
             Answer::Ask if confirmed => {}
@@ -354,6 +376,7 @@ pub(super) fn question(
     Ok(ConfirmationQuestion {
         id,
         device_label: agent,
+        agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
         workspace: workspace.to_owned(),
         title,
         action_label: about.descriptor.action_label.clone(),

@@ -998,6 +998,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// steps of this session's `history task`, and the words a person reads.
     fn program_answer(&self, answer: Option<&Value>, reply: &Reply) -> Value {
         let steps = self.programs.lock_recover().steps_json();
+        // Each line as the tool says it, its resources by the references a later program and a
+        // REPL entry name them by: what the model's `output` is for.
+        let output: Vec<String> = {
+            let mut programs = self.programs.lock_recover();
+            answer
+                .and_then(|answer| answer.get("output"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .flat_map(str::lines)
+                .map(|line| shown_line(line, &mut programs))
+                .collect()
+        };
         let Some(answer) = answer else {
             // `undo`, `undo task` and `history task` answer text: the steps
             // they report are the typed answer, and a failure's words are its
@@ -1022,11 +1036,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         let mut typed = json!({
             "status": status,
-            "output": answer
-                .get("output")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default(),
+            "output": output,
             // The same lines as a person reads them: no reference literals, a day or a moment in
             // their formats, a field that is none left out. A reply the person reads takes these;
             // the model keeps `output` for its next program.

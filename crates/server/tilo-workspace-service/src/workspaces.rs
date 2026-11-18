@@ -1239,7 +1239,7 @@ impl Workspaces {
                 continue;
             }
             let workspace = GovernedWorkspace::open(path.clone(), device.as_ref())
-                .map_err(|error| format!("{}: record: {error}", path.display()))?;
+                .map_err(|error| document_format::unopened(&path, &dir, &error))?;
             this.serve_direct(&workspace)?;
             workspaces.insert(
                 workspace.workspace().to_owned(),
@@ -1338,117 +1338,7 @@ impl Workspaces {
         &self.inner.host.cert
     }
 
-    /// Create a new governed workspace named `name`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace could not be created, persisted or bound.
-    pub async fn create(&self, name: &str) -> Result<WorkspaceSummary, String> {
-        self.create_workspace(name, None).await
-    }
-
-    /// Create a governed workspace named `name`, under the identity `workspace` when
-    /// given: a workspace moving here keeps the workspace it is. Refused when
-    /// this host holds that workspace already.
-    ///
-    /// # Errors
-    ///
-    /// The name is not 1–80 characters, `workspace` is no UUID or held here
-    /// already, or the workspace could not be written.
-    pub async fn create_workspace(
-        &self,
-        name: &str,
-        workspace: Option<&str>,
-    ) -> Result<WorkspaceSummary, String> {
-        // A workspace placed under an identity waits for another placing the
-        // same one, so two devices placing it at once create it once. Others
-        // are made side by side, a few at a time: making one writes and syncs
-        // its files on this runtime's threads, which every other request needs
-        // too.
-        let _same = match workspace {
-            Some(workspace) => Some(self.inner.creating.one(workspace).await),
-            None => None,
-        };
-        let _turn = self.inner.creating.turn().await;
-        if let Some(workspace) = workspace
-            && self.inner.workspaces.lock().await.contains_key(workspace)
-        {
-            return Err("this host has that workspace already".into());
-        }
-        if let Some(workspace) = workspace
-            && self
-                .inner
-                .dir
-                .join(workspace)
-                .with_extension(RELEASED)
-                .exists()
-        {
-            return Err("this host released that workspace; its files stay here".into());
-        }
-        if let Some(workspace) = workspace
-            && self
-                .inner
-                .dir
-                .join(workspace)
-                .with_extension(delete::DELETED)
-                .exists()
-        {
-            return Err("that workspace was deleted here".into());
-        }
-        // A workspace this host serves for its governor elsewhere is that
-        // governor's: governing it here as well would fork it.
-        if let Some(workspace_id) = workspace.and_then(WorkspaceId::parse) {
-            let bound = self
-                .inner
-                .host
-                .workspaces
-                .lock()
-                .await
-                .get(&workspace_id)
-                .cloned();
-            if let Some(bound) = bound
-                && bound.lock().await.admission == crate::workspace_access::AdmissionMode::Governed
-            {
-                return Err("this host has that workspace already".into());
-            }
-        }
-        let device = self.device_keys();
-        let workspace = match workspace {
-            Some(workspace) => GovernedWorkspace::create_in(
-                &self.inner.dir,
-                workspace,
-                name,
-                (&self.inner.host.cert, &self.inner.host.key),
-                device.as_ref(),
-                tilo_clock::wall(),
-            )?,
-            None => GovernedWorkspace::create(
-                &self.inner.dir,
-                name,
-                &self.inner.host.cert,
-                &self.inner.host.key,
-                device.as_ref(),
-                tilo_clock::wall(),
-            )?,
-        };
-        self.bind(&workspace).await?;
-        let summary = self.people(&workspace);
-        let workspace = Arc::new(AsyncMutex::new(workspace));
-        self.inner
-            .workspaces
-            .lock()
-            .await
-            .insert(summary.workspace.clone(), Arc::clone(&workspace));
-        let mut governed = workspace.lock().await;
-        self.settle(&mut governed).await?;
-        self.name_own_host(&mut governed).await?;
-        self.serve_direct(&governed)?;
-        drop(governed);
-        tracing::info!(workspace = %summary.workspace, workspace_id = %summary.workspace_id, "governed workspace created");
-        Ok(summary)
-    }
-
-    /// Let go of and stop serving `workspace`: its workspace admits nobody from
+    /// Stop governing and serving `workspace`: its workspace admits nobody from
     /// now on, which ends its sessions here, and the host leaves it closed
     /// when it opens again. Its files stay on disk. A device releases a
     /// workspace after moving it to another host, whose hints its members follow.

@@ -1134,6 +1134,10 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     // of the document that offers it, while the agent shows it is waiting.
     let question = asked(&mut device).await;
     assert_eq!(
+        question.agent_id, grant,
+        "the agent the person approved, by its id"
+    );
+    assert_eq!(
         question.agent_label, "Careful",
         "the agent by the name the person approved"
     );
