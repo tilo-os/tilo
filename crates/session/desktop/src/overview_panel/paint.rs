@@ -360,47 +360,47 @@ impl OverviewPanel {
         .paint(scene, transform, text, theme);
 
         let access_y = here_rect.y0 + f64::from(name_h) + m.s1;
+        let body = tokens.typography.style(TextRole::Body);
+        let body_line = f64::from(body.line_height_px_at(text.text_scale()));
+        let access_line = Rect::new(content.x0, access_y, content.x1, access_y + body_line);
         let who = card.others().cloned().collect::<Vec<WorkspacePerson>>();
         // A site workspace is named by its site, and stays words. Any other says who it is shared
         // with as people: each their own chip, a face and the name they go by, never a key and
         // never one sentence of names. Where it is hosted, once that means something, follows as
         // words in what the chips leave.
         if let Some(site) = self.shell.sites.get(&card.id).cloned() {
-            let site = text.elide_to_width_style(
-                &site,
-                f32_of_f64(content.width()),
-                &tokens.typography.style(TextRole::Body),
-            );
-            text.draw_style(
-                scene,
-                &site,
-                colors.text_dim,
-                transform.pre_translate((content.x0, access_y).into()),
-                None,
-                &tokens.typography.style(TextRole::Body),
-            );
+            ui::widget::TextLineFace::styled(&site, &body, TextRole::Body)
+                .start()
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                    access_line,
+                    colors.text_dim,
+                );
         } else if who.is_empty() {
             let alone = t("overview-access-only-you");
-            text.draw_style(
-                scene,
-                &alone,
-                colors.text_dim,
-                transform.pre_translate((content.x0, access_y).into()),
-                None,
-                &tokens.typography.style(TextRole::Body),
-            );
+            ui::widget::TextLineFace::styled(&alone, &body, TextRole::Body)
+                .start()
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                    access_line,
+                    colors.text_dim,
+                );
         } else {
-            let style = tokens.typography.style(TextRole::Body);
+            let style = body.clone();
             let lead = t("overview-access-lead");
             let (lead_w, lead_h) = text.measure_style(&lead, None, &style);
-            text.draw_style(
-                scene,
-                &lead,
-                colors.text_dim,
-                transform.pre_translate((content.x0, access_y).into()),
-                None,
-                &style,
-            );
+            ui::widget::TextLineFace::styled(&lead, &style, TextRole::Body)
+                .start()
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                    Rect::new(
+                        content.x0,
+                        access_y,
+                        content.x0 + f64::from(lead_w),
+                        access_y + f64::from(lead_h),
+                    ),
+                    colors.text_dim,
+                );
             let people: Vec<ShownPerson> = who
                 .iter()
                 .map(|person| ShownPerson {
@@ -426,16 +426,13 @@ impl OverviewPanel {
                 let after = chips_right + m.s3;
                 let left_width = (content.x1 - after).max(0.0);
                 if left_width > 40.0 {
-                    let hosting =
-                        text.elide_to_width_style(hosting, f32_of_f64(left_width), &style);
-                    text.draw_style(
-                        scene,
-                        &hosting,
-                        colors.text_dim,
-                        transform.pre_translate((after, access_y).into()),
-                        None,
-                        &style,
-                    );
+                    ui::widget::TextLineFace::styled(hosting, &style, TextRole::Body)
+                        .start()
+                        .paint(
+                            &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                            Rect::new(after, access_y, after + left_width, access_y + body_line),
+                            colors.text_dim,
+                        );
                 }
             }
         }
@@ -1191,34 +1188,33 @@ fn paint_share_row(
     let what = ctx
         .text
         .elide_to_width_style(&share.what, f32_of_f64(what_avail), &body);
-    let (what_w, _) = ctx.text.measure_style(&what, None, &body);
-    ctx.text.draw_style(
-        ctx.scene,
-        &what,
-        palette.text_primary,
-        ctx.transform.pre_translate((what_x, body_top).into()),
-        None,
-        &body,
-    );
+    let (what_w, what_h) = ctx.text.measure_style(&what, None, &body);
+    ui::widget::TextLineFace::styled(&what, &body, TextRole::Body)
+        .start()
+        .paint(
+            ctx,
+            Rect::new(
+                what_x,
+                body_top,
+                what_x + what_avail,
+                body_top + f64::from(what_h),
+            ),
+            palette.text_primary,
+        );
     if share.writable {
         let can_edit = t("overview-share-writable");
         let after = what_x + f64::from(what_w) + s2;
         if after + s3 < holders_left {
             let left_width = holders_left - s3 - after;
-            let can_edit =
-                ctx.text
-                    .elide_to_width_style(&can_edit, f32_of_f64(left_width), &caption);
             let (_, can_h) = ctx.text.measure_style(&can_edit, None, &caption);
-            ctx.text.draw_style(
-                ctx.scene,
-                &can_edit,
-                palette.text_tertiary,
-                ctx.transform.pre_translate(
-                    (after, row.y0 + (row.height() - f64::from(can_h)) / 2.0).into(),
-                ),
-                None,
-                &caption,
-            );
+            let top = row.y0 + (row.height() - f64::from(can_h)) / 2.0;
+            ui::widget::TextLineFace::styled(&can_edit, &caption, TextRole::Caption)
+                .start()
+                .paint(
+                    ctx,
+                    Rect::new(after, top, after + left_width, top + f64::from(can_h)),
+                    palette.text_tertiary,
+                );
         }
     }
 }

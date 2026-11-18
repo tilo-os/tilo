@@ -49,10 +49,14 @@ impl Comparison {
     }
 
     pub fn title(&self) -> String {
-        if self.left_label.0.is_empty() && self.right_label.0.is_empty() {
-            tilo_resource::word!("diffmerge-comparison").read()
-        } else {
-            format!("{} ↔ {}", self.left_label.0, self.right_label.0)
+        let (left, right) = (self.left_label.0.trim(), self.right_label.0.trim());
+        match (left.is_empty(), right.is_empty()) {
+            (true, true) => tilo_resource::word!("diffmerge-comparison").read(),
+            (false, false) => {
+                tilo_resource::word!("comparison-title", left = left, right = right).read()
+            }
+            (true, false) => tilo_resource::word!("comparison-title-one", name = right).read(),
+            (false, true) => tilo_resource::word!("comparison-title-one", name = left).read(),
         }
     }
 }

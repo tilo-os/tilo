@@ -25,6 +25,8 @@ diffmerge-effects-show = Show change
 ## The titles the window shows for what is open.
 
 merge-title = Merge of { $name }
+comparison-title = Comparison of { $left } and { $right }
+comparison-title-one = Comparison of { $name }
 merge-title-pair = Merge of { $ours } and { $theirs }
 merge-title-empty = Merged result
 diffmerge-comparison = Comparison

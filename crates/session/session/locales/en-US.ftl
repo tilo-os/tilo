@@ -550,6 +550,7 @@ so-tilo-desktop-window-menu-open = Open the window menu
 machines-waiting-source = Your devices
 machines-waiting-title = New machine waiting
 machines-waiting-body = { $machine } wants to join, showing code { $code }
+machines-waiting-body-hardware = { $machine } ({ $hardware }) wants to join, showing code { $code }
 machines-waiting-review = See what will join
 machines-waiting-approve = Approve { $code }
 machines-waiting-decline = Decline
