@@ -41,11 +41,6 @@ impl super::Instance {
         self.facts.as_ref().map(|facts| &facts.sent)
     }
 
-    /// The resource the detail level shows: its view's, or the facts page's.
-    pub(super) fn detail_resource(&self) -> Option<&ResourceRef> {
-        self.detail_target()
-    }
-
     /// A new build of the app: its facts page opens again through what the build declares, or as
     /// the page again when it still declares no view of the type.
     pub(super) fn reopen_facts(&mut self) {

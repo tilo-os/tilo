@@ -1118,7 +1118,7 @@ impl Instance {
                 .or_default()
                 .push((Actor::Member(who), false, typing));
         }
-        if let Some(detail) = self.detail_resource() {
+        if let Some(detail) = self.detail_target() {
             now.entry(detail.id_string())
                 .or_default()
                 .push((self.me_actor(), true, false));
