@@ -18,6 +18,9 @@ use tokio::time::timeout;
 pub mod imap;
 pub mod mail_servers;
 mod smtp;
+/// A mail server with real sockets that takes one made-up login: what a rehearsal signs in to.
+#[cfg(test)]
+mod stand_in;
 
 pub trait AccountTester: Send + Sync {
     /// Resolve real calendars during setup. Test doubles must opt in explicitly.
@@ -314,6 +317,9 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use test_http::{Reply, Responder};
+
+    /// The sign-in proof against the stand-in mail server, over real sockets.
+    mod stand_in_tests;
 
     /// An IMAP server that is TLS from the first byte, with the identity
     /// `server`. Answers the `LOGIN` it was sent.
