@@ -6343,17 +6343,18 @@ isolation = "vm"
 timeout_secs = 1800
 default = false
 
-# The server image's release, asked for and never run by a change: build it (host-base,
+# The server image's release, asked for and never run by a tag or a change: build it (host-base,
 # host-binaries, image-host), prove it (test-image-host in a container, host-assurance-x86_64 by
 # installing and booting it), sign it with the release key and publish it as
-# registry.tilo.so/tilo/tilo-host. A release builds a commit whose server checks passed: the boot
-# proof is a need, not a step someone remembers.
+# registry.tilo.so/tilo/tilo-host. As the desktop's OS release, someone runs it on a release tag,
+# one step at a time: a release builds a commit whose server checks passed, and the boot proof is
+# a need, not a step someone remembers.
 #
 # `t dispatch publish-host --ref tag:vX.Y.Z --publish` is the whole release, and one step may be
 # dispatched alone on a tag whose own run stopped there. The tags never move a published image:
 # sha-<commit> names the build once, <version> the release, and latest follows only a final
-# version (oci-publish.sh). A dispatch elsewhere builds and signs nothing: the release key's role
-# trusts v* tags, and oci-sign.sh refuses an image built from an RPM set no release published.
+# version (oci-publish.sh). A dispatch elsewhere signs and publishes nothing: the release key's
+# role trusts v* tags, and oci-sign.sh refuses an image built from an RPM set no release published.
 [[check]]
 name = "sign-host"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
@@ -6363,7 +6364,7 @@ needs = ["image-host", "test-image-host", "host-assurance-x86_64", "signing-tool
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/host/payload.json", "/target/publish/host/signature", "/target/publish/host/dry-run.pub", "/target/publish/host/bundle.json"]
-on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
+on = ["dispatch"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -6374,7 +6375,7 @@ run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-h
 needs = ["image-host", "sign-host", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/host/receipt.json"]
-on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
+on = ["dispatch"]
 id_token = ["registry.tilo.so"]
 
 # The release path rehearsed with no credentials: the image is signed with a throwaway key and

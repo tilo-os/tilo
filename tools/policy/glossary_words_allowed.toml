@@ -651,6 +651,8 @@ paths = [
     "os/build-host.sh",
     "os/dev/derive-rpm-package-set.py",
     "os/tests/containerfile_sources.sh",
+    "os/tests/no_openssl_runtime.sh",
+    "os/tests/rpm_snapshot_invariants.sh",
     "tools/ci/publish/host-base.sh",
     "tools/ci/publish/host-build.sh",
     "tools/signing/release_trust.py",
