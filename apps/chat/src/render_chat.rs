@@ -1001,9 +1001,14 @@ mod tests {
                 did: "Add function".into(),
                 about: "the revenue curve".into(),
             };
-            for state in [AgentWorkState::Taken, doing] {
-                assert_eq!(working(state).unwrap().summary.as_deref(), Some("Working"));
-            }
+            assert_eq!(
+                working(AgentWorkState::Taken).unwrap().summary.as_deref(),
+                Some("Working")
+            );
+            assert_eq!(
+                working(doing).unwrap().summary.as_deref(),
+                Some("Add function: the revenue curve")
+            );
             let waiting = AgentWorkState::Waiting {
                 app: "Calculator".into(),
             };
@@ -1054,11 +1059,16 @@ mod tests {
                 "No change: Add function",
                 "Refused: Set bounds: Outside the granted range",
             ];
-            // While it works, every dispatched operation shows as it happens.
+            // While it works, one line counts the dispatched operations, and opens them.
             let running = AgentWork::new(AgentWorkState::Taken, 42).with_trace(steps.clone());
             let shown = AgentWorkPresentation::of(&running, false, false).unwrap();
+            assert_eq!(shown.summary.as_deref(), Some("Working · 3 steps"));
             assert_eq!(shown.did, None);
-            assert_eq!(shown.steps, lines);
+            assert!(shown.steps.is_empty() && shown.opens);
+            assert_eq!(
+                AgentWorkPresentation::of(&running, true, false).unwrap().steps,
+                lines
+            );
             // Done, it is one line that opens the list.
             let done = AgentWork::new(complete, 42).with_trace(steps);
             let folded = AgentWorkPresentation::of(&done, false, false).unwrap();
@@ -1068,6 +1078,49 @@ mod tests {
             assert_eq!(
                 AgentWorkPresentation::of(&done, true, false).unwrap().steps,
                 lines
+            );
+        }
+
+        phase a_turn_at_work_shows_one_line_and_lists_its_steps_only_when_they_are_opened;
+        {
+            // A turn at its fifty-eighth step, as the server that carries it out keeps it with
+            // the reply: the step it is at, in words, and a row for each step so far.
+            let steps: Vec<AgentStep> = (1..=58_u64)
+                .map(|place| {
+                    AgentStep::authored("word-processor", "List", AgentStepOutcome::NoChange, place)
+                })
+                .collect();
+            let doing = AgentWorkState::Doing {
+                did: "Append paragraph".into(),
+                about: "word-processor".into(),
+            };
+            let at_work = AgentWork::new(doing, 42).with_trace(steps);
+            let closed = AgentWorkPresentation::of(&at_work, false, false).unwrap();
+            assert_eq!(
+                closed.summary.as_deref(),
+                Some("Append paragraph: word-processor · 58 steps"),
+                "one line says the step the turn is at and how many it has taken"
+            );
+            assert_eq!(closed.did, None);
+            assert_eq!(
+                closed.steps,
+                Vec::<String>::new(),
+                "no step is listed unasked while the turn works"
+            );
+            let opened = AgentWorkPresentation::of(&at_work, true, false).unwrap();
+            assert_eq!(opened.summary, closed.summary);
+            assert_eq!(opened.steps.len(), 58, "opened, the line shows every step");
+            // A tool's bare name is no words for a person: the line says that the turn works.
+            let bare = AgentWorkState::Doing {
+                did: "tilo_ls".into(),
+                about: String::new(),
+            };
+            assert_eq!(
+                AgentWorkPresentation::of(&AgentWork::new(bare, 42), false, false)
+                    .unwrap()
+                    .summary
+                    .as_deref(),
+                Some("Working")
             );
         }
 

@@ -1,7 +1,9 @@
 //! What an agent did for a reply, drawn under the reply's words. While the
-//! agent works it is a card that says so and lists each operation as it is
-//! dispatched; once it is done it folds to one line — "Did 3 things" — that
-//! opens the list. The answer itself is the reply's text, never this line.
+//! agent works it is a card of one line, which says the step the agent is at
+//! and how many it has taken; once it is done it folds to one line, "Did 3
+//! things". Either line opens the list of the operations, each one line, and
+//! closes it again: no operation is listed unasked, however many there are.
+//! The answer itself is the reply's text, never this line.
 
 use ui::TextRole;
 use ui::paint::PaintCtx;
@@ -17,13 +19,15 @@ use crate::paint::text;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct AgentWorkPresentation {
     /// The state, while it says something the reply's text does not: the
-    /// agent is still working, or the work did not finish.
+    /// step the agent is at and how many it has taken while it works, or
+    /// that the work did not finish.
     pub(super) summary: Option<String>,
     /// The folded list's line, once the work ended with operations done.
     pub(super) did: Option<String>,
-    /// The operations shown: every one while the agent works, the folded
-    /// list's only when it is open.
+    /// The operations, each one line: only while their list is open.
     pub(super) steps: Vec<String>,
+    /// Whether a press opens and closes the list: there are operations.
+    pub(super) opens: bool,
 }
 
 impl AgentWorkPresentation {
@@ -63,7 +67,10 @@ impl AgentWorkPresentation {
             state
         };
         let summary = match &state {
-            AgentWorkState::Taken | AgentWorkState::Doing { .. } => Some(t("chat-agent-working")),
+            AgentWorkState::Taken => Some(at_work(None, work.trace.len())),
+            AgentWorkState::Doing { did, about } => {
+                Some(at_work(step_words(did, about), work.trace.len()))
+            }
             AgentWorkState::Waiting { app } => {
                 Some(t_args("chat-agent-work-waiting", &[("app", app.into())]))
             }
@@ -82,15 +89,16 @@ impl AgentWorkPresentation {
         let finished = state.finished();
         let did = (finished && !work.trace.is_empty())
             .then(|| t_args("chat-agent-work-did", &[("count", work.trace.len().into())]));
-        let steps = if finished && !open {
-            Vec::new()
-        } else {
+        let steps = if open {
             work.trace.iter().map(step_line).collect()
+        } else {
+            Vec::new()
         };
         (summary.is_some() || did.is_some() || !steps.is_empty()).then_some(Self {
             summary,
             did,
             steps,
+            opens: !work.trace.is_empty(),
         })
     }
 
@@ -112,6 +120,39 @@ impl AgentWorkPresentation {
             .chain(self.did.iter().map(|did| (did.as_str(), Line::Did)))
             .chain(self.steps.iter().map(|step| (step.as_str(), Line::Step)))
     }
+}
+
+/// The one line of an agent at work: the step it is at, in the words its state
+/// says it in (`None` where it says none), and how many steps it has taken.
+fn at_work(step: Option<String>, taken: usize) -> String {
+    use crate::i18n::{t, t_args};
+    let what = step.unwrap_or_else(|| t("chat-agent-working"));
+    if taken == 0 {
+        return what;
+    }
+    t_args(
+        "chat-agent-work-at-step",
+        &[("what", what.into()), ("count", taken.into())],
+    )
+}
+
+/// A step in words a person reads, with what it is about. A tool's or an
+/// action's bare name (`tilo_ls`, `tasks.add`, `find`) is no such words: words
+/// have a blank between them, or begin as a label does.
+fn step_words(did: &str, about: &str) -> Option<String> {
+    let (did, about) = (did.trim(), about.trim());
+    let named =
+        !did.contains(' ') && (did.contains(['_', '.']) || !did.starts_with(char::is_uppercase));
+    if did.is_empty() || named {
+        return None;
+    }
+    if about.is_empty() {
+        return Some(did.to_owned());
+    }
+    Some(crate::i18n::t_args(
+        "chat-agent-work-step-about",
+        &[("step", did.into()), ("about", about.into())],
+    ))
 }
 
 /// One operation, in its app's words, with what came of it.
@@ -211,7 +252,7 @@ pub(super) fn measure_agent_work(
 }
 
 /// Paint `work` into `area`, as [`measure_agent_work`] measured it. Returns
-/// whether it folds, so the caller makes the area open and close it.
+/// whether it has a list to open, so the caller makes the area open and close it.
 pub(super) fn draw_agent_work(
     paint: &mut PaintCtx<'_>,
     work: &AgentWork,
@@ -248,5 +289,5 @@ pub(super) fn draw_agent_work(
             .1,
         );
     }
-    shown.did.is_some()
+    shown.opens
 }
