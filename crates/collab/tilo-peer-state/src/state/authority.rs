@@ -721,6 +721,16 @@ impl StatePeer {
     pub fn write_as_workspace_host(&mut self) {
         self.workspace_host = true;
     }
+    /// Tell this copy which device it is the copy of. Where that device is a
+    /// member's and may write the workspace, the copy keeps what it saw when
+    /// the workspace's document starts over: a base that lacks a work
+    /// delegation's form this copy holds is adopted, and the form goes back
+    /// into its row as this device's own change in the same step
+    /// ([`Self::receive_from`]). A copy that was told no device refuses such
+    /// a base and stays on what it holds until a base holds the form.
+    pub fn write_as_device(&mut self, device: [u8; 32]) {
+        self.own_device = Some(device);
+    }
 
     /// The Automerge actor this peer makes the workspace changes `key` signs
     /// under: the device key for a replica, [`workspace_host_actor`] for a workspace
