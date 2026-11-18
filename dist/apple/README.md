@@ -727,6 +727,16 @@ written into the bundles, never into the sources. Without an identity the Mac ap
 nobody: it runs on the Mac that built it, a later build cannot read the keys it kept, and it
 has no share extension.
 
+A build says which build it is, and nobody sets that by hand. Its version is the release's
+name (`dist/VERSION`, or `TILO_VERSION`), and many builds are of one release. Its build number
+is the number of commits the commit that is built stands on, so every later head of `main`
+reads a higher one: the Mac's About window shows the two as `Version 0.1.13 (49852)`. The
+commit's own name is in every bundle's `Info.plist` as `TiloCommit`, with `+changes` behind it
+when the tree that was built differs from that commit, and Tilo Assistant's `--check` says all
+three in its first line. An iPhone's Settings show the version alone. A tree that is no git
+checkout, or one that holds only part of its history, builds nothing and says why: it could
+not say which build it is.
+
 Each app has one drawing for its icon, so the two are told apart at a glance: Tilo Shell's is
 `Bundle/AppIcon.svg`, Tilo's mark on its light ground; Tilo Assistant's is
 `AssistantBundle/AppIcon.svg`, a message on Tilo's blue with the mark's three parts as three

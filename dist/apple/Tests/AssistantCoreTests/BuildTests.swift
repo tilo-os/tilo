@@ -9,7 +9,8 @@ import XCTest
 /// The script's own functions make a bundle here, in a folder of the test's, from stand-ins
 /// for the programs. Nothing is compiled, nothing is signed (the signing command is written
 /// down instead of carried out), no keychain is asked, and no profile is a real one: a
-/// profile here is the list a real one decodes to, made up by the test.
+/// profile here is the list a real one decodes to, made up by the test. No checkout is asked
+/// either: git answers as the checkout the test names would.
 final class BuildTests: XCTestCase {
     private static let team = "TESTTEAM00"
     private static let app = "so.tilo.assistant"
@@ -33,6 +34,16 @@ final class BuildTests: XCTestCase {
     xcrun() { printf '26.4\n'; }
     security() { cat "$4"; }
     codesign() { printf '%s\n' "$*" >> "$work/signed.txt"; }
+    git() {
+      [ "${TEST_CHECKOUT:-whole}" != none ] || return 128
+      case "$*" in
+        *"rev-parse --short"*) printf 'abcdef01234\n' ;;
+        *--is-shallow-repository*) if [ "${TEST_CHECKOUT:-whole}" = shallow ]; then printf 'true\n'; else printf 'false\n'; fi ;;
+        *"rev-list --count"*) printf '4711\n' ;;
+        *"status --porcelain"*) [ "${TEST_CHECKOUT:-whole}" != changed ] || printf ' M dist/apple/build.sh\n' ;;
+        *) printf 'git was asked what no build asks: %s\n' "$*" >&2; return 2 ;;
+      esac
+    }
     case "$what" in
       mac) build_assistant_mac ;;
       iphone) build_assistant_iphone ;;
@@ -369,6 +380,70 @@ final class BuildTests: XCTestCase {
             + "name the profile of the notice extension in TILO_APPLE_NOTICE_PROFILE")
         // Only the widget extension was signed: neither the notice extension nor the app itself.
         XCTAssertEqual(stopped.signed, [BuildTests.phoneSigned[0]])
+    }
+
+    // MARK: Which build it is
+
+    /// The release's name as the tree holds it, in the file every distribution reads.
+    private func release() throws -> String {
+        let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("VERSION")
+        return try String(contentsOf: file, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Two builds of one release read alike wherever a version is shown: both numbers of a
+    /// bundle were the release's name. Every part of a build now says the commit it was built
+    /// from, and its build number is the number of commits that commit stands on.
+    func testEveryPartOfABuildSaysItsCommitAndCountsItForItsBuildNumber() throws {
+        let named = try release()
+        let mac = try build("mac", ["TILO_APPLE_PUSH": "1", "TILO_APPLE_MAC_PROFILE": macProfile("mac.plist", push: "production")])
+        let phone = try build("iphone", ["TILO_APPLE_PROFILE": profileForAny()])
+        let parts: [(Made, String)] = [(mac, "Contents/"), (mac, "Contents/PlugIns/AssistantNotice.appex/Contents/"),
+                                       (phone, ""), (phone, "PlugIns/AssistantWidgets.appex/")]
+        for (made, part) in parts {
+            let info = try made.info(part)
+            XCTAssertEqual(info["CFBundleShortVersionString"] as? String, named, part)
+            XCTAssertEqual(info["CFBundleVersion"] as? String, "4711", part)
+            XCTAssertEqual(info["TiloCommit"] as? String, "abcdef01234", part)
+        }
+        // Said once for a build, however many bundles it writes.
+        for made in [mac, phone] {
+            XCTAssertEqual(made.said.filter { $0.contains("built from") },
+                           ["dist/apple: version \(named) (4711), built from abcdef01234"])
+        }
+    }
+
+    /// A tree that differs from its commit is not that commit's build, and says so beside it.
+    func testABuildOfATreeNoCommitHoldsSaysSoBesideItsCommit() throws {
+        let named = try release()
+        let mac = try build("mac", ["TEST_CHECKOUT": "changed"])
+        XCTAssertEqual(try mac.info("Contents/")["TiloCommit"] as? String, "abcdef01234+changes")
+        XCTAssertEqual(try mac.info("Contents/")["CFBundleVersion"] as? String, "4711")
+        XCTAssertEqual(mac.said.filter { $0.contains("built from") },
+                       ["dist/apple: version \(named) (4711), built from abcdef01234+changes"])
+    }
+
+    /// The release's name can be given. The build number and the commit cannot: no word of the
+    /// environment sets them.
+    func testNoWordOfTheEnvironmentSetsTheBuildNumberOrTheCommit() throws {
+        let mac = try build("mac", ["TILO_VERSION": "9.8.7", "TILO_BUILD": "1", "TILO_COMMIT": "a-hand", "build": "1", "commit": "a-hand"])
+        let info = try mac.info("Contents/")
+        XCTAssertEqual(info["CFBundleShortVersionString"] as? String, "9.8.7")
+        XCTAssertEqual(info["CFBundleVersion"] as? String, "4711")
+        XCTAssertEqual(info["TiloCommit"] as? String, "abcdef01234")
+    }
+
+    /// A tree that cannot say which commit it is, or cannot count the commits under it, builds
+    /// nothing and says why: it would be one more build nobody can tell from another.
+    func testATreeThatCannotSayItsCommitOrCountItBuildsNothingAndSaysWhy() throws {
+        let none = try build("mac", ["TEST_CHECKOUT": "none"], ends: 1)
+        XCTAssertTrue(none.said.last?.hasPrefix("dist/apple: a build says which commit it is of, and ") == true, "\(none.said)")
+        XCTAssertTrue(none.said.last?.hasSuffix(" is no git checkout") == true, "\(none.said)")
+        XCTAssertEqual(none.signed, [])
+        let part = try build("iphone", ["TILO_APPLE_PROFILE": profileForAny(), "TEST_CHECKOUT": "shallow"], ends: 1)
+        XCTAssertEqual(part.said.last, "dist/apple: a build's number counts the commits under abcdef01234, and this checkout holds "
+            + "only some of them: git fetch --unshallow")
+        XCTAssertEqual(part.signed, [])
     }
 
     // MARK: The icon
