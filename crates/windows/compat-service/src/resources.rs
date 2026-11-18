@@ -79,8 +79,7 @@ impl LaunchResourceBroker for SystemResourceBroker {
         let microphone = request
             .capabilities
             .devices
-            .iter()
-            .any(|device| device == "microphone");
+            .contains(&collab_types::caps::DeviceCap::Microphone);
         let audio_proxy =
             (self.start_audio_proxy)(PathBuf::from(LEASE_ROOT).join(&id), self.uid, microphone)
                 .map_err(|error| ResourceError::Refused(format!("audio proxy: {error}")))?;

@@ -75,7 +75,14 @@ impl crate::Session {
         };
         let now = tilo_clock::unix_now();
         let ended = captures.keep_only(|app, workspace, kind| {
-            crate::capture_grants::still_allowed(&tree, app, workspace, kind, now)
+            crate::capture_grants::still_allowed(
+                &tree,
+                &self.shared.person,
+                app,
+                workspace,
+                kind,
+                now,
+            )
         });
         if ended > 0 {
             tracing::debug!(ended, "captures ended: the session no longer allows them");

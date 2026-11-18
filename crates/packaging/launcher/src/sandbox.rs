@@ -2135,10 +2135,10 @@ mod tests {
 
     /// Deterministic stand-in for the host's device nodes, so a camera assertion doesn't depend on the
     /// test machine owning one.
-    fn fake_device_paths(device: &str) -> Vec<PathBuf> {
+    fn fake_device_paths(device: collab_types::caps::DeviceCap) -> Vec<PathBuf> {
         match device {
-            "camera" => vec![PathBuf::from("/dev/video0")],
-            "microphone" => vec![PathBuf::from("/dev/snd")],
+            collab_types::caps::DeviceCap::Camera => vec![PathBuf::from("/dev/video0")],
+            collab_types::caps::DeviceCap::Microphone => vec![PathBuf::from("/dev/snd")],
             _ => Vec::new(),
         }
     }
@@ -2146,9 +2146,21 @@ mod tests {
     /// Build the argv the launcher would really produce for `app_id`, through the same production path
     /// as `run_with`; only the device-node lookup is substituted.
     fn argv_with_caps(app_id: &str, caps: &[CapOverride], now: u64) -> Vec<String> {
-        let m = mk_manifest("host");
-        let plan = CapabilityPlan::for_app_with(app_id, caps, Some(now), fake_device_paths);
-        build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &plan)
+        let mut m = mk_manifest("host");
+        m.capabilities.push("camera".to_owned());
+        argv_declared(&m, app_id, caps, now)
+    }
+
+    /// [`argv_with_caps`] for an app whose manifest is `m`.
+    fn argv_declared(
+        m: &ManifestView,
+        app_id: &str,
+        caps: &[CapOverride],
+        now: u64,
+    ) -> Vec<String> {
+        let caps = crate::capabilities::declared(m, caps.to_vec());
+        let plan = CapabilityPlan::for_app_with(app_id, &caps, Some(now), fake_device_paths);
+        build_bwrap_argv(m, Path::new("/host/pkg"), None, &[], None, None, &plan)
     }
 
     /// Every bind triple in an argv, as `(flag, src, dst)`.
@@ -2437,7 +2449,7 @@ mod tests {
 
                 let caps = vec![app_grant(
                     "so.tilo.meet",
-                    Scope::Device("camera".to_string()),
+                    Scope::Device(collab_types::caps::DeviceCap::Camera),
                     Access::Read,
                 )];
                 let with = argv_with_caps("so.tilo.meet", &caps, 1_000);
@@ -2447,13 +2459,18 @@ mod tests {
                         && w[2] == "/dev/video0"),
                     "a camera capability must bind the device node: {with:?}"
                 );
+                let undeclared = argv_declared(&mk_manifest("host"), "so.tilo.meet", &caps, 1_000);
+                assert!(
+                    !undeclared.iter().any(|a| a.starts_with("/dev/video")),
+                    "a camera the manifest does not declare is never bound: {undeclared:?}"
+                );
             }
             {
                 let caps = vec![
                     fs_grant("so.tilo.other", "/var/workspace/secrets", Access::Write),
                     app_grant(
                         "so.tilo.other",
-                        Scope::Device("camera".to_string()),
+                        Scope::Device(collab_types::caps::DeviceCap::Camera),
                         Access::Read,
                     ),
                     app_grant(
@@ -2651,7 +2668,7 @@ mod tests {
                     "an app without `gpu` has no /dev/dri at all"
                 );
                 let mut gpu = mk_manifest("off");
-                gpu.capabilities.push(crate::gpu::CAPABILITY.to_string());
+                gpu.capabilities.push("gpu".to_owned());
                 assert!(
                     grants_drm(crate::gpu::granted(&gpu, &none, true), &none),
                     "an app the image ships declaring `gpu` gets the device, narrowed"
@@ -2661,7 +2678,7 @@ mod tests {
                     "an app the person installed declaring `gpu` waits for their grant"
                 );
                 let mut person = CapabilityPlan::empty();
-                person.devices.push(crate::gpu::CAPABILITY.to_string());
+                person.devices.push(crate::gpu::CAPABILITY);
                 assert!(crate::gpu::granted(&gpu, &person, false));
                 assert!(
                     !crate::gpu::granted(&off, &person, false),

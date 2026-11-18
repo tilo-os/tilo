@@ -13,8 +13,7 @@ use tilo_desktop_model::width::{
     WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
 };
 use tilo_desktop_model::{
-    Capability, Display, GRANT_ALWAYS, IdMinter, Layout, TabId, TileContent, WindowWidth,
-    Workspace, WorkspaceId,
+    Display, IdMinter, Layout, TabId, TileContent, WindowWidth, Workspace, WorkspaceId,
 };
 use ui::widget::TabHolder;
 use ui::window_share::OpenWindow;
@@ -1502,12 +1501,14 @@ fn stopping_desktop_control_takes_the_grant_back() {
     let route = first_route(&handle);
     assert!(row(&handle.window_menu(route.tab), STOP_DESKTOP_CONTROL).is_none());
     let mut tree = handle.read(Clone::clone);
-    tree.workspaces[0].grant_app(
-        "ada",
-        "so.tilo.app0",
-        &Capability::DesktopControl {
-            scope: GRANT_ALWAYS,
-        },
+    let control = collab_types::caps::DeviceCap::DesktopControl;
+    tree.workspaces[0].grant_sandbox(
+        collab_types::caps::CapOverride::grant(
+            tilo_action_policy::Grantee::person("ada"),
+            collab_types::caps::Scope::Device(control),
+            control.access(),
+        )
+        .through("so.tilo.app0"),
     );
     handle.replace_tree(tree);
     let rows = handle.window_menu(route.tab);
@@ -1524,8 +1525,9 @@ fn stopping_desktop_control_takes_the_grant_back() {
         .unwrap();
     settle(&mut frame);
     assert!(
-        !handle.read(|tree| tree.workspaces[0]
-            .holds_desktop_control_at("so.tilo.app0", tilo_clock::unix_now())),
+        handle.read(|tree| tree.workspaces[0]
+            .app_capabilities_at("so.tilo.app0", tilo_clock::unix_now())
+            .is_empty()),
         "the grant is taken back"
     );
     assert!(row(&handle.window_menu(route.tab), STOP_DESKTOP_CONTROL).is_none());

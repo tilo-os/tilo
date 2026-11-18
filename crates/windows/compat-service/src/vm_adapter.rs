@@ -263,8 +263,8 @@ impl VmPortalAuthority for PortalRailPortalAuthority {
 /// Live projection of canonical Tilo grants which have an exact RAIL
 /// transport and revocation boundary today.
 ///
-/// Clipboard is represented by the ordinary `Device("clipboard")` grant and
-/// microphone by `Device("microphone")`. Files are deliberately absent: a
+/// Clipboard is represented by the ordinary `Device(DeviceCap::Clipboard)` grant
+/// and microphone by `Device(DeviceCap::Microphone)`. Files are deliberately absent: a
 /// filesystem path is not an opaque portal document handle. `NetHost` values
 /// are preserved verbatim for the lease relay; this does not attach a NAT NIC
 /// or convert a filtered grant into unrestricted guest networking.
@@ -289,9 +289,7 @@ impl VmPortalAuthority for CanonicalRailPortalAuthority {
         _workspace_id: &str,
         capabilities: &CapabilityPlan,
     ) -> Result<windows_vm::VmLaunchGrants, windows_vm::LaunchError> {
-        let device_granted = |name: &str| {
-            self.native_rail && capabilities.devices.iter().any(|device| device == name)
-        };
+        let device_granted = |device| self.native_rail && capabilities.devices.contains(&device);
         Ok(windows_vm::VmLaunchGrants {
             network_hosts: if self.native_rail {
                 capabilities.net_hosts.clone()
@@ -299,8 +297,8 @@ impl VmPortalAuthority for CanonicalRailPortalAuthority {
                 Vec::new()
             },
             network: self.native_rail && !capabilities.net_hosts.is_empty(),
-            clipboard: device_granted("clipboard"),
-            microphone: device_granted("microphone"),
+            clipboard: device_granted(collab_types::caps::DeviceCap::Clipboard),
+            microphone: device_granted(collab_types::caps::DeviceCap::Microphone),
             portal_documents: Vec::new(),
         })
     }
@@ -1117,16 +1115,14 @@ fn validate_portal_projection(
     if grants.microphone
         && !capabilities
             .devices
-            .iter()
-            .any(|device| device == "microphone")
+            .contains(&collab_types::caps::DeviceCap::Microphone)
     {
         return Err(windows_vm::LaunchError::BrokerEscalated("microphone"));
     }
     if grants.clipboard
         && !capabilities
             .devices
-            .iter()
-            .any(|device| device == "clipboard")
+            .contains(&collab_types::caps::DeviceCap::Clipboard)
     {
         return Err(windows_vm::LaunchError::BrokerEscalated("clipboard"));
     }
@@ -1143,7 +1139,10 @@ mod tests {
             let authority =
                 CanonicalRailPortalAuthority::new(windows_vm::ApplicationPresentation::NativeRail);
             let capabilities = CapabilityPlan {
-                devices: vec!["clipboard".to_string(), "microphone".to_string()],
+                devices: vec![
+                    collab_types::caps::DeviceCap::Clipboard,
+                    collab_types::caps::DeviceCap::Microphone,
+                ],
                 allow_network: true,
                 net_hosts: vec!["example.test".to_string()],
                 ro_paths: vec!["/tmp/document".into()],

@@ -3137,7 +3137,7 @@ fn describe_scope(scope: &Scope) -> String {
         // Record authority intentionally has no path: it follows the file across rename/move and
         // the stable id is not useful activity copy.
         Scope::FsResource(_) => t("activity-capability-one-shared-file"),
-        Scope::Device(d) => d.clone(),
+        Scope::Device(d) => d.name().to_owned(),
         Scope::NetHost(h) => t_args("activity-capability-network", &[("host", h.into())]),
     }
 }

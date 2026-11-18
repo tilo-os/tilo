@@ -12,14 +12,14 @@
 //!    which the Terminal forwards and the supervisor refuses regardless of any allow;
 //! 3. only for the device owner ([`DeviceOwnership`]);
 //! 4. only after the person allowed it once, as a `CapOverride` on
-//!    `Scope::Device("host-shell")` in this runtime's store ([`HostPolicy`]).
+//!    `Scope::Device(DeviceCap::HostShell)` in this runtime's store ([`HostPolicy`]).
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef, Scope, decide_app};
-
-pub const HOST_SHELL_DEVICE: &str = "host-shell";
+use collab_types::caps::{
+    Access, CapDecision, CapOverride, DeviceCap, ResourceRef, Scope, decide_app,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HostPolicy {
@@ -111,7 +111,7 @@ impl HostPolicy {
     pub fn allows_host_shell(&self, app_id: &str, now: Option<u64>) -> bool {
         decide_app(
             app_id,
-            &ResourceRef::Device(HOST_SHELL_DEVICE.to_string()),
+            &ResourceRef::Device(DeviceCap::HostShell),
             Access::Write,
             &self.capabilities,
             now,
@@ -124,7 +124,7 @@ impl HostPolicy {
         self.capabilities.push(
             CapOverride::grant(
                 tilo_action_policy::Grantee::person("local"),
-                Scope::Device(HOST_SHELL_DEVICE.to_string()),
+                Scope::Device(DeviceCap::HostShell),
                 Access::Write,
             )
             .through(app_id)
@@ -555,7 +555,7 @@ mod tests {
             restricted.capabilities.push(
                 collab_types::caps::CapOverride::new(
                     tilo_action_policy::Grantee::person("local"),
-                    collab_types::caps::Scope::Device(HOST_SHELL_DEVICE.into()),
+                    collab_types::caps::Scope::Device(DeviceCap::HostShell),
                     collab_types::caps::Effect::Restrict,
                     collab_types::caps::Access::Read,
                 )

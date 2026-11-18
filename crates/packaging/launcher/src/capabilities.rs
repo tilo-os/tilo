@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::{
-    Access, CapDecision, CapOverride, Effect, LaunchGrants, ResourceRef, Scope, decide_app,
+    Access, CapDecision, CapOverride, DeviceCap, Effect, LaunchGrants, ResourceRef, Scope,
+    decide_app,
 };
 
 /// How an app may take part in the space it is launched into.
@@ -48,8 +49,8 @@ pub struct CapabilityPlan {
     pub ro_paths: Vec<PathBuf>,
     /// Host paths to bind read-write, at the same path in the sandbox.
     pub rw_paths: Vec<PathBuf>,
-    /// Device classes that were granted (`"camera"`, `"microphone"`, `"screencast"`).
-    pub devices: Vec<String>,
+    /// The devices that were granted.
+    pub devices: Vec<DeviceCap>,
     /// Whether any network capability was granted at all — says nothing about *which* hosts.
     pub allow_network: bool,
     /// The host patterns the network capabilities named.
@@ -99,10 +100,10 @@ impl CapabilityPlan {
         app_id: &str,
         caps: &[CapOverride],
         now: Option<u64>,
-        device_paths: fn(&str) -> Vec<PathBuf>,
+        device_paths: fn(DeviceCap) -> Vec<PathBuf>,
     ) -> Self {
         let mut fs: BTreeMap<String, bool> = BTreeMap::new();
-        let mut devices: Vec<String> = Vec::new();
+        let mut devices: Vec<DeviceCap> = Vec::new();
         let mut net_hosts: Vec<String> = Vec::new();
 
         for cap in caps {
@@ -133,15 +134,15 @@ impl CapabilityPlan {
                     // it.
                     if !allows(
                         app_id,
-                        &ResourceRef::Device(device.clone()),
+                        &ResourceRef::Device(*device),
                         Access::Read,
                         caps,
                         now,
                     ) {
                         continue;
                     }
-                    if !devices.iter().any(|d| d == device) {
-                        devices.push(device.clone());
+                    if !devices.contains(device) {
+                        devices.push(*device);
                     }
                 }
                 Scope::NetHost(host) => {
@@ -184,7 +185,7 @@ impl CapabilityPlan {
             }
         }
         for device in &devices {
-            for path in device_paths(device) {
+            for path in device_paths(*device) {
                 if !plan.rw_paths.contains(&path) {
                     plan.rw_paths.push(path);
                 }
@@ -549,10 +550,32 @@ fn is_bindable_path(raw: &str) -> bool {
     normal_components > 0
 }
 
-/// Host paths a device class needs, as they exist on *this* machine.
-pub fn host_device_paths(device: &str) -> Vec<PathBuf> {
+/// The grants a launch of `manifest` can use: a device grant reaches the app only for a device its
+/// manifest declares, so a workspace granting more than the app asked for binds nothing more.
+#[must_use]
+pub fn declared(
+    manifest: &crate::manifest::ManifestView,
+    mut caps: Vec<CapOverride>,
+) -> Vec<CapOverride> {
+    caps.retain(|cap| match cap.scope {
+        Scope::Device(device) => declares(manifest, device),
+        Scope::FsPath(_) | Scope::NetHost(_) | Scope::FsResource(_) => true,
+    });
+    caps
+}
+
+/// Whether `manifest` declares `device` among its `[capabilities]`.
+#[must_use]
+pub fn declares(manifest: &crate::manifest::ManifestView, device: DeviceCap) -> bool {
+    device
+        .declaration()
+        .is_some_and(|name| manifest.declares_capability(name))
+}
+
+/// Host paths a device needs, as they exist on *this* machine.
+pub fn host_device_paths(device: DeviceCap) -> Vec<PathBuf> {
     match device {
-        "camera" => {
+        DeviceCap::Camera => {
             let mut out = Vec::new();
             if let Ok(entries) = std::fs::read_dir("/dev") {
                 for entry in entries.flatten() {
@@ -569,7 +592,7 @@ pub fn host_device_paths(device: &str) -> Vec<PathBuf> {
             out.sort();
             out
         }
-        "microphone" => {
+        DeviceCap::Microphone => {
             let mut out = Vec::new();
             let runtime_dir = tilo_paths::xdg::runtime_dir_or_default();
             let pipewire = runtime_dir.join("pipewire-0");
@@ -582,7 +605,7 @@ pub fn host_device_paths(device: &str) -> Vec<PathBuf> {
             }
             out
         }
-        // Screencast is brokered by the portal (a PipeWire node handed over an existing connection),
+        // A screen is brokered by the portal (a PipeWire node handed over an existing connection),
         // not by a mount.
         _ => Vec::new(),
     }
@@ -622,10 +645,10 @@ mod tests {
 
     /// Deterministic stand-in for the host's device nodes, so an argv assertion doesn't depend on
     /// whether the test machine owns a webcam.
-    fn fake_device_paths(device: &str) -> Vec<PathBuf> {
+    fn fake_device_paths(device: DeviceCap) -> Vec<PathBuf> {
         match device {
-            "camera" => vec![PathBuf::from("/dev/video0")],
-            "microphone" => vec![PathBuf::from("/dev/snd")],
+            DeviceCap::Camera => vec![PathBuf::from("/dev/video0")],
+            DeviceCap::Microphone => vec![PathBuf::from("/dev/snd")],
             _ => Vec::new(),
         }
     }
@@ -766,12 +789,12 @@ mod tests {
             {
                 let caps = vec![app_grant(
                     "so.tilo.meet",
-                    Scope::Device("camera".to_string()),
+                    Scope::Device(DeviceCap::Camera),
                     Access::Read,
                 )];
                 let plan =
                     CapabilityPlan::for_app_with("so.tilo.meet", &caps, Some(1), fake_device_paths);
-                assert_eq!(plan.devices, vec!["camera".to_string()]);
+                assert_eq!(plan.devices, vec![DeviceCap::Camera]);
                 assert_eq!(plan.rw_paths, vec![PathBuf::from("/dev/video0")]);
 
                 let without =
@@ -784,12 +807,12 @@ mod tests {
             {
                 let caps = vec![app_grant(
                     "so.tilo.meet",
-                    Scope::Device("screencast".to_string()),
+                    Scope::Device(DeviceCap::Screen),
                     Access::Read,
                 )];
                 let plan =
                     CapabilityPlan::for_app_with("so.tilo.meet", &caps, Some(1), fake_device_paths);
-                assert_eq!(plan.devices, vec!["screencast".to_string()]);
+                assert_eq!(plan.devices, vec![DeviceCap::Screen]);
                 assert!(
                     plan.rw_paths.is_empty() && plan.ro_paths.is_empty(),
                     "screencast is portal-brokered, not a mount: {plan:?}"

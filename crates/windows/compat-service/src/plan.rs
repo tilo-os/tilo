@@ -447,8 +447,7 @@ impl LaunchLease {
         let root = PathBuf::from(LEASE_ROOT).join(&self.id);
         let microphone = capabilities
             .devices
-            .iter()
-            .any(|device| device == "microphone");
+            .contains(&collab_types::caps::DeviceCap::Microphone);
         let mut protocols = HashSet::new();
         for audio in &self.audio {
             if !audio.host_socket.starts_with(&root) {
@@ -746,8 +745,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             write_grants: capabilities.rw_paths.len(),
             microphone: capabilities
                 .devices
-                .iter()
-                .any(|device| device == "microphone"),
+                .contains(&collab_types::caps::DeviceCap::Microphone),
             audio_output: !lease.audio.is_empty(),
             latency_sensitive: route.runtime.layer == Layer::Proton,
             lease_id: lease.id.clone(),
@@ -855,8 +853,7 @@ fn push_private_store_masks(
 fn is_host_microphone_endpoint(capabilities: &CapabilityPlan, source: &Path) -> bool {
     capabilities
         .devices
-        .iter()
-        .any(|device| device == "microphone")
+        .contains(&collab_types::caps::DeviceCap::Microphone)
         && (source == Path::new("/dev/snd")
             || source.file_name().is_some_and(|name| name == "pipewire-0"))
 }
@@ -1895,7 +1892,7 @@ mod tests {
                     PathBuf::from("/run/user/1000/pipewire-0"),
                     PathBuf::from("/dev/snd"),
                 ],
-                devices: vec!["microphone".to_string()],
+                devices: vec![collab_types::caps::DeviceCap::Microphone],
                 ..CapabilityPlan::empty()
             };
             let lease = LaunchLease {

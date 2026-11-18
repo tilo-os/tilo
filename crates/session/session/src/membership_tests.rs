@@ -811,12 +811,14 @@ fn a_refused_grant_change_says_why_and_keeps_the_grant() {
     let mut tree = session.session().handle().read(Clone::clone);
     tree.active_workspace_mut()
         .expect("a workspace in front")
-        .grant_app(
-            "ada",
-            "so.tilo.notes",
-            &tilo_desktop_model::Capability::Camera {
-                scope: tilo_desktop_model::GRANT_SESSION,
-            },
+        .grant_sandbox(
+            collab_types::caps::CapOverride::grant(
+                tilo_action_policy::Grantee::person("ada"),
+                collab_types::caps::Scope::Device(collab_types::caps::DeviceCap::Camera),
+                collab_types::caps::Access::Read,
+            )
+            .through("so.tilo.notes")
+            .expiring(collab_types::caps::Expiry::EndOfSession),
         );
     session.session().handle().replace_tree(tree);
     let mut app = settings_sheet(&mut session);

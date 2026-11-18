@@ -1482,8 +1482,7 @@ fn explanation(
         },
         microphone: capabilities
             .devices
-            .iter()
-            .any(|device| device == "microphone"),
+            .contains(&collab_types::caps::DeviceCap::Microphone),
         audio_output,
     };
     ExplainStatus {

@@ -7,7 +7,7 @@
 //!
 //! * an output tunnel is always present, to the session's Pulse server;
 //! * an input tunnel is added only after `CapabilityPlan` has granted the
-//!   canonical `Device("microphone")` capability.
+//!   canonical `Device(DeviceCap::Microphone)` capability.
 //!
 //! The capsule sees only the private daemon's native and Pulse sockets.  It
 //! cannot name, mount, or connect to the host socket.  Killing the two broker

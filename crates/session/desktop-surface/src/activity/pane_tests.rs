@@ -93,7 +93,7 @@ mod tests {
             &user,
             CapOverride::grant(
                 Grantee::person("ada"),
-                Scope::Device("camera".to_string()),
+                Scope::Device(collab_types::caps::DeviceCap::Camera),
                 Access::Read,
             )
             .through("terminal"),

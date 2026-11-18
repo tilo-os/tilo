@@ -50,22 +50,14 @@ impl Grant {
     /// Every grant, in the order a prompt would ask for them.
     pub const ALL: [Self; 3] = [Self::SystemInfo, Self::Processes, Self::CommandLines];
 
-    /// The device scope a workspace capability names this grant by
-    /// (`collab_types::caps::Scope::Device`).
+    /// The name the person's answer to this grant is kept under.
     #[must_use]
-    pub const fn device_scope(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::SystemInfo => "system-info",
             Self::Processes => "processes",
             Self::CommandLines => "process-commands",
         }
-    }
-
-    #[must_use]
-    pub fn from_device_scope(scope: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|grant| grant.device_scope() == scope)
     }
 }
 
@@ -338,7 +330,7 @@ pub enum Refusal {
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotGranted { grant } => write!(f, "not allowed to read {}", grant.device_scope()),
+            Self::NotGranted { grant } => write!(f, "not allowed to read {}", grant.name()),
             Self::NotYours => f.write_str("it belongs to another user"),
             Self::NotAnApp => f.write_str("it is part of the system, not an app"),
             Self::Gone => f.write_str("it is no longer running"),
@@ -826,9 +818,6 @@ mod tests {
                     .holds(Grant::CommandLines)
             );
             assert!(!Grants::IMAGE_DEFAULT.holds(Grant::CommandLines));
-            for grant in Grant::ALL {
-                assert_eq!(Grant::from_device_scope(grant.device_scope()), Some(grant));
-            }
         }
     }
 }

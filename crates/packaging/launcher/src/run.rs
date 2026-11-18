@@ -580,7 +580,8 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> Capab
         .as_deref()
         .map(load_capability_file)
         .unwrap_or_default();
-    let mut plan = CapabilityPlan::for_app(&app_id, &grants.sandbox, Some(unix_now()));
+    let sandbox = crate::capabilities::declared(manifest, grants.sandbox);
+    let mut plan = CapabilityPlan::for_app(&app_id, &sandbox, Some(unix_now()));
     // A workspace launch may change the space when its person may.
     if grants.author {
         plan.participation = crate::capabilities::Participation::Author;

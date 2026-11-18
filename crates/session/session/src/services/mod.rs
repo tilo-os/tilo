@@ -442,14 +442,13 @@ fn caller(handoff: &Handoff) -> PortalCaller {
 
 impl Prompter for ConsentsPrompter {
     fn granted(&self, handoff: &Handoff, grant: Grant) -> bool {
-        self.consents
-            .allowed(&caller(handoff), grant.device_scope())
+        self.consents.allowed(&caller(handoff), grant.name())
     }
 
     fn ask(&self, handoff: &Handoff, grant: Grant) -> std::sync::mpsc::Receiver<bool> {
         let caller = caller(handoff);
         let question = tilo_portal::consent::AccessQuestion {
-            capability: grant.device_scope().to_owned(),
+            capability: grant.name().to_owned(),
             reason: None,
             may_remember: true,
             text: None,

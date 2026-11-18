@@ -8,6 +8,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use collab_types::caps::DeviceCap;
 use console_control::{ConsoleServer, Endpoint, Request, catalog, wire};
 use serde_json::json;
 use tilo_actions::{ActionSpec, EncodedAction, OperationKind, ResourcePresentation, ResourceSpec};
@@ -22,13 +23,30 @@ const ROOT: &str = "device-grants";
 const REVOKE: &str = "revoke";
 const OPERATION: &str = "tilo.runtime.device-grant";
 
+/// The sandbox device a capture device is.
+pub(crate) const fn device_cap(device: DeviceKind) -> DeviceCap {
+    match device {
+        DeviceKind::Camera => DeviceCap::Camera,
+        DeviceKind::Microphone => DeviceCap::Microphone,
+    }
+}
+
+/// The capture device a sandbox device is, when it is one.
+pub(crate) const fn capture_device(device: DeviceCap) -> Option<DeviceKind> {
+    match device {
+        DeviceCap::Camera => Some(DeviceKind::Camera),
+        DeviceCap::Microphone => Some(DeviceKind::Microphone),
+        _ => None,
+    }
+}
+
 /// A grant's resource id: `device-grant:<device>:<workspace>:<app>`. Neither a
 /// workspace nor a package id holds `:`, and none holds `@`, which the console
 /// address reserves.
 fn resource_id(grant: &Grant) -> String {
     format!(
         "device-grant:{}:{}:{}",
-        grant.device.name(),
+        device_cap(grant.device).name(),
         grant.workspace,
         grant.app
     )
@@ -36,7 +54,7 @@ fn resource_id(grant: &Grant) -> String {
 
 fn parse_resource_id(id: &str) -> Option<(DeviceKind, &str, &str)> {
     let mut parts = id.strip_prefix("device-grant:")?.splitn(3, ':');
-    let device = DeviceKind::from_name(parts.next()?)?;
+    let device = capture_device(DeviceCap::from_name(parts.next()?)?)?;
     Some((device, parts.next()?, parts.next()?))
 }
 
@@ -62,7 +80,7 @@ pub fn resources(grants: &DeviceGrants) -> Vec<ResourceSpec> {
                     "device-grant-workspace",
                     &[("workspace", grant.workspace.as_str().into())],
                 )),
-                badge: Some(grant.device.name().to_owned()),
+                badge: Some(device_cap(grant.device).name().to_owned()),
                 preview: None,
             })
             .with_action(
@@ -91,7 +109,7 @@ pub fn answer(grants: &DeviceGrants, line: &str) -> String {
             "device_grants": grants.list().iter().map(|grant| json!({
                 "workspace": grant.workspace,
                 "app": grant.app,
-                "device": grant.device.name(),
+                "device": device_cap(grant.device).name(),
                 "decision": match grant.decision {
                     Decision::Allow => "allow",
                     Decision::Deny => "deny",

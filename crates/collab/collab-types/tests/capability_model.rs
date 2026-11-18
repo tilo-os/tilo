@@ -7,7 +7,8 @@
 //! things hasn't been shown to work at all.
 
 use collab_types::caps::{
-    Access, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_app, decide_capability,
+    Access, CapDecision, CapOverride, DeviceCap, Effect, ResourceRef, Scope, decide_app,
+    decide_capability,
 };
 use tilo_action_policy::{Acting, Grantee, MemberId, Role};
 
@@ -40,7 +41,7 @@ tilo_test_env::scenario! {
         // Case: an app with no capability is denied everything.
         for resource in [
             fs("/var/workspace/books/dune.epub"),
-            ResourceRef::Device("camera".into()),
+            ResourceRef::Device(DeviceCap::Camera),
             ResourceRef::NetHost("example.com".into()),
             ResourceRef::FsResource("file-1".into()),
         ] {
@@ -150,13 +151,13 @@ tilo_test_env::scenario! {
     {
         let caps = vec![app_grant(
             "org.tilo.Camera",
-            Scope::Device("camera".into()),
+            Scope::Device(DeviceCap::Camera),
             Access::Read,
         )];
         assert_eq!(
             decide_app(
                 "org.tilo.Camera",
-                &ResourceRef::Device("camera".into()),
+                &ResourceRef::Device(DeviceCap::Camera),
                 Access::Read,
                 &caps,
                 None
@@ -166,7 +167,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             decide_app(
                 "org.tilo.Camera",
-                &ResourceRef::Device("camera".into()),
+                &ResourceRef::Device(DeviceCap::Camera),
                 Access::Write,
                 &caps,
                 None
@@ -177,7 +178,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             decide_app(
                 "org.tilo.Camera",
-                &ResourceRef::Device("microphone".into()),
+                &ResourceRef::Device(DeviceCap::Microphone),
                 Access::Read,
                 &caps,
                 None
