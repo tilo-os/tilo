@@ -396,7 +396,10 @@ fn claimed_run() -> tilo_actions::ActionContext {
 }
 
 /// The runs the changes of `route` the page received are grouped under.
-fn runs_of(page: &mut Browser, route: &DocumentRoute) -> Vec<tilo_actions::WorkGroup> {
+fn runs_of(
+    page: &mut Browser,
+    route: &DocumentRoute,
+) -> Vec<(tilo_actions::WorkGroup, Option<tilo_actions::Actor>)> {
     page.pump();
     // The document and every document its app keeps beside it (the parts
     // Notes keeps its notes in), each read on its own.
@@ -415,7 +418,10 @@ fn runs_of(page: &mut Browser, route: &DocumentRoute) -> Vec<tilo_actions::WorkG
                 .iter()
                 .filter_map(|change| change.message())
                 .filter_map(tilo_actions::ActionContext::from_change_message)
-                .filter_map(|context| context.group),
+                .filter_map(|context| {
+                    let by = context.invoker.map(|invoker| invoker.acting.by);
+                    context.group.map(|group| (group, by))
+                }),
         );
     }
     groups
@@ -671,11 +677,11 @@ async fn both_routes_decide_every_callers_actions_alike() {
                     "{who} {app}#{action}: the host {by_host:?} ({status:?}), the broker {by_broker:?}"
                 ));
             }
-            if app == NOTES
-                && by_host == Admitted::Runs
-                && let Some(run) = caller.agent_session()
-            {
-                agents.push((caller.agent_name().unwrap_or_default().to_owned(), run.id));
+            if app == NOTES && by_host == Admitted::Runs && caller.agent_session().is_some() {
+                agents.push((
+                    caller.agent_called().unwrap_or_default().to_owned(),
+                    caller.acting().by.clone(),
+                ));
             }
             // A command the host runs for anyone runs in the workspace's
             // shell, and answers with how it ran: never left waiting.
@@ -712,17 +718,18 @@ async fn both_routes_decide_every_callers_actions_alike() {
         let runs = runs_of(&mut browser, notes);
         if agents
             .iter()
-            .all(|(_, id)| runs.iter().any(|run| &run.id == id))
+            .all(|(_, by)| runs.iter().any(|(_, run_by)| run_by.as_ref() == Some(by)))
             || Instant::now() >= deadline
         {
             break runs;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    for (name, id) in &agents {
+    for (name, by) in &agents {
         let named: BTreeSet<_> = runs
             .iter()
-            .filter(|run| run.id == *id)
+            .filter(|(_, run_by)| run_by.as_ref() == Some(by))
+            .map(|(run, _)| run)
             .map(|run| (run.id.clone(), run.kind.clone()))
             .collect();
         if named.len() != 1
@@ -733,7 +740,10 @@ async fn both_routes_decide_every_callers_actions_alike() {
             differences.push(format!("{name}'s changes on the host: runs {named:?}"));
         }
     }
-    if runs.iter().any(|run| run.id == "agent-session:claimed") {
+    if runs
+        .iter()
+        .any(|(run, _)| run.id == "agent-session:claimed")
+    {
         differences.push("the host took a run a client claimed".into());
     }
 
