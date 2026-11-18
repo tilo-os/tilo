@@ -1490,7 +1490,10 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 #action_enum::#variant(params) => {
                     let mut params = ::core::clone::Clone::clone(params);
                     params.#items = #krate::__private::kept_of(&params.#items, keep);
-                    #action_enum::#variant(params)
+                    ::core::option::Option::Some(#krate::Stamped {
+                        operation: #action_enum::#variant(params),
+                        now_ms: action.now_ms,
+                    })
                 }
             });
         }
@@ -2450,14 +2453,10 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             ) -> ::core::option::Option<Self::Action> {
                 let _ = keep;
                 #[allow(unreachable_patterns, reason = "most verbs list no items")]
-                let operation = match &action.operation {
+                match &action.operation {
                     #(#keep_arms)*
-                    _ => return ::core::option::Option::None,
-                };
-                ::core::option::Option::Some(#krate::Stamped {
-                    operation,
-                    now_ms: action.now_ms,
-                })
+                    _ => ::core::option::Option::None,
+                }
             }
 
             fn kind_of(action: &Self::Action) -> #krate::ActionKind {
