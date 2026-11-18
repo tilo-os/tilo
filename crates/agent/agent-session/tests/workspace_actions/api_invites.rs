@@ -208,8 +208,8 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
 
 /// An owner's key lets a person in by their key, as an owner, through the
 /// action API: no invitation to hand over. That person's own key then reaches
-/// the workspace and brings someone in themself, and neither a key minted for
-/// the workspace nor anyone below an owner makes an owner.
+/// the workspace and brings someone in themself; nobody below an owner makes
+/// an owner, while a key minted for the workspace is its owner's own and does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
     let on_server = api_on_server(ISSUER).await;
@@ -301,7 +301,8 @@ async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
     assert_eq!(waiting["status"], "ok", "{waiting}");
     assert_eq!(waiting["result"]["entries"], json!([]), "{waiting}");
 
-    // A key minted for the workspace makes no owner.
+    // A key minted for the workspace is Ada's own there, an owner's, so it
+    // makes an owner as she does.
     let minted = ada_mcp
         .did("account/keys#mint", json!({"workspace": workspace}))
         .await;
@@ -321,7 +322,7 @@ async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
         json!({"person": hex::encode(ivy.verifying_key().to_bytes()), "role": "owner"}),
     )
     .await;
-    assert_eq!(by_agent["status"], "failed", "{by_agent}");
+    assert_eq!(by_agent["status"], "ok", "{by_agent}");
 }
 
 /// An owner's key moves a member to another role through the action API,
