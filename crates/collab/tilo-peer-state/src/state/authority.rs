@@ -1117,6 +1117,20 @@ impl StatePeer {
         })
     }
 
+    /// Whether this copy refused a base of its governor that is newer than
+    /// the workspace document it holds: its governor then governs by roles
+    /// and grants the copy does not hold, and what the copy holds says of no
+    /// write that it is its author's to make.
+    pub(super) fn behind_its_governor(&self) -> bool {
+        self.refused_base.is_some_and(|refused| {
+            self.core
+                .workspace_doc
+                .as_deref()
+                .map_or(0, workspace::base::generation)
+                < refused
+        })
+    }
+
     /// The authority of `source` for the change `envelope` makes on `record`
     /// of `app_id`, refused when the change is not granted; held while what
     /// it is decided against is not here: its app surface, or the cut of its
