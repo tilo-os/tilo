@@ -76,7 +76,7 @@ async fn round(seed: u64) {
             |doc| {
                 chat::demo::apply_as(
                     doc,
-                    "operator",
+                    &hex::encode(serving.user_public_key),
                     chat::Chat::CREATE_CHANNEL_WITH_ID.with(
                         chat::chat::chat::CreateChannelWithId {
                             id: "c_general".into(),
