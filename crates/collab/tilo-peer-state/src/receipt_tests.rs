@@ -950,3 +950,83 @@ fn an_unsigned_draft_under_a_write_its_device_sent_meanwhile_is_numbered_past_it
     assert!(again, "signed again under its new number");
     assert!(numbered.seq > 1, "past the write sent meanwhile");
 }
+
+/// The guest's write of `value`, written under the governance whose heads
+/// are `governance`, as its page drafts it.
+fn guest_write_under(
+    peer: &StatePeer,
+    key: &SigningKey,
+    value: &str,
+    governance: Vec<[u8; 32]>,
+) -> NeighbourMsg {
+    let mut message = guest_write(
+        peer,
+        key,
+        |doc| doc.put(ROOT, "value", value).unwrap(),
+        edit_value(),
+        None,
+    );
+    let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
+        panic!("the guest's write is a document write")
+    };
+    envelope.governance = governance;
+    collab_types::sign_op(envelope, key).unwrap();
+    message
+}
+
+/// The owner's device, which governs the test workspace.
+fn owner() -> (SigningKey, DeviceCert) {
+    let owner_key = SigningKey::from_bytes(&[2; 32]);
+    let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
+    (owner_key, owner)
+}
+
+/// A viewer made an editor a moment ago writes at once: a peer that has not
+/// heard of the role yet holds the write rather than refusing it, and takes
+/// it in once the role arrives.
+#[test]
+fn a_write_under_a_role_given_a_moment_ago_waits_for_it_then_applies() {
+    let (mut peer, guest_key, guest) = workspace_with(Role::Viewer);
+    let (owner_key, owner) = owner();
+    let mut governor = peer.clone();
+    governor
+        .governance_mut()
+        .set_member_role(guest.user_public_key, Role::Editor, &owner_key, now())
+        .unwrap();
+    let before = value(&peer);
+    let write = guest_write_under(
+        &governor,
+        &guest_key,
+        "edited",
+        governor.governance().heads(),
+    );
+    receive(&mut peer, &guest, write).expect("held, not refused");
+    assert_eq!(value(&peer), before, "nothing of it is taken in yet");
+
+    peer.receive_from(
+        TransportOrigin::ServerDelta(owner.device_public_key),
+        governor.workspace_message(),
+        now(),
+    )
+    .unwrap();
+    assert_ne!(value(&peer), before, "taken in once the role arrived");
+    assert!(value(&peer).contains("edited"));
+}
+
+/// A write naming governance its receiver holds is decided at once against
+/// all of it: an editor removed after the governance its write names (while
+/// it wrote) is refused, the earlier heads bringing back nothing it lost.
+#[test]
+fn a_write_citing_governance_from_before_its_writers_removal_is_refused() {
+    let (mut peer, guest_key, guest) = workspace_with(Role::Editor);
+    let (owner_key, _) = owner();
+    let before_removal = peer.governance().heads();
+    let write = guest_write_under(&peer, &guest_key, "edited", before_removal);
+    peer.governance_mut()
+        .remove_member(guest.user_public_key, &owner_key, now())
+        .unwrap();
+    assert!(
+        receive(&mut peer, &guest, write).is_err(),
+        "a removed writer's write is refused, whatever governance it names"
+    );
+}

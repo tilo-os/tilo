@@ -864,7 +864,8 @@ impl StatePeer {
             .collect()
     }
 
-    /// The heads of the workspace's governance as this peer holds it.
+    /// The heads of the workspace's governance as this peer holds it: what a
+    /// write it drafts says it was written under ([`SignedOp::governance`]).
     pub(super) fn governance_heads(&self) -> Vec<[u8; 32]> {
         self.core
             .workspace_doc
@@ -876,6 +877,11 @@ impl StatePeer {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Whether `envelope` names governance heads this peer does not hold yet.
+    fn lacks_governance_of(&self, envelope: &SignedOp) -> bool {
+        !self.governance().held_heads().holds(&envelope.governance)
     }
 
     /// The authority of `source` for the change `envelope` makes on `record`
@@ -893,10 +899,20 @@ impl StatePeer {
         if envelope.author.as_bytes() != source {
             return Err("the change is not its sender's own".into());
         }
-        let Some((member, history)) = self
+        // Its writer may be a member under governance this peer does not hold
+        // yet.
+        let Some(written) = self
             .written_as(app_id, record, envelope, authorization_time)
-            .map_err(|error| error.to_string())?
+            .map(Some)
+            .or_else(|error| {
+                self.lacks_governance_of(envelope)
+                    .then_some(None)
+                    .ok_or_else(|| error.to_string())
+            })?
         else {
+            return Ok(Authorized::Hold(crate::MissingPrerequisite::Governance));
+        };
+        let Some((member, history)) = written else {
             return Ok(Authorized::Hold(crate::MissingPrerequisite::RemovalCut));
         };
         // A change made with another version of the app than the workspace runs
@@ -957,43 +973,58 @@ impl StatePeer {
             Ok(collab_types::Receipt::Hold) => {
                 Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface))
             }
-            Err(refusal) => {
-                // Who the change names as having made it, and who signed it:
-                // what a refusal report needs to say whose change it was.
-                let claimed = collab_types::claimed_invokers(envelope);
-                let invokers: Vec<String> = claimed
-                    .iter()
-                    .map(|invoker| serde_json::to_string(invoker).unwrap_or_default())
-                    .collect();
-                // A key the workspace holds no grant for is told how to get one.
-                let by_key = claimed.iter().any(|invoker| {
-                    invoker.nodes().into_iter().any(|node| {
-                        node.agent_id()
-                            .and_then(tilo_action_policy::key_of_agent)
-                            .is_some()
-                    })
-                });
-                tracing::warn!(
-                    route = ?route,
-                    signer = %hex::encode(source),
-                    invokers = ?invokers,
-                    %refusal,
-                    "a change was refused"
-                );
-                let mut said = format!(
-                    "document change forbidden: {refusal} (made by {}, signed by device {})",
-                    if invokers.is_empty() {
-                        "its signer".to_owned()
-                    } else {
-                        invokers.join(", ")
-                    },
-                    hex::encode(source)
-                );
-                if by_key {
-                    said.push_str(KEY_NOT_APPROVED);
-                }
-                Err(said)
+            // Written under governance this peer does not hold yet (a role
+            // given just before): decided once it does, against all of it.
+            Err(_) if self.lacks_governance_of(envelope) => {
+                Ok(Authorized::Hold(crate::MissingPrerequisite::Governance))
             }
+            Err(refusal) => Err(refused(&route, source, envelope, &refusal)),
         }
     }
+}
+
+/// What a refused change is answered with, and logged as: why, who it names
+/// as having made it, and who signed it, and how a key the workspace holds no
+/// grant for gets one.
+fn refused(
+    route: &Route,
+    source: &[u8; 32],
+    envelope: &SignedOp,
+    refusal: &impl std::fmt::Display,
+) -> String {
+    // Who the change names as having made it, and who signed it:
+    // what a refusal report needs to say whose change it was.
+    let claimed = collab_types::claimed_invokers(envelope);
+    let invokers: Vec<String> = claimed
+        .iter()
+        .map(|invoker| serde_json::to_string(invoker).unwrap_or_default())
+        .collect();
+    // A key the workspace holds no grant for is told how to get one.
+    let by_key = claimed.iter().any(|invoker| {
+        invoker.nodes().into_iter().any(|node| {
+            node.agent_id()
+                .and_then(tilo_action_policy::key_of_agent)
+                .is_some()
+        })
+    });
+    tracing::warn!(
+        route = ?route,
+        signer = %hex::encode(source),
+        invokers = ?invokers,
+        %refusal,
+        "a change was refused"
+    );
+    let mut said = format!(
+        "document change forbidden: {refusal} (made by {}, signed by device {})",
+        if invokers.is_empty() {
+            "its signer".to_owned()
+        } else {
+            invokers.join(", ")
+        },
+        hex::encode(source)
+    );
+    if by_key {
+        said.push_str(KEY_NOT_APPROVED);
+    }
+    said
 }

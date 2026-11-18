@@ -532,9 +532,12 @@ async fn change_refusal(
     };
     // The change itself must say what it does and stay inside what its app
     // publishes, before the server keeps or forwards it.
+    let payloads = ws.lock().await.store.payloads().clone();
+    let named = crate::surfaces::governance_named(&*payloads, delta);
     let decision = Box::pin(crate::workspace::access_deciding(
         ws,
         claimed,
+        &named,
         |device_access, payloads| {
             crate::surfaces::refusal(payloads, delta, device_access).is_some()
                 || crate::surfaces::role_refusal(delta, device_access, claimed).is_some()

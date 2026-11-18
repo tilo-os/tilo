@@ -592,8 +592,13 @@ mod claims_wire {
     }
 }
 
-/// Why a change that waited for the governance its writer's access depends
-/// on is refused when that governance did not come in time.
+/// The most governance heads an op names ([`SignedOp::governance`]): a
+/// governance with more concurrent heads than this is rare, and an op naming
+/// none is decided at once.
+pub const MAX_GOVERNANCE_HEADS: usize = 8;
+
+/// Why a write that waited for the governance it was written under is
+/// refused when that governance did not come in time.
 pub const GOVERNANCE_NEVER_ARRIVED: &str = "the role change it depends on never arrived";
 
 /// One signed CRDT mutation. `Clone` because the broker fans an op to
@@ -643,6 +648,13 @@ pub struct SignedOp {
     /// as the launcher handed it to the app. A receiver fetches it by hash
     /// and holds the op until it has it.
     pub surface: Option<[u8; 32]>,
+    /// The heads of the workspace's governance its writer held when it wrote
+    /// the op: the roles and grants it wrote under. A receiver that would
+    /// refuse the op while some of these are not in its governance yet holds
+    /// it until they are, then decides it against all the governance it holds
+    /// by then, revocations made since included: the heads say when to decide,
+    /// never what against. At most [`MAX_GOVERNANCE_HEADS`].
+    pub governance: Vec<[u8; 32]>,
     /// Detached Ed25519 signature by `author` over the canonical-bytes view
     /// of every other field. See `SignedOp::signing_bytes`.
     pub signature: Signature,
@@ -673,6 +685,7 @@ impl SignedOp {
             encryption: None,
             claims: Vec::new(),
             surface: None,
+            governance: Vec::new(),
             signature: Signature::from_bytes([0u8; 64]),
         }
     }
@@ -719,6 +732,19 @@ impl SignedOp {
         self
     }
 
+    /// The op written under the governance whose heads are `heads`
+    /// ([`Self::governance`]); past [`MAX_GOVERNANCE_HEADS`] of them it names
+    /// none, and is decided at once as before.
+    #[must_use]
+    pub fn with_governance(mut self, heads: Vec<[u8; 32]>) -> Self {
+        self.governance = if heads.len() > MAX_GOVERNANCE_HEADS {
+            Vec::new()
+        } else {
+            heads
+        };
+        self
+    }
+
     /// Whether this op is the whole record rather than a change to it: a
     /// compaction, which the key holder folded the record's sealed history
     /// into, or a checkpoint, the record as its writer saved it. It names
@@ -749,6 +775,7 @@ impl SignedOp {
             encryption: &'a Option<EncryptionMetadata>,
             claims: &'a [crate::claim::ChangeClaim],
             surface: &'a Option<[u8; 32]>,
+            governance: &'a [[u8; 32]],
         }
         canonical_bytes(&View {
             payload: &self.payload,
@@ -761,6 +788,7 @@ impl SignedOp {
             encryption: &self.encryption,
             claims: &self.claims,
             surface: &self.surface,
+            governance: &self.governance,
         })
     }
 }
@@ -887,7 +915,8 @@ mod tests {
                 units: vec![Vec::new()],
                 invoker: None,
             }])
-            .with_surface(Some([5; 32]));
+            .with_surface(Some([5; 32]))
+            .with_governance(vec![[6; 32]]);
             crate::crypto::sign_op(&mut op, &key).unwrap();
             let bytes = canonical_bytes(&op).unwrap();
             assert_eq!(from_canonical_bytes::<SignedOp>(&bytes).unwrap(), op);
@@ -897,7 +926,7 @@ mod tests {
             );
             assert_eq!(
                 hex::encode(sha2::Sha256::digest(&bytes)),
-                "9771c868530b57b24a636d95b302981a82edc9c5e43c0bb7ace89f3676fadc08",
+                "a1e378b555d485b52b46558e54ceb769b778b8dd7e4edb677ac767f384416d4c",
                 "{}",
                 hex::encode(&bytes)
             );
