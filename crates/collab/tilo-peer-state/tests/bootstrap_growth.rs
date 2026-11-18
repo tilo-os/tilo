@@ -244,7 +244,23 @@ tilo_test_env::scenario! {
             .publication_mut()
             .durable_bootstrap_messages(&key, now, 7)
             .unwrap();
-        assert_eq!(&messages[1..], expected_messages);
+        // Each op names the governance heads its writer held. A serial publish
+        // writes a document's coverage before it drafts the next document's op, so
+        // its later ops name that coverage; the batch drafts them all before
+        // its one coverage change. What the ops carry is one and the same.
+        let published = |message: &NeighbourMsg| -> NeighbourMsg {
+            let mut message = message.clone();
+            let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
+                return message;
+            };
+            envelope.governance.clear();
+            envelope.signature = collab_types::Signature::from_bytes([0; 64]);
+            message
+        };
+        assert_eq!(
+            messages[1..].iter().map(published).collect::<Vec<_>>(),
+            expected_messages.iter().map(published).collect::<Vec<_>>()
+        );
         let batched_workspace = workspace_document(&messages[0]);
         assert_eq!(
             tilo_peer_state::coverage::entries(&batched_workspace).unwrap(),
@@ -311,12 +327,13 @@ tilo_test_env::scenario! {
         assert_eq!(peer.durable().unwrap(), before);
     }
 
-    phase empty_durable_bootstrap_writes_empty_receipts_once;
+    phase empty_durable_bootstrap_writes_no_change;
     {
+        // The workspace is founded with its coverage and receipt routes, so a
+        // bootstrap of no documents has nothing to write, the first time or
+        // later.
         let measurement = measure(0);
-        assert_eq!(measurement.first.changes, 1);
-        // No document receipts contain a generation, so the second empty map is
-        // identical and Automerge does not create another change.
+        assert_eq!(measurement.first.changes, 0);
         assert_eq!(measurement.repeated.changes, 0);
         assert_eq!(measurement.repeated.bytes, 0);
     }
