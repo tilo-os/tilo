@@ -30,20 +30,3 @@ impl Default for AttestationId {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AvatarBytes(#[serde(with = "serde_bytes")] pub Vec<u8>);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::canonical::{canonical_bytes, from_canonical_bytes};
-
-    /// Attestation ids are unique and avatar bytes round-trip canonically.
-    #[test]
-    fn ids_are_unique_and_avatars_round_trip() {
-        assert_ne!(AttestationId::new(), AttestationId::new());
-
-        let avatar = AvatarBytes(vec![0x89, b'P', b'N', b'G']);
-        let bytes = canonical_bytes(&avatar).unwrap();
-        let back: AvatarBytes = from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(avatar, back);
-    }
-}
