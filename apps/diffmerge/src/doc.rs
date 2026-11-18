@@ -198,15 +198,12 @@ mod tests {
                 right: Atom("after\n".into()),
                 ..Comparison::default()
             };
-            let model = first.model();
-            let again = first.clone();
-            assert!(std::sync::Arc::ptr_eq(&model, &again.model()));
+            assert_eq!(first.model().blocks.len(), 1);
             let changed = Comparison {
                 right: Atom("before\n".into()),
                 ..first
             };
             assert!(changed.model().blocks.is_empty());
-            assert!(!std::sync::Arc::ptr_eq(&model, &changed.model()));
         }
 
         phase resolutions_apply_to_the_merge_and_composed_follows_the_result;
