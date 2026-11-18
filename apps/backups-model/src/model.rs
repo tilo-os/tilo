@@ -313,6 +313,10 @@ pub struct Destination {
 
 impl Destination {
     /// The share of the destination in use, `0..=1`, when its capacity is known.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a share of a drive read to size a bar, where an exact byte count is not needed"
+    )]
     pub fn used_fraction(&self) -> Option<f64> {
         let total = self.total_bytes.filter(|total| *total > 0)?;
         Some((self.used_bytes as f64 / total as f64).clamp(0.0, 1.0))
@@ -414,6 +418,10 @@ impl RetentionPolicy {
     }
 
     /// The most snapshots the policy keeps per source, pins aside.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "four counts the policy reads, each capped at MAX_KEPT"
+    )]
     pub fn total(&self) -> u32 {
         self.hourly + self.daily + self.weekly + self.monthly
     }
@@ -432,7 +440,6 @@ const GB: u64 = 1_000 * MB;
 const TB: u64 = 1_000 * GB;
 
 impl Catalog {
-
     pub fn empty() -> Self {
         Self {
             sources: Vec::new(),
