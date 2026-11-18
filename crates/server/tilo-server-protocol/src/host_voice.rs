@@ -117,6 +117,7 @@ impl HostSaid {
         match &self.words {
             HostWords::Presence(presence) => {
                 if !is_run(presence.on_behalf.as_deref())
+                    || presence.member.as_deref().is_none_or(str::is_empty)
                     || presence.app != DESKTOP_APP
                     || !matches!(&presence.key, PresenceKey::Workspace { id } if *id == presence.cluster)
                 {
@@ -244,20 +245,25 @@ mod tests {
         }
     }
 
-    fn said(host: &ed25519_dalek::SigningKey, payload: Payload, run: Option<&str>) -> HostSaid {
+    fn said(
+        server: &ed25519_dalek::SigningKey,
+        payload: Payload,
+        session: Option<&str>,
+    ) -> HostSaid {
         let mut presence = Presence::desktop("w1", payload);
-        presence.on_behalf = run.map(str::to_owned);
+        presence.on_behalf = session.map(str::to_owned);
+        presence.member = session.map(|_| "claude-code".to_owned());
         HostSaid {
             version: HOST_VOICE_VERSION,
             workspace_id: WorkspaceId::from_u128(7),
-            host: host.verifying_key().to_bytes(),
+            host: server.verifying_key().to_bytes(),
             words: HostWords::Presence(presence),
         }
     }
 
-    fn sign(host: &ed25519_dalek::SigningKey, frame: &HostSaid) -> (Vec<u8>, [u8; 64]) {
+    fn sign(server: &ed25519_dalek::SigningKey, frame: &HostSaid) -> (Vec<u8>, [u8; 64]) {
         let (said, signed) = frame.signing_bytes().unwrap();
-        (said, host.sign(&signed).to_bytes())
+        (said, server.sign(&signed).to_bytes())
     }
 
     tilo_test_env::scenario! {

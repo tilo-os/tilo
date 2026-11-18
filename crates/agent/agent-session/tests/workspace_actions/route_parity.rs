@@ -751,7 +751,10 @@ async fn both_routes_decide_every_callers_actions_alike() {
                 kind != tilo_actions::context::AGENT_SESSION_GROUP || id == "agent-session:claimed"
             })
         {
-            differences.push(format!("{name}'s changes on the host: runs {named:?}"));
+            differences.push(format!(
+                "{name}'s changes on the host: runs {named:?} of {}",
+                runs.len()
+            ));
         }
     }
     if groups
@@ -1021,7 +1024,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
             None,
         ))),
     )
-    .spoken_for("agent-session:forged");
+    .spoken_for("agent-session:forged", "impostor");
     agent
         .peer
         .send(Cmd::SayForSession(
