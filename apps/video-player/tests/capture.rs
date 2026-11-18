@@ -15,7 +15,13 @@ fn an_unreadable_video_cannot_produce_a_successful_capture() {
     assert!(!output_path.exists());
     assert!(!missing_path.exists());
     let mut command = std::process::Command::new(tilo_test_env::package_binary!("video-player"));
-    command.arg("--shots").arg(&output_path).arg(missing_path);
+    // A video that cannot be read never finishes its decode; the capture has
+    // to be told so before the live bound instead of waiting it out.
+    command
+        .env("TILO_CAPTURE_SETTLE_MS", "200")
+        .arg("--shots")
+        .arg(&output_path)
+        .arg(missing_path);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
