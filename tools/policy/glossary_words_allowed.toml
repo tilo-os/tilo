@@ -543,6 +543,12 @@ paths = [
 ]
 
 [[allow]]
+reason = "A test of the workspace service's in-process asks builds its service with the fixture main already names `test_host`, and reads it back by `.host()`."
+words = ["host"]
+identifiers = ["test_host", "host"]
+paths = ["crates/server/tilo-workspace-service/src/own_workspaces.rs"]
+
+[[allow]]
 # A device runs its workspaces' work; the API main already names that with it.
 words = ["run"]
 identifiers = ["run", "runs", "run_jobs", "runner"]
