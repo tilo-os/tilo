@@ -336,6 +336,22 @@ public struct Message: Equatable, Sendable {
     }
 }
 
+extension Message {
+    /// Whether nothing of it is drawn: no words, nothing attached, no live thing, and no way back
+    /// to a key under it. A turn leaves such a reply when what its person wrote next takes the
+    /// turn along: the answer stands under their newest words.
+    public var showsNothing: Bool {
+        text.allSatisfy(\.isWhitespace) && attachments.isEmpty && live.isEmpty && keyFault == nil
+    }
+}
+
+extension Item {
+    /// Whether a conversation draws nothing for it: a message that shows nothing.
+    public var showsNothing: Bool {
+        if case .message(let message) = content { message.showsNothing } else { false }
+    }
+}
+
 /// A file that came with a message.
 public struct Attachment: Identifiable, Equatable, Sendable {
     public typealias ID = Identifier<Attachment>
