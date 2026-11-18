@@ -211,6 +211,29 @@ public struct TaskLine: Equatable, Sendable {
     }
 }
 
+/// What a message answers: one piece of its conversation, whole or a part of its words.
+public struct Answered: Equatable, Sendable {
+    /// The piece that is answered.
+    public var piece: Item.ID
+    /// Its words as the piece holds them, or the part of them that is answered. Empty where this
+    /// device does not hold the piece.
+    public var words: String
+    /// Whether `words` are a part of the piece that was marked, and not the piece whole.
+    public var isPart: Bool
+
+    public init(_ piece: Item.ID, words: String, isPart: Bool = false) {
+        self.piece = piece
+        self.words = words
+        self.isPart = isPart
+    }
+
+    /// The words as one line of plain text: what stands above the field and above a reply.
+    public var line: String {
+        Markdown.copied(words).split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: " ")
+    }
+}
+
 public struct Message: Equatable, Sendable {
     public var author: Author
     /// Markdown.
@@ -225,15 +248,18 @@ public struct Message: Equatable, Sendable {
     /// What the turn that writes this reply does, where the person's Tilo says so with the
     /// reply. Nil for a reply no turn works on, and for every other message.
     public var turn: Turn?
+    /// The message of its conversation this one answers, where it answers one.
+    public var answers: Answered?
 
     public init(_ author: Author, _ text: String, attachments: [Attachment] = [], live: [LiveThing] = [],
-                keyFault: KeyFault? = nil, turn: Turn? = nil) {
+                keyFault: KeyFault? = nil, turn: Turn? = nil, answers: Answered? = nil) {
         self.author = author
         self.text = text
         self.attachments = attachments
         self.live = live
         self.keyFault = keyFault
         self.turn = turn
+        self.answers = answers
     }
 
     public enum Author: Equatable, Sendable {

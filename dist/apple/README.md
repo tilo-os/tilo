@@ -540,6 +540,16 @@ app's lies over a message there and takes the second button and Control with a c
 (`SecondButtonView`): every other press goes past it to the words. The app keeps nothing of
 this.
 
+**Answering a message.** Reply, the first row of a piece's menu, and on an iPhone a swipe to
+the right on the piece (`SwipeToReply`) put the piece above the field as what is answered
+(`AnsweredLine`): one line of its words and a cross that drops it. It is kept on the draft
+(`Draft.answers`) and nowhere else. The message then sent says which message it answers. Where
+the page's Chat keeps that (its `post` takes `answers`, as the page lists it) the app posts
+with it, a read gives it back (`Message.answers`), and the conversation shows the line above
+the reply's words, where a press goes to the answered piece. On a Tilo whose Chat does not keep
+it yet the words are sent with one line of the answered message above them as a quote, so the
+assistant is told what is answered either way.
+
 **A task's replies.** A task's line counts the replies the conversation does not show.
 Pressed, they open under the line (`AssistantSource.replies(of:in:)`), and the same press
 puts them away. On a narrow window what does not fit beside a task's title goes under the

@@ -357,6 +357,17 @@ public final class AssistantModel {
         fieldCalls += 1
     }
 
+    /// Answer one piece of the open conversation: it stands above the field, which is called,
+    /// and the message then sent says which piece it answers. `part` is the part of its words
+    /// that is answered, where the person marked one.
+    public func reply(to piece: Item.ID, saying words: String, part: String? = nil) {
+        guard case .chat(let chat) = place else { return }
+        var draft = drafts[chat] ?? Draft(text: "")
+        draft.answers = Answered(piece, words: part ?? words, isPart: part != nil)
+        drafts[chat] = draft
+        fieldCalls += 1
+    }
+
     // MARK: Calling
 
     @discardableResult
