@@ -342,6 +342,22 @@ fn a_hosted_session_serves_its_apps_where_its_launcher_hands_them() {
     );
 }
 
+/// A session started as `dist/dev/nested-session.sh` starts it, beside another desktop
+/// (`TILO_MACHINE=hosted`) and with no agent key, serves the person's agents: a program of this
+/// login reaches its MCP server at the login's own path, as on the person's own computer. It once
+/// served none there, so no agent could reach a nested session.
+#[test]
+fn a_hosted_session_serves_its_persons_agents() {
+    let session = StartedSession::start(&[(tilo_paths::machine::VAR, "hosted")]);
+    let server = session
+        .runtime
+        .path()
+        .join("tilo-session")
+        .join(tilo_paths::login::AGENT_SOCKET_FILE);
+    UnixStream::connect(&server)
+        .unwrap_or_else(|error| panic!("an agent reaches {}: {error}", server.display()));
+}
+
 tilo_test_env::scenario! {
     fn a_session_stopped_from_outside_leaves_no_mount_behind;
 

@@ -550,17 +550,13 @@ start_session --shell screen "${agent_key_args[@]}" "${apps[@]}"
 # socket: wait for it as for the socket, while the session lives.
 # A debug build serves it where `TILO_MCP_SERVER` names; an optimised one at the session's own
 # path in this session's runtime directory, which it announces the same way.
-# A session in a window serves none unless it holds an agent key (`tilo-session`'s options say why).
-socket=
-if ((!window)) || [[ -n $agent_key ]]; then
-    tries=600
-    until grep -q "^TILO_MCP_SERVER=$runtime/" "$log"; do
-        kill -0 "$session_pid" 2>/dev/null || { tail -40 "$log" >&2; die "the session ended before serving its MCP server"; }
-        ((tries--)) || { tail -40 "$log" >&2; die "the session serves no MCP server"; }
-        sleep 0.1
-    done
-    socket=$(sed -n "s|^TILO_MCP_SERVER=\($runtime/.*\)\$|\1|p" "$log" | tail -1)
-fi
+tries=600
+until grep -q "^TILO_MCP_SERVER=$runtime/" "$log"; do
+    kill -0 "$session_pid" 2>/dev/null || { tail -40 "$log" >&2; die "the session ended before serving its MCP server"; }
+    ((tries--)) || { tail -40 "$log" >&2; die "the session serves no MCP server"; }
+    sleep 0.1
+done
+socket=$(sed -n "s|^TILO_MCP_SERVER=\($runtime/.*\)\$|\1|p" "$log" | tail -1)
 
 if [[ -n $model_record ]]; then
     env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
@@ -573,7 +569,7 @@ if [[ -n $model_record ]]; then
     say "the person's model provider: $model_record"
 fi
 
-[[ -n $socket ]] && echo "TILO_MCP_SERVER=$socket"
+echo "TILO_MCP_SERVER=$socket"
 cat <<EOF
 TILO_TEST_CONTROL=$control
 XDG_RUNTIME_DIR=$runtime
