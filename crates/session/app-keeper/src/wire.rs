@@ -109,8 +109,13 @@ pub struct Window {
 pub enum End {
     /// It exited with this status.
     Exited { code: i32 },
-    /// This signal ended it.
-    Signalled { signal: i32 },
+    /// This signal ended it; `memory` when the kernel ended it for memory (its cgroup counted an
+    /// OOM kill while it ran).
+    Signalled {
+        signal: i32,
+        #[serde(default)]
+        memory: bool,
+    },
 }
 
 /// The frame a keeper sends after its version mismatch when it holds its app for the session at

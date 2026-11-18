@@ -133,21 +133,21 @@ else
       && ok 'the compositor is never the OOM killer'"'"'s choice' \
       || bad "compositor oom_score_adj is $(cat "/proc/$shell_pid/oom_score_adj"), not -1000"
   else bad 'no compositor running'; fi
-  # Every app is a scope of its own, with a tier it moves between, and
-  # OOMPolicy=continue keeps one OOM kill from stopping every app.
+  # Every app is a scope of its own, with a tier it moves between. A Tilo app
+  # is one OOM group (OOMPolicy=kill); the machine's own apps keep one victim
+  # (OOMPolicy=continue), so a language server in a terminal ends alone.
+  # systemd writes memory.oom.group from the policy: the two always agree.
   slice="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice"
   apps=$(cd "$slice" && ls -d app-tilo-*.scope 2>/dev/null || true)
   [ -n "$apps" ] && ok "app scopes: $(echo $apps)" || bad 'no app-tilo-*.scope: launched apps got no cgroup of their own'
   for app in $apps; do
-    prop --user "$slice/$app" OOMPolicy continue
     w=$(cat "$slice/$app/cpu.weight")
     case "$w" in 10000 | 800 | 50) ;;
       *) bad "$app has no tier (cpu.weight=$w)" ;; esac
-    # A Tilo app is one OOM group; a host app is not delegated and keeps one
-    # victim.
+    policy=$(systemctl --user show -P OOMPolicy "$app" 2>/dev/null)
     oom_group=$(cat "$slice/$app/memory.oom.group")
-    case "$oom_group" in 0 | 1) ;;
-      *) bad "$app has no OOM grouping ($oom_group)" ;; esac
+    case "$policy/$oom_group" in kill/1 | continue/0) ok "$app OOMPolicy=$policy" ;;
+      *) bad "$app OOMPolicy=$policy with memory.oom.group=$oom_group" ;; esac
   done
   # IO weights need a scheduler that honours them.
   for dev in /sys/block/nvme*n*; do

@@ -30,6 +30,7 @@ roots = ["ToKeeper", "FromKeeper"]
 "End::exited" = "struct"
 "End::exited.code" = "i32"
 "End::signalled" = "struct"
+"End::signalled.memory" = "bool optional"
 "End::signalled.signal" = "i32"
 "FromKeeper" = "enum external"
 "FromKeeper::described" = "tuple(Description)"

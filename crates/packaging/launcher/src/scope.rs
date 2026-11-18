@@ -20,9 +20,27 @@ pub const APP_SLICE: &str = "app.slice";
 /// Unit name prefix of a launch's own scope ([`unit_name`]).
 pub const UNIT_PREFIX: &str = "app-tilo-";
 
-/// What happens to an app's scope when the kernel OOM killer kills one of its processes: only that
-/// process dies (see the module docs).
-const OOM_POLICY: &str = "continue";
+/// What the kernel's OOM killer ends in a launch's scope. systemd writes the scope's
+/// `memory.oom.group` from its `OOMPolicy`, and writes it again whenever it applies the scope's
+/// settings, so the policy is the one place it is set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Oom {
+    /// A Tilo app is one program: when the kernel picks any of it, all of it ends (`kill`), and the
+    /// session says it ran out of memory.
+    WholeApp,
+    /// A machine's own app may start programs of the person's (a language server in a terminal):
+    /// only the process picked ends, and the app sees its child end like any crash (`continue`).
+    OneProcess,
+}
+
+impl Oom {
+    const fn policy(self) -> &'static str {
+        match self {
+            Self::WholeApp => "kill",
+            Self::OneProcess => "continue",
+        }
+    }
+}
 
 /// The longest unit name systemd accepts.
 const UNIT_NAME_MAX: usize = 255;
@@ -80,12 +98,12 @@ pub fn unescape_name(escaped: &str) -> String {
 
 /// Move this process into a new scope for `app_id` through the system's `busctl`, waiting until the
 /// move is visible in `/proc/self/cgroup`.
-pub fn join(app_id: &str, description: &str) -> Result<String, String> {
+pub fn join(app_id: &str, description: &str, oom: Oom) -> Result<String, String> {
     let busctl = Path::new(BUSCTL);
     if !busctl.is_file() {
         return Err(format!("no {BUSCTL} to reach the systemd user manager"));
     }
-    join_with(busctl, app_id, description, JOIN_TIMEOUT)
+    join_with(busctl, app_id, description, oom, JOIN_TIMEOUT)
 }
 
 /// [`join`] with the manager's front end and the join wait supplied.
@@ -93,6 +111,7 @@ pub fn join_with(
     busctl: &Path,
     app_id: &str,
     description: &str,
+    oom: Oom,
     timeout: Duration,
 ) -> Result<String, String> {
     let pid = std::process::id();
@@ -100,7 +119,7 @@ pub fn join_with(
     join_unit(
         busctl,
         &unit,
-        &request_args(&unit, pid, description),
+        &request_args(&unit, pid, description, oom),
         timeout,
     )
 }
@@ -142,7 +161,7 @@ fn join_unit(
 
 /// `busctl` arguments for `StartTransientUnit` of a scope holding `pid`.
 #[must_use]
-pub fn request_args(unit: &str, pid: u32, description: &str) -> Vec<String> {
+pub fn request_args(unit: &str, pid: u32, description: &str, oom: Oom) -> Vec<String> {
     let mut properties: Vec<Vec<String>> = vec![
         vec!["PIDs".into(), "au".into(), "1".into(), pid.to_string()],
         vec!["Slice".into(), "s".into(), APP_SLICE.into()],
@@ -157,7 +176,7 @@ pub fn request_args(unit: &str, pid: u32, description: &str) -> Vec<String> {
             "1".into(),
             SESSION_TARGET.into(),
         ],
-        vec!["OOMPolicy".into(), "s".into(), OOM_POLICY.into()],
+        vec!["OOMPolicy".into(), "s".into(), oom.policy().into()],
     ];
     // The person just asked for this app: it is born in the startup tier and served before everything
     // else while it opens, then the session moves it to the tier of what the person can see (see
@@ -221,7 +240,12 @@ mod tests {
 
         phase a_scope_request_names_its_unit_slice_session_and_process;
         {
-            let request = request_args("app-tilo-com.spotify.Client-42.scope", 42, "Spo\ntify");
+            let request = request_args(
+                "app-tilo-com.spotify.Client-42.scope",
+                42,
+                "Spo\ntify",
+                Oom::OneProcess,
+            );
             let tier = crate::priority::tier_properties(
                 crate::priority::Tier::Startup,
                 crate::priority::mem_total_bytes(),
@@ -327,19 +351,26 @@ mod tests {
             let pid = std::process::id();
             {
                 let busctl = stand_in("refusing-busctl", 1);
-                let error = join_with(&busctl, "so.tilo.notes", "Notes", Duration::from_millis(20))
+                let error = join_with(&busctl, "so.tilo.notes", "Notes", Oom::WholeApp, Duration::from_millis(20))
                     .expect_err("a refusal is reported");
                 assert!(error.contains("user scope bus"), "{error}");
                 let argv = std::fs::read_to_string(dir.path().join("refusing-busctl.argv"))
                     .expect("the manager was asked");
                 assert_eq!(
                     argv.lines().map(str::to_string).collect::<Vec<_>>(),
-                    request_args(&format!("app-tilo-so.tilo.notes-{pid}.scope"), pid, "Notes")
+                    request_args(
+                        &format!("app-tilo-so.tilo.notes-{pid}.scope"),
+                        pid,
+                        "Notes",
+                        Oom::WholeApp
+                    )
                 );
+                // A Tilo app ends whole when the kernel picks any of it.
+                assert!(argv.contains("OOMPolicy\ns\nkill\n"), "{argv}");
             }
             {
                 let busctl = stand_in("accepting-busctl", 0);
-                let error = join_with(&busctl, "so.tilo.notes", "Notes", Duration::from_millis(20))
+                let error = join_with(&busctl, "so.tilo.notes", "Notes", Oom::WholeApp, Duration::from_millis(20))
                     .expect_err("the process never moved");
                 assert!(error.contains("not joined"), "{error}");
             }
@@ -348,6 +379,7 @@ mod tests {
                     &dir.path().join("absent-busctl"),
                     "so.tilo.notes",
                     "Notes",
+                    Oom::WholeApp,
                     Duration::from_millis(20),
                 )
                 .expect_err("no busctl to run");
