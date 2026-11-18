@@ -3,10 +3,13 @@
 //! same work beside fifty items as beside five hundred.
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
-use tilo_app::framework::Chained;
+use tilo_app::framework::testing::TEST_WORKSPACE;
+use tilo_app::framework::{AttachedView, Chained, definition};
+use tilo_app::permissions::PermissionContext;
 use tilo_app::prelude::*;
-use tilo_app::resource::DocumentId;
+use tilo_app::resource::{DocumentCheckout, DocumentId, chain_resource_id};
 use tilo_app::tilo_resource::Collection;
+use tilo_app::tilo_resource::profiling::observe;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {
@@ -110,5 +113,117 @@ tilo_test_env::scenario! {
         // Past the page, the new card is not published and nothing is built.
         let (past, _) = items_built_by_one_write(500);
         assert!(past <= 1, "a full page builds no card again, built {past}");
+    }
+}
+
+/// A copy of the board where no window is open, as a workspace's server keeps one for each
+/// member who acts there.
+fn copy_for(app: &TestApp<BoardApp>, member: &str) -> AttachedView {
+    let definition = definition::<BoardApp>();
+    AttachedView::open(
+        definition,
+        TEST_WORKSPACE,
+        DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
+        app.read_document(|doc| doc.clone().save()),
+        &MemberId::person(member),
+        PermissionContext::permissive(),
+        false,
+    )
+    .unwrap()
+}
+
+/// What `put` takes to put `texts` up.
+fn putting(texts: &[String]) -> serde_json::Map<String, serde_json::Value> {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("texts".into(), serde_json::json!(texts));
+    arguments
+}
+
+/// Hand what `writer` changed to `keeper`, as a workspace's server hands a member's change
+/// to the copy it keeps: the keys each change writes are read there first, then it is taken.
+/// The parts that changed.
+fn hand_over(writer: &mut AttachedView, keeper: &mut AttachedView) -> Vec<DocumentId> {
+    if let Some(change) = writer.take_changes().unwrap() {
+        keeper.merge(&change).unwrap();
+    }
+    let mut parts = Vec::new();
+    for (part, change) in writer.take_resources_beside_changes().unwrap() {
+        let _ = keeper.changed_keys(&part, &change);
+        keeper.merge_resource(&part, &change).unwrap();
+        parts.push(part);
+    }
+    parts
+}
+
+/// What two copies of a board do for ONE more card beside `cards` others: every scope that
+/// ran, by name, with how often it ran. The writer resolves the action, carries it out and
+/// hands its change over; the keeper takes it, says what it now wants of the workspace and
+/// answers the lookup the next write begins with.
+fn work_for_one_more_card(cards: usize) -> Vec<(&'static str, usize)> {
+    let app = TestApp::<BoardApp>::new().unwrap();
+    let mut writer = copy_for(&app, "ada");
+    let mut keeper = copy_for(&app, "bo");
+    let put = tilo_actions::ActionAddress::new(chain_resource_id(&BoardPart::chain()), "put");
+    let before: Vec<String> = (0..cards).map(|n| format!("card {n}")).collect();
+    writer.invoke(&put, &putting(&before), false).unwrap();
+    let parts = hand_over(&mut writer, &mut keeper);
+    assert_eq!(parts.len(), 1, "every card went into the one part");
+    // Each copy is read once: what the cards before cost is behind it.
+    let _ = writer.resources();
+    let _ = keeper.wanted_resources();
+    let _ = keeper.resources();
+    let one = putting(&["one more".to_owned()]);
+    let ((), phases) = observe(|| {
+        assert!(
+            writer.descriptor(&put).is_some(),
+            "the writer is offered it"
+        );
+        writer.invoke(&put, &one, false).unwrap();
+        let changed = hand_over(&mut writer, &mut keeper);
+        assert_eq!(changed, parts, "the card went into the same part");
+        let _ = keeper.wanted_resources();
+        assert!(
+            keeper.descriptor(&put).is_some(),
+            "the keeper answers the next"
+        );
+    });
+    let mut work: Vec<(&'static str, usize)> = phases
+        .iter()
+        .map(|phase| (phase.phase, phase.calls))
+        .collect();
+    work.sort_unstable();
+    work
+}
+
+/// How often the scope `name` ran in `work`.
+fn ran(work: &[(&'static str, usize)], name: &str) -> usize {
+    work.iter()
+        .filter(|(phase, _)| *phase == name)
+        .map(|(_, calls)| *calls)
+        .sum()
+}
+
+tilo_test_env::scenario! {
+    fn one_more_item_costs_two_copies_the_same_however_many_the_part_holds;
+
+    phase no_view_is_laid_out_and_no_scope_is_entered_more_often_beside_six_hundred;
+    {
+        let few = work_for_one_more_card(20);
+        let many = work_for_one_more_card(600);
+        assert_eq!(
+            (ran(&few, "ui.frame_sync"), ran(&many, "ui.frame_sync")),
+            (0, 0),
+            "one more card lays out no frame of either copy: {many:?}"
+        );
+        let grown: Vec<(&str, usize, usize)> = many
+            .iter()
+            .map(|(phase, calls)| (*phase, ran(&few, phase), *calls))
+            .filter(|(_, beside_few, beside_many)| beside_many > beside_few)
+            .collect();
+        assert!(
+            grown.is_empty(),
+            "one more card enters no scope more often beside 600 cards than beside 20 \
+             (scope, beside 20, beside 600): {grown:?}"
+        );
     }
 }
