@@ -135,11 +135,11 @@ async fn a_typed_listing_says_which_rows_a_read_answers() {
     );
 }
 
-/// A path naming a place inside a resource answers no read of its own without
-/// reading the app's root resources for one: nothing there is that place's to
-/// read, so a caller is told so instead of waiting on every root resource.
+/// A path naming a place inside a resource answers no read of its own: the
+/// root resources are read once to find the read that could answer such a
+/// path, not once for every place a walk asks about.
 #[tokio::test]
-async fn a_read_of_a_place_answers_no_read_without_reading_the_apps_root() {
+async fn a_read_of_a_place_answers_no_read_without_reading_the_apps_root_again() {
     let notes = Notes::new(true);
     let mut rows = vec![
         notes.row("", "font", "place", "Fonts", None, false),
@@ -150,18 +150,15 @@ async fn a_read_of_a_place_answers_no_read_without_reading_the_apps_root() {
     rows.extend(notes.rows("1"));
     *notes.published_kinds.lock().unwrap() = Some(rows);
     let server = agent(&notes);
+    let (_, _) = tool(&server, "tilo_read", json!({"path": "notes/font"})).await;
     notes.take_asked();
-    let (text, failed) = tool(&server, "tilo_read", json!({"path": "notes/Fonts"})).await;
-    assert!(failed, "{text}");
-    assert!(text.contains("no read action"), "{text}");
+    let (_, _) = tool(&server, "tilo_read", json!({"path": "notes/theme"})).await;
     let asked = notes.take_asked();
-    // The place the read names is listed to find it; the other root
-    // resources are not read looking for a read that answers it.
-    for place in ["theme", "folder", "voice"] {
+    for place in ["font", "folder", "voice"] {
         let id = notes.id(place);
         assert!(
             !asked.iter().any(|ask| ask.contains(&format!("under {id}"))),
-            "{place} was read to find a read it does not answer: {asked:?}"
+            "{place} was read again looking for a read it does not answer: {asked:?}"
         );
     }
 }

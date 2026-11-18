@@ -1438,8 +1438,10 @@ async fn write_export<S: ExportSource>(
                 .map(|path| async move { source.read_whole(&path).await })
                 .buffered(EXPORT_READS_AT_ONCE);
             for row in &fresh {
-                if row.reads {
-                    match reads.next().await.expect("one read for each row read") {
+                if row.reads
+                    && let Some(read) = reads.next().await
+                {
+                    match read {
                         Ok(resource) => {
                             let mut piece = String::new();
                             if !first {

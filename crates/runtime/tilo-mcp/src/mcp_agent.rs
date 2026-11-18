@@ -88,6 +88,8 @@ const DEEP_READS: usize = 16;
 const NAME_BYTES: usize = 256;
 /// Lines `tilo_ls` answers before a cursor.
 const LS_LINES: usize = 40;
+/// Root-resource read searches a session keeps, by app and directory revision.
+const SWEPT_READS: usize = 256;
 /// Hits `tilo_find` answers.
 const FIND_HITS: usize = 15;
 /// Characters of a read answered before the rest is cut.
@@ -2198,27 +2200,48 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 return Ok(Some((ancestor.id.clone(), found)));
             }
         }
-        // A path that names a resource answers with no read of its own when
-        // neither it nor what it is listed under has one: it is a place inside
-        // that resource (an option, a choice), which the resource's own read
-        // already answers, and looking further would read every root resource
-        // to find a read that takes nothing here as its item. Say so, and let
-        // the caller go on without paying for it.
-        if resolved.node.is_some() {
-            return Ok(None);
-        }
         // The app's root resources: a notebook reads its pages. A read that
         // names no item answers a document whole, and a resource inside it is
         // that read's to answer: a listing that takes no item would answer
         // every item with the whole document.
+        //
+        // Which root resource that is depends on the app's directory alone, so
+        // it is looked for once an app's directory stands still: a path that no
+        // root resource reads otherwise reads every one of them, and a walk
+        // over an app's empty places would pay that for each.
+        let sweep = (resolved.provider.clone(), resolved.revision.clone());
+        if !sweep.1.is_empty()
+            && let Some(known) = self.swept_reads.lock_recover().get(&sweep).cloned()
+        {
+            return Ok(known);
+        }
         let root = self.level(&resolved.provider, "", levels).await?;
+        let reading_item = |found: &ActionDescriptor| {
+            resolved.node.is_none()
+                || found
+                    .params
+                    .iter()
+                    .any(|param| param.name.as_ref() == "item")
+        };
+        let mut found = None;
         for node in &root.children {
             let level = self.level(&resolved.provider, &node.id, levels).await?;
-            if let Some(found) = reads_action(&level.own).or_else(|| reads_action(&node.actions)) {
-                return Ok(Some((node.id.clone(), found)));
+            if let Some(reading) = reads_action(&level.own)
+                .or_else(|| reads_action(&node.actions))
+                .filter(reading_item)
+            {
+                found = Some((node.id.clone(), reading));
+                break;
             }
         }
-        Ok(None)
+        if !sweep.1.is_empty() {
+            let mut swept = self.swept_reads.lock_recover();
+            if swept.len() >= SWEPT_READS {
+                swept.clear();
+            }
+            swept.insert(sweep, found.clone());
+        }
+        Ok(found)
     }
 
     async fn agent_do(&self, args: DoArgs, structured: bool) -> Result<Reply, Failure> {
