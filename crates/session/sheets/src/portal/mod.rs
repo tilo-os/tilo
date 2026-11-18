@@ -194,7 +194,8 @@ pub struct Dialog {
     /// [`PortalEffect`] answers by naming it.
     pub handle: String,
     pub title: String,
-    /// Who asks, or what it is about (the app, the drive, the action).
+    /// What the title does not already say: the program asking when the title leaves it out, the
+    /// network, the administrator, the step. Empty when the title names who asks.
     pub heading: String,
     /// What the person reviews: this page of it, when it is paged.
     pub detail: String,

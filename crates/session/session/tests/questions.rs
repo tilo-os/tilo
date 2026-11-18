@@ -292,7 +292,7 @@ fn the_access_question_is_answered_on_the_portal_sheet() {
         shown.title, "org.example.Recorder wants to use your screen",
         "what the app asks for, in the person's words"
     );
-    assert_eq!(shown.heading, "org.example.Recorder");
+    assert_eq!(shown.heading, "", "the title already names the app");
     assert_eq!(
         shown.body,
         Body::Choices(vec![
@@ -312,7 +312,7 @@ fn the_access_question_is_answered_on_the_portal_sheet() {
 
     let grant = dialog(&session);
     assert_eq!(grant.title, "Allowed for good");
-    assert_eq!(grant.heading, "org.example.Recorder");
+    assert_eq!(grant.heading, "", "its detail names the app");
     assert_eq!(
         grant.detail,
         "org.example.Recorder may now use your screen without asking. \
@@ -624,7 +624,7 @@ fn the_network_that_could_not_be_joined_offers_to_join_it() {
     pump(&mut session, |_| questions.pending().len() == 1);
     let shown = dialog(&session);
     assert_eq!(shown.title, "Couldn't join Cafe");
-    assert_eq!(shown.heading, "Cafe");
+    assert_eq!(shown.heading, "", "the title already names the network");
     assert_eq!(shown.detail, "Enter the password to connect.");
     assert_eq!(shown.body, Body::Choices(vec!["Enter password".to_owned()]));
     assert_eq!(shown.confirm_label, "Enter password");

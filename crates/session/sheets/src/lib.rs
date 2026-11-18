@@ -67,5 +67,11 @@ pub fn words(key: &str, args: &[(&str, &str)]) -> String {
         .iter()
         .map(|(name, value)| (*name, ui::i18n::ArgValue::from(*value)))
         .collect();
-    t_args(key, &args)
+    words_with(key, &args)
+}
+
+/// The same, with `args` filled in, one of them a number the reader's grammar counts.
+#[must_use]
+pub fn words_with(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
+    t_args(key, args)
 }
