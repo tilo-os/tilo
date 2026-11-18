@@ -629,3 +629,8 @@ reason = "The in-sandbox loopback port that carries an app's traffic to the egre
 words = ["relay"]
 identifiers = ["RELAY_PORT"]
 paths = ["crates/session/session/tests/windows_compat.rs"]
+
+[[allow]]
+reason = "t's name for this check and the image it tests, the console of the VM it boots the image in, and the boot-assessment runner's own variable naming the unit it breaks: names those tools give them, not Tilo concepts."
+words = ["host", "run", "record", "subject"]
+paths = ["tools/ci/host-assurance.sh"]
