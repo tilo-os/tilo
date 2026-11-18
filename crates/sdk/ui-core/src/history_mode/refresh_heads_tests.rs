@@ -496,6 +496,13 @@ impl Parts {
     }
 }
 impl crate::history_mode::HistoryParts for Parts {
+    fn heads(&self) -> Vec<automerge::ChangeHash> {
+        self.0
+            .borrow()
+            .iter()
+            .flat_map(automerge::transaction::Transactable::base_heads)
+            .collect()
+    }
     fn documents(&self) -> Vec<(crate::history_mode::HistoryPart, AutoCommit)> {
         self.0
             .borrow()
@@ -554,8 +561,7 @@ fn history_previews_and_restores_the_parts_beside_the_document() {
     for second in 1..=3 {
         typed_at(&mut part, second);
     }
-    // The workspace's history the window follows lists the part's changes.
-    crate::history_mode::feed::tests::serve(&part);
+    // The window's History lists the part's changes.
     let parts = std::rc::Rc::new(std::cell::RefCell::new(vec![part]));
     fixture.parts = Some(std::rc::Rc::new(Parts(std::rc::Rc::clone(&parts))));
     let mut history = fixture.history(&outer);
@@ -565,7 +571,12 @@ fn history_previews_and_restores_the_parts_beside_the_document() {
     assert!(!listed.is_empty(), "the part's changes are listed");
 
     // Choosing a part's earliest change shows the part as that change left it.
-    let index = 0;
+    let index = listed
+        .iter()
+        .position(|entry| {
+            entry.timestamp == std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1)
+        })
+        .expect("the part's first change is listed with the window's own");
     let chosen = listed[index].clone();
     history.timeline.set_selection(Some((index, index)));
     history.refresh(&outer);

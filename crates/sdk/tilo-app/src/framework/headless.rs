@@ -2329,14 +2329,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .collect()
     }
 
-    /// Serve the history of the resources the window keeps to History, as the session serves them:
-    /// without it History lists nothing, since what it lists is the workspace's history and not the
-    /// frame's own reading of the changes.
-    #[cfg(feature = "test-support")]
-    pub fn serve_history(&self) {
-        ui_core::testing::serve_history(&self.records, &self.checkout().id);
-    }
-
     /// What each version of the resource `id` did through an action, oldest
     /// first: a resource the app keeps beside its own, such as a part of a
     /// chain, as this window holds it.

@@ -352,7 +352,6 @@ fn select_version(app: &mut TestApp<WordProcessorApp>, version: &[automerge::Cha
         panic!("a single-author edit leaves one head");
     };
     if !app.harness().targets().contains_key("history-back-live") {
-        app.serve_history();
         app.harness().press_window_history().unwrap();
     }
     let entry = format!("timeline-entry:{}", &hash.to_string()[..32]);
