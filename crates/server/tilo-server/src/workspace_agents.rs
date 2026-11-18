@@ -82,6 +82,7 @@ mod first_try;
 mod going;
 mod issue_work;
 mod learned;
+mod logged;
 mod mail;
 mod mail_connect;
 mod skills;
@@ -2491,7 +2492,7 @@ async fn run_calls(
         noted = Some(call.name.clone());
         step.say(content.len(), is_error);
         if is_error {
-            let said: String = content.chars().take(LOGGED_CHARS).collect();
+            let said = logged::refusal(&content);
             tracing::info!(tool = %call.name, %said, "a tool of an agent on the workspace's server was refused or failed");
         } else {
             tracing::info!(tool = %call.name, "an agent on the workspace's server used a tool");
