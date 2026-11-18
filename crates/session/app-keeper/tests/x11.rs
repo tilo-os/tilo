@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use smithay::xwayland::XWaylandListener;
 
 use tilo_compositor::Selection;
+use tilo_test_env::SpawnUnderEnvLock as _;
 use x11rb::connection::Connection as _;
 use x11rb::errors::ConnectError;
 use x11rb::protocol::Event;
@@ -338,7 +339,7 @@ fn a_display_left_by_a_killed_launch_goes_to_one_of_those_taking_it_at_once() {
     let lock = std::path::PathBuf::from(format!("/tmp/.X{number}-lock"));
     let path = std::path::PathBuf::from(format!("/tmp/.X11-unix/X{number}"));
     let mut gone = std::process::Command::new("true")
-        .spawn()
+        .spawn_locked()
         .expect("a process");
     let dead = gone.id();
     gone.wait().expect("it ended");

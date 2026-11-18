@@ -213,6 +213,7 @@ pub(crate) fn watch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     #[test]
     fn each_connection_hears_each_end_of_its_workspace_once() {
@@ -255,7 +256,7 @@ mod tests {
         let programs = Arc::new(Programs::default());
         let child = std::process::Command::new("sleep")
             .arg("30")
-            .spawn()
+            .spawn_locked()
             .expect("a program starts");
         let program = crate::ChildProgram::new(child).expect("its pidfd");
         let released = Arc::new(std::sync::atomic::AtomicBool::new(false));

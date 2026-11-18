@@ -22,6 +22,7 @@ use tilo_app_launch::kept::testing;
 use tilo_desktop_model::{Layout, Strip, StripId, TabId, TileContent, Workspace, WorkspaceId};
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
 
@@ -585,7 +586,7 @@ fn the_launcher_takes_the_command_line_the_session_starts_an_app_with() {
         .arg("--dry-run")
         .env("XDG_DATA_HOME", rig.home.data())
         .env("XDG_DATA_DIRS", &nowhere)
-        .output()
+        .output_locked()
         .expect("the launcher answers");
     let said = String::from_utf8_lossy(&planned.stdout);
     assert!(
@@ -1242,7 +1243,7 @@ fn start_service_keeper(rig: &Rig) -> std::process::Child {
         .arg(exe)
         .args(["--exact", "kept_apps::kept_app", "--nocapture"])
         .process_group(0)
-        .spawn()
+        .spawn_locked()
         .expect("the service's keeper starts")
 }
 

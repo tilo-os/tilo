@@ -1163,7 +1163,7 @@ fn real_launcher_keeper(handed: &[String]) -> (String, Vec<String>) {
     args.insert(separator, "--print-keeper".to_owned());
     let planned = std::process::Command::new(&launcher)
         .args(&args)
-        .output()
+        .output_locked()
         .expect("the launcher answers");
     let said = String::from_utf8_lossy(&planned.stdout);
     assert!(

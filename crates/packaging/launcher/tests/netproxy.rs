@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use launcher::egress_proxy::{EgressPolicy, reply};
 use launcher::netproxy;
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 const LAUNCHER: &str = env!("CARGO_BIN_EXE_tilo-launcher");
 
@@ -59,7 +60,7 @@ fn start_proxy(dir: &Path, control: &Path) -> Child {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .spawn_locked()
         .expect("the proxy starts");
     wait_until("the proxy listens", || {
         dir.join("proxy.sock").exists() && control.exists()
@@ -229,7 +230,7 @@ fn a_proxy_with_no_policy_file_refuses_to_start() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .status_locked()
         .unwrap();
     assert!(
         !status.success(),
@@ -262,7 +263,7 @@ fn a_proxy_ends_with_the_program_its_launch_starts_and_leaves_no_way_out() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     wait_until("the proxy listens", || {
         dir.join("proxy.sock").exists() && control.exists()
@@ -322,7 +323,7 @@ fn a_program_starts_only_after_its_proxy_listens() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .status_locked()
         .unwrap();
     assert!(
         !status.success(),

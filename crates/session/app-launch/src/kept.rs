@@ -1001,7 +1001,9 @@ mod tests {
             std::fs::write(&lock, format!("{pid:>10}\n")).unwrap();
             std::fs::write(&socket, "").unwrap();
         };
-        let mut ended = std::process::Command::new("/bin/true").spawn().unwrap();
+        let mut ended = std::process::Command::new("/bin/true")
+            .spawn_locked()
+            .unwrap();
         let dead = ended.id();
         ended.wait().unwrap();
 

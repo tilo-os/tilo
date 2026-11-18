@@ -28,6 +28,7 @@ use tilo_desktop_policy::Window;
 use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The app a test installs: a Tilo package whose window is a tab of the layout.
 const PROBE: &str = "so.tilo.probe";
@@ -599,7 +600,7 @@ fn a_window_moved_just_before_the_restart_signal_comes_back_there() {
         .env("TILO_TEST_SCENE_STATE", &device.state)
         .env("TILO_TEST_SCENE_WORKSPACE", workspace_ids[1].to_string())
         .env("TILO_TEST_SCENE_TAB", mail.to_string())
-        .output()
+        .output_locked()
         .expect("the scene starts");
     assert!(
         scene.status.success(),
