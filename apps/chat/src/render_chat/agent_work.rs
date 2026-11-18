@@ -146,19 +146,26 @@ fn step_words(did: &str, about: &str) -> Option<String> {
     if did.is_empty() || named {
         return None;
     }
-    if about.is_empty() {
-        return Some(did.to_owned());
-    }
-    Some(crate::i18n::t_args(
-        "chat-agent-work-step-about",
-        &[("step", did.into()), ("about", about.into())],
-    ))
+    Some(step_about(did, about))
 }
 
-/// One operation, in its app's words, with what came of it.
+/// A step with what it is about, as one line says both: the working line and
+/// an opened row say a step the same way. The step alone where it names nothing.
+fn step_about(step: &str, about: &str) -> String {
+    if about.is_empty() {
+        return step.to_owned();
+    }
+    crate::i18n::t_args(
+        "chat-agent-work-step-about",
+        &[("step", step.into()), ("about", about.into())],
+    )
+}
+
+/// One operation, in its app's words, with the resource it was addressed to
+/// and what came of it.
 fn step_line(step: &crate::model::AgentStep) -> String {
     use crate::i18n::t_args;
-    let target = || step.label.clone().into();
+    let target = || step_about(step.label.trim(), step.resource.trim()).into();
     match &step.outcome {
         AgentStepOutcome::Asked => {
             t_args("chat-agent-work-step-requested", &[("target", target())])

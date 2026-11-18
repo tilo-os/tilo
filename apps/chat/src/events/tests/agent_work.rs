@@ -96,7 +96,7 @@ fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
         render_frame(&mut app, width, height);
         assert_eq!(
             description(&app),
-            "Did one thing; Applied: Add function",
+            "Did one thing; Applied: Add function: calculator.workspace",
             "the state update retains the previously recorded dispatch evidence"
         );
         let reply = app
