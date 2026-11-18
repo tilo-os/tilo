@@ -830,6 +830,41 @@ async fn each_member_runs_what_their_access_lets_them_and_nothing_else() {
     ended(browser, hosted).await;
 }
 
+/// The tracker keeps its issues in the parts of a chain, and a workspace that holds no issue
+/// yet holds no part of it. Its first issue is filed on the chain itself: that write is taken
+/// as the chain's before any part of it stands here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_first_write_into_an_empty_chain_is_taken() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let server = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let site = start(&root, &server, state.path()).await;
+    let mut browser = Browser::open(&site, &browser_device, &server).await;
+    let tasks = browser.create(TASKS);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let tasks_provider = record_provider(&tasks);
+    let issues = ui::resource::chain_resource_id(&ui::resource::DocumentId::derived(
+        "issues",
+        &ui::resource::DocumentId::workspace_default(),
+    ));
+    let filed = browser
+        .invoke(request(
+            &tasks_provider,
+            ActionAddress::new(issues, "create"),
+            json(serde_json::json!({"title": "Ship the launch"})),
+        ))
+        .await;
+    assert!(
+        matches!(
+            filed.status,
+            ReceiptStatus::Completed { .. } | ReceiptStatus::Accepted
+        ),
+        "the first issue of a tracker that holds none is filed: {filed:?}"
+    );
+    ended(browser, site).await;
+}
+
 // What an app keeps for its whole workspace is reached the same way and judged by the same
 // membership, so its tests stand below this fixture.
 #[path = "workspace_documents.rs"]
