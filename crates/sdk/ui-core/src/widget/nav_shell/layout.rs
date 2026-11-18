@@ -351,7 +351,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         0.0
     };
     let docks = rail_sidebar || reaches(w, g.breakpoint, held.sidebar_docked, band);
-    g.sidebar = if !inputs.has_sidebar || (inputs.floats && !docks) {
+    g.sidebar = if !inputs.has_sidebar || inputs.alone || (inputs.floats && !docks) {
         SidebarPlacement::None
     } else if docks {
         SidebarPlacement::Docked
