@@ -1354,12 +1354,15 @@ pub(crate) fn resolve_open(tree: &Layout, app: &str) -> Admitted {
 
 /// Whether `tab` is a window of `app` on this device: one it shows, or opens itself. A window that
 /// runs only on another device is that device's, whatever app it is of: it is no place to take a
-/// person who asks for the app here.
+/// person who asks for the app here. A tab that shows one thing of the app is the person's place
+/// of that thing, not a window of its app: asking for the app goes past it to the app's window.
 fn window_here(tab: &tilo_desktop_model::Tab, app: &str) -> bool {
-    !matches!(
-        tab.tile,
-        tilo_desktop_model::TileContent::HostedWindow { .. }
-    ) && tilo_desktop_model::apps::canonical_app_id(&tab.tile).as_deref() == Some(app)
+    !tilo_desktop_model::apps::shows_a_view(tab)
+        && !matches!(
+            tab.tile,
+            tilo_desktop_model::TileContent::HostedWindow { .. }
+        )
+        && tilo_desktop_model::apps::canonical_app_id(&tab.tile).as_deref() == Some(app)
 }
 
 /// A window of `app` in the active workspace, the shown strip's first:

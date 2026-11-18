@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use tilo_desktop_model::apps::app_ids_match;
+use tilo_desktop_model::apps::{app_ids_match, shows_a_view};
 use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
     Display, GroupId, IdMinter, Layout, Tab, TabId, TileContent, Workspace, WorkspaceId,
@@ -385,7 +385,7 @@ impl TileSource for Windows {
         let TileContent::LocalApp { app_id, note, .. } = &tab.tile else {
             return;
         };
-        if app_id.trim().is_empty() || !note.is_empty() {
+        if app_id.trim().is_empty() || !note.is_empty() || shows_a_view(tab) {
             return;
         }
         self.held
@@ -1262,7 +1262,16 @@ impl DesktopPolicy {
         background: bool,
         window: Option<KeptWindow>,
     ) -> bool {
-        if self.handle.read(|tree| route_of(tree, tab)).is_none() {
+        let Some(ids) = self.handle.read(|tree| route_of(tree, tab)) else {
+            return false;
+        };
+        // A tab that shows one thing of the app is the person's place of that thing: a window of
+        // the app is never bound into it, and the tab is not reused for one.
+        if self.handle.read(|tree| {
+            tabs(tree)
+                .find(|found| found.id == ids.tab)
+                .is_some_and(shows_a_view)
+        }) {
             return false;
         }
         self.held
@@ -1310,7 +1319,9 @@ impl DesktopPolicy {
         self.handle.read(|tree| {
             tabs(tree)
                 .find(|found| found.id == tab)
-                .is_some_and(|found| matches!(found.tile, TileContent::LocalApp { .. }))
+                .is_some_and(|found| {
+                    matches!(found.tile, TileContent::LocalApp { .. }) && !shows_a_view(found)
+                })
         })
     }
 
@@ -1383,6 +1394,14 @@ impl DesktopPolicy {
         let Some(ids) = route_of(&tree, held_tab) else {
             return false;
         };
+        // The person's place of a view is not a window's: a hold left on it by mistake lets the
+        // window land where a launch lands.
+        if tabs(&tree)
+            .find(|tab| tab.id == held_tab)
+            .is_some_and(shows_a_view)
+        {
+            return false;
+        }
         let app_id = window.app_id.clone().unwrap_or_default();
         let title = tab_title(&self.names, &app_id, window.title.as_deref());
         let Some(tab) = tabs_mut(&mut tree).find(|tab| tab.id == held_tab) else {
@@ -1687,6 +1706,7 @@ impl DesktopPolicy {
                 .flat_map(|group| &group.tabs)
                 .find(|tab| {
                     matches!(&tab.tile, TileContent::LocalApp { note, .. } if note.is_empty())
+                        && !shows_a_view(tab)
                         && !answered.contains_key(&tab.id)
                         && !comes(tab, &held)
                         && tilo_desktop_model::apps::canonical_app_id(&tab.tile)
@@ -2053,6 +2073,9 @@ fn anchor_for(tree: &Layout, app: &str) -> Option<(TabId, GroupId, usize)> {
                 .map(move |(index, tab)| (tab, group.id, index))
         })
         .filter_map(|(tab, group, index)| {
+            if shows_a_view(tab) {
+                return None;
+            }
             let id = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
             app_ids_match(&id, app).then_some((tab.id, group, index))
         })

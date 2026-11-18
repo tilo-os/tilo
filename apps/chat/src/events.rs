@@ -2258,6 +2258,7 @@ impl ChatApp {
         };
         self.submit_part(ChatMessages::POST.with(chat_messages::Post {
             message: NewMessage {
+                id: None,
                 channel: item(&pending.channel),
                 text: String::new(),
                 parent: None,

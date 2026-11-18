@@ -756,6 +756,11 @@ fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(Works
             let TileContent::LocalApp { app_id, label, .. } = &tab.tile else {
                 continue;
             };
+            // A tab that shows one thing of the app is the person's place of that thing, not a
+            // window waiting to be opened again.
+            if tilo_desktop_model::apps::shows_a_view(tab) {
+                continue;
+            }
             // A window that announced no app id (an X11 client without a class, `vkcube`) is
             // saved under none: nothing here can start it again, but its window, kept across an
             // in-place restart, still claims this tab by its id.
