@@ -1144,7 +1144,7 @@ tilo_test_env::scenario! {
         let _loan = store.set_mut();
         assert_eq!(
             store.private_actions(&checkout.id).unwrap_err(),
-            "record store is busy"
+            "resource store is busy"
         );
     }
 
