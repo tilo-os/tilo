@@ -67,7 +67,7 @@ pub struct Caller {
     // (`Self::named`): presentation only, what History names it by.
     pub(super) agent_name: Option<String>,
     // What the person asked the agent to do, in a line (`Self::asked`): what
-    // its session is labelled by. Never its name.
+    // its session is labelled by, where it was asked.
     pub(super) asked: Option<String>,
     // What the agent's own record bounds it to on its turn (`Self::on_turn`), narrowing the
     // grants a delegated agent acts with; empty follows the default.
@@ -295,7 +295,7 @@ impl Caller {
     /// An agent caller working on `request`, the words of the person that
     /// started its session (their message, what they sent it): its first line,
     /// trimmed and bounded, labels the session ([`Self::agent_session`]). A
-    /// blank request leaves the session without a label.
+    /// blank request leaves the session labelled by the agent's name.
     #[must_use]
     pub fn asked(mut self, request: &str) -> Self {
         self.asked = crate::context::one_line(request, crate::context::MAX_LABEL_CHARS);
@@ -437,10 +437,11 @@ impl Caller {
 
     /// The session this caller's actions are part of, as the provider that
     /// admitted it says: an agent (or a key it holds) in an execution the
-    /// provider minted for its connection works in one session, labelled by
-    /// what it was asked ([`Self::asked`]). History groups the session's
-    /// changes, Activity lists it and undo takes it back whole, whatever the
-    /// client says of itself. `None` for anyone else.
+    /// provider minted for its connection works in one session, named by what
+    /// it was asked ([`Self::asked`]), else by the name the provider knows it
+    /// by ([`Self::named`]). History groups the session's changes, Activity
+    /// lists it and undo takes it back whole, whatever the client says of
+    /// itself. `None` for anyone else.
     #[must_use]
     pub fn agent_session(&self) -> Option<crate::WorkGroup> {
         self.acting.agent_id()?;
@@ -454,7 +455,10 @@ impl Caller {
         };
         Some(crate::WorkGroup {
             id,
-            label: self.asked.clone(),
+            label: self
+                .asked
+                .clone()
+                .or_else(|| self.agent_name().map(str::to_owned)),
             kind: crate::context::AGENT_SESSION_GROUP.to_owned(),
             declared_id: None,
         })
@@ -494,7 +498,21 @@ impl Caller {
 
 #[cfg(test)]
 mod tests {
-    use super::device_agent_id;
+    use super::{Caller, device_agent_id};
+
+    /// An agent session names itself by what it was asked, and by the agent's name where it was
+    /// asked nothing.
+    #[test]
+    fn an_agent_sessions_label_is_what_it_was_asked_else_the_agents_name() {
+        let session = Caller::local_agent("claude-code")
+            .in_new_execution()
+            .named("Claude Code")
+            .in_agent_session("visit-1");
+        let label = |caller: &Caller| caller.agent_session().and_then(|session| session.label);
+        assert_eq!(label(&session).as_deref(), Some("Claude Code"));
+        let asked = session.asked("Fill Jane's application");
+        assert_eq!(label(&asked).as_deref(), Some("Fill Jane's application"));
+    }
 
     /// One person's agent under one name is one agent, however the name is typed; another name
     /// or another person's agent is another.
