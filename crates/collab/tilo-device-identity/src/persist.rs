@@ -1234,7 +1234,9 @@ pub fn read_device_cert(path: &Path) -> Result<DeviceCert, PersistError> {
 /// bytes each version wrote are kept in `golden/device-certificate/`.
 pub const DEVICE_CERT: Format = Format {
     name: "device certificate",
-    version: tilo_user_identity::cert::BINARY_LAYOUT,
+    // The identity crate owns the layout number ([`tilo_user_identity::cert::BINARY_LAYOUT`]);
+    // a test beside the golden bytes keeps this in step with it.
+    version: 1,
     oldest: 1,
     steps: &[],
 };
@@ -1543,6 +1545,11 @@ mod tests {
         assert_eq!(
             tilo_user_identity::cert::binary_layout_of(&kept).unwrap(),
             1
+        );
+        assert_eq!(
+            DEVICE_CERT.version,
+            tilo_user_identity::cert::BINARY_LAYOUT,
+            "the declared version is the one the identity crate writes"
         );
         let dir = identity_tempdir();
         let paths = IdentityPaths::under(dir.path());
