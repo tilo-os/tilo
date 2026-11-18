@@ -26,4 +26,6 @@ target=${CARGO_TARGET_DIR:-$(cargo metadata --format-version 1 --no-deps --offli
 dir=$target/htmlrenderer/tilolang
 app=$(ls "$dir/tl" | head -n 1)
 echo "http://127.0.0.1:$port/tilolang.html?package=tl/$app/"
-exec python3 -m http.server --bind 127.0.0.1 --directory "$dir" "$port"
+# The checks' own server: nothing cached, so a browser that showed an earlier
+# build loads all of this one.
+exec node tools/web/html-renderer/serve.mjs "$dir" "$port"
