@@ -53,6 +53,16 @@ roots = ["Request", "Response", "ToolRequest", "ToolReply", "Call", "HostFrame",
 # left out, so only the postcard roots pin what a compact encoding carries.
 json_roots = ["Request", "Response", "ToolRequest", "ToolReply"]
 
+# The keywords a declared shape may use (an action's argument, its result): an
+# app writes its declarations in them and the programs of the runtime check a
+# call against what was written, so a word one side does not know is a call
+# refused. No type carries them: each list is recorded a line a word, and a
+# list that changes needs a higher version as a type that changes does.
+words = [
+    "crates/collab/actions/src/params.rs:SCHEMA_ASSERTIONS",
+    "crates/collab/actions/src/params.rs:SCHEMA_ANNOTATIONS",
+]
+
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
 Acting = "tilo_action_policy::Acting: who made a change, carried as the JSON text its history entry writes (ChangeClaim.invoker)"
@@ -817,6 +827,36 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "Role::moderator" = "#3 unit"
 "Role::owner" = "#4 unit"
 "Role::viewer" = "#0 unit"
+"SCHEMA_ANNOTATIONS" = "words"
+"SCHEMA_ANNOTATIONS::$comment" = "word"
+"SCHEMA_ANNOTATIONS::$id" = "word"
+"SCHEMA_ANNOTATIONS::$schema" = "word"
+"SCHEMA_ANNOTATIONS::default" = "word"
+"SCHEMA_ANNOTATIONS::deprecated" = "word"
+"SCHEMA_ANNOTATIONS::description" = "word"
+"SCHEMA_ANNOTATIONS::examples" = "word"
+"SCHEMA_ANNOTATIONS::readOnly" = "word"
+"SCHEMA_ANNOTATIONS::title" = "word"
+"SCHEMA_ANNOTATIONS::writeOnly" = "word"
+"SCHEMA_ASSERTIONS" = "words"
+"SCHEMA_ASSERTIONS::additionalProperties" = "word"
+"SCHEMA_ASSERTIONS::const" = "word"
+"SCHEMA_ASSERTIONS::enum" = "word"
+"SCHEMA_ASSERTIONS::format" = "word"
+"SCHEMA_ASSERTIONS::items" = "word"
+"SCHEMA_ASSERTIONS::maxItems" = "word"
+"SCHEMA_ASSERTIONS::maxLength" = "word"
+"SCHEMA_ASSERTIONS::maximum" = "word"
+"SCHEMA_ASSERTIONS::minItems" = "word"
+"SCHEMA_ASSERTIONS::minLength" = "word"
+"SCHEMA_ASSERTIONS::minimum" = "word"
+"SCHEMA_ASSERTIONS::oneOf" = "word"
+"SCHEMA_ASSERTIONS::pattern" = "word"
+"SCHEMA_ASSERTIONS::prefixItems" = "word"
+"SCHEMA_ASSERTIONS::properties" = "word"
+"SCHEMA_ASSERTIONS::required" = "word"
+"SCHEMA_ASSERTIONS::type" = "word"
+"SCHEMA_ASSERTIONS::uniqueItems" = "word"
 "Service" = "enum external"
 "Service::ApprovedCheck" = "#8 unit"
 "Service::AudioOutput" = "#0 unit"

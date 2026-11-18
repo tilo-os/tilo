@@ -285,6 +285,93 @@ class AgainstMainTests(unittest.TestCase):
             self.assertIn("`T` is gone", problems[0])
 
 
+class WordListTests(unittest.TestCase):
+    """A list of words both sides hold alike though no type carries it (the
+    keywords a declared shape may use) is part of the interface's schema."""
+
+    WORDS = (
+        "pub const V: u32 = {version};\npub struct S {{ a: u32 }}\n"
+        "/// The words.\nconst WORDS: &[&str] = &[\n    {words}\n];\n"
+    )
+    SPEC = (
+        'name = "demo"\nversion = 0\nversion_const = "crates/demo/wire/src/lib.rs:V"\n'
+        'encoding = "json"\nsources = ["crates/demo/wire/src/lib.rs"]\nroots = ["S"]\n'
+    )
+    LISTED = 'words = ["crates/demo/wire/src/lib.rs:WORDS"]\n'
+    git = AgainstMainTests.git
+
+    def code(self, version, *words):
+        listed = " ".join(f'"{word}",' for word in words)
+        return self.WORDS.format(version=version, words=listed)
+
+    def tree(self, root, spec_text, code_text):
+        self.git(root, "init", "-q", "-b", "main")
+        self.git(root, "config", "user.email", "t@example.com")
+        self.git(root, "config", "user.name", "t")
+        spec = root / "crates/demo/wire/interface.toml"
+        code = root / "crates/demo/wire/src/lib.rs"
+        code.parent.mkdir(parents=True)
+        spec.write_text(spec_text)
+        code.write_text(code_text)
+        self.git(root, "add", ".")
+        self.git(root, "commit", "-qm", "base")
+        return spec, code
+
+    def test_a_word_list_is_written_into_the_schema(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            (root / "wire.rs").write_text(self.code(1, "type", "items") + "// \"not\" a word\n")
+            spec = interfaces.Spec(
+                name="test", version=1, version_const="wire.rs:V", encoding="json",
+                sources=["wire.rs"], roots=["S"], opaque={}, serves=False,
+                path=root / "interface.toml", words=["wire.rs:WORDS"],
+            )
+            schema = interfaces.schema_of(spec, root)
+            self.assertEqual(schema["WORDS"], "words")
+            self.assertEqual(schema["WORDS::type"], "word")
+            self.assertEqual(schema["WORDS::items"], "word")
+            self.assertNotIn("WORDS::not", schema)
+            spec.words = ["wire.rs:OTHER"]
+            with self.assertRaisesRegex(interfaces.InterfaceError, "OTHER"):
+                interfaces.schema_of(spec, root)
+
+    def test_a_new_word_needs_a_new_version(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            _, code = self.tree(root, self.SPEC + self.LISTED, self.code(1, "type", "items"))
+            self.assertEqual(interfaces.against("main", root), [])
+
+            # A side that does not know the word refuses what the other writes with it.
+            code.write_text(self.code(1, "type", "items", "oneOf"))
+            problems = interfaces.against("main", root)
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("`WORDS::oneOf` is new", problems[0])
+            code.write_text(self.code(2, "type", "items", "oneOf"))
+            self.assertEqual(interfaces.against("main", root), [])
+
+            code.write_text(self.code(1, "type"))
+            problems = interfaces.against("main", root)
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("`WORDS::items` is gone", problems[0])
+
+    def test_a_list_recorded_for_the_first_time_is_no_change(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            spec, _ = self.tree(root, self.SPEC, self.code(1, "type", "items"))
+            spec.write_text(self.SPEC + self.LISTED)
+            self.assertEqual(interfaces.against("main", root), [])
+
+    def test_the_runtime_interface_lists_the_words_of_a_declared_shape(self):
+        spec, committed = interfaces.load_spec(
+            interfaces.ROOT / "crates/runtime/runtime-portal/interface.toml")
+        self.assertEqual(spec.words, [
+            "crates/collab/actions/src/params.rs:SCHEMA_ASSERTIONS",
+            "crates/collab/actions/src/params.rs:SCHEMA_ANNOTATIONS",
+        ])
+        self.assertEqual(committed["SCHEMA_ASSERTIONS::additionalProperties"], "word")
+        self.assertEqual(committed["SCHEMA_ANNOTATIONS::description"], "word")
+
+
 class RepositoryTests(unittest.TestCase):
     def test_the_eight_interfaces_each_have_one_number(self):
         names = sorted(
