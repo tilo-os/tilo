@@ -3,6 +3,10 @@
 //! of it.
 
 #![cfg(feature = "agents")]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "the test reads the server until its shutdown, which consumes it"
+)]
 
 use tilo_action_policy::{Answer, Grantee, KindSet, TreePath};
 
