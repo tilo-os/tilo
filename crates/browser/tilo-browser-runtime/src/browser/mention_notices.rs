@@ -26,8 +26,6 @@ struct Taken {
     peer: u32,
     /// The stream of record changes the page's replication feeds.
     changes: Changes,
-    /// The kind of the records an app keeps, as the page's own bundle declares it.
-    kind: Rc<dyn Fn(&str) -> String>,
 }
 
 impl Records for Taken {
@@ -57,10 +55,6 @@ impl Records for Taken {
     ) -> Option<Vec<ui::automerge::ChangeHash>> {
         crate::replicated::record_heads(self.peer, app, record)
     }
-
-    fn kind(&self, app: &str, _workspace: &str) -> String {
-        (self.kind)(app)
-    }
 }
 
 /// This page's mentions of `person` in the workspace `peer` replicated into `store`, drawn by the
@@ -78,11 +72,6 @@ pub(super) fn role(
         records: Some(Rc::new(Taken {
             peer,
             changes: crate::replicated::changes(),
-            kind: Rc::new(|app| {
-                crate::desktop::application(app)
-                    .map(|definition| definition.resource_type.as_str().to_owned())
-                    .unwrap_or_default()
-            }),
         })),
         notices: Some(crate::host_services::notices()),
         name,
