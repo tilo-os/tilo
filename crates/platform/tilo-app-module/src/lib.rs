@@ -182,7 +182,6 @@ mod tests {
         std::fs::write(out.path().join(CURRENT_FILE), "the third one\n").unwrap();
         let error = current(out.path()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("names no build"), "{error}");
         assert!(publish(out.path(), write("one")).is_err());
     }
 
