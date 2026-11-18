@@ -38,6 +38,7 @@ on:
       - "crates/collab/reference/**"
       - "crates/collab/threshold-identity/**"
       - "crates/collab/tilo-device-identity/**"
+      - "crates/collab/tilo-enrollment/**"
       - "crates/collab/tilo-identity-ceremony/**"
       - "crates/collab/tilo-live/**"
       - "crates/collab/tilo-peer-state/**"
