@@ -401,6 +401,13 @@ the person is writing in (`Markdown.marks`, `Markdown.hidden`, `FieldStyle`). Re
 Shift Return makes a line; on an iPhone's glass keyboard Return makes a line and the arrow
 sends. Attachments and dictation stand under the field, and dictation is the shell's.
 
+**A file in a message** is shown with the name and the size Chat gives. In Tilo a file that a
+message carries is content its workspace keeps and the message names (Chat's `attachments`):
+`ChatMessage.files` reads them, `TiloFiles` hands them to the views, and a file's tag says its
+name and its size (`Attachment.words`). The app keeps nothing of a file. Tilo's page hands a
+native app no way to a file's content yet, so pressing a file and sending one each say so in a
+sentence: nothing is read from a picked file, and nothing is fetched.
+
 **A secret** is typed into the system's protected field. What is typed lives in that one view
 until Save hands it to `AssistantSource.keep`, and the field is emptied before the call. It is
 never part of a message, a draft, a notification or a log, and a `Secret` prints nothing of

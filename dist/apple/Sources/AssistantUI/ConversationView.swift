@@ -234,10 +234,10 @@ private struct MessageView: View {
                             if let file = await model.file(of: attachment.id) { openURL(file) }
                         }
                     } label: {
-                        Tag(words: attachment.name)
+                        Tag(words: attachment.words())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(AssistantWords.attachment.said): \(attachment.name)")
+                    .accessibilityLabel("\(AssistantWords.attachment.said): \(attachment.words())")
                 }
             }
             .frame(maxWidth: .infinity, alignment: message.author == .person ? .trailing : .leading)

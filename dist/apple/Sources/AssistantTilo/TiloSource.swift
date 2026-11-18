@@ -1317,7 +1317,8 @@ public final class TiloSource: AssistantSource {
         } else {
             author = .assistant
         }
-        return Item(id: id, at: message.at, .message(Message(author, message.text, live: live)))
+        return Item(id: id, at: message.at,
+                    .message(Message(author, message.text, attachments: TiloFiles.attachments(of: message), live: live)))
     }
 
     /// What a question's kind keeps with it: JSON, as text or already read.
