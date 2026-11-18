@@ -352,26 +352,22 @@ async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_gover
         // And what members write reaches each through the other.
         let on_one = session_to(&alice, &phone, one).await;
         assert!(admitted(&on_one, workspace.workspace_id).await);
-        tilo_test_env::within(
-            "a change through one holder reaches the other",
-            carried(
-                &on_one,
-                &phone,
-                &on_two,
-                workspace.workspace_id,
-                b"through one",
-            ),
+        // Each round's changes differ, so an earlier round's copy reaching a
+        // holder that came back is not taken for this one.
+        carried(
+            &on_one,
+            &phone,
+            &on_two,
+            workspace.workspace_id,
+            format!("through one, without holder {gone}").as_bytes(),
         )
         .await;
-        tilo_test_env::within(
-            "and back",
-            carried(
-                &on_two,
-                &newcomer,
-                &on_one,
-                workspace.workspace_id,
-                b"through two",
-            ),
+        carried(
+            &on_two,
+            &newcomer,
+            &on_one,
+            workspace.workspace_id,
+            format!("through two, without holder {gone}").as_bytes(),
         )
         .await;
 
