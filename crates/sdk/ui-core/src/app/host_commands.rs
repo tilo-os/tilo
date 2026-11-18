@@ -284,7 +284,7 @@ impl App {
     fn history_rows(&self) -> Vec<crate::widget::HistoryEntry> {
         self.history
             .as_ref()
-            .map(|history| history.current_entries(&self.state.doc))
+            .map(|history| history.current_entries())
             .unwrap_or_default()
     }
 

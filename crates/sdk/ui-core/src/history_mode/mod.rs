@@ -21,6 +21,7 @@ pub(crate) fn note_news() {
 pub(crate) mod api;
 pub mod capability;
 pub mod coverage;
+mod feed;
 pub mod folder;
 pub mod preview;
 pub mod restore;
@@ -41,17 +42,13 @@ pub use registration::*;
 
 use std::collections::HashMap;
 use std::fmt;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash};
 
-use crate::history_source::{
-    CompareError, HistorySource, compare_entries, groups::read_named_ranges,
-};
-use crate::permissions::MemberId;
-use crate::{DocumentId, HistoryEntry, HistoryEntryId, NamedRange};
+use crate::history_source::{CompareError, HistorySource, compare_entries};
+use crate::{DocumentId, HistoryEntry, HistoryEntryId};
 
 /// Full authority namespace for one historical resource.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -187,241 +184,42 @@ struct SelectedPreview {
     effect_only: bool,
 }
 
-/// Documents a window keeps beside its own whose changes its History lists with its own: the parts of
-/// the app's chain.
-pub trait HistoryParts {
-    /// Every part's committed frontier, in one list: it moves whenever a part changes or arrives.
-    fn heads(&self) -> Vec<ChangeHash>;
-    /// Every part's committed document.
-    fn documents(&self) -> Vec<AutoCommit>;
-}
-
 pub struct HistoryController {
     resource: HistoryResource,
-    source: HistorySource,
-    parts: Option<Rc<dyn HistoryParts>>,
-    /// The parts' frontier the entries were listed at.
-    projected_parts: Vec<ChangeHash>,
-    entries: Vec<HistoryEntry>,
-    named: Vec<NamedRange>,
-    descriptions: HashMap<HistoryEntryId, String>,
-    projected_heads: Option<Vec<ChangeHash>>,
     observed_live_heads: Vec<ChangeHash>,
     selected: Option<SelectedPreview>,
     side: PreviewSide,
     live_updates: bool,
     generation: u64,
     snapshots: HashMap<Vec<ChangeHash>, Arc<[u8]>>,
-    window: usize,
-    has_earlier: bool,
-    /// For an app's own history, which of the session's lists of its workspaces' verified agents
-    /// ([`crate::history_source::set_workspace_agents`]) the source names; a newer list is named on the
-    /// next refresh.
-    workspace_agents: Option<u64>,
-    /// The workspace's members by id and name, as presence last named them: the authors the source
-    /// resolves besides registered identities.
-    roster: Vec<(MemberId, String)>,
 }
 
-/// How many of the newest changes a history view describes when it opens, and how many more each
-/// request for earlier ones adds.
-pub const HISTORY_PAGE: usize = 200;
-
 impl HistoryController {
-    /// Build a controller with the default factual history source. # Errors Returns a projection error
-    /// if the committed history cannot be read.
-    pub fn new(resource: HistoryResource, live: &AutoCommit) -> Result<Self, HistoryError> {
-        Self::with_source(resource, HistorySource::new(), live)
-    }
-
-    /// Build a controller with a caller-configured source, for example one carrying the host's author
-    /// directory and artifact kind. # Errors Returns a projection error if the committed history cannot
-    /// be read.
-    pub fn with_source(
-        resource: HistoryResource,
-        source: HistorySource,
-        live: &AutoCommit,
-    ) -> Result<Self, HistoryError> {
-        let mut controller = Self::unprojected_with_source(resource, source, Vec::new());
-        controller.refresh(live)?;
-        Ok(controller)
-    }
-
-    /// A controller that has observed the committed frontier `live_heads` but projected nothing yet.
-    pub(crate) fn unprojected(resource: HistoryResource, live_heads: Vec<ChangeHash>) -> Self {
-        let revision = crate::history_source::workspace_agents_revision();
-        let source = HistorySource::new()
-            .with_authors(crate::history_source::AuthorDirectory::with_workspace_agents());
-        let mut controller = Self::unprojected_with_source(resource, source, live_heads);
-        controller.workspace_agents = Some(revision);
-        controller
-    }
-
-    fn unprojected_with_source(
-        resource: HistoryResource,
-        source: HistorySource,
-        live_heads: Vec<ChangeHash>,
-    ) -> Self {
+    /// A controller over `resource` that has observed the committed frontier `live_heads`.
+    pub fn new(resource: HistoryResource, live_heads: Vec<ChangeHash>) -> Self {
         Self {
             resource,
-            source: source.with_max_entries(HISTORY_PAGE),
-            parts: None,
-            projected_parts: Vec::new(),
-            entries: Vec::new(),
-            named: Vec::new(),
-            descriptions: HashMap::new(),
-            projected_heads: None,
             observed_live_heads: sorted_heads(live_heads),
             selected: None,
             side: PreviewSide::After,
             live_updates: false,
             generation: 0,
-            roster: Vec::new(),
             snapshots: HashMap::new(),
-            window: HISTORY_PAGE,
-            has_earlier: false,
-            workspace_agents: None,
         }
-    }
-
-    /// List the changes of `parts` with the document's own, in time order.
-    #[must_use]
-    pub fn with_parts(mut self, parts: Option<Rc<dyn HistoryParts>>) -> Self {
-        self.parts = parts;
-        self.projected_heads = None;
-        self
-    }
-
-    /// Whether a part changed since the entries were listed.
-    pub(crate) fn parts_moved(&self) -> bool {
-        self.parts
-            .as_ref()
-            .is_some_and(|parts| sorted_heads(parts.heads()) != self.projected_parts)
-    }
-
-    /// The newest page of entries of `live` and of the parts, in time order, and whether older ones
-    /// exist. Each part's genesis is left out: nobody made it.
-    fn project(&self, live: &mut AutoCommit) -> (Vec<HistoryEntry>, bool) {
-        let mut entries = self.source.entries(live);
-        let mut earlier = live.get_changes_meta(&[]).len() > self.window;
-        let Some(parts) = &self.parts else {
-            return (entries, earlier);
-        };
-        for mut part in parts.documents() {
-            earlier |= part.get_changes_meta(&[]).len() > self.window;
-            entries.extend(
-                self.source
-                    .entries(&mut part)
-                    .into_iter()
-                    .filter(|entry| !entry.is_genesis()),
-            );
-        }
-        entries.sort_by_key(|entry| entry.timestamp);
-        let older = entries.len().saturating_sub(self.window);
-        entries.drain(..older);
-        (entries, earlier || older > 0)
-    }
-
-    /// Whether changes older than the listed ones exist.
-    pub fn has_earlier(&self) -> bool {
-        self.has_earlier
-    }
-
-    /// List another page of older changes. # Errors Returns a projection error if the committed history
-    /// cannot be read.
-    pub fn show_earlier(&mut self, live: &AutoCommit) -> Result<(), HistoryError> {
-        self.window = self.window.saturating_add(HISTORY_PAGE);
-        self.source = std::mem::take(&mut self.source).with_max_entries(self.window);
-        self.projected_heads = None;
-        self.refresh(live)
     }
 
     pub fn resource(&self) -> &HistoryResource {
         &self.resource
     }
 
-    pub fn entries(&self) -> &[HistoryEntry] {
-        &self.entries
-    }
-
-    pub fn named_ranges(&self) -> &[NamedRange] {
-        &self.named
-    }
-
-    pub fn descriptions(&self) -> &HashMap<HistoryEntryId, String> {
-        &self.descriptions
-    }
-
-    /// Committed activity at `live`'s frontier, in causal order, leaving this controller's projection
-    /// and selection where they are.
-    #[cfg(any(feature = "native", test))]
-    pub(crate) fn entries_at(&self, live: &AutoCommit) -> Vec<HistoryEntry> {
-        let mut projection = committed_clone(live);
-        if self.projected_heads.as_ref() == Some(&sorted_heads(projection.get_heads()))
-            && !self.parts_moved()
-        {
-            return self.entries.clone();
-        }
-        self.project(&mut projection).0
-    }
-
-    /// Reproject factual activity from committed graph state. An existing preview stays pinned to its
-    /// exact bytes and heads.
-    pub(crate) fn follow_roster(&mut self, presence: &crate::presence::PresenceCtx) -> bool {
-        let mut roster: Vec<(MemberId, String)> = presence
-            .names
-            .iter()
-            .map(|(id, name)| (id.clone(), name.clone()))
-            .collect();
-        roster.compact_sort();
-        if roster == self.roster {
-            return false;
-        }
-        self.source
-            .authors_mut()
-            .register_roster(roster.iter().map(|(id, name)| (id, name.as_str())));
-        self.roster = roster;
-        self.projected_heads = None;
-        true
-    }
-
-    /// Returns a projection error if the committed history cannot be read.
-    pub fn refresh(&mut self, live: &AutoCommit) -> Result<(), HistoryError> {
-        let mut projection = committed_clone(live);
-        let live_heads = sorted_heads(projection.get_heads());
+    /// Observe `live`'s committed frontier: whether the pinned preview is behind it.
+    pub fn observe(&mut self, live: &AutoCommit) {
+        let live_heads = sorted_heads(committed_clone(live).get_heads());
         self.live_updates = self
             .selected
             .as_ref()
             .is_some_and(|selected| selected.after.heads != live_heads);
-        self.observed_live_heads.clone_from(&live_heads);
-        if let Some(named) = self.workspace_agents {
-            let current = crate::history_source::workspace_agents_revision();
-            if current != named {
-                let mut authors = crate::history_source::AuthorDirectory::with_workspace_agents();
-                authors.register_roster(self.roster.iter().map(|(id, name)| (id, name.as_str())));
-                *self.source.authors_mut() = authors;
-                self.workspace_agents = Some(current);
-                self.projected_heads = None;
-            }
-        }
-        if self.projected_heads.as_ref() == Some(&live_heads) && !self.parts_moved() {
-            return Ok(());
-        }
-        let parts_heads = self
-            .parts
-            .as_ref()
-            .map(|parts| sorted_heads(parts.heads()))
-            .unwrap_or_default();
-        let (entries, earlier) = self.project(&mut projection);
-        let named = read_named_ranges(&projection, self.source.authors());
-        self.descriptions = crate::history_source::descriptions::read_descriptions(&projection);
-
-        self.has_earlier = earlier;
-        self.projected_heads = Some(live_heads);
-        self.projected_parts = parts_heads;
-        self.entries = entries;
-        self.named = named;
-        Ok(())
+        self.observed_live_heads = live_heads;
     }
 
     /// Pin the exact before and after causal frontiers of one change or group. # Errors Returns
@@ -435,22 +233,14 @@ impl HistoryController {
         let mut projection = committed_clone(live);
         let current_live_heads = sorted_heads(projection.get_heads());
         let comparison = compare_entries(&mut projection, entries).map_err(HistoryError::from)?;
-        let refreshed_projection =
-            if self.projected_heads.as_ref() == Some(&current_live_heads) && !self.parts_moved() {
-                None
-            } else {
-                let projected_entries = self.project(&mut projection).0;
-                let named = read_named_ranges(&projection, self.source.authors());
-                Some((projected_entries, named))
-            };
-        let factual_entries = refreshed_projection
-            .as_ref()
-            .map_or(self.entries.as_slice(), |(entries, _)| entries.as_slice());
+        // What the changes were, read from the resource itself: a receipt of an outside effect is no
+        // content to restore, whatever a listing says of it.
+        let factual = HistorySource::new().entries(&mut projection);
         let effect_only = entries.iter().all(|id| {
-            factual_entries
+            factual
                 .iter()
                 .find(|entry| entry.id == *id)
-                .is_some_and(is_effect_receipt)
+                .is_some_and(HistoryEntry::is_effect_receipt)
         });
 
         let before_heads = sorted_heads(comparison.before_heads);
@@ -471,16 +261,6 @@ impl HistoryController {
         let live_updates = after.heads != current_live_heads;
 
         self.generation = self.generation.wrapping_add(1);
-        if let Some((entries, named)) = refreshed_projection {
-            self.entries = entries;
-            self.named = named;
-            self.projected_heads = Some(current_live_heads.clone());
-            self.projected_parts = self
-                .parts
-                .as_ref()
-                .map(|parts| sorted_heads(parts.heads()))
-                .unwrap_or_default();
-        }
         self.observed_live_heads = current_live_heads;
         self.selected = Some(SelectedPreview {
             selection,
@@ -610,10 +390,6 @@ fn committed_clone(live: &AutoCommit) -> AutoCommit {
 pub(crate) fn sorted_heads(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
     heads.compact_sort();
     heads
-}
-
-fn is_effect_receipt(entry: &HistoryEntry) -> bool {
-    entry.is_effect_receipt()
 }
 
 #[cfg(test)]

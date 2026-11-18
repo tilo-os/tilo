@@ -130,10 +130,8 @@ impl HistoryHost {
                 owner.close_open_step(&mut state.doc);
             }
             let document = self.source().document(&state.doc).ok();
-            if let (Some(controller), Some(document)) = (self.controller.as_mut(), document)
-                && let Err(error) = controller.refresh(&document)
-            {
-                tracing::debug!(%error, "history review could not observe the live frontier");
+            if let (Some(controller), Some(document)) = (self.controller.as_mut(), document) {
+                controller.observe(&document);
             }
         }
         if self.controller.is_none() {
@@ -153,7 +151,7 @@ impl HistoryHost {
             let version = self
                 .selected
                 .first()
-                .and_then(|id| controller.entries().iter().find(|entry| &entry.id == id))
+                .and_then(|id| self.timeline.entries().iter().find(|entry| &entry.id == id))
                 .map_or_else(
                     || I18nManager::lookup_plain("history-review-selected-version"),
                     |entry| entry.summary.clone(),

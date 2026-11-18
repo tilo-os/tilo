@@ -400,14 +400,6 @@ impl ViewStorage {
             .unwrap_or_default()
     }
 
-    /// `read` of every part the chains the views opened hold.
-    pub(crate) fn read_chain_parts<T>(
-        &self,
-        read: &dyn Fn(&ui_core::automerge::AutoCommit) -> T,
-    ) -> Vec<T> {
-        self.chains.read_parts(read)
-    }
-
     /// What search finds in the chains the views opened.
     pub(crate) fn chains_search(&self) -> Vec<tilo_resource::SearchEntry> {
         self.chains

@@ -1971,9 +1971,6 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::PressTarget { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Pick { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { .. }
-                | crate::floating_surface::FloatingSurfaceHostMessage::HistoryDescriptions {
-                    ..
-                }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
                     ..
                 }

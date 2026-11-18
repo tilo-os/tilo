@@ -520,26 +520,6 @@ impl App {
         false
     }
 
-    /// Write the descriptions the shell gave into the document, when no
-    /// edit is open, so they reach everyone in it; otherwise they wait for
-    /// the next pump.
-    #[cfg(feature = "native")]
-    pub(super) fn write_history_descriptions(&mut self) {
-        let Some(history) = self.history.as_mut() else {
-            return;
-        };
-        if history.has_unwritten_descriptions()
-            && history.service_descriptions(
-                &mut self.state,
-                &self.permission_ctx,
-                &self.collaboration.local_author,
-            )
-        {
-            let restored = history.take_restored_source();
-            self.publish_history_write(restored.as_ref());
-        }
-    }
-
     /// Sync and publish what a History write changed in `source`.
     #[cfg(feature = "native")]
     fn publish_history_write(

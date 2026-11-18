@@ -1312,16 +1312,6 @@ impl AppComponent {
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         self.register_history_of(definition, Some(folder))
     }
-    /// List the changes of `parts`, the documents the app keeps beside its own, in the History of its
-    /// document, in time order with the document's own.
-    pub fn list_parts_in_history(&mut self, parts: &Rc<dyn crate::history_mode::HistoryParts>) {
-        if let Some(history) = &mut self.history {
-            history.sources = std::mem::take(&mut history.sources)
-                .into_iter()
-                .map(|source| source.with_parts(Rc::clone(parts)))
-                .collect();
-        }
-    }
     /// Open History at `entry` when the window starts, as a window replaying
     /// a recording opens at its first step. Refused before History is
     /// registered.

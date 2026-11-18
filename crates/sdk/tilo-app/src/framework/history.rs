@@ -106,30 +106,6 @@ pub(crate) fn result(
     ui_core::history_source::verbs::result(action, doc, patches, &ThreadWords)
 }
 
-/// The parts of the chains a window's views opened, as its History lists them with the window's
-/// document.
-pub(crate) struct ChainHistory(pub(crate) std::rc::Weak<super::settings::ViewStorage>);
-
-impl ui_core::history_mode::HistoryParts for ChainHistory {
-    fn heads(&self) -> Vec<ChangeHash> {
-        self.0
-            .upgrade()
-            .map(|storage| {
-                storage
-                    .read_chain_parts(&ui_core::automerge::transaction::Transactable::base_heads)
-                    .concat()
-            })
-            .unwrap_or_default()
-    }
-
-    fn documents(&self) -> Vec<AutoCommit> {
-        self.0
-            .upgrade()
-            .map(|storage| storage.read_chain_parts(&AutoCommit::clone))
-            .unwrap_or_default()
-    }
-}
-
 /// The history lists views follow ([`ViewCx::history`](super::ViewCx::history)),
 /// brought up to date when the document moves.
 #[derive(Clone, Default)]

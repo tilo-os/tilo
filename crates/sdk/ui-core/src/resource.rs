@@ -2510,6 +2510,25 @@ impl ResourceStore {
         (set.app_id.to_string(), set.home.clone())
     }
 
+    /// The resources this store holds open, and the chain of each part among them: the resources a
+    /// window keeps.
+    #[must_use]
+    pub fn held_resources(&self) -> Vec<DocumentId> {
+        let Ok(set) = self.0.try_borrow() else {
+            return Vec::new();
+        };
+        let mut held: Vec<DocumentId> = Vec::new();
+        for id in set.open.keys().chain(set.lent.iter()) {
+            let chain = id.chain_part().map(|(chain, _)| chain);
+            for kept in std::iter::once(id.clone()).chain(chain) {
+                if !held.contains(&kept) {
+                    held.push(kept);
+                }
+            }
+        }
+        held
+    }
+
     /// The numbers of the parts of the chain `base` this store holds, in order: those open here,
     /// and those kept on this device unopened. Listing reads the store's index, so a frame loop
     /// asks on [`Self::kept_revision`] instead of every frame.

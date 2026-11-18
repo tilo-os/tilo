@@ -255,66 +255,6 @@ fn check_restore_authority(
     Ok(())
 }
 
-/// The History host's API for descriptions of its resource's changes: one forward change
-/// through the resource's owner, under the same authority a restore needs, written only
-/// while no edit is open.
-#[cfg(feature = "native")]
-pub(crate) fn describe_history(
-    state: &mut State,
-    source: &crate::history_mode::HistorySourceRegistration,
-    title: &str,
-    (authority, author): (&PermissionContext, &MemberId),
-    now: u64,
-    described: &[(crate::HistoryEntryId, String, String)],
-) -> Result<OwnedActionReceipt, OwnedRestoreError> {
-    use crate::history_mode::HistorySourceRegistration;
-    let (resource, file) = match source {
-        HistorySourceRegistration::HostDocument { resource, .. } => (resource, false),
-        HistorySourceRegistration::OwnedDocument { resource, .. } => (resource, true),
-        HistorySourceRegistration::Unversioned { .. }
-        | HistorySourceRegistration::FolderFiles { .. } => {
-            return Err(OwnedRestoreError::Denied);
-        }
-    };
-    let current = source
-        .committed_heads(&state.doc)
-        .map_err(|_| OwnedRestoreError::Denied)?;
-    let context =
-        tilo_actions::ActionContext::for_resource(resource.document_id.as_str(), "document", title)
-            .with_app(&resource.app_id, title);
-    let apply = |authority: &PermissionContext, author: &MemberId, state: &mut State| {
-        check_restore_authority(
-            &authority.clone().at_unix_time(now),
-            author,
-            &resource.app_id,
-            file.then_some(&resource.document_id),
-        )
-        .map_err(|_| OwnedRestoreError::Denied)?;
-        let admitted = ConfirmedRestore {
-            _authority: authority,
-            author: author.clone(),
-            context,
-        };
-        let write = RestoreWrite::Describe {
-            current: &current,
-            described,
-        };
-        match source {
-            HistorySourceRegistration::OwnedDocument { owner, .. } => {
-                owner.restore_write(&mut state.doc, &admitted, write)
-            }
-            _ => state.restore_write_owned(&admitted, write),
-        }
-    };
-    match source {
-        HistorySourceRegistration::OwnedDocument { owner, .. } => {
-            owner.with_restore_authority(authority, author, |authority, author| {
-                apply(authority, author, state)
-            })
-        }
-        _ => apply(authority, author, state),
-    }
-}
 #[derive(Debug)]
 pub(crate) enum OwnedRestoreError {
     PendingEdits,
@@ -326,8 +266,6 @@ pub(crate) enum OwnedRestoreError {
     Engine(RestoreError),
     EngineContract,
     Bound(crate::bound_dispatch::BoundDispatchError),
-    #[cfg(feature = "native")]
-    Denied,
 }
 /// What a confirmed restore writes: the schema-declared content of a version, or, for a
 /// resource without a content schema, the whole document returned to the version's
@@ -349,11 +287,6 @@ pub(crate) enum RestoreWrite<'a> {
         current: &'a [ChangeHash],
         request: &'a crate::GroupNameRequest,
     },
-    #[cfg(feature = "native")]
-    Describe {
-        current: &'a [ChangeHash],
-        described: &'a [(crate::HistoryEntryId, String, String)],
-    },
 }
 impl RestoreWrite<'_> {
     pub(crate) fn current_heads(&self) -> &[ChangeHash] {
@@ -362,8 +295,6 @@ impl RestoreWrite<'_> {
             Self::WholeDocument { current, .. }
             | Self::Changes { current, .. }
             | Self::Name { current, .. } => current,
-            #[cfg(feature = "native")]
-            Self::Describe { current, .. } => current,
         }
     }
 }
@@ -428,20 +359,6 @@ impl<'a> OwnedContentAction<'a> {
             RestoreWrite::WholeDocument { current, target } => {
                 super::write_revert_patches(self.doc, current, target);
                 if self.doc.pending_ops() > 0 {
-                    RestoreOutcome::Changed
-                } else {
-                    RestoreOutcome::Unchanged
-                }
-            }
-            #[cfg(feature = "native")]
-            RestoreWrite::Describe { described, .. } => {
-                let mut wrote = false;
-                for (id, text, generator) in described {
-                    wrote |= crate::history_source::descriptions::write_description(
-                        self.doc, id, text, generator,
-                    );
-                }
-                if wrote {
                     RestoreOutcome::Changed
                 } else {
                     RestoreOutcome::Unchanged

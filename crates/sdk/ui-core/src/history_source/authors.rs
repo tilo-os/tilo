@@ -261,20 +261,6 @@ impl AuthorDirectory {
         });
     }
 
-    /// An empty directory that names every agent the session verified for
-    /// the workspaces this thread's app is in ([`set_workspace_agents`]): what an app's
-    /// own history reads with.
-    #[must_use]
-    pub fn with_workspace_agents() -> Self {
-        let mut directory = Self::new();
-        WORKSPACE_AGENTS.with(|workspaces| {
-            for agent in workspaces.borrow().values().flatten() {
-                directory.register_roster_agent(agent);
-            }
-        });
-        directory
-    }
-
     /// Bind `actor_hex` to the local user, read from the Tilo identity on disk.
     /// A `false` return is not an error: an app run outside a Tilo session has
     /// no identity, and the caller should leave the actor to resolve through
@@ -672,13 +658,6 @@ impl ResolveAuthor for AuthorDirectory {
 
 thread_local! {
     static THREAD_READER: std::cell::RefCell<Option<tilo_actions::MemberId>> = const { std::cell::RefCell::new(None) };
-    /// The verified agents of each workspace this thread's app is in, as the
-    /// session last sent them.
-    static WORKSPACE_AGENTS: std::cell::RefCell<std::collections::BTreeMap<String, Vec<RosterAgent>>> =
-        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
-    /// Moves whenever [`WORKSPACE_AGENTS`] is replaced, so a history view that
-    /// named them knows to name them again.
-    static WORKSPACE_AGENTS_REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// The actors this thread's mounts write records as, with who each is:
     /// only the shell that mounted them knows which is whose.
     static NOTED_ACTORS: std::cell::RefCell<
@@ -733,27 +712,6 @@ pub fn note_resource_mount(writer: Option<&automerge::ActorId>, author: &str, ag
         );
         note_mount_actor(writer, author, agent);
     }
-}
-
-/// Which replacement of this thread's workspace agents
-/// ([`set_workspace_agents`]) is current.
-pub(crate) fn workspace_agents_revision() -> u64 {
-    WORKSPACE_AGENTS_REVISION.with(std::cell::Cell::get)
-}
-
-/// Replace the verified agents of `workspace` this thread's app names in its
-/// history ([`AuthorDirectory::with_workspace_agents`]). Only the session's
-/// context stream calls this, with what it verified.
-pub fn set_workspace_agents(workspace: &str, agents: Vec<RosterAgent>) {
-    WORKSPACE_AGENTS.with(|workspaces| {
-        let mut workspaces = workspaces.borrow_mut();
-        if agents.is_empty() {
-            workspaces.remove(workspace);
-        } else {
-            workspaces.insert(workspace.to_owned(), agents);
-        }
-    });
-    WORKSPACE_AGENTS_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
 }
 
 /// The member this thread's app runs for: whose changes every history read

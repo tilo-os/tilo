@@ -787,19 +787,6 @@ impl App {
             )?;
             *changed = true;
         }
-        // History's changes are described by the shell's model, never the
-        // app's; what it answered is written once no edit is open.
-        self.write_history_descriptions();
-        let changes = self
-            .history
-            .as_mut()
-            .map(|history| history.take_describe_request())
-            .unwrap_or_default();
-        if !changes.is_empty() {
-            client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::DescribeHistory { changes },
-            )?;
-        }
         if !self.floating.selection_capable_sent {
             client
                 .send(&crate::floating_surface::FloatingSurfaceClientMessage::SelectionCapable)?;
@@ -1198,12 +1185,6 @@ impl App {
                     // In its place among the window's own input.
                     self.receive_bar_event(event.clone(), *after_input);
                 }
-                FloatingSurfaceHostMessage::HistoryDescriptions { described } => {
-                    if let Some(history) = self.history.as_mut() {
-                        history.receive_descriptions(described.clone());
-                    }
-                    self.write_history_descriptions();
-                }
                 FloatingSurfaceHostMessage::PointAt { request, point } => {
                     self.refresh_semantic_tree();
                     let control = self
@@ -1346,9 +1327,6 @@ impl App {
         // Nothing presents the app's search and History any more: it shows
         // its own again.
         self.floating.window_bar.disconnected();
-        if let Some(history) = self.history.as_mut() {
-            history.describing_disconnected();
-        }
         if self.floating.window_bar.presents() {
             self.set_window_presents_history(false);
         }

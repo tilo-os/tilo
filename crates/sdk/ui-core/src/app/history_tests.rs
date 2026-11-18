@@ -5797,11 +5797,7 @@ fn a_documents_genesis_is_a_version_in_history_but_never_a_recent_change() {
     app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
     layout(&mut app);
 
-    let rows = app
-        .history
-        .as_ref()
-        .unwrap()
-        .current_entries(&app.state.doc);
+    let rows = app.history.as_ref().unwrap().current_entries();
     assert_eq!(rows.len(), 2);
     assert!(
         rows[0].is_genesis(),

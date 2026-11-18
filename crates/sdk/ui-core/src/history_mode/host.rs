@@ -149,7 +149,11 @@ pub struct HistoryHost {
     /// selection closes it.
     name_draft: crate::LocalState<String>,
     name_draft_for: Option<Vec<crate::HistoryEntryId>>,
-    describing: describe::Describing,
+    /// What History lists, as the workspace's history serves it, while History is open.
+    feed: Option<super::feed::WindowFeed>,
+    /// How many of the newest changes History lists, and whether older ones exist.
+    feed_limit: usize,
+    has_earlier: bool,
     before: PreviewCanvas,
     after: PreviewCanvas,
     side: PreviewSide,
@@ -262,16 +266,10 @@ impl HistoryHost {
         }
     }
 
-    /// The changes the timeline would list now, in causal order, whether or not History is open.
+    /// The changes History lists, in causal order.
     #[cfg(any(feature = "native", test))]
-    pub(crate) fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry> {
-        let Some(controller) = self.controller.as_ref().filter(|_| !self.invalid_owner) else {
-            return Vec::new();
-        };
-        self.source()
-            .document(doc)
-            .map(|document| controller.entries_at(&document))
-            .unwrap_or_default()
+    pub(crate) fn current_entries(&self) -> Vec<crate::widget::HistoryEntry> {
+        self.timeline.entries().to_vec()
     }
 
     /// The host presents History elsewhere, or the system surface omits document chrome: retain History
@@ -326,8 +324,7 @@ impl HistoryHost {
         let controller = match source {
             HistorySourceRegistration::HostDocument { resource, .. }
             | HistorySourceRegistration::OwnedDocument { resource, .. } => Some(
-                HistoryController::unprojected(resource.clone(), source.committed_heads(doc)?)
-                    .with_parts(source.parts()),
+                HistoryController::new(resource.clone(), source.committed_heads(doc)?),
             ),
             HistorySourceRegistration::Unversioned { .. }
             | HistorySourceRegistration::FolderFiles { .. } => None,
@@ -404,7 +401,9 @@ impl HistoryHost {
             selected: vec![],
             name_draft: crate::LocalState::new(String::new()),
             name_draft_for: None,
-            describing: describe::Describing::default(),
+            feed: None,
+            feed_limit: crate::tilo_actions::remote::workspace_activity::FEED_PAGE,
+            has_earlier: false,
             before: PreviewCanvas::new(),
             after: PreviewCanvas::new(),
             side: PreviewSide::After,
@@ -1259,7 +1258,12 @@ impl HistoryHost {
         if self.invalid_owner {
             return Some(false);
         }
-        if self.assets.has_results() {
+        if self.assets.has_results()
+            || self
+                .feed
+                .as_ref()
+                .is_some_and(super::feed::WindowFeed::has_news)
+        {
             return Some(true);
         }
         if self.folder_scope_asking_to_open().is_some() {
@@ -1305,7 +1309,6 @@ impl HistoryHost {
         self.open
             && self.controller.as_ref().is_some_and(|controller| {
                 super::sorted_heads(heads) != controller.observed_live_heads
-                    || controller.parts_moved()
             })
     }
     /// Whether every document this surface answers for is a hosted component's (or the host's own),
@@ -1331,6 +1334,38 @@ impl HistoryHost {
     pub(crate) fn observe_pointer(&mut self, event: &WindowEvent, scale: f64) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale, position.y / scale);
+        }
+    }
+
+    /// Follow what History lists while it is open: the workspace's history of the resources the
+    /// window keeps, its own resource and the chains of parts it holds. Closed, it follows nothing.
+    fn follow_feed(&mut self) {
+        let window = match self.source() {
+            HistorySourceRegistration::HostDocument { resource, .. } => {
+                Some((resource.app_id.clone(), vec![resource.document_id.clone()]))
+            }
+            HistorySourceRegistration::OwnedDocument {
+                owner, resource, ..
+            } => {
+                let mut kept = owner.store_checkout().0.held_resources();
+                if !kept.contains(&resource.document_id) {
+                    kept.push(resource.document_id.clone());
+                }
+                Some((resource.app_id.clone(), kept))
+            }
+            HistorySourceRegistration::Unversioned { .. }
+            | HistorySourceRegistration::FolderFiles { .. } => None,
+        };
+        let Some((app, kept)) = window.filter(|_| self.open) else {
+            self.feed = None;
+            return;
+        };
+        if !self
+            .feed
+            .as_ref()
+            .is_some_and(|feed| feed.reads(&kept, self.feed_limit))
+        {
+            self.feed = Some(super::feed::WindowFeed::follow(&app, kept, self.feed_limit));
         }
     }
 
@@ -1396,11 +1431,9 @@ impl HistoryHost {
                     }
                 }
                 Command::Earlier => {
-                    if let Ok(document) = self.source().document(doc)
-                        && let Some(controller) = &mut self.controller
-                    {
-                        let _ = controller.show_earlier(&document);
-                    }
+                    self.feed_limit = self
+                        .feed_limit
+                        .saturating_add(crate::tilo_actions::remote::workspace_activity::FEED_PAGE);
                 }
                 Command::PreviousPage | Command::NextPage => {
                     self.canvas_mut()
@@ -1445,10 +1478,8 @@ impl HistoryHost {
                             HistorySourceRegistration::HostDocument { resource, .. }
                             | HistorySourceRegistration::OwnedDocument { resource, .. } => {
                                 if let Ok(heads) = self.source().committed_heads(doc) {
-                                    self.controller = Some(
-                                        HistoryController::unprojected(resource.clone(), heads)
-                                            .with_parts(self.source().parts()),
-                                    );
+                                    self.controller =
+                                        Some(HistoryController::new(resource.clone(), heads));
                                 }
                             }
                             HistorySourceRegistration::Unversioned { reason, .. } => {
@@ -1484,10 +1515,27 @@ impl HistoryHost {
         } else {
             None
         };
+        self.follow_feed();
+        if let Some(listed) = self.feed.as_mut().and_then(super::feed::WindowFeed::take) {
+            self.timeline.set_entries(listed.entries);
+            self.timeline.set_named_ranges(listed.named);
+            self.has_earlier = listed.has_earlier;
+            changed = true;
+            if opening {
+                crate::diag!(
+                    "HISTORY-OPEN listed={} earlier={} ms={}",
+                    self.timeline.entries().len(),
+                    self.has_earlier,
+                    crate::time::now()
+                        .saturating_duration_since(started)
+                        .as_millis()
+                );
+            }
+        }
         if let Some(document) = &document
             && let Some(controller) = &mut self.controller
         {
-            let _ = controller.refresh(document);
+            controller.observe(document);
             let choosing = selected != self.selected && !selected.is_empty();
             let shown = choosing && controller.select(document, &selected).is_ok();
             if choosing && !shown {
@@ -1508,23 +1556,6 @@ impl HistoryHost {
                 self.assets.snapshots = [before, after];
                 changed = true;
             }
-            self.timeline.set_entries(controller.entries().to_vec());
-            self.timeline
-                .set_named_ranges(controller.named_ranges().to_vec());
-            self.timeline.set_descriptions(describe::shown_descriptions(
-                controller.descriptions(),
-                &self.describing,
-            ));
-            if opening {
-                crate::diag!(
-                    "HISTORY-OPEN listed={} earlier={} ms={}",
-                    controller.entries().len(),
-                    controller.has_earlier(),
-                    crate::time::now()
-                        .saturating_duration_since(started)
-                        .as_millis()
-                );
-            }
             if let Some(entry) = requested
                 && self.selected == [entry]
                 && let Some(index) = self
@@ -1535,9 +1566,6 @@ impl HistoryHost {
             {
                 self.timeline.set_selection(Some((index, index)));
             }
-        }
-        if let Some(mut document) = document {
-            self.queue_descriptions(&mut document);
         }
         self.refresh_media();
         let now_has_updates = self
@@ -1794,12 +1822,7 @@ impl HistoryHost {
             for failure in &self.pending_control_capture_failures {
                 toolbar = toolbar.push(Box::new(Text::new(failure)));
             }
-            if self.open
-                && self
-                    .controller
-                    .as_ref()
-                    .is_some_and(HistoryController::has_earlier)
-            {
+            if self.open && self.has_earlier {
                 toolbar = toolbar.push(Box::new(self.command_button(
                     "history-earlier",
                     "history-mode-earlier",
@@ -2232,7 +2255,7 @@ pub(crate) trait HistoryChromeApi: Widget {
     fn api_resource(&self) -> tilo_actions::ResourceSpec;
     fn invoke_api(&mut self, encoded: &tilo_actions::EncodedAction) -> Result<(), String>;
     #[cfg(any(feature = "native", test))]
-    fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry>;
+    fn current_entries(&self) -> Vec<crate::widget::HistoryEntry>;
     fn remove_fallback_bar(&mut self);
     fn remove_open_button(&mut self);
     fn set_open_button(&mut self, shown: bool);
@@ -2353,24 +2376,6 @@ pub(crate) trait HistoryChromeApi: Widget {
     fn observe_pointer(&mut self, event: &WindowEvent, scale: f64);
     fn refresh(&mut self, doc: &AutoCommit);
     fn live_visible(&self) -> bool;
-    #[cfg(feature = "native")]
-    fn take_describe_request(&mut self) -> Vec<crate::floating_surface::HistoryChangeFacts>;
-    #[cfg(feature = "native")]
-    fn describing_disconnected(&mut self);
-    #[cfg(feature = "native")]
-    fn receive_descriptions(
-        &mut self,
-        described: Vec<crate::floating_surface::HistoryChangeDescription>,
-    );
-    #[cfg(feature = "native")]
-    fn has_unwritten_descriptions(&self) -> bool;
-    #[cfg(feature = "native")]
-    fn service_descriptions(
-        &mut self,
-        state: &mut crate::State,
-        authority: &crate::permissions::PermissionContext,
-        author: &crate::permissions::MemberId,
-    ) -> bool;
     #[cfg(test)]
     fn set_clock(&mut self, clock: fn() -> Option<u64>);
     fn take_restored_source(&mut self) -> Option<HistorySourceRegistration>;
@@ -2445,8 +2450,8 @@ impl HistoryChromeApi for HistoryHost {
         HistoryHost::invoke_api(self, encoded)
     }
     #[cfg(any(feature = "native", test))]
-    fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry> {
-        HistoryHost::current_entries(self, doc)
+    fn current_entries(&self) -> Vec<crate::widget::HistoryEntry> {
+        HistoryHost::current_entries(self)
     }
     fn remove_fallback_bar(&mut self) {
         HistoryHost::remove_fallback_bar(self)
@@ -2709,34 +2714,6 @@ impl HistoryChromeApi for HistoryHost {
     fn live_visible(&self) -> bool {
         HistoryHost::live_visible(self)
     }
-    #[cfg(feature = "native")]
-    fn take_describe_request(&mut self) -> Vec<crate::floating_surface::HistoryChangeFacts> {
-        HistoryHost::take_describe_request(self)
-    }
-    #[cfg(feature = "native")]
-    fn describing_disconnected(&mut self) {
-        HistoryHost::describing_disconnected(self)
-    }
-    #[cfg(feature = "native")]
-    fn receive_descriptions(
-        &mut self,
-        described: Vec<crate::floating_surface::HistoryChangeDescription>,
-    ) {
-        HistoryHost::receive_descriptions(self, described)
-    }
-    #[cfg(feature = "native")]
-    fn has_unwritten_descriptions(&self) -> bool {
-        HistoryHost::has_unwritten_descriptions(self)
-    }
-    #[cfg(feature = "native")]
-    fn service_descriptions(
-        &mut self,
-        state: &mut crate::State,
-        authority: &crate::permissions::PermissionContext,
-        author: &crate::permissions::MemberId,
-    ) -> bool {
-        HistoryHost::service_descriptions(self, state, authority, author)
-    }
     #[cfg(test)]
     fn set_clock(&mut self, clock: fn() -> Option<u64>) {
         HistoryHost::set_clock(self, clock)
@@ -2790,8 +2767,6 @@ impl HistoryChromeApi for HistoryHost {
 mod surface;
 
 mod review;
-
-mod describe;
 
 mod media;
 
