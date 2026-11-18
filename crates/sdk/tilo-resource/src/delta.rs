@@ -188,12 +188,47 @@ fn exid(doc: &Doc, obj: &automerge::legacy::ObjectId) -> Option<ObjId> {
     }
 }
 
+/// A delta read: the version of the document it was read in, the changes it
+/// was read from, sorted, and what they touched.
+type Read = (Vec<ChangeHash>, Vec<ChangeHash>, Delta);
+
+thread_local! {
+    /// The delta read last. A write is followed by every reader of its
+    /// document (the resource that made it, the next action starting from
+    /// what it kept), each asking what the same changes touched; their
+    /// operations are read once.
+    static LAST: std::cell::RefCell<Option<Read>> = const { std::cell::RefCell::new(None) };
+}
+
 impl Delta {
     /// The delta `changes` make to `doc` (which already holds them), read from
     /// their operations: each touched object, and the path to it. Paths come
     /// from `locate` when it knows the object, from the changes themselves
     /// for objects they create, and otherwise from the document.
     pub fn from_changes(
+        doc: &Doc,
+        changes: &[automerge::Change],
+        locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
+    ) -> Self {
+        let mut at = doc.committed_heads();
+        at.sort_unstable();
+        let mut read: Vec<ChangeHash> = changes.iter().map(automerge::Change::hash).collect();
+        read.sort_unstable();
+        let known = LAST.with_borrow(|last| {
+            last.as_ref()
+                .filter(|(heads, hashes, _)| *heads == at && *hashes == read)
+                .map(|(_, _, delta)| delta.clone())
+        });
+        if let Some(delta) = known {
+            return delta;
+        }
+        let delta = Self::read_from(doc, changes, locate);
+        LAST.with_borrow_mut(|last| *last = Some((at, read, delta.clone())));
+        delta
+    }
+
+    /// [`Self::from_changes`], read from the operations.
+    fn read_from(
         doc: &Doc,
         changes: &[automerge::Change],
         locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
