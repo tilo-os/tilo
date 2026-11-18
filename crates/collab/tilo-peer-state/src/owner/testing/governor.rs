@@ -55,6 +55,32 @@ fn random<const N: usize>() -> [u8; N] {
     bytes
 }
 
+/// `cert`'s signed address for the workspace `workspace_id`, saying it is
+/// reached at `endpoint_addr` and keeps the workspace with its keys: the hint
+/// a device named among a workspace's holders signs for itself.
+#[must_use]
+pub fn holding_hint(
+    cert: &DeviceCert,
+    key: &SigningKey,
+    workspace_id: WorkspaceId,
+    endpoint_addr: iroh_base::EndpointAddr,
+) -> TransportHint {
+    WorkspaceDeviceHintV1 {
+        version: 1,
+        holds_keys: true,
+        runs_work: false,
+        label: String::new(),
+        cloud: false,
+        workspace_id,
+        endpoint_addr,
+        user_public_key: cert.user_public_key,
+        device_certificate: cert.clone(),
+        packet_relay_url: "https://relay.invalid".into(),
+    }
+    .transport_hint(key)
+    .unwrap()
+}
+
 fn ns(now: SystemTime) -> u64 {
     crate::owner::enrollment::ns(now).unwrap()
 }
@@ -238,20 +264,7 @@ impl TestGovernor {
     /// The host's signed hint that it serves the workspace at `endpoint_addr`.
     #[must_use]
     pub fn hint(&self, endpoint_addr: iroh_base::EndpointAddr) -> TransportHint {
-        WorkspaceDeviceHintV1 {
-            version: 1,
-            holds_keys: true,
-            runs_work: false,
-            label: String::new(),
-            cloud: false,
-            workspace_id: self.workspace_id,
-            endpoint_addr,
-            user_public_key: self.host.user_public_key,
-            device_certificate: self.host.clone(),
-            packet_relay_url: "https://relay.invalid".into(),
-        }
-        .transport_hint(&self.host_key)
-        .unwrap()
+        holding_hint(&self.host, &self.host_key, self.workspace_id, endpoint_addr)
     }
 
     /// The host's signed invitation for `role`, redeemable until

@@ -417,14 +417,93 @@ impl StatePeer {
         source: &[u8; 32],
         now: SystemTime,
     ) -> Result<(String, bool, Option<crate::state::ActingAs>), MembershipError> {
-        let (_, delegate) = backend::member::legacy(&self.core, source, now)?;
-        let cert = self.certificate(source, now)?;
-        let person = hex::encode(cert.user_public_key);
-        Ok((
-            person,
-            backend::member::foreign(cert, &self.core.origin),
-            delegate,
-        ))
+        match backend::member::legacy(&self.core, source, now) {
+            Ok((_, delegate)) => {
+                let cert = self.certificate(source, now)?;
+                let person = hex::encode(cert.user_public_key);
+                Ok((
+                    person,
+                    backend::member::foreign(cert, &self.core.origin),
+                    delegate,
+                ))
+            }
+            Err(error @ (MembershipError::Absent | MembershipError::UnknownDevice)) => {
+                // A key holder of another person that is no member takes a
+                // member's work as that member, under the delegation the
+                // member's own device signed for it; every change it writes is
+                // admitted within the delegation's paths alone
+                // ([`Self::authorize_document`]). A server the workspace names
+                // for nobody is nobody's.
+                let Some(delegation) = self.delegated_work(source, now) else {
+                    return Err(error);
+                };
+                let acting = crate::state::ActingAs {
+                    actor: tilo_action_policy::Actor::Member(delegation.actor()),
+                    grants: delegation.grants.clone(),
+                };
+                Ok((hex::encode(delegation.person), true, Some(acting)))
+            }
+            Err(error) => Err(error),
+        }
+    }
+    /// The delegation a member's device signed for the holder `source` to take
+    /// their work at `now`, when `source` is a holder this workspace names and
+    /// the delegation is live. A device that is no holder takes no member's
+    /// work, whatever rows the workspace carries.
+    fn delegated_work(
+        &self,
+        source: &[u8; 32],
+        now: SystemTime,
+    ) -> Option<collab_types::work_delegation::WorkDelegation> {
+        self.holder_certificate(source)?;
+        self.workspace().delegation_for_server(source, now)
+    }
+    /// Check that `write`, which `server` makes under `delegation`, is the
+    /// work of the member who signed it: every change names that member, or
+    /// the agent of theirs the delegation names, as the actor and the server's
+    /// device as where it ran. A write whose history names another person,
+    /// another device or nobody is refused: a server takes the work of the
+    /// member who delegated it and of no one else, and history says so.
+    fn delegated_work_is_theirs(
+        server: &[u8; 32],
+        delegation: &collab_types::work_delegation::WorkDelegation,
+        write: &SignedOp,
+    ) -> Result<(), AuthorizeRefusal> {
+        if write.encryption.is_some() {
+            return Err(AuthorizeRefusal::Denied(
+                "work a server takes for a member is written in the clear".into(),
+            ));
+        }
+        let mutation = collab_types::DocumentMutation::decode(&write.payload).map_err(|error| {
+            AuthorizeRefusal::Denied(format!("the change does not read as work: {error}"))
+        })?;
+        let changes = collab_types::claim::parse_changes(mutation.data()).map_err(|error| {
+            AuthorizeRefusal::Denied(format!("the change does not read as work: {error}"))
+        })?;
+        let actor = tilo_action_policy::Actor::Member(delegation.actor());
+        let server = hex::encode(server);
+        for change in &changes {
+            let named = change
+                .message()
+                .and_then(tilo_actions::ActionContext::from_change_message)
+                .and_then(|context| context.invoker)
+                .ok_or_else(|| {
+                    AuthorizeRefusal::Denied(
+                        "work a server takes for a member names the actor it acts for".into(),
+                    )
+                })?;
+            if named.acting.by != actor {
+                return Err(AuthorizeRefusal::Denied(
+                    "a server takes the work of the member who delegated it and no one else".into(),
+                ));
+            }
+            if named.device.as_ref().map(|device| device.id.as_str()) != Some(server.as_str()) {
+                return Err(AuthorizeRefusal::Denied(
+                    "work a server takes for a member names the server it ran on".into(),
+                ));
+            }
+        }
+        Ok(())
     }
     /// What `source` may do, for a write of its history: [`Self::permissions`]
     /// as if its person had not removed the device since. Asked only of a
@@ -620,6 +699,15 @@ impl StatePeer {
             .resource(resource)
             .rest()
             .action(action);
+        // A server of another person takes a member's work only within the
+        // delegation the member signed for it.
+        if backend::member::legacy(&self.core, &source, now).is_err()
+            && self
+                .delegated_work(&source, now)
+                .is_none_or(|delegation| !delegation.allows(&node, ActionKind::Undoable))
+        {
+            return Ok(false);
+        }
         Ok(member.allows(&node, ActionKind::Undoable, now))
     }
     /// The app surface this peer names in the changes it signs for `app`'s
@@ -866,8 +954,24 @@ impl StatePeer {
         if let Some(person) = &person {
             cx = cx.with_own_resource(record, person);
         }
+        // A server that is no member's own device takes a member's work under
+        // that member's delegation, and only as far as the delegation names:
+        // the member's authority bounds it above, the delegation below.
+        let delegation = backend::member::legacy(&self.core, source, authorization_time)
+            .is_err()
+            .then(|| self.delegated_work(source, authorization_time))
+            .flatten();
+        if let Some(delegation) = &delegation {
+            Self::delegated_work_is_theirs(source, delegation, envelope)?;
+        }
         let allows =
             |invoker: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
+                if delegation
+                    .as_ref()
+                    .is_some_and(|delegation| !delegation.allows(node, kind))
+                {
+                    return false;
+                }
                 collab_types::ChangeAuthor::answer(&member, invoker, node, kind, &cx)
                     == tilo_action_policy::Answer::Allow
             };

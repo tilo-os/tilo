@@ -192,7 +192,7 @@ fn step(doc: &mut AutoCommit, what: Did, item: Option<&str>) {
             id: id.into(),
             label: id.into(),
         }),
-        ..ActionContext::for_resource(RECORD, KIND, "Test")
+        ..ActionContext::for_resource("tab:1", KIND, "Test")
     };
     doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
 }
@@ -291,7 +291,7 @@ fn guest_write_by(
     write(&mut doc);
     let context = ActionContext {
         what: Some(what),
-        ..ActionContext::for_resource(RECORD, KIND, "Test")
+        ..ActionContext::for_resource("tab:1", KIND, "Test")
     }
     .with_invoker(invoker);
     doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
@@ -911,4 +911,280 @@ fn upgraded_write(
         envelope: Box::new(envelope),
         own: None,
     }
+}
+
+/// A server of another person, named among the workspace's key-holding
+/// holders: its device key, its certificate.
+fn named_server(peer: &mut StatePeer, owner: &SigningKey) -> (SigningKey, DeviceCert) {
+    let key = SigningKey::from_bytes(&[92; 32]);
+    let server = certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Household server");
+    let hint = crate::owner::testing::governor::holding_hint(
+        &server,
+        &key,
+        tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
+        iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(&server.device_public_key).unwrap(),
+        ),
+    );
+    assert!(
+        peer.governance_mut()
+            .author_keeping_device(&hint, owner, now())
+            .unwrap()
+    );
+    (key, server)
+}
+
+/// The member's delegation of `app`'s undoable work to `server`, signed by
+/// their own device `key`.
+fn delegating(
+    key: &SigningKey,
+    person: [u8; 32],
+    server: [u8; 32],
+    app: &str,
+) -> collab_types::work_delegation::WorkDelegation {
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    let member = Grantee::person(hex::encode(person));
+    let grant = Grant::new(
+        "delegated-work",
+        member.clone(),
+        TreePath::workspace(WORKSPACE).app(app),
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        member,
+    );
+    let at = u64::try_from(
+        now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap();
+    collab_types::work_delegation::WorkDelegation::sign(
+        key,
+        person,
+        server,
+        WORKSPACE,
+        None,
+        vec![grant],
+        at.saturating_sub(1),
+        at.saturating_add(10_000_000_000),
+    )
+    .unwrap()
+}
+
+/// The server's signed write of the document's value as `invoker`, its `seq`th.
+fn server_write(
+    peer: &StatePeer,
+    key: &SigningKey,
+    seq: u64,
+    value: &str,
+    invoker: tilo_actions::ActionInvoker,
+) -> NeighbourMsg {
+    let mut doc = AutoCommit::load(&peer.document(APP, "tab:1").unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = doc.get_heads();
+    doc.put(ROOT, "value", value).unwrap();
+    let context = ActionContext {
+        what: Some(edit_value()),
+        ..ActionContext::for_resource("tab:1", KIND, "Test")
+    }
+    .with_invoker(invoker);
+    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    signed_write_at(&mut doc, &heads, key, seq)
+}
+
+/// The invoker history files for a server's write of the member's work.
+fn the_servers_invoker(member: &str, server: [u8; 32]) -> tilo_actions::ActionInvoker {
+    tilo_actions::ActionInvoker::person(member.to_owned()).from_device(Some(
+        tilo_actions::InvokerDevice::certified(server, "Household server"),
+    ))
+}
+
+/// The history entry the change `server` wrote carries.
+fn history_invoker(peer: &StatePeer, server: [u8; 32]) -> tilo_actions::ActionInvoker {
+    let mut doc = AutoCommit::load(&peer.document(APP, "tab:1").unwrap()).unwrap();
+    let actor = automerge::ActorId::from(server.to_vec());
+    doc.get_changes(&[])
+        .into_iter()
+        .rev()
+        .filter(|change| change.actor_id() == &actor)
+        .find_map(|change| {
+            change
+                .message()
+                .and_then(ActionContext::from_change_message)
+        })
+        .expect("the server's change names what it did")
+        .invoker
+        .unwrap()
+}
+
+/// What `write` changes on `peer`, as a receiver takes the changes in.
+fn workspace_changes(peer: &mut StatePeer, write: impl FnOnce(&mut StatePeer)) -> Vec<Vec<u8>> {
+    let heads = peer.admitted_workspace().unwrap().clone().get_heads();
+    write(peer);
+    peer.admitted_workspace()
+        .unwrap()
+        .clone()
+        .get_changes(&heads)
+        .into_iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect()
+}
+
+/// A member delegates their work to a server of another person: every holder
+/// takes the delegation in from the workspace, the server's work is admitted
+/// as that member's — history naming their actor and the server it ran on —
+/// another member's work is refused, and a revocation stops it at once.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario: the delegation, the work under it, its refusals and its revocation"
+)]
+fn a_server_takes_a_members_work_only_under_their_delegation() {
+    use tilo_actions::{ActionInvoker, InvokerDevice};
+
+    let (mut peer, guest_key, guest) = workspace_with(Role::Editor);
+    let owner_key = SigningKey::from_bytes(&[2; 32]);
+    let (server_key, server) = named_server(&mut peer, &owner_key);
+    let guest_person = hex::encode(guest.user_public_key);
+    let owner_person = hex::encode(peer.owner());
+    let delegation = delegating(
+        &guest_key,
+        guest.user_public_key,
+        server.device_public_key,
+        APP,
+    );
+
+    // The member's device signs the delegation into the workspace, and a
+    // holder that did not write it takes it in like any other change.
+    let mut receiver = peer.clone();
+    let delegation_changes = workspace_changes(&mut peer, |copy| {
+        assert!(
+            copy.workspace_mut()
+                .author_work_delegation(&delegation, &guest_key, now())
+                .unwrap()
+        );
+        assert_eq!(
+            copy.workspace().work_delegations(),
+            vec![delegation.clone()]
+        );
+    });
+    receiver
+        .receive_from(
+            TransportOrigin::ServerDelta(guest.device_public_key),
+            NeighbourMsg::SyncResp {
+                changes: delegation_changes,
+                workspace: WORKSPACE.into(),
+            },
+            now(),
+        )
+        .unwrap();
+    assert_eq!(
+        receiver.workspace().work_delegations(),
+        vec![delegation.clone()],
+        "every member reads the delegation beside who holds the workspace"
+    );
+
+    // The server takes the member's work: the holder admits it as theirs, and
+    // history names their actor and the server it ran on.
+    let invoker = the_servers_invoker(&guest_person, server.device_public_key);
+    let work = server_write(
+        &receiver,
+        &server_key,
+        1,
+        "set by the server",
+        invoker.clone(),
+    );
+    receive(&mut receiver, &server, work).expect("the server takes the member's work");
+    let named = history_invoker(&receiver, server.device_public_key);
+    assert_eq!(
+        named.acting.by,
+        tilo_action_policy::Actor::Member(
+            tilo_action_policy::MemberId::parsed_person(&guest_person).unwrap()
+        )
+    );
+    assert_eq!(named.acting.people(), vec![guest_person.as_str()]);
+    assert_eq!(
+        named.device.as_ref().map(|device| device.id.clone()),
+        Some(hex::encode(server.device_public_key)),
+        "history names the server it was done on"
+    );
+
+    // Another member's work is refused: nobody delegated it to this server.
+    let for_another = server_write(
+        &receiver,
+        &server_key,
+        2,
+        "set for someone else",
+        the_servers_invoker(&owner_person, server.device_public_key),
+    );
+    let refused = receive(&mut receiver.clone(), &server, for_another).unwrap_err();
+    assert!(
+        refused.contains("delegated it and no one else"),
+        "{refused}"
+    );
+
+    // Nor may the server name the member and act on another device.
+    let elsewhere = server_write(
+        &receiver,
+        &server_key,
+        2,
+        "set under another device",
+        ActionInvoker::person(guest_person)
+            .from_device(Some(InvokerDevice::certified([7; 32], "Somewhere else"))),
+    );
+    let refused = receive(&mut receiver.clone(), &server, elsewhere).unwrap_err();
+    assert!(refused.contains("server it ran on"), "{refused}");
+
+    // The member revokes it; every holder that takes the revocation in
+    // refuses the server's work from then on.
+    let revocation = workspace_changes(&mut peer, |copy| {
+        assert!(
+            copy.workspace_mut()
+                .revoke_work_delegation(
+                    &server.device_public_key,
+                    &guest.user_public_key,
+                    &guest_key,
+                    now()
+                )
+                .unwrap()
+        );
+    });
+    receiver
+        .receive_from(
+            TransportOrigin::ServerDelta(guest.device_public_key),
+            NeighbourMsg::SyncResp {
+                changes: revocation,
+                workspace: WORKSPACE.into(),
+            },
+            now(),
+        )
+        .unwrap();
+    assert!(
+        receiver
+            .workspace()
+            .work_delegation(&server.device_public_key, &guest.user_public_key, now())
+            .is_none(),
+        "a revocation stops the delegation at once"
+    );
+    assert!(
+        receiver.workspace().work_delegations()[0]
+            .revoked_at_ns
+            .is_some(),
+        "and stays read by every holder that took it"
+    );
+    let after_revocation = server_write(
+        &receiver,
+        &server_key,
+        2,
+        "set after the revocation",
+        invoker,
+    );
+    let refused = receive(&mut receiver.clone(), &server, after_revocation).unwrap_err();
+    assert!(
+        refused.contains("absent from governed roster") || refused.contains("certified identity"),
+        "{refused}"
+    );
 }

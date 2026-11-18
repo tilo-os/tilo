@@ -88,6 +88,7 @@ pub fn seed_workspace(
     // each device keeps for itself in its person's name.
     for rows in [
         collab_types::workspace_grant::WORKSPACE_GRANTS_KEY,
+        collab_types::work_delegation::WORK_DELEGATIONS_KEY,
         super::keeping_devices::WORKSPACE_KEEPING_DEVICES_KEY,
         super::app_versions::APP_VERSIONS,
         super::bot_members::PROGRAMS,

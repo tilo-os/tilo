@@ -343,28 +343,40 @@ impl StatePeer {
                 workspace: received,
             } => self.receive_workspace_changes(source, &received, &changes, now, strict_report),
             message @ NeighbourMsg::AppDocument { .. } => {
-                if self.core.workspace_doc.is_none()
-                    || !self.core.certificates.contains_key(&source)
-                {
-                    let prerequisite = if self.core.workspace_doc.is_none() {
-                        MissingPrerequisite::Governance
-                    } else {
-                        MissingPrerequisite::Certificate
-                    };
+                if self.core.workspace_doc.is_none() {
                     return self.defer(
                         source,
                         message,
                         Held {
                             retained_replay,
-                            prerequisite,
+                            prerequisite: MissingPrerequisite::Governance,
                             now,
                         },
                     );
                 }
-                if matches!(
-                    backend::member::legacy(&self.core, &source, now),
-                    Err(MembershipError::Absent)
-                ) {
+                // A holder of the workspace is known by the address it signed
+                // among the workspace's holders, whether or not the roster
+                // carries its certificate: what it writes is decided now, as a
+                // member's work under a member's delegation or not at all. A
+                // holder never becomes a member by governance arriving later.
+                let holder = self.holder_certificate(&source).is_some();
+                if !holder && !self.core.certificates.contains_key(&source) {
+                    return self.defer(
+                        source,
+                        message,
+                        Held {
+                            retained_replay,
+                            prerequisite: MissingPrerequisite::Certificate,
+                            now,
+                        },
+                    );
+                }
+                if !holder
+                    && matches!(
+                        backend::member::legacy(&self.core, &source, now),
+                        Err(MembershipError::Absent)
+                    )
+                {
                     // The governance that lists the writer's device has not arrived yet: a
                     // replay or a delivery ahead of it. A write it would refuse is held and
                     // decided again with every governance change; it is applied only once the

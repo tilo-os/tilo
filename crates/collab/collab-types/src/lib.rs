@@ -76,6 +76,7 @@ pub mod signer;
 pub mod surface;
 pub mod units;
 pub mod validator;
+pub mod work_delegation;
 pub mod workspace_document;
 pub mod workspace_grant;
 pub mod workspace_id;
