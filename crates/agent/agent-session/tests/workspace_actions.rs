@@ -150,6 +150,9 @@ mod member_own;
 mod member_roles;
 #[cfg(test)]
 #[cfg(test)]
+#[path = "workspace_actions/one_workspace_list.rs"]
+mod one_workspace_list;
+#[cfg(test)]
 #[path = "workspace_actions/own_agent.rs"]
 mod own_agent;
 #[cfg(test)]
