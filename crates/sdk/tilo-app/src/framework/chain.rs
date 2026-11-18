@@ -78,6 +78,7 @@ use super::resources::ResourceApi;
 
 mod dispatching;
 mod listing;
+mod named;
 mod part;
 mod reading;
 mod shares;
@@ -2212,6 +2213,10 @@ impl ResourceApi for ChainState {
 
     fn search(&self) -> Vec<tilo_resource::SearchEntry> {
         ChainState::search(self)
+    }
+
+    fn items_named(&self, name: &str) -> Vec<tilo_actions::ResourceSpec> {
+        ChainState::items_named(self, name)
     }
 
     fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {

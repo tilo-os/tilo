@@ -60,11 +60,14 @@ fn clamp(value: u32, max: usize) -> usize {
     usize::try_from(value).unwrap_or(max).clamp(1, max)
 }
 
-/// Whether a resource of `kind` labelled `label` is the one `name` names: by
-/// its kind exactly, or by its label ignoring ASCII case.
+/// Whether the resource `id` of `kind`, labelled `label`, is the one `name`
+/// names: its id, the item part of it (an item's id is
+/// `<kind>/<field>/<item>`, and `<item>` names it as its own id does), its
+/// kind exactly, or its label ignoring ASCII case.
 #[must_use]
-pub fn is_named(kind: &str, label: &str, name: &str) -> bool {
-    kind == name || label.eq_ignore_ascii_case(name)
+pub fn is_named(id: &str, kind: &str, label: &str, name: &str) -> bool {
+    let item_of_id = id.rsplit_once('/').map(|(_, item)| item);
+    id == name || item_of_id == Some(name) || kind == name || label.eq_ignore_ascii_case(name)
 }
 
 /// The resource rows of `snapshot` that `name` names: at its top level for an
@@ -84,7 +87,8 @@ pub fn named_rows(
     Some(
         rows.iter()
             .filter(|row| {
-                row.action.is_none() && is_named(&row.resource_kind, &row.resource_label, name)
+                row.action.is_none()
+                    && is_named(&row.resource, &row.resource_kind, &row.resource_label, name)
             })
             .cloned()
             .collect(),

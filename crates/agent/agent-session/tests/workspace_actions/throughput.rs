@@ -169,6 +169,45 @@ fn message(index: usize) -> Value {
     json!({"channel": CHANNEL.lock().unwrap().clone(), "text": format!("message {index}: a line of chat")})
 }
 
+/// The ids of the first `take` issues of the tracker's newest part, as a
+/// path names one (`tasks/Issues/<id>`): the ones the page the tracker
+/// publishes carries, read from the parts it keeps them in.
+async fn issue_ids(
+    on_server: &super::api_on_server::OnServer,
+    workspace: &str,
+    take: usize,
+) -> Vec<String> {
+    use ui::tilo_resource::Resource as _;
+    let workspaces = on_server.hosted.server.workspaces().unwrap().clone();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let mut newest: Vec<String> = Vec::new();
+        for index in 0..16 {
+            let part = tasks::part::chain().part(index).as_str().to_owned();
+            let Ok(Some(bytes)) = workspaces
+                .resource_document(workspace, "so.tilo.tasks", &part)
+                .await
+            else {
+                break;
+            };
+            let part = tasks::part::IssuePart::read(&automerge::AutoCommit::load(&bytes).unwrap())
+                .unwrap();
+            let held: Vec<String> = part
+                .issues
+                .iter()
+                .map(|(id, _)| id.as_str().to_owned())
+                .collect();
+            if !held.is_empty() {
+                newest = held;
+            }
+        }
+        if !newest.is_empty() || Instant::now() >= deadline {
+            return newest.into_iter().take(take).collect();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// The channel chat messages go to, in the workspace being measured.
 static CHANNEL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
@@ -481,6 +520,41 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
             table.push(row);
         }
 
+        // Issues named by their id, as an agent deletes one it kept the id
+        // of: the address names the item, so the tracker's own items answer
+        // it and the call costs its action, not a page of the listing.
+        let named = issue_ids(&on_server, &id, singles).await;
+        let mut took = Vec::with_capacity(named.len());
+        for target in &named {
+            let began = Instant::now();
+            agent
+                .act(
+                    &base,
+                    &format!("tasks/Issues/{target}"),
+                    "delete",
+                    &json!({}),
+                )
+                .await;
+            took.push(began.elapsed());
+        }
+        let row = Row {
+            kind: "delete by id".into(),
+            size,
+            single_p50_ms: ms(quantile(&took, 0.5)),
+            single_p99_ms: ms(quantile(&took, 0.99)),
+            seed_per_s: 0.0,
+            bulk_per_s: 0.0,
+            second_device_p50_ms: None,
+        };
+        eprintln!(
+            "{:>14} at {size:>6}: single p50 {:7.1} ms p99 {:7.1} ms ({} deletes)",
+            row.kind,
+            row.single_p50_ms,
+            row.single_p99_ms,
+            took.len()
+        );
+        table.push(row);
+
         // Files: one put after another (upload, then `files#open`), as
         // `tilo files put` sends them today.
         let files = count("TILO_THROUGHPUT_FILES", 200);
@@ -611,7 +685,7 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
             if row.kind.starts_with("upload") {
                 continue;
             }
-            if row.kind != "file put" && row.bulk_per_s < 1000.0 {
+            if row.kind != "file put" && row.kind != "delete by id" && row.bulk_per_s < 1000.0 {
                 let _ = writeln!(
                     failed,
                     "{} at {}: bulk {:.0}/s < 1000/s",

@@ -409,6 +409,22 @@ impl ViewStorage {
             .collect()
     }
 
+    /// The items `name` names among what the chain `parent` holds, each built
+    /// alone by the part keeping it ([`ResourceApi::items_named`]): what a
+    /// path naming one costs, however many items the chain holds.
+    pub(crate) fn chain_items_named(
+        &self,
+        parent: &str,
+        name: &str,
+    ) -> Vec<tilo_actions::ResourceSpec> {
+        self.chains
+            .apis()
+            .into_iter()
+            .find(|api| api.id() == parent)
+            .map(|api| api.items_named(name))
+            .unwrap_or_default()
+    }
+
     /// A revision that moves whenever a chain the views opened changed.
     pub(crate) fn chains_revision(&self) -> u64 {
         self.chains.apis().iter().fold(0u64, |revision, api| {

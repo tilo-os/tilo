@@ -321,6 +321,13 @@ pub(crate) trait ResourceApi {
     fn search(&self) -> Vec<tilo_resource::SearchEntry> {
         Vec::new()
     }
+    /// The items `name` names by its id or label, built alone: what a
+    /// resource holding its items itself answers a path naming one with,
+    /// however many items it holds (a chain, whose items may stand past its
+    /// page).
+    fn items_named(&self, _name: &str) -> Vec<tilo_actions::ResourceSpec> {
+        Vec::new()
+    }
     fn apply_encoded(&self, action: &EncodedAction, invoker: &ActionInvoker) -> Result<(), String>;
     /// [`Self::apply_encoded`], answering its invoker with what it made.
     fn apply_answering(

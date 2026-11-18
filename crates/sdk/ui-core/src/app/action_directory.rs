@@ -216,6 +216,7 @@ impl App {
                 .iter()
                 .filter(|resource| {
                     ::collaboration::action_directory::is_named(
+                        resource.id.as_str(),
                         &resource.kind,
                         &resource.label,
                         name,
@@ -245,7 +246,12 @@ impl App {
             children
                 .iter()
                 .filter(|child| {
-                    ::collaboration::action_directory::is_named(&child.kind, &child.label, name)
+                    ::collaboration::action_directory::is_named(
+                        child.id.as_str(),
+                        &child.kind,
+                        &child.label,
+                        name,
+                    )
                 })
                 .filter_map(|child| self.directory_resource_row(child, parent, true))
                 .collect()

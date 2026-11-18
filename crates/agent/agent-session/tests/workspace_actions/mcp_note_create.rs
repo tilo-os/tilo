@@ -16,26 +16,42 @@ use tracing_subscriber::{Layer as _, filter::Targets};
 
 /// The catalogue requests the workspace's host answered: each is one job of
 /// kind `catalogue` its workspace actions log as they run it.
-static CATALOGUES: AtomicUsize = AtomicUsize::new(0);
+pub(super) static CATALOGUES: AtomicUsize = AtomicUsize::new(0);
 
-/// Counts the host's `catalogue` jobs as it logs them.
-struct CatalogueJobs;
+/// The catalogue pages that listed a resource's items (a job under a parent,
+/// naming nothing) rather than answering a name: what a lookup pays when it
+/// pages a level to find one item.
+pub(super) static LISTINGS: AtomicUsize = AtomicUsize::new(0);
+
+/// Counts the server's `catalogue` jobs as it logs them.
+pub(super) struct CatalogueJobs;
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CatalogueJobs {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        struct Kind(bool);
+        #[derive(Default)]
+        struct Kind {
+            catalogue: bool,
+            parent: String,
+            named: String,
+        }
         impl tracing::field::Visit for Kind {
             fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-                if field.name() == "kind" && value == "catalogue" {
-                    self.0 = true;
+                match field.name() {
+                    "kind" if value == "catalogue" => self.catalogue = true,
+                    "parent" => value.clone_into(&mut self.parent),
+                    "named" => value.clone_into(&mut self.named),
+                    _ => {}
                 }
             }
             fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
         }
-        let mut kind = Kind(false);
+        let mut kind = Kind::default();
         event.record(&mut kind);
-        if kind.0 {
+        if kind.catalogue {
             CATALOGUES.fetch_add(1, Ordering::Relaxed);
+            if !kind.parent.is_empty() && kind.named.is_empty() {
+                LISTINGS.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -74,8 +90,9 @@ async fn a_note_create_asks_the_host_the_same_however_full_the_notebook() {
         "tilo_agent_session::workspace_actions",
         tracing::Level::DEBUG,
     ));
-    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(counting))
-        .expect("the test process's only subscriber");
+    // Counting the server's jobs: each test of this binary counts the same
+    // two, so one already installed serves both.
+    let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry().with(counting));
     let on_server = api_on_server(ISSUER).await;
     let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);

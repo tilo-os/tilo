@@ -1741,16 +1741,27 @@ impl Worker {
     }
 
     /// Take `job`, queued at `queued`, logging every one at debug and one
-    /// that waited or ran long at warn.
+    /// that waited or ran long at warn. A catalogue page names the resource
+    /// it listed under and the one it looked for, so a slow lookup says which
+    /// of the resource's levels was read.
     fn timed(&mut self, queued: Instant, job: Job) {
         let started = Instant::now();
         let kind = job.kind();
+        let (parent, named) = match &job {
+            Job::Catalogue { query, .. } => (
+                query.parent_resource.clone().unwrap_or_default(),
+                query.resource_name.clone().unwrap_or_default(),
+            ),
+            _ => (String::new(), String::new()),
+        };
         self.take(job);
         // What it ended, it ended now, as a listing of runs says.
         self.log().stamp_ended();
         let (waited, ran) = (started.duration_since(queued), started.elapsed());
         tracing::debug!(
             kind,
+            parent,
+            named,
             waited_ms = waited.as_millis(),
             ran_ms = ran.as_millis(),
             "workspace actions: a request ran"
@@ -1758,6 +1769,8 @@ impl Worker {
         if waited.max(ran) >= SLOW_JOB {
             tracing::warn!(
                 kind,
+                parent,
+                named,
                 waited_ms = waited.as_millis(),
                 ran_ms = ran.as_millis(),
                 "workspace actions: a request waited or ran long"
