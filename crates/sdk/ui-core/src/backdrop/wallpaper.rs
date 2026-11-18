@@ -103,10 +103,44 @@ impl Source {
     }
 }
 
+/// What the shell shows under `shape`, blurred: its picture covering the shape, its gradient
+/// (already as smooth as its blur) across it, or `ground` where it shows neither or `blur` is off.
+fn paint_shell(
+    scene: &mut Scene,
+    source: &Source,
+    transform: Affine,
+    shape: &impl Shape,
+    blur: Option<f32>,
+    ground: Color,
+) -> bool {
+    let Some(blur_px) = blur else {
+        scene.fill(Fill::NonZero, transform, ground, None, shape);
+        return false;
+    };
+    let gradient = source.state.borrow().gradient;
+    let (brush, brush_transform) =
+        if let Some((image, placed)) = source.cover(shape.bounding_box(), blur_px) {
+            let brush = Brush::Image(ImageBrush::new(image).with_extend(Extend::Pad));
+            (brush, Some(transform.inverse() * placed))
+        } else if let Some((from, to)) = gradient {
+            let bounds = shape.bounding_box();
+            let gradient = Gradient::new_linear(bounds.origin(), Point::new(bounds.x1, bounds.y1))
+                .with_extend(Extend::Pad)
+                .with_stops([from, to].as_slice());
+            (Brush::Gradient(gradient), None)
+        } else {
+            scene.fill(Fill::NonZero, transform, ground, None, shape);
+            return false;
+        };
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, shape);
+    scene.fill(Fill::NonZero, transform, &brush, brush_transform, shape);
+    scene.pop_layer();
+    true
+}
+
 /// Fill `shape` with `material` over `source`: the shell's wallpaper, blurred and fitted to the
 /// shape, behind it under the material's tint of `ground`; where the shell shows its gradient, that
-/// gradient (already as smooth as its blur) across the shape; `ground` alone for an opaque material
-/// or a shell that shows neither.
+/// gradient across the shape; `ground` alone for an opaque material or a shell that shows neither.
 pub(crate) fn fill(
     scene: &mut Scene,
     source: &Source,
@@ -116,35 +150,11 @@ pub(crate) fn fill(
     theme: &Theme,
     ground: Color,
 ) {
-    let cover = if super::blurs(material, theme) {
-        source.cover(
-            shape.bounding_box(),
-            theme.tokens.colors.surfaces.material_blur_px,
-        )
-    } else {
-        None
-    };
-    let gradient = if super::blurs(material, theme) {
-        source.state.borrow().gradient
-    } else {
-        None
-    };
-    let (brush, brush_transform) = if let Some((image, placed)) = cover {
-        let brush = Brush::Image(ImageBrush::new(image).with_extend(Extend::Pad));
-        (brush, Some(transform.inverse() * placed))
-    } else if let Some((from, to)) = gradient {
-        let bounds = shape.bounding_box();
-        let gradient = Gradient::new_linear(bounds.origin(), Point::new(bounds.x1, bounds.y1))
-            .with_extend(Extend::Pad)
-            .with_stops([from, to].as_slice());
-        (Brush::Gradient(gradient), None)
-    } else {
-        scene.fill(Fill::NonZero, transform, ground, None, shape);
+    let blur =
+        super::blurs(material, theme).then_some(theme.tokens.colors.surfaces.material_blur_px);
+    if !paint_shell(scene, source, transform, shape, blur, ground) {
         return;
-    };
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, shape);
-    scene.fill(Fill::NonZero, transform, &brush, brush_transform, shape);
-    scene.pop_layer();
+    }
     super::settle(scene, transform, shape, theme, ground);
     scene.fill(
         Fill::NonZero,
@@ -153,6 +163,22 @@ pub(crate) fn fill(
         None,
         shape,
     );
+}
+
+/// Fill `shape` with the shell itself, blurred as a floating surface blurs it but under no tint: a
+/// ground that stands for the shell rather than a surface over it. `ground` where the theme draws
+/// floating surfaces opaque.
+pub(crate) fn shell(
+    scene: &mut Scene,
+    source: &Source,
+    transform: Affine,
+    shape: &impl Shape,
+    theme: &Theme,
+    ground: Color,
+) {
+    let blur = super::blurs(Material::Floating, theme)
+        .then_some(theme.tokens.colors.surfaces.material_blur_px);
+    paint_shell(scene, source, transform, shape, blur, ground);
 }
 
 /// `image` covering `rect` as a shell paints a wallpaper (scaled to cover it, centred), blurred by
