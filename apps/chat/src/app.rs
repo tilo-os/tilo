@@ -2538,6 +2538,12 @@ impl Widget for ChatApp {
             || self.alone_needs_frame()
     }
 
+    // The toolkit's frame asks the window whether a sync is owed, never a widget inside it. A
+    // view shown alone owes one while its instance has work that no frame has taken in yet.
+    fn needs_idle_sync(&self) -> bool {
+        self.alone_owes_sync()
+    }
+
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let now = ui::time::now();
         // An attachment on its way steps its placeholder on at its
