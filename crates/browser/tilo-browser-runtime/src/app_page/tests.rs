@@ -506,3 +506,84 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_second_mount_of_an_app_in_a_page_reads_what_the_first_holds_of_the_workspace;
+
+    phase a_part_of_the_workspaces_chain_opens_in_both_and_a_windows_own_document_in_one;
+    // The page's own window of an app and a mount of the same app beside it (a message's view
+    // in Chat) each read the page's storage through a store of their own. A part of the chain
+    // kept beside the workspace's own document is the workspace's: both hold it. A document of
+    // one window keeps its one owner.
+    {
+        let definition = definition(true);
+        let memory = Rc::new(MemoryStore::queued());
+        let mount = || {
+            let mut owners = ResourceOwners::with_store(
+                Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>
+            );
+            let stores = Rc::new(RefCell::new(Vec::new()));
+            store(&mut owners, &definition, WORKSPACE, true, &stores).unwrap()
+        };
+        let kept = |want: &DocumentCheckout, body: &str| {
+            let key = StorageKey::document(PACKAGE, WORKSPACE, want.id.storage_key());
+            memory
+                .write(&key, WriteOp::Replace(written_elsewhere(want, body)), None)
+                .unwrap();
+        };
+        let chain = DocumentId::derived("messages", &DocumentId::workspace_default());
+        let part = DocumentCheckout::new(chain.part(0), ResourceType::new("probe.part"));
+        kept(&part, "the first message");
+        let own = default_resource(&definition);
+        kept(&own, "one window's");
+
+        let first = mount();
+        first
+            .try_open_resource(&part)
+            .expect("the page's own window holds the part");
+        first
+            .try_open_resource(&own)
+            .expect("and its own document");
+
+        let beside = mount();
+        assert_eq!(beside.held_parts(&chain), vec![0], "the part is in the page");
+        beside
+            .try_open_resource(&part)
+            .expect("a mount beside reads the part the page's own window holds");
+        assert_eq!(
+            body(&beside, &part.id).as_deref(),
+            Some("the first message")
+        );
+        assert!(
+            beside.try_open_resource(&own).is_err(),
+            "a document of one window keeps its one owner"
+        );
+        // So does a part of a chain of a document that is not the workspace's own.
+        let theirs = DocumentCheckout::new(own.id.part(0), ResourceType::new("probe.part"));
+        kept(&theirs, "one window's first part");
+        first
+            .try_open_resource(&theirs)
+            .expect("its window holds it");
+        assert!(
+            beside.try_open_resource(&theirs).is_err(),
+            "a part of one window's chain keeps its one owner"
+        );
+        // And the store of another workspace over the same storage has nothing of this
+        // workspace's part: it neither lists nor opens it.
+        let elsewhere = {
+            let mut owners = ResourceOwners::with_store(
+                Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>
+            );
+            let stores = Rc::new(RefCell::new(Vec::new()));
+            store(&mut owners, &definition, "workspace-b", true, &stores).unwrap()
+        };
+        assert!(
+            elsewhere.held_parts(&chain).is_empty(),
+            "another workspace's store holds none of it"
+        );
+        assert!(
+            elsewhere.try_open_resource(&part).is_err(),
+            "and does not open it"
+        );
+    }
+}

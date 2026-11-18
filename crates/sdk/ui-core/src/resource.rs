@@ -1267,12 +1267,14 @@ impl ResourceSet {
         ))
     }
 
-    /// Whether `id` is a record of the workspace rather than of one window: its own document and
-    /// the records its people share, each written by every window and host, which join as shared
-    /// writers. Any other record has one owner.
+    /// Whether `id` is a record of the workspace rather than of one window: its own document, the
+    /// records its people share and the parts of a chain kept beside its own document (Chat's
+    /// messages), each written by every window and host, which join as shared writers. Any other
+    /// record has one owner.
     fn shared_in_workspace(&self, id: &DocumentId) -> bool {
         id.is_package_primary()
             || collab_types::workspace_document(&self.app_id, id.as_str()).is_some()
+            || workspace_chain_part(id)
     }
 
     fn try_open_resource(
@@ -1568,6 +1570,19 @@ enum Durability {
 /// document; single-threaded on purpose, since a `Mutex` here would guard against nothing.
 #[derive(Clone)]
 pub struct ResourceStore(std::rc::Rc<std::cell::RefCell<ResourceSet>>);
+
+/// Whether `id` is a part of a chain that belongs to the workspace's own document
+/// (`derived:part.N@derived:ROLE@` and then the workspace's default document): what an app keeps
+/// beside its own document of the workspace because it grows without end.
+fn workspace_chain_part(id: &DocumentId) -> bool {
+    id.chain_part().is_some_and(|(chain, _)| {
+        chain
+            .as_str()
+            .strip_prefix("derived:")
+            .and_then(|derived| derived.split_once('@'))
+            .is_some_and(|(_, of)| of == DocumentId::workspace_default().as_str())
+    })
+}
 
 type OwnerIndex = Rc<
     std::cell::RefCell<HashMap<(String, String), std::rc::Weak<std::cell::RefCell<ResourceSet>>>>,
