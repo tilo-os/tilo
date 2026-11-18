@@ -888,7 +888,9 @@ fix = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/pyth
 # TypeScript SDK's packages from sdk/typescript/bun.lock, both baked into the image this check
 # builds. They run offline. That image is built for these checks and not published, so the
 # dependencies a suite runs against are always the tree's locks: a bump changes the image's
-# inputs and with it the image.
+# inputs and with it the image. Each suite's fake API holds every exchange it answers to
+# docs/api/openapi.json, so the spec and the SDKs cannot drift apart: a route, a body or an
+# answer either side stops describing fails the suite.
 [[check]]
 name = "sdk-python"
 run = "bash tools/ci/sdk-python.sh"

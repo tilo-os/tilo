@@ -6,6 +6,10 @@
  * assert what the SDK sent, and its state says what the host answers.
  */
 
+import { Contract } from "./openapiContract.ts";
+
+const contract = new Contract();
+
 export const WORKSPACE_ID = "11111111-2222-3333-4444-555555555555";
 export const OTHER_ID = "66666666-7777-8888-9999-aaaaaaaaaaaa";
 export const INVITED_ID = "abcdef01-2345-6789-abcd-ef0123456789";
@@ -181,11 +185,25 @@ export class FakeApi {
       body,
     };
     this.calls.push(call);
-    if (parsed.pathname === "/keys/new") {
+    const response = this.answer(call, parsed.pathname, body, headers);
+    // What the SDK sent and what this fake answers have to be what
+    // `docs/api/openapi.json` describes.
+    await contract.check(call, response);
+    return response;
+  }
+
+  private answer(
+    call: Recorded,
+    pathname: string,
+    body: string,
+    headers: Record<string, string>,
+  ): Response {
+    const method = call.method;
+    if (pathname === "/keys/new") {
       this.newKeyAsked = JSON.parse(body || "{}") as Answer;
       return this.json({ approve_url: "https://api.test/keys/approve/abc", poll: "poll-secret", interval: 0, expires_in: 300 }, 201);
     }
-    if (parsed.pathname === "/keys/poll") {
+    if (pathname === "/keys/poll") {
       this.polls += 1;
       if (this.polls < this.pollsUntilApproved) {
         return this.json({ status: "pending" }, 202);
@@ -223,7 +241,14 @@ export class FakeApi {
         503,
       );
     }
-    return this.route(method, segments.map((part) => decodeURIComponent(part)), call);
+    return this.route(
+      method,
+      pathname
+        .split("/")
+        .filter((part) => part !== "")
+        .map((part) => decodeURIComponent(part)),
+      call,
+    );
   }
 
   private route(method: string, segments: string[], call: Recorded): Response {

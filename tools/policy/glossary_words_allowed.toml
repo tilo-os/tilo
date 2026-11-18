@@ -463,3 +463,9 @@ reason = "t's own check field, the command a check starts: the name t's config g
 words = ["run"]
 identifiers = ["run"]
 paths = ["t.toml"]
+
+[[allow]]
+reason = "TypeScript's built-in `Record<K, V>` type."
+words = ["record"]
+identifiers = ["Record"]
+paths = ["sdk/typescript/**"]
