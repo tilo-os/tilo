@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The programs the local tilo.sh stack runs natively (os/containers/tilo-sh/stack.sh), in one
 # build: the server and the Discord worker as the Lounge image carries them (feature `agents`),
-# the API server, the fake Discord and the tilo command, at Cargo.toml's `lounge-check` (the
+# the API server and the program it starts a task's tilolang programs in (found beside it),
+# the fake Discord and the tilo command, at Cargo.toml's `lounge-check` (the
 # release's code and opt-level without the whole-program link). One cargo build, so a change
 # to the server compiles it once and relinks every program beside it, instead of one check
 # waiting on another's build. Reads no git: a commit that changes none of what it compiles
@@ -11,9 +12,10 @@ set -euo pipefail
 out=${1:?usage: tilo-sh-programs.sh OUT}
 cd "$repo_root"
 target=${CARGO_TARGET_DIR:-$repo_root/target}
-bins=(tilo-server discord-worker tilo-api fake-discord tilo)
+bins=(tilo-server discord-worker tilo-api fake-discord tilo tilolang-process)
 rm -rf "$out"
 mkdir -p "$out"
 cargo build --locked --profile lounge-check --features tilo-server/agents \
-  -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli "${bins[@]/#/--bin=}"
+  -p tilo-server -p discord-worker -p tilo-api -p fake-discord -p tilo-cli -p tilolang-process \
+  "${bins[@]/#/--bin=}"
 for bin in "${bins[@]}"; do cp "$target/lounge-check/$bin" "$out/"; done
