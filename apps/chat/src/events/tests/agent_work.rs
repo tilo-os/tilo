@@ -31,8 +31,8 @@ fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
                 .description
                 .unwrap()
         };
-        assert!(description(&app).contains("Working"));
-        assert!(description(&app).contains("Requested: Add function"));
+        let said = description(&app);
+        says_its_step_and_opens_its_list(&mut app, &mut doc, &said, (width, height));
 
         if app.thread_is_page() {
             // A thread that fills the window is the window bar's place: its
@@ -111,6 +111,35 @@ fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
         );
         opens_what_the_agent_did(&mut app, &mut doc, width, height);
     }
+}
+
+/// At work, the reply says the step its agent is at and how many it has taken, and that one
+/// line opens the list of what the agent did so far and closes it again.
+fn says_its_step_and_opens_its_list(
+    app: &mut ChatApp,
+    doc: &mut crate::testing::Workspace,
+    said: &str,
+    (width, height): (f64, f64),
+) {
+    assert!(said.contains("Add function: Revenue curve"), "{said}");
+    assert!(said.contains("1 step"), "{said}");
+    assert!(said.contains("Requested: Add function"), "{said}");
+    let reply = crate::testing::agent_reply();
+    opens_what_the_agent_did(app, doc, width, height);
+    render_frame(app, width, height);
+    let line = app
+        .hits
+        .iter()
+        .find(|(_, hit)| matches!(hit, Hit::AgentWork(id) if *id == reply))
+        .expect("the open list keeps the line that closes it")
+        .0
+        .center();
+    click_point(app, doc, line);
+    assert!(
+        !app.expanded_agent.contains(&reply),
+        "a second press closes the list"
+    );
+    render_frame(app, width, height);
 }
 
 /// The folded line of what an agent did opens its list.
