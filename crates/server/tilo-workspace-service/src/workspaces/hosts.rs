@@ -1,5 +1,5 @@
-//! The hosts of a workspace this host governs: itself first, then each host it
-//! asked to hold the workspace as well ([`super::holding`]): another host of its
+//! The holders of a workspace this host governs: itself and each host it asked
+//! to hold the workspace as well, every one alike ([`super::holding`]): another host of its
 //! own person, or another person's host whose operator takes that work.
 //!
 //! Each host signs its own address. The workspace's governance names the hosts
@@ -43,7 +43,10 @@ const fn host_device(hint: &TransportHint) -> [u8; 32] {
 }
 
 impl Workspaces {
-    /// Every host of `workspace`, each its own signed address: this host first.
+    /// Every holder of `workspace`, each its own signed address, by device
+    /// key: the holders are equal, so nothing here comes first. A host the
+    /// workspace's governance does not name yet (one founded here before it
+    /// named itself) is listed at its own signed address all the same.
     ///
     /// # Errors
     ///
@@ -53,16 +56,15 @@ impl Workspaces {
         let governed = self.workspace(workspace).await?;
         let governed = governed.lock().await;
         let own = self.transport_hint(&governed)?;
-        let mut hosts = vec![own.clone()];
-        hosts.extend(
-            governed
-                .peer()
-                .governance()
-                .keeping_devices()
-                .into_iter()
-                .filter(|hint| hint.host.device_public_key != own.host.device_public_key),
-        );
+        let mut hosts = governed.peer().governance().keeping_devices();
+        if !hosts
+            .iter()
+            .any(|hint| hint.host.device_public_key == own.host.device_public_key)
+        {
+            hosts.push(own);
+        }
         drop(governed);
+        hosts.sort_by_key(|hint| hint.host.device_public_key);
         Ok(hosts)
     }
 
@@ -381,8 +383,8 @@ impl Workspaces {
                     .is_ok_and(|policy| policy.is_keeper(&hex::encode(person))))
     }
 
-    /// The hosts holding `workspace`, as its owners list them: this host, its
-    /// governor, first.
+    /// The holders of `workspace`, as its governance names them: every one
+    /// alike, by device key.
     ///
     /// # Errors
     ///
@@ -394,11 +396,9 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         Ok(hosts
             .iter()
-            .enumerate()
-            .map(|(at, hint)| KeepingDevice {
+            .map(|hint| KeepingDevice {
                 device: hex::encode(hint.host.device_public_key),
                 person: hex::encode(hint.host.user_public_key),
-                governs: at == 0,
             })
             .collect())
     }
@@ -551,13 +551,10 @@ fn hex_postcard(value: &impl serde::Serialize) -> Result<String, String> {
 /// One host of a workspace, as its owners list them ([`Workspaces::keeping_devices`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct KeepingDevice {
-    /// The host's device key, hex: what removing it may name it by.
+    /// The holder's device key, hex: what removing it may name it by.
     pub device: String,
-    /// The person the host runs for, by their user public key, hex.
+    /// The person the holder runs for, by their user public key, hex.
     pub person: String,
-    /// Whether this is the host that governs the workspace: the one it was
-    /// made on, which every other host follows.
-    pub governs: bool,
 }
 
 /// `text` as a device key, when it is 64 hex characters; anything else names

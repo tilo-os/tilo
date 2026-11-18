@@ -86,8 +86,14 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
         .unwrap();
     let hosts = workspaces.hosts(&workspace.workspace).await.unwrap();
     assert_eq!(hosts.len(), 2, "the governor and the host serving it");
-    assert_eq!(hosts[0].host, laptop.cert, "the governor comes first");
-    assert_eq!(hosts[1], hint);
+    assert!(
+        hosts.iter().any(|held| held.host == laptop.cert),
+        "the governor holds it: {hosts:?}"
+    );
+    assert!(
+        hosts.contains(&hint),
+        "and the host it handed it to: {hosts:?}"
+    );
 
     // The phone enters the workspace on the laptop; the holder follows that
     // governance and admits it.
