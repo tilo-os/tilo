@@ -1702,7 +1702,7 @@ mod own_resource_tests {
         let person = crate::permissions::MemberId::person("ad".repeat(32));
         let edit = |id: &str| {
             let mut spec =
-                ActionSpec::operation(id, id, OperationKind::Document, format!("t.{id}"), &())
+                ActionSpec::operation(id, id, OperationKind::Effect, format!("t.{id}"), &())
                     .unwrap();
             spec.type_mut().contract.kind = ActionKind::Undoable;
             spec
