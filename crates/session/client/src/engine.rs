@@ -1750,6 +1750,13 @@ impl Engine {
         }
     }
 
+    /// Whether a founder is handed ([`Self::serve_founding`]): this device's own workspace service
+    /// is open.
+    #[must_use]
+    pub fn founds(&self) -> bool {
+        self.founder.get().is_some()
+    }
+
     /// Found workspaces through `founder` from now on: this device's own workspace service, once
     /// it is open. The first one handed stays.
     pub fn serve_founding(&self, founder: Arc<dyn Founder>) {

@@ -12,7 +12,7 @@ use tilo_network_actor::{DeviceIdentity, NetCmd, NetEvent};
 use tilo_session_client::Cmd;
 use tilo_session_client::network::Event;
 
-use super::adopt::{enter, redeem};
+use super::adopt::{Carrier, enter, redeem};
 use super::{
     DeviceActions, Engine, Enrolled, HostCmd, HostEvent, KeyLink, PeerDocuments, endpoint_for,
 };
@@ -469,8 +469,10 @@ impl Asking {
                         endpoint,
                         identity,
                         engine,
-                        &network,
-                        &events,
+                        Some(Carrier {
+                            network: &network,
+                            events: &events,
+                        }),
                         *request,
                         channels.as_deref(),
                         own_service.as_ref(),
@@ -518,17 +520,19 @@ fn files_link(
 }
 
 /// Wait for `opening`, this device's own workspace service opening, and tell the peer actor once
-/// it is open.
+/// it is open: whether it opened.
 async fn own_service_opened(
     opening: impl std::future::Future<Output = Result<impl Sized, String>>,
     actor: &tokio::sync::mpsc::Sender<NetCmd>,
-) {
+) -> bool {
     match opening.await {
         Ok(_) => {
             let _ = actor.send(NetCmd::OwnServiceReady).await;
+            true
         }
         Err(error) => {
             tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
+            false
         }
     }
 }
@@ -622,9 +626,10 @@ async fn listening(
         serving_own,
         served,
     );
+    let mut opened = false;
     if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
         let opening = super::own_service::open(service, identity, engine, endpoint.clone());
-        own_service_opened(Box::pin(opening), &actor).await;
+        opened = own_service_opened(Box::pin(opening), &actor).await;
     }
     let founding_link = link.clone();
     let (events, carrying, attending) = heard(
@@ -635,15 +640,17 @@ async fn listening(
         link,
         documents,
     );
-    // A workspace this device makes is founded on its own service from now on.
-    if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
+    // A workspace this device makes is founded on its own service from now on, and carried on
+    // this network.
+    if let (true, Some(service), Some(identity), Some(engine)) =
+        (opened, &own_service, identity, engine)
+    {
         engine.serve_founding(Arc::new(super::own_service::Founding {
             service: service.clone(),
             endpoint: endpoint.clone(),
             identity: identity.clone(),
             engine: Arc::downgrade(engine),
-            network: actor.clone(),
-            events: events.clone(),
+            network: Some((actor.clone(), events.clone())),
             link: founding_link,
         }));
     }

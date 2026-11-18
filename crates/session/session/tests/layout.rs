@@ -270,11 +270,16 @@ fn one_window(app: &str, label: &str) -> Layout {
 }
 
 /// A session on the shell this device saved, starting `apps` when its windows are asked for. `None`
-/// : a session that starts nothing at all. It takes part in the peer network as the desktop does:
-/// the workspaces it makes are founded on its own workspace service, and a session without one
-/// writes no layout to come back to.
+/// : a session that starts nothing at all. It takes part in no peer network, as a laptop that
+/// boots with none: the workspaces it makes are founded on its own workspace service all the same.
 fn session_keeping(state: &Path, apps: Option<Rc<Apps>>) -> Session {
+    session_on(state, apps, false)
+}
+
+/// [`session_keeping`], taking part in the peer network when `network` says so.
+fn session_on(state: &Path, apps: Option<Rc<Apps>>, network: bool) -> Session {
     crate::common::headless(Options {
+        collab: network,
         apps: apps
             .as_ref()
             .map(|apps| Rc::clone(apps) as Rc<dyn AppActions>),
@@ -288,6 +293,7 @@ fn session_keeping(state: &Path, apps: Option<Rc<Apps>>) -> Session {
 /// in place, and ends its apps only when the login does.
 fn session_restarted(state: &Path) -> Session {
     crate::common::headless(Options {
+        collab: false,
         state: Some(state.to_path_buf()),
         teardown: Box::new(tilo_session::restart::teardown),
         ..Options::default()
@@ -507,15 +513,28 @@ fn a_restart_brings_back_the_shell_the_session_kept() {
 
 /// A window the person sends to a workspace they are not looking at is in that workspace after a
 /// restart: the workspace it left and the one it went to are both written, though the person never
-/// went there.
+/// went there. A desktop with no peer network keeps it as one on the network does.
 #[test]
 fn a_window_moved_to_a_workspace_behind_comes_back_there() {
+    moved_behind_comes_back(false);
+}
+
+/// [`a_window_moved_to_a_workspace_behind_comes_back_there`] on a desktop that takes part in the
+/// peer network.
+#[test]
+fn a_window_moved_to_a_workspace_behind_on_the_network_comes_back_there() {
+    moved_behind_comes_back(true);
+}
+
+/// A window moved to the workspace behind, by a session taking part in the peer network when
+/// `network` says so, is there in the next one.
+fn moved_behind_comes_back(network: bool) {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let (device, workspace_ids) = Device::with_layout(&mut home, &wide_shell());
     let mail = device.id(200);
 
-    let mut session = session_keeping(&device.state, None);
+    let mut session = session_on(&device.state, None, network);
     laid_out(&mut session);
     session
         .handle()
@@ -539,7 +558,7 @@ fn a_window_moved_to_a_workspace_behind_comes_back_there() {
     session.step(Duration::from_millis(1)).expect("step");
     drop(session);
 
-    let mut next = session_keeping(&device.state, None);
+    let mut next = session_on(&device.state, None, network);
     until(&mut next, "the window is back", |session| {
         workspace_of(session, mail).is_some()
     });

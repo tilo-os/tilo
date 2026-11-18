@@ -76,6 +76,8 @@ mod own_service;
 pub(crate) use network::Reached;
 #[cfg(target_os = "linux")]
 use network::{Serving, Wire, run};
+#[cfg(target_os = "linux")]
+pub(crate) use own_service::found_alone;
 
 /// How long the session waits for this device's endpoint to bind before it starts without one: a
 /// desktop with no one else on it, rather than a session that never opens.
@@ -2179,6 +2181,16 @@ pub(crate) fn fabric_checkpoint(state: &std::path::Path, device: &DeviceId) -> s
     state.join(format!("{}.fabric", device.as_str()))
 }
 
+/// An endpoint only this machine reaches: on loopback, with nothing that finds it from elsewhere.
+#[cfg(target_os = "linux")]
+pub(super) fn loopback_endpoint() -> Result<iroh::endpoint::Builder, String> {
+    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Disabled)
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+        .map_err(|error| format!("no loopback address: {error}"))
+}
+
 /// The endpoint the peer actor binds, and the relays held back from it until something needs this
 /// device dialable: the person's `relays` for a device with an identity, none for a session that
 /// takes part as nobody and stays on this machine's loopback.
@@ -2189,12 +2201,7 @@ fn endpoint_for(
     lan: &tilo_endpoint_reachability::Nearby,
 ) -> Result<(iroh::endpoint::Builder, iroh::RelayMap), String> {
     let Some(identity) = identity else {
-        let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .relay_mode(iroh::RelayMode::Disabled)
-            .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
-            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-            .map_err(|error| format!("no loopback address: {error}"))?;
-        return Ok((builder, iroh::RelayMap::empty()));
+        return Ok((loopback_endpoint()?, iroh::RelayMap::empty()));
     };
     let key = iroh::SecretKey::from_bytes(
         &identity
