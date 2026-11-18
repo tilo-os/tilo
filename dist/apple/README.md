@@ -435,6 +435,10 @@ sends. On the Mac, Up in an empty field brings back the last message the person 
 conversation, Up again the one before and Down the next, until they type, move the caret or
 press Escape (`Stepping`): the messages are the conversation's own, and the app keeps no list
 of them. While an input method is putting a letter together the field takes no key for itself.
+On an iPhone a drag down the conversation takes the keyboard down with the finger, the
+system's own way for a scroll view, and a touch on the conversation puts it away; the words
+being written stay in the field and the conversation stays at its newest piece. Sending
+leaves the keyboard up: the field is empty and takes the next message.
 Attachments and dictation stand under the field, and dictation is the shell's.
 
 **A file in a message** is shown with the name and the size Chat gives. In Tilo a file that a
@@ -591,7 +595,10 @@ simulator that shows no window. The Mac's picture tool is signed before it is st
 works on. The script's head names the simulator, the kind of iPhone and the text size it is
 set to, and its other ways: `said` writes down what every screen of the iPhone says of itself
 to someone who cannot see it, `secret` types into the protected field and looks at the window
-as the app leaves the front, `typing` takes the whole screen with the keyboard up. Asked for `told`, it also hands the system the drawing's
+as the app leaves the front, `typing` takes the whole screen with the keyboard up, and
+`keyboard` brings the keyboard up, puts it away and sends a message, light and dark: it says
+what a drag on the conversation does to the keyboard and what is kept, takes the whole screen
+with the keyboard up and with it away, and fails where it found a fault. Asked for `told`, it also hands the system the drawing's
 notifications and live activities there, and writes down what the system then holds.
 
 ## Limits
