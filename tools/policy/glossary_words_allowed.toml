@@ -564,3 +564,9 @@ paths = [
 reason = "The argument names of Chat's post (its channel) and the library's shelve (a book's subject), which the agent tests call by name."
 words = ["channel", "subject"]
 paths = ["crates/agent/agent-session/tests/host_agents.rs"]
+
+[[allow]]
+reason = "A call's failure names the host's own error beside its text (`Failure::host`): this file tells a policy refusal from a call the app cannot answer."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_agent.rs"]

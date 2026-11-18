@@ -997,12 +997,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// A program's answer, typed: what it printed, what it changed, the
     /// steps of this session's `history task`, and the words a person reads.
     fn program_answer(&self, answer: Option<&Value>, reply: &Reply) -> Value {
-        let (steps, output) = {
+        let steps = self.programs.lock_recover().steps_json();
+        // Each line as the tool says it, its resources by the references a later program and a
+        // REPL entry name them by: what the model's `output` is for.
+        let output: Vec<String> = {
             let mut programs = self.programs.lock_recover();
-            let steps = programs.steps_json();
-            // Each line as the tool says it, its resources by the references a later program
-            // and a REPL entry name them by: what the model's `output` is for.
-            let output: Vec<String> = answer
+            answer
                 .and_then(|answer| answer.get("output"))
                 .and_then(Value::as_array)
                 .into_iter()
@@ -1010,8 +1010,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 .filter_map(Value::as_str)
                 .flat_map(str::lines)
                 .map(|line| shown_line(line, &mut programs))
-                .collect();
-            (steps, output)
+                .collect()
         };
         let Some(answer) = answer else {
             // `undo`, `undo task` and `history task` answer text: the steps
