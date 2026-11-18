@@ -20,6 +20,9 @@ impl App {
         if self.close_admission.dialog.is_some() {
             return false;
         }
+        // The window's loop never waits on the disk: the save only starts the store's commits,
+        // and later passes hear of them.
+        let _started_only = durable_store::waiting::forbid_on_this_thread();
         self.request_close() && self.admit_close()
     }
 
@@ -38,11 +41,7 @@ impl App {
         // Native hosts may deliver another window-close or application Quit
         // while a decision is already visible. Coalesce it here so it cannot
         // replace the session, semantic addresses, focus, or failure detail.
-        if self.close_admission.dialog.is_some() {
-            return false;
-        }
-        self.close_admission.ready = false;
-        if self.close_admission.save_waiting {
+        if self.close_admission.dialog.is_some() || self.close_admission.save_waiting {
             return false;
         }
         let pending = crate::component_lifecycle::unsaved_documents(
@@ -69,28 +68,51 @@ impl App {
         if !self.left_invocations() {
             return false;
         }
-        let errors = {
-            // The save only starts the store's commits, so the window goes at once; the
-            // process waits for them as it ends, when it has nothing left to show.
-            let _started_only = durable_store::waiting::forbid_on_this_thread();
-            #[cfg(feature = "native")]
-            let _save = super::slow_event::phase("save");
-            self.checkpoint_before_close()
+        if self.close_admission.ready {
+            return true;
+        }
+        // Where this thread must not wait, the save only starts the stores' commits, and the
+        // window stays until they confirm them, hearing of each on a later pass: a write the
+        // disk refuses keeps the window and its edits, with Retry.
+        let mut saving = if let Some(saving) = self.close_admission.saving.take() {
+            saving
+        } else {
+            let (errors, started) = durable_store::waiting::collect_started(|| {
+                #[cfg(feature = "native")]
+                let _save = super::slow_event::phase("save");
+                self.checkpoint_before_close()
+            });
+            if !errors.is_empty() {
+                self.show_save_failed(&errors);
+                return false;
+            }
+            let wake = self.wake_scope.as_ref().map(crate::wake::WakeScope::handle);
+            let wake: durable_store::ReadyWake =
+                std::sync::Arc::new(move || wake.iter().for_each(crate::wake::WakeHandle::wake));
+            (started, wake)
+        };
+        let Some(errors) = saving.0.outcome(&saving.1) else {
+            self.close_admission.saving = Some(saving);
+            return false;
         };
         if !errors.is_empty() {
-            self.close_admission.show(
-                "close-save-failed",
-                &errors.join("\n"),
-                &[Choice::Retry, Choice::KeepEditing],
-                self.input.platform,
-            );
-            self.invalidate_close_presentation();
+            self.show_save_failed(&errors);
             return false;
         }
         self.close_admission.dialog = None;
         self.invalidate_close_presentation();
         self.close_admission.ready = true;
         true
+    }
+
+    fn show_save_failed(&mut self, errors: &[String]) {
+        self.close_admission.show(
+            "close-save-failed",
+            &errors.join("\n"),
+            &[Choice::Retry, Choice::KeepEditing],
+            self.input.platform,
+        );
+        self.invalidate_close_presentation();
     }
 
     /// Whether the window has let go of the invocations the broker hands it, so it may close:
@@ -145,8 +167,9 @@ impl App {
 
     #[cfg(feature = "native")]
     pub(super) fn finish_close_if_ready(&mut self) -> bool {
-        // Recheck at the actual event-loop exit boundary: asynchronous saves
-        // may have completed earlier in a batch which also delivered edits.
+        // Recheck at the actual event-loop exit boundary: a batch since may have left a document
+        // unsaved.
+        let _started_only = durable_store::waiting::forbid_on_this_thread();
         self.close_admission.ready && self.request_close() && self.admit_close()
     }
 
@@ -342,16 +365,16 @@ impl App {
     }
 
     pub(super) fn service_close_admission(&mut self) {
-        // A close that waits only on letting go of its invocations goes on once it has.
+        let _started_only = durable_store::waiting::forbid_on_this_thread();
+        // A close that waits on letting go of its invocations, or on its save, goes on once it has.
         if !self.close_admission.ready
             && !self.close_admission.admitted
             && !matches!(
                 self.close_admission.leaving,
                 crate::close_admission::Leaving::Staying
             )
-            && self.left_invocations()
         {
-            self.close_admission.ready = true;
+            self.request_close();
         }
         while let Some(intent) =
             self.close_admission.dialog.as_mut().and_then(|dialog| {
@@ -780,6 +803,87 @@ mod tests {
             [false],
             "one save, after the last invocation, that never waits on storage"
         );
+    }
+
+    /// On the window's loop, which never waits on the disk, a close's save only starts the
+    /// store's commits: the window stays until the store confirms them and goes once it has. A
+    /// write the disk refuses keeps the window and its edits, and Retry saves them again.
+    #[test]
+    fn a_closing_window_goes_only_once_its_store_confirms_the_save() {
+        use automerge::{ReadDoc as _, transaction::Transactable as _};
+        use durable_store::{DurableStore, waiting::forbid_strictly_on_this_thread};
+        for refused in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let store: std::rc::Rc<dyn DurableStore> =
+                std::rc::Rc::new(app_state::FsStore::new(tmp.path()));
+            let key = durable_store::StorageKey::document("so.tilo.test", "workspace", "note");
+            let owner = std::rc::Rc::new(
+                app_state::DocOwner::acquire(std::rc::Rc::clone(&store), key.clone()).unwrap(),
+            );
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Text::new("body")),
+            )
+            .with_autosave(app_state::DocWriter::try_start(&owner).unwrap());
+            app.state.doc.put(automerge::ROOT, "body", "kept").unwrap();
+            let path = store.local_path(&key).unwrap();
+            if refused {
+                std::fs::create_dir_all(&path).unwrap();
+            }
+            let mut closed = {
+                let _loop = forbid_strictly_on_this_thread();
+                app.admit_native_close_request()
+            };
+            if !closed {
+                // The store's thread commits while the loop draws other frames.
+                let _ = store.flush(None);
+                let _loop = forbid_strictly_on_this_thread();
+                app.service_close_admission();
+                closed = app.finish_close_if_ready();
+            }
+            if refused {
+                assert!(!closed, "a refused write keeps the window");
+                assert!(!app.close_admission.admitted);
+                assert!(
+                    app.close_admission.resources()[0]
+                        .actions
+                        .iter()
+                        .any(|action| action.id == Choice::Retry.id()),
+                    "the refusal offers Retry"
+                );
+                assert_eq!(
+                    app.state
+                        .doc
+                        .get(automerge::ROOT, "body")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .as_str(),
+                    Some("kept")
+                );
+                std::fs::remove_dir(&path).unwrap();
+                {
+                    let _loop = forbid_strictly_on_this_thread();
+                    close_choice(&mut app, Choice::Retry);
+                }
+                let _ = store.flush(None);
+                let _loop = forbid_strictly_on_this_thread();
+                app.service_close_admission();
+                closed = app.finish_close_if_ready();
+            }
+            assert!(closed, "a confirmed write closes the window");
+            assert!(app.close_admission.admitted);
+            let saved = automerge::AutoCommit::load(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                saved
+                    .get(automerge::ROOT, "body")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("kept")
+            );
+        }
     }
 
     fn close_choice(app: &mut App, choice: Choice) {

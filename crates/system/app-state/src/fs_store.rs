@@ -902,7 +902,11 @@ impl DurableStore for FsStore {
     fn flush_without_waiting(&self, key: &StorageKey) -> Result<(), DurableError> {
         self.target(key)?;
         let mut state = lock(&self.shared.state);
-        if let Some((_, _, message)) = state.keys.get(key).and_then(|status| status.failed.last()) {
+        // A failure a write still under way may replace is not the outcome yet.
+        if !state.outstanding(key)
+            && let Some((_, _, message)) =
+                state.keys.get(key).and_then(|status| status.failed.last())
+        {
             return Err(DurableError::Failed {
                 context: key.to_string(),
                 message: message.clone(),
@@ -925,6 +929,23 @@ impl DurableStore for FsStore {
         drop(state);
         self.ensure_worker()?;
         self.shared.changed.notify_all();
+        let (shared, started) = (Arc::clone(&self.shared), key.clone());
+        durable_store::waiting::started(Box::new(move |wake| {
+            let mut state = lock(&shared.state);
+            if arm_settle_wake(&mut state, &started, Arc::clone(wake)) == SettleWatch::Armed {
+                return None;
+            }
+            Some(
+                match state
+                    .keys
+                    .get(&started)
+                    .and_then(|status| status.failed.last())
+                {
+                    Some((_, _, message)) => Err(format!("{started}: {message}")),
+                    None => Ok(()),
+                },
+            )
+        }));
         Err(DurableError::Pending(format!(
             "{key} is being made durable"
         )))

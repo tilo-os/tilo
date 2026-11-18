@@ -132,9 +132,12 @@ pub fn same_wake(a: &crate::ReadyWake, b: &crate::ReadyWake) -> bool {
 }
 
 /// Forbid storage waits on this thread while the guard lives. See the
-/// module docs.
+/// module docs. A test that forbids them strictly keeps doing so.
 pub fn forbid_on_this_thread() -> Forbidden {
-    set(Rule::Forbidden)
+    match RULE.with(Cell::get) {
+        Rule::Strict => set(Rule::Strict),
+        _ => set(Rule::Forbidden),
+    }
 }
 
 /// [`forbid_on_this_thread`] for a test: a blocking wait reached anyway
@@ -205,6 +208,67 @@ fn refuse(what: &str, commit: bool) {
          move it to a worker, or for a commit use DurableStore::flush_where_allowed \
          and read the outcome from durability"
     );
+}
+
+/// A commit a store started for a thread that must not wait ([`started`]): asked
+/// again, it answers `None` until it ends, arming the wake for its end, and then
+/// whether it landed.
+pub type Commit = Box<dyn FnMut(&crate::ReadyWake) -> Option<Result<(), String>>>;
+
+thread_local! {
+    static STARTED: RefCell<Option<Vec<Commit>>> = const { RefCell::new(None) };
+}
+
+/// Do `work`, and keep every commit a store starts for this thread without waiting
+/// on it meanwhile, so the caller hears of each outcome on a later pass.
+pub fn collect_started<T>(work: impl FnOnce() -> T) -> (T, Started) {
+    let outer = STARTED.with(|started| started.replace(Some(Vec::new())));
+    let value = work();
+    let running = STARTED
+        .with(|started| started.replace(outer))
+        .unwrap_or_default();
+    (
+        value,
+        Started {
+            running,
+            failed: Vec::new(),
+        },
+    )
+}
+
+/// A store's flush left `commit` running for this thread: kept for the caller of
+/// [`collect_started`], if any.
+pub fn started(commit: Commit) {
+    STARTED.with(|started| {
+        if let Some(running) = started.borrow_mut().as_mut() {
+            running.push(commit);
+        }
+    });
+}
+
+/// The commits [`collect_started`] kept.
+pub struct Started {
+    running: Vec<Commit>,
+    failed: Vec<String>,
+}
+
+impl Started {
+    /// `None` while a commit is under way, with `wake` armed for it; then the
+    /// failures, none when every commit landed.
+    pub fn outcome(&mut self, wake: &crate::ReadyWake) -> Option<Vec<String>> {
+        let failed = &mut self.failed;
+        self.running.retain_mut(|commit| match commit(wake) {
+            None => true,
+            Some(Ok(())) => false,
+            Some(Err(error)) => {
+                failed.push(error);
+                false
+            }
+        });
+        self.running
+            .is_empty()
+            .then(|| std::mem::take(&mut self.failed))
+    }
 }
 
 #[cfg(test)]
