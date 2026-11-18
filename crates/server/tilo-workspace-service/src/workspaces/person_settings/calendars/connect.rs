@@ -834,6 +834,69 @@ mod tests {
         );
     }
 
+    /// What a person says is taken as they say it: a server's bare name, with
+    /// the port and the path they say with it, and their mail address, whose
+    /// calendar is looked for under the name the address ends in. Each is
+    /// the https address of that name, and is held to the public internet as
+    /// an address written whole is.
+    #[tokio::test]
+    async fn a_bare_name_or_a_mail_address_is_the_https_address_of_that_name() {
+        let public = Destinations::Public;
+        let outside = answering(&["93.184.216.34"]);
+        for (said, taken) in [
+            ("calendar.example.test", "https://calendar.example.test/"),
+            (
+                " calendar.example.test/dav/ ",
+                "https://calendar.example.test/dav/",
+            ),
+            (
+                "calendar.example.test:8443/dav/",
+                "https://calendar.example.test:8443/dav/",
+            ),
+            ("ada@example.test", "https://example.test/"),
+        ] {
+            assert_eq!(
+                bounded(said, public, &outside).await.map(String::from),
+                Ok(taken.to_owned()),
+                "{said}"
+            );
+        }
+        for said in ["calendar.example.test", "ada@example.test"] {
+            assert_eq!(
+                bounded(said, public, &answering(&["93.184.216.34", "10.0.0.8"])).await,
+                Err(NOT_PUBLIC),
+                "{said}: one answer inside refuses the name"
+            );
+            assert_eq!(
+                bounded(said, public, &answering(&[])).await,
+                Err(NO_SUCH_SERVER),
+                "{said}: a name nobody answers for"
+            );
+        }
+        for inside in ["10.0.0.8", "127.0.0.1:8443/dav/", "[::1]/dav/"] {
+            assert_eq!(
+                bounded(inside, public, &outside).await,
+                Err(NOT_PUBLIC),
+                "{inside}"
+            );
+        }
+        for said in [
+            "",
+            "my calendar",
+            "ada@",
+            "@example.test",
+            "ada@example.test/dav/",
+            "ada:made-up@example.test",
+            "ada@grace@example.test",
+        ] {
+            assert_eq!(
+                bounded(said, public, &outside).await,
+                Err(NOT_AN_ADDRESS),
+                "{said}"
+            );
+        }
+    }
+
     /// A calendar's name is its server's to say: it is told on one line and
     /// cut where it is long.
     #[test]
