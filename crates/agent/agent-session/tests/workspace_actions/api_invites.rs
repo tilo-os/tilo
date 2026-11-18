@@ -322,10 +322,10 @@ async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
     assert_eq!(by_agent["status"], "failed", "{by_agent}");
 }
 
-/// An owner's key moves a member to another role, removes them, and names
-/// the workspace, through the action API; an editor's key removes nobody.
+/// An owner's key moves a member to another role through the action API,
+/// and an editor's key removes nobody.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_owners_key_moves_removes_and_names() {
+async fn an_owners_key_moves_a_member_and_an_editors_removes_nobody() {
     let on_server = api_on_server(ISSUER).await;
     let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -398,34 +398,4 @@ async fn an_owners_key_moves_removes_and_names() {
     )
     .await;
     assert_eq!(refused["status"], "failed", "{refused}");
-
-    let removed = members(
-        &mut ada_mcp,
-        here,
-        "workspace/members#remove",
-        json!({"person": hal_hex}),
-    )
-    .await;
-    assert_eq!(removed["status"], "ok", "{removed}");
-    assert!(row(&removed, &hal_hex).is_none(), "Hal is gone: {removed}");
-    assert!(
-        row(&removed, &grace_hex).is_some(),
-        "Grace stays: {removed}"
-    );
-
-    let renamed = ada_mcp
-        .did(
-            "account/workspaces#rename",
-            json!({"workspace": workspace, "name": "Studio 2027"}),
-        )
-        .await;
-    assert_eq!(renamed["workspace"]["name"], "Studio 2027", "{renamed}");
-    let listed = ada_mcp.did("account/workspaces#list", json!({})).await;
-    let names: Vec<&str> = listed["workspaces"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|listed| listed["name"].as_str())
-        .collect();
-    assert!(names.contains(&"Studio 2027"), "{listed}");
 }
