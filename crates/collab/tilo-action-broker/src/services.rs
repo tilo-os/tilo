@@ -645,8 +645,41 @@ pub trait BrowserServiceSessionServices: Send + Sync {
         context: &BrowserServiceSessionRequestContext,
         command: runtime_collab::BrowserServiceSessionCommand,
     ) -> Result<runtime_collab::BrowserServiceSessionReply, String>;
+    /// Answer an item's use ([`runtime_collab::BrowserServiceSessionCommand::UseItem`]),
+    /// later: whoever keeps the vault is asked outside this process, and the connection
+    /// that asked is not kept waiting on its dispatch. Everything the service decides is an
+    /// answer of its own, a refusal with its reason among them
+    /// ([`runtime_collab::BrowserServiceSessionReply::ItemRefused`]); an error is for what
+    /// is no item's use at all. A service that has no vault items used says so at once.
+    fn item_use(
+        &self,
+        context: &BrowserServiceSessionRequestContext,
+        command: runtime_collab::BrowserServiceSessionCommand,
+    ) -> ItemAnswering {
+        let _ = context;
+        let answer = command
+            .item_use()
+            .map(|invocation| {
+                runtime_collab::BrowserServiceSessionReply::item_refused(
+                    invocation,
+                    "This session has no vault items used for a page, so nothing was released.",
+                )
+            })
+            .ok_or_else(|| "not an item's use".to_owned());
+        Box::pin(std::future::ready(answer))
+    }
     fn disconnect(&self, peer_id: u64);
 }
+
+/// The answer to an item's use, as [`BrowserServiceSessionServices::item_use`] hands it
+/// back to be waited for.
+pub type ItemAnswering = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<runtime_collab::BrowserServiceSessionReply, String>>
+            + Send
+            + 'static,
+    >,
+>;
 
 /// A wait for Nearby Send's next change, as [`NearbyTransferServices::changed`]
 /// returns it.

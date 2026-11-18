@@ -310,6 +310,9 @@ pub(crate) fn start_app_wire(
         .and_then(crate::sync::Client::personal)
         .map(|own| own.sync().clone());
     let channels = std::sync::Arc::clone(&sealed.broker);
+    // What Browser's asks for vault items are answered with: kept here as well, so a session
+    // that holds a workspace's Browser can say so and name who asks its server.
+    let item_lending = std::sync::Arc::new(crate::item_lending::ItemLending::default());
     let broker = app_wire::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
@@ -350,6 +353,7 @@ pub(crate) fn start_app_wire(
             // desktop's clipboard for another app.
             file_clipboard: std::sync::Arc::clone(&file_clipboard),
             personal,
+            item_lending: std::sync::Arc::clone(&item_lending),
             fanout: std::sync::Arc::clone(&fanout),
         },
     )?;
@@ -386,6 +390,7 @@ pub(crate) fn start_app_wire(
         carets: crate::carets::Carets::new(fanout, options.wake.handle()),
         file_clipboard,
         _personal: personal,
+        item_lending,
     }))
 }
 

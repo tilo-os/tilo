@@ -1227,11 +1227,7 @@ impl Session {
         // loop when the server answers, and what the broker admits of its window's page.
         if let Some(hosted) = &mut options.hosted_browser {
             hosted.waking(options.wake.handle());
-            hosted.watching(
-                app_wire.as_ref().and_then(AppWire::agent_broker).as_ref(),
-                app_wire.as_ref().and_then(AppWire::hosted_workspaces),
-                &options.person,
-            );
+            hosted.wired(app_wire.as_ref(), &options.person);
         }
         // What Files may read, and where a received file may land, is what
         // this session's workspaces grant it: read off the shell the broker

@@ -9,7 +9,10 @@
 //! - Settings, the keeper of the person's accounts: sealing an account's
 //!   secret, which it is never released back;
 //! - the app that keeps an account's type ([`accounts::person::secret_keeper`],
-//!   Mail for email): that one account's secret.
+//!   Mail for email): that one account's secret;
+//! - Browser, where this session holds a workspace's Browser: the text of a vault item for
+//!   one page action that fills a field from it by reference, which the workspace's server
+//!   keeps and decides about ([`crate::item_lending`]). The session keeps no vault for it.
 //!
 //! Every request is decided on the certificate the broker attested on the
 //! app's connection, against the workspace that connection is in: a current
@@ -30,7 +33,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path};
 use std::sync::Arc;
 use tilo_action_broker::services::{
-    BrowserServiceSessionRequestContext as Context, BrowserServiceSessionServices,
+    BrowserServiceSessionRequestContext as Context, BrowserServiceSessionServices, ItemAnswering,
 };
 use tilo_desktop_model::WorkspaceId;
 
@@ -43,11 +46,13 @@ const MAX_STORE: u64 = 2 * 1024 * 1024;
 /// The person's account credentials, as the apps it serves reach it on the action API.
 pub(crate) struct ServiceSessions {
     engine: Arc<Engine>,
+    /// What Browser's asks for vault items are answered with.
+    items: Arc<crate::item_lending::ItemLending>,
 }
 
 impl ServiceSessions {
-    pub(crate) fn new(engine: Arc<Engine>) -> Self {
-        Self { engine }
+    pub(crate) fn new(engine: Arc<Engine>, items: Arc<crate::item_lending::ItemLending>) -> Self {
+        Self { engine, items }
     }
 
     /// The certified person's own route of `app` , readable on that app's record in the workspace
@@ -128,6 +133,16 @@ impl BrowserServiceSessionServices for ServiceSessions {
         if !command.valid() {
             return Err("Invalid account credentials request".into());
         }
+        if matches!(command, Command::LendsItems {}) {
+            // Answered by what this session is: it says so before its server can be asked.
+            return Ok(Reply::ItemsLent {
+                lent: self.items.lends(context.workspace_id()),
+            });
+        }
+        if command.item_use().is_some() {
+            // Its answer is waited for, and never here ([`Self::item_use`]).
+            return Err("An item's use is not answered on the connection's dispatch".into());
+        }
         let root = accounts::config_root().ok_or(UNAVAILABLE)?;
         let reply = if command.browser_only() {
             resolve(&root, context.identity_public_key(), command.clone())?
@@ -136,6 +151,22 @@ impl BrowserServiceSessionServices for ServiceSessions {
         };
         self.authorize_command(context, &command)?;
         Ok(reply)
+    }
+
+    fn item_use(&self, context: &Context, command: Command) -> ItemAnswering {
+        // Browser's ask is decided as every request of Browser's is: the certified person's
+        // own connection, in a workspace this device is still in. What that refuses is told
+        // with its reason. Any other app is told that only Browser asks.
+        if context.app_id() == BROWSER
+            && let Some(invocation) = command.item_use()
+            && let Err(reason) = self.authorize_selection(context, false, BROWSER)
+        {
+            return Box::pin(std::future::ready(Ok(Reply::item_refused(
+                invocation, &reason,
+            ))));
+        }
+        self.items
+            .answer(context.app_id(), context.workspace_id(), &command)
     }
 
     fn disconnect(&self, _peer_id: u64) {}

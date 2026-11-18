@@ -51,6 +51,7 @@ mod host_workers;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
+mod item_use;
 mod kept_document;
 mod launcher_handoff;
 use launcher_handoff::{LauncherHandoff, credentialed_peer, read_launcher_handoff};

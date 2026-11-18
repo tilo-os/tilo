@@ -49,6 +49,9 @@ use tilo_actions::selection::logical_resource_id;
 use tilo_server_protocol::hosted::Material;
 
 use crate::Shared;
+use crate::app_wire::AppWire;
+use crate::item_lending::ItemLending;
+use runtime_collab::BrowserServiceSessionReply as ItemReply;
 
 /// The app whose window a session holds.
 pub use ui::apps::BROWSER;
@@ -146,6 +149,11 @@ pub struct HostedBrowser {
     asks_host: bool,
     /// Whether this session's window shares are written by the workspace's host yet.
     governed: bool,
+    /// What the session's account-credentials service answers Browser's asks for vault items
+    /// with, once the session was handed it.
+    items: Option<std::sync::Arc<ItemLending>>,
+    /// Whether that service asks the workspace's server for those items yet.
+    lends_items: bool,
 }
 
 /// How this session asks the workspace's host what its device may not hold or write itself
@@ -163,7 +171,37 @@ impl HostAsks {
     /// Ask the host for `action` with `argument`: what it answered, or `None` when it refused or
     /// did not answer.
     async fn ask(&self, action: &str, argument: InvokeArgument) -> Option<serde_json::Value> {
-        let host = self.hosted.host_actions(&self.workspace)?;
+        match self.ask_told(action, argument).await {
+            Ok(answer) => answer,
+            Err(unanswered) => {
+                match *unanswered {
+                    Unanswered::Unreached => {}
+                    Unanswered::Refused(error) => {
+                        tracing::warn!(%error, action, "the workspace's host refused this session");
+                    }
+                    Unanswered::Status(status) => {
+                        tracing::warn!(
+                            ?status,
+                            action,
+                            "the workspace's host did not answer this session"
+                        );
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// Ask as [`Self::ask`] does, and where there is no answer say why: a refusal's reason is
+    /// handed back to whoever asked and not only written down.
+    async fn ask_told(
+        &self,
+        action: &str,
+        argument: InvokeArgument,
+    ) -> Result<Option<serde_json::Value>, Box<Unanswered>> {
+        let Some(host) = self.hosted.host_actions(&self.workspace) else {
+            return Err(Box::new(Unanswered::Unreached));
+        };
         let request = InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target: environment_device::target(action),
@@ -175,24 +213,138 @@ impl HostAsks {
             wait_ms: None,
             appearance: None,
         };
-        let receipt = match host.invoke(&self.caller, request).await? {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                tracing::warn!(%error, action, "the workspace's host refused this session");
-                return None;
-            }
+        let receipt = match host.invoke(&self.caller, request).await {
+            Some(Ok(receipt)) => receipt,
+            Some(Err(error)) => return Err(Box::new(Unanswered::Refused(error))),
+            None => return Err(Box::new(Unanswered::Unreached)),
         };
         match receipt.status {
-            ReceiptStatus::Completed { output } => output.value,
-            status => {
-                tracing::warn!(
-                    ?status,
-                    action,
-                    "the workspace's host did not answer this session"
+            ReceiptStatus::Completed { output } => Ok(output.value),
+            status => Err(Box::new(Unanswered::Status(status))),
+        }
+    }
+
+    /// Ask the server to use the vault item `used` names for the page action it names, as
+    /// the device it placed, and open what it answers with `key`, this device's own: the
+    /// text, that its person is asked first, or the refusal in the server's own words.
+    async fn use_item(
+        &self,
+        key: &ed25519_dalek::SigningKey,
+        used: environment_device::ItemUse,
+    ) -> ItemReply {
+        let argument = match serde_json::to_value(&used) {
+            Ok(serde_json::Value::Object(named)) => InvokeArgument::Json(named),
+            _ => {
+                return ItemReply::item_refused(
+                    used.invocation,
+                    "This session could not name the item to its workspace's server, so nothing \
+                     was filled.",
                 );
-                None
+            }
+        };
+        let answered = self.ask_told(environment_device::USE_ITEM, argument).await;
+        item_answer(&self.workspace, key, &used, answered)
+    }
+}
+
+/// Why the workspace's server gave this session no answer.
+enum Unanswered {
+    /// The server was not reached.
+    Unreached,
+    /// It refused before it started anything.
+    Refused(ActionCallError),
+    /// It answered that the action did not complete.
+    Status(ReceiptStatus),
+}
+
+impl Unanswered {
+    /// Why, in the server's own words where it gave any: a refusal's reason is carried as it
+    /// was given.
+    fn reason(&self) -> String {
+        match self {
+            Self::Unreached => {
+                "This session cannot reach its workspace's server, so nothing was filled."
+                    .to_owned()
+            }
+            Self::Refused(error) | Self::Status(ReceiptStatus::Rejected { error }) => match error {
+                ActionCallError::Refused { reason } => reason.clone(),
+                other => other.to_string(),
+            },
+            Self::Status(ReceiptStatus::Failed { error }) => error.message.clone(),
+            Self::Status(ReceiptStatus::Cancelled { message }) => {
+                message.clone().unwrap_or_else(|| {
+                    "The workspace's server stopped the ask for the item, so nothing was filled."
+                        .to_owned()
+                })
+            }
+            Self::Status(_) => {
+                "The workspace's server has not decided about the item, so nothing was filled."
+                    .to_owned()
             }
         }
+    }
+}
+
+/// What a box that does not open here is refused with: it names nothing of what it holds.
+const NOT_SEALED_FOR_THIS: &str = "What the workspace's server answered was not sealed for \
+                                   this fill of this page on this device, so nothing was filled.";
+
+/// What Browser is answered for `used`, from what the workspace's server answered this
+/// device: a text it sealed to `key` for this workspace, this page action and this site is
+/// opened, a question's words and a refusal's reason are carried, and a box sealed for
+/// anything else opens for nothing.
+///
+/// The text is held by the answer alone, which wipes it and prints nothing. No failure here
+/// says anything of it.
+fn item_answer(
+    workspace: &str,
+    key: &ed25519_dalek::SigningKey,
+    used: &environment_device::ItemUse,
+    answered: Result<Option<serde_json::Value>, Box<Unanswered>>,
+) -> ItemReply {
+    let invocation = used.invocation;
+    let refused = |reason: &str| ItemReply::item_refused(invocation, reason);
+    let answer = match answered {
+        Ok(Some(answer)) => answer,
+        Ok(None) => {
+            return refused(
+                "The workspace's server answered nothing for the item, so nothing was filled.",
+            );
+        }
+        Err(unanswered) => return refused(&unanswered.reason()),
+    };
+    match serde_json::from_value::<environment_device::ItemUsed>(answer) {
+        Ok(environment_device::ItemUsed::Asked { words }) => {
+            ItemReply::item_asked(invocation, &words)
+        }
+        Ok(environment_device::ItemUsed::Released { sealed, into }) => {
+            let Some(into) = runtime_collab::ItemField::from_word(&into) else {
+                return refused(
+                    "The workspace's server named a kind of field this session does not know, \
+                     so nothing was filled.",
+                );
+            };
+            let Ok(sealed) = hex::decode(sealed) else {
+                return refused(NOT_SEALED_FOR_THIS);
+            };
+            let bound = key_group::ReleasedFor {
+                workspace,
+                invocation: *invocation.0.as_bytes(),
+                origin: &used.origin,
+            };
+            match key_group::open_released_text(key, &bound, &sealed) {
+                Ok(text) => ItemReply::ItemText {
+                    invocation,
+                    text,
+                    into,
+                },
+                Err(_) => refused(NOT_SEALED_FOR_THIS),
+            }
+        }
+        Err(_) => refused(
+            "The workspace's server answered something that is no item's use, so nothing was \
+             filled.",
+        ),
     }
 }
 
@@ -365,6 +517,8 @@ impl HostedBrowser {
             said_used: None,
             asks_host: false,
             governed: false,
+            items: None,
+            lends_items: false,
         };
         hosted.say(Report::Ready);
         Ok(hosted)
@@ -377,6 +531,30 @@ impl HostedBrowser {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake.clone());
         self.waking = Some(wake);
+    }
+
+    /// Take what the session's account-credentials service answers Browser's asks for vault
+    /// items with. A session that holds a workspace's Browser says so from here on, and has
+    /// the items used once its server can be asked.
+    pub(crate) fn lending(&mut self, items: Option<std::sync::Arc<ItemLending>>) {
+        if self.holds == Holds::Browser
+            && let Some(items) = &items
+        {
+            items.hold(&self.material.workspace);
+        }
+        self.items = items;
+    }
+
+    /// Take from the session's app wire what the window it holds needs of it, as `person`'s
+    /// device: what its broker admits ([`Self::watching`]), and then what answers Browser's
+    /// asks for vault items ([`Self::lending`]).
+    pub(crate) fn wired(&mut self, app_wire: Option<&AppWire>, person: &str) {
+        self.watching(
+            app_wire.and_then(AppWire::agent_broker).as_ref(),
+            app_wire.and_then(AppWire::hosted_workspaces),
+            person,
+        );
+        self.lending(app_wire.map(AppWire::item_lending));
     }
 
     /// Read what its host tells it on `input` from now on, a line at a time, each a Linux app
@@ -490,6 +668,30 @@ impl HostedBrowser {
             caller: self.caller(),
             workspace: self.material.workspace.clone(),
         };
+        if !self.lends_items {
+            // The pages of this window are filled from vault items the server keeps: the
+            // session's account-credentials service asks for each as this device from here on,
+            // and opens the answer with this device's key.
+            self.lends_items = true;
+            if self.holds == Holds::Browser
+                && let Some(items) = &self.items
+            {
+                match self.material.key() {
+                    Ok(key) => {
+                        let asking = asking.clone();
+                        items.lent_by(std::sync::Arc::new(
+                            move |used: environment_device::ItemUse| -> crate::item_lending::Lending {
+                                let (asking, key) = (asking.clone(), key.clone());
+                                Box::pin(async move { asking.use_item(&key, used).await })
+                            },
+                        ));
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "no vault item is used for this window's pages");
+                    }
+                }
+            }
+        }
         if !self.governed {
             // Before any window is shared: a share the session wrote itself would be dropped.
             self.governed = true;
@@ -1229,7 +1431,192 @@ mod tests {
             said_used: None,
             asks_host: false,
             governed: false,
+            items: None,
+            lends_items: false,
         }
+    }
+
+    /// A vault item's reference, made up.
+    const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
+    /// Where the made-up item is kept for.
+    const ORIGIN: &str = "https://login.example.test";
+    /// What the made-up item keeps: nobody's password, and it says so.
+    const MADE_UP_TEXT: &str = "made-up item text, nobody's password";
+
+    /// The workspace's server is stood in for by what it answers this device: a text sealed
+    /// to it is opened for the fill, the site and the workspace it was sealed for and for no
+    /// other, a question's words and a refusal's reason are carried, and nothing that is said
+    /// holds the text.
+    #[test]
+    fn what_the_server_answers_an_items_use_is_opened_here_or_its_reason_is_carried() {
+        use environment_device::{ItemUse, ItemUsed};
+        let handed = material();
+        let key = handed.key().unwrap();
+        let device = key.verifying_key().to_bytes();
+        let used = ItemUse {
+            invocation: tilo_actions::InvocationId::new(),
+            item: ITEM.into(),
+            origin: ORIGIN.into(),
+        };
+        let sealed_for = |workspace: &str,
+                          invocation: tilo_actions::InvocationId,
+                          device: [u8; 32],
+                          origin: &str,
+                          into: &str|
+         -> Result<Option<serde_json::Value>, Box<Unanswered>> {
+            let bound = key_group::ReleasedFor {
+                workspace,
+                invocation: *invocation.0.as_bytes(),
+                origin,
+            };
+            let sealed = key_group::seal_released_text(device, &bound, MADE_UP_TEXT).unwrap();
+            Ok(Some(
+                serde_json::to_value(ItemUsed::Released {
+                    sealed: hex::encode(sealed),
+                    into: into.to_owned(),
+                })
+                .unwrap(),
+            ))
+        };
+        let here = handed.workspace.as_str();
+
+        // Sealed to this device for this fill of this page: opened, with its kind of field.
+        let reply = item_answer(
+            here,
+            &key,
+            &used,
+            sealed_for(here, used.invocation, device, ORIGIN, "password"),
+        );
+        assert!(matches!(
+            &reply,
+            ItemReply::ItemText { invocation, text, into: runtime_collab::ItemField::Password }
+                if *invocation == used.invocation && text.as_str() == MADE_UP_TEXT
+        ));
+        assert!(!format!("{reply:?}").contains(MADE_UP_TEXT));
+
+        // Sealed for another site, another page action, another device or another workspace,
+        // or for a kind of field nobody knows: nothing is released, and the refusal holds
+        // nothing of the text.
+        let another = ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+            .verifying_key()
+            .to_bytes();
+        for answered in [
+            sealed_for(
+                here,
+                used.invocation,
+                device,
+                "https://other.example.test",
+                "password",
+            ),
+            sealed_for(
+                here,
+                tilo_actions::InvocationId::new(),
+                device,
+                ORIGIN,
+                "password",
+            ),
+            sealed_for(here, used.invocation, another, ORIGIN, "password"),
+            sealed_for(
+                "22222222-2222-4222-8222-222222222222",
+                used.invocation,
+                device,
+                ORIGIN,
+                "password",
+            ),
+            sealed_for(here, used.invocation, device, ORIGIN, "elsewhere"),
+            Ok(Some(
+                serde_json::to_value(ItemUsed::Released {
+                    sealed: "not hex".into(),
+                    into: "password".into(),
+                })
+                .unwrap(),
+            )),
+        ] {
+            let reply = item_answer(here, &key, &used, answered);
+            assert!(matches!(
+                &reply,
+                ItemReply::ItemRefused { invocation, reason }
+                    if *invocation == used.invocation
+                        && reason.contains("nothing was filled")
+                        && !reason.contains(MADE_UP_TEXT)
+            ));
+        }
+
+        // A refusal comes back in the server's own words, however it was given.
+        let no_fill = "No fill this server handed this window waits for that item";
+        let said_no = "Ada said no, so the item is not used.";
+        let late = "Nobody answered in time, so the item is not used.";
+        for (answered, reason) in [
+            (
+                Err(Box::new(Unanswered::Refused(ActionCallError::Refused {
+                    reason: no_fill.to_owned(),
+                }))),
+                no_fill,
+            ),
+            (
+                Err(Box::new(Unanswered::Status(ReceiptStatus::Rejected {
+                    error: ActionCallError::Refused {
+                        reason: said_no.to_owned(),
+                    },
+                }))),
+                said_no,
+            ),
+            (
+                Err(Box::new(Unanswered::Status(ReceiptStatus::Rejected {
+                    error: ActionCallError::Refused {
+                        reason: late.to_owned(),
+                    },
+                }))),
+                late,
+            ),
+            (
+                Err(Box::new(Unanswered::Status(ReceiptStatus::Rejected {
+                    error: ActionCallError::NotPermitted,
+                }))),
+                "may not invoke this action",
+            ),
+            (
+                Err(Box::new(Unanswered::Status(ReceiptStatus::Cancelled {
+                    message: None,
+                }))),
+                "stopped the ask",
+            ),
+            (Err(Box::new(Unanswered::Unreached)), "cannot reach"),
+            (Ok(None), "answered nothing"),
+            (
+                Ok(Some(serde_json::json!({"neither": true}))),
+                "no item's use",
+            ),
+        ] {
+            let reply = item_answer(here, &key, &used, answered);
+            assert!(
+                matches!(
+                    &reply,
+                    ItemReply::ItemRefused { invocation, reason: said }
+                        if *invocation == used.invocation && said.contains(reason)
+                ),
+                "a refusal lost its reason: {reason}"
+            );
+        }
+
+        // That its person is asked first comes back in the words whoever asked is told.
+        let words = "Ada is asked whether the assistant may sign in.";
+        let reply = item_answer(
+            here,
+            &key,
+            &used,
+            Ok(Some(
+                serde_json::to_value(ItemUsed::Asked {
+                    words: words.to_owned(),
+                })
+                .unwrap(),
+            )),
+        );
+        assert!(matches!(
+            &reply,
+            ItemReply::ItemAsked { invocation, words: said }
+                if *invocation == used.invocation && said == words
+        ));
     }
 
     /// An apps session reads each later line of its input as one app to start, wakes its loop
