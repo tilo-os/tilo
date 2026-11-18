@@ -98,6 +98,3 @@ pub(super) fn legacy_error(error: Error) -> MediaPolicyError {
         Error::Capacity => MediaPolicyError::Capacity,
     }
 }
-
-#[cfg(test)]
-mod tests;

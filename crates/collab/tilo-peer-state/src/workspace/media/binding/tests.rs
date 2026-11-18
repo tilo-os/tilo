@@ -1,10 +1,17 @@
-use super::super::{CallPhaseV1, CallV1, DirectionsV1, MediaPolicyError};
-use super::*;
-use automerge::{
-    ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
+//! A call binds to the exact Chat voice channel it was made in, read from
+//! the channel tree of an admitted document.
+
+use super::super::{
+    CallPhaseV1, CallV1, ChatCallBindingV1, DirectionsV1, MediaPolicyError, WorkspaceMediaV1,
+    resolve_chat_binding, validate_bound_chat_change,
 };
+use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use std::collections::BTreeMap;
 use tilo_automerge::ApplyIncoming;
+
+const APP: &str = "so.tilo.chat";
+const DOCUMENT: &str = "tab:voice";
+
 fn fixture() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(ActorId::from(vec![17; 32]));
@@ -18,229 +25,13 @@ fn fixture() -> AutoCommit {
     doc.commit();
     doc
 }
-tilo_test_env::scenario! {
-    fn media_binding_binds_a_call_to_its_exact_voice_channel;
-
-    phase media_binding_retains_exact_object_strings_after_document_drop;
-    {
-        let doc = fixture();
-        let expected = historical_resolve("so.tilo.chat", "tab:voice", "voice", &doc).unwrap();
-        let native = doc.clone();
-        let binding = resolve_legacy("so.tilo.chat", "tab:voice", "voice", &native).unwrap();
-        assert!(binding.matches(&expected));
-        drop(native);
-        drop(doc);
-        assert!(binding.matches(&expected));
-    }
-
-    phase media_binding_matches_original_archival_wrong_type_conflict_and_route_errors;
-    {
-        for mode in 0..7 {
-            let mut doc = fixture();
-            let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-            let voice = {
-                let entry = doc.get(&channels, "voice").unwrap().unwrap().1;
-                doc.get(&entry, "v").unwrap().unwrap().1
-            };
-            match mode {
-                0 => {
-                    doc.put(&voice, "archived", true).unwrap();
-                }
-                1 => {
-                    doc.put(&voice, "kind", "text").unwrap();
-                }
-                2 => {
-                    doc.put(&voice, "workspace", true).unwrap();
-                }
-                3 => {
-                    doc.delete(&channels, "voice").unwrap();
-                }
-                4 => {
-                    let mut fork = doc.fork();
-                    doc.put(&voice, "archived", false).unwrap();
-                    doc.commit();
-                    fork.put(&voice, "archived", false).unwrap();
-                    fork.commit();
-                    doc.merge_incoming(&mut fork).unwrap();
-                }
-                5 => {
-                    doc.put(&voice, "archived", false).unwrap();
-                }
-                _ => {}
-            }
-            doc.commit();
-            let app = if mode == 6 {
-                "wrong.app"
-            } else {
-                "so.tilo.chat"
-            };
-            let expected = historical_resolve(app, "", "voice", &doc);
-            let native = doc.clone();
-            let actual = resolve_legacy(app, "", "voice", &native);
-            match expected {
-                Ok(expected) => assert!(actual.unwrap().matches(&expected)),
-                Err(error) => assert!(matches!(actual, Err(actual) if actual == error)),
-            }
-        }
-    }
-
-    phase a_call_stays_its_channels_when_the_channel_is_remade_but_not_when_it_stops_being_voice;
-    {
-        let mut doc = fixture();
-        let binding = historical_resolve("so.tilo.chat", "", "voice", &doc).unwrap();
-        let mut policy = policy_for(binding);
-        let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-        let voice = {
-            let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
-            doc.put_object(&entry, "v", ObjType::Map).unwrap()
-        };
-        doc.put(&voice, "kind", "voice").unwrap();
-        doc.commit();
-        let native = doc.clone();
-        assert_eq!(
-            validate_legacy(&policy, "so.tilo.chat", "", &native),
-            Ok(()),
-            "the channel id names the call's channel, whatever object holds it"
-        );
-        doc.put(&voice, "kind", "text").unwrap();
-        doc.commit();
-        let native = doc.clone();
-        assert_eq!(
-            validate_legacy(&policy, "so.tilo.chat", "", &native),
-            Err(MediaPolicyError::Binding)
-        );
-        assert_eq!(
-            validate_legacy(&policy, "so.tilo.chat", "other", &native),
-            Ok(())
-        );
-        policy.calls.values_mut().next().unwrap().phase = CallPhaseV1::Ended;
-        assert_eq!(
-            validate_legacy(&policy, "so.tilo.chat", "", &native),
-            Ok(())
-        );
-    }
-
-    phase a_chat_without_workspaces_binds_its_voice_channels_and_keeps_its_earlier_calls;
-    {
-        // A call bound while the chat still named its workspace...
-        let mut doc = fixture();
-        let earlier = historical_resolve("so.tilo.chat", "", "voice", &doc).unwrap();
-        assert_eq!(earlier.chat_workspace_id, "main");
-        let policy = policy_for(earlier.clone());
-        // ...stays bound once the chat's migration drops the workspace field.
-        let voice = voice_value(&doc);
-        doc.delete(&voice, "workspace").unwrap();
-        doc.commit();
-        let native = doc.clone();
-        assert_eq!(
-            validate_legacy(&policy, "so.tilo.chat", "", &native),
-            Ok(())
-        );
-        let now = resolve_legacy("so.tilo.chat", "", "voice", &native).unwrap();
-        assert!(now.matches(&earlier));
-        let fresh = now.into_legacy();
-        assert_eq!(fresh.chat_workspace_id, "");
-        fresh.validate().unwrap();
-        assert!(fresh.same_channel(&earlier));
-    }
-
-    phase a_voice_channel_two_devices_made_binds_the_same_on_both;
-    {
-        let mut first = AutoCommit::new();
-        first.set_actor(ActorId::from(vec![17; 32]));
-        let mut second = AutoCommit::new();
-        second.set_actor(ActorId::from(vec![18; 32]));
-        for doc in [&mut first, &mut second] {
-            let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
-            let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
-            let voice = doc.put_object(&entry, "v", ObjType::Map).unwrap();
-            doc.put(&voice, "kind", "voice").unwrap();
-            doc.put(&voice, "archived", false).unwrap();
-            doc.commit();
-        }
-        let mut merged_first = first.fork();
-        merged_first.merge_incoming(&mut second.fork()).unwrap();
-        let mut merged_second = second.fork();
-        merged_second.merge_incoming(&mut first.fork()).unwrap();
-        let on_first = resolve_legacy("so.tilo.chat", "", "voice", &merged_first)
-            .unwrap()
-            .into_legacy();
-        let on_second = resolve_legacy("so.tilo.chat", "", "voice", &merged_second)
-            .unwrap()
-            .into_legacy();
-        assert_eq!(on_first, on_second);
-        assert_eq!(
-            historical_resolve("so.tilo.chat", "", "voice", &merged_first).unwrap(),
-            on_first
-        );
-    }
-
-    phase media_binding_rejects_orphan_history_before_channel_lookup;
-    {
-        let mut doc = fixture();
-        let before = doc.get_heads();
-        let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-        let voice = {
-            let entry = doc.get(&channels, "voice").unwrap().unwrap().1;
-            doc.get(&entry, "v").unwrap().unwrap().1
-        };
-        doc.put(&voice, "workspace", "later").unwrap();
-        doc.commit();
-        let child = doc.get_changes(&before)[0].raw_bytes().to_vec();
-        let mut orphan = AutoCommit::new();
-        orphan.load_incoming(&child).unwrap();
-        assert!(!orphan.get_missing_deps(&[]).is_empty());
-        assert_eq!(
-            historical_resolve("so.tilo.chat", "", "voice", &orphan),
-            Err(MediaPolicyError::Binding)
-        );
-        let native = orphan.clone();
-        assert!(!native.get_missing_deps(&[]).is_empty());
-        assert!(matches!(
-            resolve_legacy("so.tilo.chat", "", "voice", &native),
-            Err(MediaPolicyError::Binding)
-        ));
-    }
-
-    phase media_binding_exact_object_limit_preserves_workspace_error_precedence;
-    {
-        for (actor_bytes, wrong_workspace) in [(127, false), (128, false), (128, true)] {
-            let mut doc = AutoCommit::new();
-            doc.set_actor(ActorId::from(vec![17; actor_bytes]));
-            let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
-            let voice = {
-                let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
-                doc.put_object(&entry, "v", ObjType::Map).unwrap()
-            };
-            doc.put(&voice, "kind", "voice").unwrap();
-            if wrong_workspace {
-                doc.put(&voice, "workspace", true).unwrap();
-            } else {
-                doc.put(&voice, "workspace", "main").unwrap();
-            }
-            doc.commit();
-            let expected = historical_resolve("so.tilo.chat", "", "voice", &doc);
-            let native = doc.clone();
-            let actual = resolve_legacy("so.tilo.chat", "", "voice", &native);
-            match expected {
-                Ok(expected) => {
-                    assert_eq!(expected.channel_object.len(), 256);
-                    assert!(actual.unwrap().matches(&expected));
-                }
-                Err(error) => {
-                    assert_eq!(
-                        error,
-                        if wrong_workspace {
-                            MediaPolicyError::Malformed
-                        } else {
-                            MediaPolicyError::Binding
-                        }
-                    );
-                    assert!(matches!(actual, Err(actual) if actual == error));
-                }
-            }
-        }
-    }
+fn voice_value(doc: &AutoCommit) -> automerge::ObjId {
+    let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
+    let entry = doc.get(&channels, "voice").unwrap().unwrap().1;
+    doc.get(&entry, "v").unwrap().unwrap().1
+}
+fn binding(doc: &AutoCommit) -> Result<ChatCallBindingV1, MediaPolicyError> {
+    resolve_chat_binding(APP, DOCUMENT, "voice", doc)
 }
 fn policy_for(binding: ChatCallBindingV1) -> WorkspaceMediaV1 {
     WorkspaceMediaV1 {
@@ -263,54 +54,171 @@ fn policy_for(binding: ChatCallBindingV1) -> WorkspaceMediaV1 {
         )]),
     }
 }
-fn voice_value(doc: &AutoCommit) -> automerge::ObjId {
-    let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
-    let entry = doc.get(&channels, "voice").unwrap().unwrap().1;
-    doc.get(&entry, "v").unwrap().unwrap().1
-}
-// Original public resolver retained as independent identity/shape oracle.
-use super::super::strict_string;
-fn historical_resolve(
-    app: &str,
-    record: &str,
-    channel: &str,
-    candidate: &impl ReadDoc,
-) -> Result<ChatCallBindingV1, MediaPolicyError> {
-    if !candidate.get_missing_deps(&[]).is_empty() {
-        return Err(MediaPolicyError::Binding);
-    }
-    let winner = |parent: &automerge::ObjId, key: &str| match candidate
-        .get(parent, key)
-        .map_err(|_| MediaPolicyError::Malformed)?
+
+tilo_test_env::scenario! {
+    fn a_call_binds_its_exact_voice_channel_or_is_refused;
+
+    phase a_voice_channel_binds_its_object_and_the_workspace_it_once_named;
     {
-        Some((Value::Object(ObjType::Map), object)) => Ok(object),
-        _ => Err(MediaPolicyError::Binding),
-    };
-    let channels = winner(&ROOT, "channels")?;
-    let entry = winner(&channels, channel)?;
-    let object = winner(&entry, "v")?;
-    if strict_string(candidate, &object, "kind")? != "voice" {
-        return Err(MediaPolicyError::Binding);
+        let doc = fixture();
+        let bound = binding(&doc).unwrap();
+        assert_eq!(bound.channel_id, "voice");
+        assert_eq!(bound.channel_object, voice_value(&doc).to_string());
+        assert_eq!(bound.chat_workspace_id, "main");
+        bound.validate().unwrap();
     }
-    let archived = candidate
-        .get_all(&object, "archived")
-        .map_err(|_| MediaPolicyError::Malformed)?;
-    if archived.len() > 1 || archived.iter().any(|(value,_)| !matches!(value, Value::Scalar(value) if matches!(value.as_ref(),ScalarValue::Boolean(false)))) {
-        return Err(MediaPolicyError::Binding);
+
+    phase a_channel_that_is_archived_or_not_voice_binds_nothing;
+    {
+        type Change = fn(&mut AutoCommit);
+        let cases: Vec<(&str, Change)> = vec![
+            ("archived", |doc| {
+                let voice = voice_value(doc);
+                doc.put(&voice, "archived", true).unwrap();
+            }),
+            ("another kind", |doc| {
+                let voice = voice_value(doc);
+                doc.put(&voice, "kind", "text").unwrap();
+            }),
+            ("not a channel map", |doc| {
+                let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
+                doc.put(&channels, "voice", "text").unwrap();
+            }),
+            ("no channel", |doc| {
+                let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
+                doc.delete(&channels, "voice").unwrap();
+            }),
+        ];
+        for (what, change) in cases {
+            let mut doc = fixture();
+            change(&mut doc);
+            doc.commit();
+            assert_eq!(binding(&doc), Err(MediaPolicyError::Binding), "{what}");
+        }
     }
-    let binding = ChatCallBindingV1 {
-        app_id: app.into(),
-        document_id: record.into(),
-        channel_id: channel.into(),
-        channel_object: object.to_string(),
-        chat_workspace_id: match candidate
-            .get(&object, "workspace")
-            .map_err(|_| MediaPolicyError::Malformed)?
-        {
-            None => String::new(),
-            Some(_) => strict_string(candidate, &object, "workspace")?,
-        },
-    };
-    binding.validate()?;
-    Ok(binding)
+
+    phase a_workspace_that_is_not_text_is_malformed_not_unbound;
+    {
+        let mut doc = fixture();
+        let voice = voice_value(&doc);
+        doc.put(&voice, "workspace", true).unwrap();
+        doc.commit();
+        assert_eq!(binding(&doc), Err(MediaPolicyError::Malformed));
+    }
+
+    phase a_channel_remade_keeps_its_call_but_one_that_stops_being_voice_loses_it;
+    {
+        let mut doc = fixture();
+        let policy = policy_for(binding(&doc).unwrap());
+        let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
+        let voice = {
+            let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
+            doc.put_object(&entry, "v", ObjType::Map).unwrap()
+        };
+        doc.put(&voice, "kind", "voice").unwrap();
+        doc.commit();
+        assert_eq!(
+            validate_bound_chat_change(&policy, APP, DOCUMENT, &doc),
+            Ok(()),
+            "the channel id names the call's channel, whatever object holds it"
+        );
+        doc.put(&voice, "kind", "text").unwrap();
+        doc.commit();
+        assert_eq!(
+            validate_bound_chat_change(&policy, APP, DOCUMENT, &doc),
+            Err(MediaPolicyError::Binding)
+        );
+        assert_eq!(
+            validate_bound_chat_change(&policy, APP, "tab:other", &doc),
+            Ok(()),
+            "another document's channels are not this call's"
+        );
+        let mut ended = policy_for(binding(&fixture()).unwrap());
+        ended.calls.values_mut().next().unwrap().phase = CallPhaseV1::Ended;
+        assert_eq!(
+            validate_bound_chat_change(&ended, APP, DOCUMENT, &doc),
+            Ok(()),
+            "an ended call restricts nothing"
+        );
+    }
+
+    phase a_chat_that_named_no_workspace_binds_an_empty_one;
+    {
+        let mut doc = fixture();
+        let earlier = binding(&doc).unwrap();
+        assert_eq!(earlier.chat_workspace_id, "main");
+        let voice = voice_value(&doc);
+        doc.delete(&voice, "workspace").unwrap();
+        doc.commit();
+        let now = binding(&doc).unwrap();
+        assert_eq!(now.chat_workspace_id, "");
+        assert!(now.same_channel(&earlier));
+        assert_eq!(
+            validate_bound_chat_change(&policy_for(earlier), APP, DOCUMENT, &doc),
+            Ok(()),
+            "the call stays the channel's once its workspace is gone"
+        );
+    }
+
+    phase two_devices_making_the_same_channel_bind_it_the_same;
+    {
+        let mut first = AutoCommit::new();
+        first.set_actor(ActorId::from(vec![17; 32]));
+        let mut second = AutoCommit::new();
+        second.set_actor(ActorId::from(vec![18; 32]));
+        for doc in [&mut first, &mut second] {
+            let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
+            let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
+            let voice = doc.put_object(&entry, "v", ObjType::Map).unwrap();
+            doc.put(&voice, "kind", "voice").unwrap();
+            doc.put(&voice, "archived", false).unwrap();
+            doc.commit();
+        }
+        let mut merged_first = first.fork();
+        merged_first.merge_incoming(&mut second.fork()).unwrap();
+        let mut merged_second = second.fork();
+        merged_second.merge_incoming(&mut first.fork()).unwrap();
+        let on_first = binding(&merged_first).unwrap();
+        let on_second = binding(&merged_second).unwrap();
+        assert_eq!(on_first, on_second);
+    }
+
+    phase a_history_that_is_missing_its_dependencies_binds_nothing;
+    {
+        let mut doc = fixture();
+        let before = doc.get_heads();
+        let voice = voice_value(&doc);
+        doc.put(&voice, "workspace", "later").unwrap();
+        doc.commit();
+        let child = doc.get_changes(&before)[0].raw_bytes().to_vec();
+        let mut orphan = AutoCommit::new();
+        orphan.load_incoming(&child).unwrap();
+        assert!(!orphan.get_missing_deps(&[]).is_empty());
+        assert_eq!(binding(&orphan), Err(MediaPolicyError::Binding));
+    }
+
+    phase a_channel_object_past_its_bound_binds_nothing;
+    {
+        for (actor_bytes, binds) in [(127, true), (128, false)] {
+            let mut doc = AutoCommit::new();
+            doc.set_actor(ActorId::from(vec![17; actor_bytes]));
+            let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
+            let entry = doc.put_object(&channels, "voice", ObjType::Map).unwrap();
+            let voice = doc.put_object(&entry, "v", ObjType::Map).unwrap();
+            doc.put(&voice, "kind", "voice").unwrap();
+            doc.put(&voice, "workspace", "main").unwrap();
+            doc.commit();
+            let bound = binding(&doc);
+            if binds {
+                let bound = bound.unwrap();
+                assert_eq!(bound.channel_object.len(), 256);
+                bound.validate().unwrap();
+            } else {
+                assert!(
+                    matches!(bound, Err(MediaPolicyError::Binding)),
+                    "an object name of its own past 256 bytes cannot be bound"
+                );
+            }
+        }
+    }
 }
