@@ -220,11 +220,40 @@ public struct Answered: Equatable, Sendable {
     public var words: String
     /// Whether `words` are a part of the piece that was marked, and not the piece whole.
     public var isPart: Bool
+    /// Where a marked part stands in the piece's own words, in UTF-8 bytes. Nil for a piece
+    /// answered whole.
+    public var span: Range<Int>?
 
-    public init(_ piece: Item.ID, words: String, isPart: Bool = false) {
+    public init(_ piece: Item.ID, words: String, isPart: Bool = false, span: Range<Int>? = nil) {
         self.piece = piece
         self.words = words
         self.isPart = isPart
+        self.span = span
+    }
+
+    /// Where a marked part stands in the words it was marked in, in UTF-8 bytes: the stretch that
+    /// holds it. A part is marked in the plain words, so where Markdown's own signs stand between
+    /// its words the stretch reaches from its first word to its last, and where even those are not
+    /// found it is the words whole.
+    public static func span(of part: String, in words: String) -> Range<Int> {
+        func bytes(_ range: Range<String.Index>) -> Range<Int> {
+            words.utf8.distance(from: words.startIndex, to: range.lowerBound)..<words.utf8.distance(from: words.startIndex, to: range.upperBound)
+        }
+        let whole = 0..<words.utf8.count
+        if let exact = words.range(of: part) { return bytes(exact) }
+        // The round sign a bubble draws for a list's dash is not in the words.
+        let tokens = part.split(whereSeparator: \.isWhitespace).map(String.init).filter { $0 != "•" }
+        var from = words.startIndex
+        var first: String.Index?
+        var last = words.startIndex
+        for token in tokens {
+            guard let found = words.range(of: token, range: from..<words.endIndex) else { return whole }
+            if first == nil { first = found.lowerBound }
+            last = found.upperBound
+            from = found.upperBound
+        }
+        guard let first, first < last else { return whole }
+        return bytes(first..<last)
     }
 
     /// The words as one line of plain text: what stands above the field and above a reply.

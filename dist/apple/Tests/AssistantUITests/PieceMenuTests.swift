@@ -83,7 +83,7 @@ final class PieceMenuTests: XCTestCase {
                 handling(event)
                 taker = top.hitTest(point)
                 let menu = try XCTUnwrap(menu(over: taker, for: event), "nothing would open over “\(words)”")
-                XCTAssertEqual(menu.items.map(\.title), ["Reply", "Copy", "Select text"], "over “\(words)”")
+                XCTAssertEqual(menu.items.map(\.title), ["Reply", "Quote", "Copy", "Select text"], "over “\(words)”")
             }
             guard marks else { continue }
             // A plain press goes past what took the second button, to the words: a drag marks them where they stand.
@@ -109,28 +109,37 @@ final class PieceMenuTests: XCTestCase {
         let event = try press(.rightMouseDown, [], at: point, in: window)
         handling(event)
         let menu = try XCTUnwrap(menu(over: top.hitTest(point), for: event))
-        XCTAssertEqual(menu.items.map(\.title), [AssistantWords.reply.said, AssistantWords.copy.said, AssistantWords.selectText.said])
+        XCTAssertEqual(menu.items.map(\.title), [AssistantWords.reply.said, AssistantWords.quote.said, AssistantWords.copy.said, AssistantWords.selectText.said])
         // Reply: the piece stands above the field as what is answered, and nothing is copied.
         menu.performActionForItem(at: 0)
         XCTAssertEqual(started.model.drafts[.main]?.answers?.line, plain.replacingOccurrences(of: "\n", with: " "))
         XCTAssertNil(board.string(forType: .string))
         // Copy: the whole piece, as plain text with its lines.
-        menu.performActionForItem(at: 1)
+        menu.performActionForItem(at: 2)
         XCTAssertEqual(board.string(forType: .string), plain)
         XCTAssertNil(started.model.selecting)
+        // Quote: the same words laid out, to select the part that is answered.
+        menu.performActionForItem(at: 1)
+        await drive.until("the words laid out to quote") { window.heldSheets.count == 1 }
+        XCTAssertEqual(started.model.selecting?.plain, plain)
+        XCTAssertEqual(started.model.selecting?.quotes, true)
+        let quoting = try XCTUnwrap(window.heldSheets.first)
+        drive.key(Drive.Key.escape.0, code: Drive.Key.escape.1, in: quoting)
+        await drive.until("the sheet to be put away") { window.heldSheets.isEmpty }
         // Select text: the same words, laid out.
-        menu.performActionForItem(at: 2)
+        menu.performActionForItem(at: 3)
         await drive.until("the words laid out") { window.heldSheets.count == 1 }
         XCTAssertEqual(started.model.selecting?.plain, plain)
+        XCTAssertEqual(started.model.selecting?.quotes, false)
         let sheet = try XCTUnwrap(window.heldSheets.first)
         drive.key(Drive.Key.escape.0, code: Drive.Key.escape.1, in: sheet)
         await drive.until("the sheet to be put away") { window.heldSheets.isEmpty }
         XCTAssertEqual(NSPasteboard.general.changeCount, general, "the person's own pasteboard was not written")
     }
 
-    func testTheMenuOffersReplyThenCopyThenSelectText() {
-        XCTAssertEqual(PieceAction.allCases, [.reply, .copy, .selectText])
-        XCTAssertEqual(PieceAction.allCases.map(\.words.english), ["Reply", "Copy", "Select text"])
+    func testTheMenuOffersReplyThenQuoteThenCopyThenSelectText() {
+        XCTAssertEqual(PieceAction.allCases, [.reply, .quote, .copy, .selectText])
+        XCTAssertEqual(PieceAction.allCases.map(\.words.english), ["Reply", "Quote", "Copy", "Select text"])
     }
 
     func testCopyPutsAPiecesPlainWordsOnThePasteboardWithEveryLine() throws {

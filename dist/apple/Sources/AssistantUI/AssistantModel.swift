@@ -363,7 +363,7 @@ public final class AssistantModel {
     public func reply(to piece: Item.ID, saying words: String, part: String? = nil) {
         guard case .chat(let chat) = place else { return }
         var draft = drafts[chat] ?? Draft(text: "")
-        draft.answers = Answered(piece, words: part ?? words, isPart: part != nil)
+        draft.answers = Answered(piece, words: part ?? words, isPart: part != nil, span: part.map { Answered.span(of: $0, in: words) })
         drafts[chat] = draft
         fieldCalls += 1
     }

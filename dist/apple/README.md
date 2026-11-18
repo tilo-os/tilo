@@ -550,6 +550,15 @@ the reply's words, where a press goes to the answered piece. On a Tilo whose Cha
 it yet the words are sent with one line of the answered message above them as a quote, so the
 assistant is told what is answered either way.
 
+**Quoting words of a message.** Quote in a piece's menu lays its words out as Select text does,
+under a line that says to select the part. With a part marked there, Quote answers that part: a
+button in the sheet's head, and the first row of the menu the text itself opens over marked
+words (the system's own on an iPhone). The marked words stand above the field; the message then
+sent carries them and where they stand in the answered message's own words
+(`Answered.span(of:in:)`, as Chat keeps a quote: `text`, `start`, `end` in UTF-8 bytes). A part
+is marked in the plain words, so where Markdown's signs stand between its words the place
+reaches from its first word to its last.
+
 **A task's replies.** A task's line counts the replies the conversation does not show.
 Pressed, they open under the line (`AssistantSource.replies(of:in:)`), and the same press
 puts them away. On a narrow window what does not fit beside a task's title goes under the
