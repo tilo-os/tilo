@@ -102,7 +102,10 @@ impl ItemIndex {
         let gone: Vec<u64> = self
             .parts
             .keys()
-            .filter(|index| !held.iter().any(|(held, _)| held == *index))
+            .filter(|index| {
+                held.binary_search_by_key(*index, |(held, _)| *held)
+                    .is_err()
+            })
             .copied()
             .collect();
         for index in gone {
@@ -342,7 +345,8 @@ impl<P: super::Chained> super::Chain<P> {
     pub fn find(&self, id: &tilo_resource::Id) -> Option<Rc<P::State>> {
         let held = self.state.parts();
         let index = self.state.indexed(&held).holding(id)?;
-        let (_, state) = held.into_iter().find(|(at, _)| *at == index)?;
+        let at = held.binary_search_by_key(&index, |(at, _)| *at).ok()?;
+        let (_, state) = held.into_iter().nth(at)?;
         state.downcast().ok()
     }
 

@@ -35,16 +35,14 @@ pub(super) fn asked(args: &serde_json::Value) -> Result<(Option<Vec<String>>, Fi
 }
 
 /// What a read of a chain's listing asks of each item: the fields its rows
-/// carry, and what an item's fields equal for its row to be answered.
+/// keep of it, and what an item's fields equal for its row to be answered.
 pub(super) struct Listing {
-    /// The fields read of every item: those its row shows, then those only
-    /// compared.
-    wanted: Vec<String>,
-    /// How many of `wanted` a row shows.
-    shown: usize,
-    /// Each condition: the place in `wanted` of the field compared, the
-    /// names reaching into it when it is a record, and what it equals.
-    conditions: Vec<(usize, Vec<String>, serde_json::Value)>,
+    /// The fields a row keeps of its item's value, when the read names
+    /// them; else the whole value.
+    shown: Option<Vec<String>>,
+    /// Each condition: the names reaching from the item's value to the
+    /// field compared, and what it equals.
+    conditions: Vec<(Vec<String>, serde_json::Value)>,
 }
 
 impl Listing {
@@ -60,65 +58,47 @@ impl Listing {
     ) -> Result<Self, String> {
         let mut filter = read.filter.clone();
         prepare(&mut filter)?;
-        let listed = || part.listed.iter().map(|name| (*name).to_owned()).collect();
-        let asked: Vec<String> = read.fields.clone().unwrap_or_else(listed);
+        // A row's `id` is its own; `*`, every field, is the whole value, as
+        // naming no fields is.
+        let every = |names: &Vec<String>| names.iter().any(|name| name == "*");
+        let shown: Option<Vec<String>> =
+            read.fields
+                .as_ref()
+                .filter(|names| !every(names))
+                .map(|names| {
+                    let mut shown: Vec<String> = Vec::with_capacity(names.len());
+                    for name in names {
+                        if name != "id" && !shown.contains(name) {
+                            shown.push(name.clone());
+                        }
+                    }
+                    shown
+                });
+        let conditions: Vec<(Vec<String>, serde_json::Value)> = filter
+            .into_iter()
+            .map(|(name, expected)| (name.split('.').map(str::to_owned).collect(), expected))
+            .collect();
         // The fields the items have, read only when something is asked of
-        // them. What the kind lists is what its items have of it; what the
-        // caller names is refused when they have no such field.
-        let known = if asked.is_empty() && filter.is_empty() {
-            Vec::new()
-        } else {
-            item_field_names(table, part.kind, parts)
-        };
-        // `*` is every field the items have: what a caller with no screen writes
-        // to read them all, answered with the fields the listing knows.
-        let asked: Vec<String> = if asked.iter().any(|name| name == "*") {
-            known.clone()
-        } else {
-            asked
-        };
-        let asked: Vec<String> = if read.fields.is_some() {
-            asked
-        } else {
-            asked
-                .into_iter()
-                .filter(|name| known.is_empty() || known.contains(name))
-                .collect()
-        };
-        let mut wanted: Vec<String> = Vec::with_capacity(asked.len());
-        for name in asked {
-            // A row's `item` and `name` are its own.
-            if name != "item" && name != "name" && !wanted.contains(&name) {
-                wanted.push(name);
+        // them; a field named that they lack is refused. A chain that holds
+        // no item yet answers nothing either way.
+        let named = shown
+            .iter()
+            .flatten()
+            .chain(conditions.iter().filter_map(|(path, _)| path.first()));
+        let mut named = named.peekable();
+        if named.peek().is_some() {
+            let known = item_field_names(table, parts);
+            if !known.is_empty()
+                && let Some(unknown) = named.find(|name| !known.contains(*name))
+            {
+                return Err(format!(
+                    "{} have no field {unknown}; their fields: {}",
+                    part.label,
+                    known.join(", ")
+                ));
             }
         }
-        let shown = wanted.len();
-        let mut conditions = Vec::with_capacity(filter.len());
-        for (name, expected) in filter {
-            let mut path = name.split('.');
-            let head = path.next().unwrap_or_default().to_owned();
-            let found = wanted.iter().position(|held| *held == head);
-            let at = found.unwrap_or_else(|| {
-                wanted.push(head);
-                wanted.len().saturating_sub(1)
-            });
-            conditions.push((at, path.map(str::to_owned).collect(), expected));
-        }
-        // A chain that holds no item yet answers nothing either way.
-        if !known.is_empty()
-            && let Some(unknown) = wanted.iter().find(|name| !known.contains(name))
-        {
-            return Err(format!(
-                "{} have no field {unknown}; their fields: {}",
-                part.label,
-                known.join(", ")
-            ));
-        }
-        Ok(Self {
-            wanted,
-            shown,
-            conditions,
-        })
+        Ok(Self { shown, conditions })
     }
 
     /// Whether the read answers only some items.
@@ -126,56 +106,42 @@ impl Listing {
         !self.conditions.is_empty()
     }
 
-    /// The fields `wanted` names of an item, from what the item's own read
-    /// answers.
-    fn values_of(&self, item: Option<&serde_json::Value>) -> Vec<Option<serde_json::Value>> {
-        self.wanted
-            .iter()
-            .map(|name| item.and_then(|item| item.get(name)).cloned())
-            .collect()
-    }
-
-    /// Whether an item whose fields read `values`, as `wanted` names them,
-    /// is answered: every condition holds. A list of values holds when the
-    /// field equals one of them, a value holds for a field that is a list
-    /// when the list has it, and null holds when the item has no value.
-    fn takes(&self, values: &[Option<serde_json::Value>]) -> bool {
-        self.conditions.iter().all(|(at, path, expected)| {
-            let mut value = values.get(*at).and_then(Option::as_ref);
+    /// Whether an item whose value reads `value` is answered: every
+    /// condition holds. A list of values holds when the field equals one of
+    /// them, a value holds for a field that is a list when the list has it,
+    /// and null holds when the item has no value.
+    fn takes(&self, value: &serde_json::Value) -> bool {
+        self.conditions.iter().all(|(path, expected)| {
+            let mut found = Some(value);
             for name in path {
-                value = value.and_then(|inner| inner.get(name));
+                found = found.and_then(|inner| inner.get(name));
             }
-            match (expected, value.filter(|value| !value.is_null())) {
-                (serde_json::Value::Null, value) => value.is_none(),
+            match (expected, found.filter(|found| !found.is_null())) {
+                (serde_json::Value::Null, found) => found.is_none(),
                 (_, None) => false,
-                (serde_json::Value::Array(any), Some(value)) if !value.is_array() => {
-                    any.contains(value)
+                (serde_json::Value::Array(any), Some(found)) if !found.is_array() => {
+                    any.contains(found)
                 }
                 (expected, Some(serde_json::Value::Array(held))) if !expected.is_array() => {
                     held.contains(expected)
                 }
-                (expected, Some(value)) => expected == value,
+                (expected, Some(found)) => expected == found,
             }
         })
     }
 
-    /// The row of the item at `item` offered as `label`: its address, its
-    /// name, and of the fields shown those it has a value of.
-    fn row(
-        &self,
-        item: String,
-        label: &str,
-        values: &[Option<serde_json::Value>],
-    ) -> serde_json::Value {
-        let mut row = serde_json::Map::new();
-        row.insert("item".into(), item.into());
-        row.insert("name".into(), label.into());
-        for (name, value) in self.wanted.iter().zip(values).take(self.shown) {
-            if let Some(value) = value.as_ref().filter(|value| !value.is_null()) {
-                row.insert(name.clone(), value.clone());
+    /// The row of the item `id` whose value reads `value`: the entry an
+    /// inline collection holds it by (`{id, value}`), its value kept to the
+    /// fields shown when the read names them.
+    fn row(&self, id: &tilo_resource::Id, value: serde_json::Value) -> serde_json::Value {
+        let value = match (&self.shown, value) {
+            (Some(shown), serde_json::Value::Object(mut fields)) => {
+                fields.retain(|name, _| shown.contains(name));
+                serde_json::Value::Object(fields)
             }
-        }
-        serde_json::Value::Object(row)
+            (_, value) => value,
+        };
+        serde_json::json!({ "id": id.as_str(), "value": value })
     }
 }
 
@@ -217,35 +183,36 @@ impl Page {
     ) -> Option<usize> {
         // What the part holds now, newest first: a cursor counted against
         // the part as it was reads from its end where items went since.
-        let newest_first: Vec<(&str, tilo_resource::Id, String)> =
-            tilo_resource::table::resource_items(table, state)
-                .into_iter()
-                .flat_map(|(field, found)| {
-                    found
-                        .into_iter()
-                        .rev()
-                        .map(move |(id, label)| (field, id, label))
-                })
-                .collect();
-        let mut passed = skip.min(newest_first.len());
-        for (field, id, label) in newest_first.iter().skip(passed) {
-            let item = tilo_resource::items::item_resource_id_in(kind, field, id);
+        let mut held: Vec<(&'static str, Vec<Entry<'_>>)> = Vec::new();
+        tilo_resource::stored_items::each_entry(
+            table,
+            state,
+            &mut |field, id, item, of| match held.last_mut() {
+                Some((at, entries)) if *at == field => entries.push((id, item, of)),
+                _ => held.push((field, vec![(id, item, of)])),
+            },
+        );
+        let newest_first = held.iter().flat_map(|(field, entries)| {
+            entries
+                .iter()
+                .rev()
+                .map(move |(id, item, of)| (*field, id, *item, *of))
+        });
+        let total: usize = held.iter().map(|(_, entries)| entries.len()).sum();
+        let mut passed = skip.min(total);
+        for (field, id, item, of) in newest_first.skip(passed) {
             // An item the chain does not show is passed over, as one the
             // read does not ask for.
-            if hidden.contains(&item) {
+            if !hidden.is_empty()
+                && hidden.contains(&tilo_resource::items::item_resource_id_in(kind, field, id))
+            {
                 passed = passed.saturating_add(1);
                 continue;
             }
-            // An item is read only when the listing asks something of it.
-            let values = if listing.wanted.is_empty() {
-                Vec::new()
-            } else {
-                let read = tilo_resource::table::item_json(table, state, kind, &item).ok();
-                listing.values_of(read.as_ref())
-            };
+            let value = tilo_resource::stored_items::json(of, item);
             // An item the read does not ask for is passed over: the cursor
             // counts it, the page does not.
-            if !listing.takes(&values) {
+            if !listing.takes(&value) {
                 passed = passed.saturating_add(1);
                 continue;
             }
@@ -254,9 +221,9 @@ impl Page {
                 return None;
             }
             self.lists
-                .entry((*field).to_owned())
+                .entry(field.to_owned())
                 .or_default()
-                .push(listing.row(item, label, &values));
+                .push(listing.row(id, value));
             self.taken = self.taken.saturating_add(1);
             passed = passed.saturating_add(1);
         }
@@ -264,25 +231,27 @@ impl Page {
     }
 }
 
+/// An item a part holds: its id, its value and its type's table.
+type Entry<'a> = (
+    tilo_resource::Id,
+    &'a dyn Any,
+    &'static tilo_resource::table::ModelTable,
+);
+
 /// The names of the fields the chain's items have, as the newest item held
 /// reads: what a listing can be asked for. Empty while the chain holds no
 /// item.
 fn item_field_names(
     table: &'static tilo_resource::table::ModelTable,
-    kind: &str,
     parts: &[(u64, &dyn Any)],
 ) -> Vec<String> {
     for (_, state) in parts.iter().rev() {
-        for (field, found) in tilo_resource::table::resource_items(table, *state) {
-            let Some((id, _)) = found.last() else {
-                continue;
-            };
-            let item = tilo_resource::items::item_resource_id_in(kind, field, id);
-            if let Ok(serde_json::Value::Object(fields)) =
-                tilo_resource::table::item_json(table, *state, kind, &item)
-            {
-                return fields.keys().cloned().collect();
-            }
+        let mut newest = None;
+        tilo_resource::stored_items::each_entry(table, *state, &mut |_, _, item, of| {
+            newest = Some(tilo_resource::stored_items::json(of, item));
+        });
+        if let Some(serde_json::Value::Object(fields)) = newest {
+            return fields.keys().cloned().collect();
         }
     }
     Vec::new()

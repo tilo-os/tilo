@@ -9,7 +9,7 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use tilo_app::framework::{Chain, Chained, PART_ITEMS};
+use tilo_app::framework::{Chain, Chained, PART_ITEMS, PartLimits};
 use tilo_app::prelude::*;
 use tilo_app::resource::{DocumentId, ResourceOwners, ResourceStore};
 use tilo_app::tilo_resource::{Collection, NamesItem};
@@ -296,4 +296,56 @@ fn bytes_lookup_and_paging_stay_flat_from_one_thousand_to_fifty_thousand_items()
         small.page,
         large.page
     );
+}
+
+/// A chain's typed read answers each item as an inline collection of the
+/// same items holds it (`{id, value}`, as the model writes it), a page at a
+/// time, so one type reads a collection however it is kept.
+#[test]
+fn a_chained_read_answers_its_items_as_the_inline_collection_of_them_reads() {
+    let _limits = PartLimits::scoped(10, usize::MAX);
+    let (_store, chain) = chain();
+    add(&chain, 0, 35);
+    assert_eq!(chain.parts().len(), 4, "the items are kept in four parts");
+
+    // Every page, newest first.
+    let mut read = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = chain
+            .read(&serde_json::json!({ "pageSize": 7, "cursor": cursor }))
+            .unwrap();
+        read.extend(page["entries"].as_array().cloned().unwrap_or_default());
+        match page.get("nextCursor").and_then(serde_json::Value::as_str) {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    read.reverse();
+
+    // The same items in one inline collection, oldest first.
+    let mut inline = Entries::default();
+    for (_, part) in chain.parts() {
+        for (id, entry) in part.entries.iter() {
+            inline.entries.push(id.clone(), entry.clone());
+        }
+    }
+    let written = Model::to_json(&inline);
+    assert_eq!(read.len(), 35);
+    assert_eq!(serde_json::Value::Array(read), written["entries"]);
+
+    // The fields asked for keep the value to them; the id stays.
+    let narrow = chain
+        .read(&serde_json::json!({ "pageSize": 1, "fields": ["amount"] }))
+        .unwrap();
+    let newest = &written["entries"][34];
+    assert_eq!(
+        narrow["entries"],
+        serde_json::json!([{ "id": newest["id"], "value": { "amount": 34 } }])
+    );
+
+    // A row's id reads its item whole.
+    let id = newest["id"].as_str().unwrap();
+    let item = chain.read(&serde_json::json!({ "item": id })).unwrap();
+    assert_eq!(item["amount"], 34, "{item}");
 }

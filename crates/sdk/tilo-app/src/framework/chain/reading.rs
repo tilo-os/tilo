@@ -87,7 +87,7 @@ pub(super) fn read_spec(label: &str, chain: &str, item: Option<&str>) -> tilo_ac
             tilo_actions::ActionParam::optional(
                 "item",
                 tilo_actions::ParamType::Text,
-                "The item to read whole: one of the chain's, or one the kind derives over every part (default: the listing)",
+                "The item to read whole, by its id: one of the chain's, or one the kind derives over every part (default: the listing)",
             )
             .nullable(),
         ]
@@ -122,9 +122,9 @@ pub(super) fn read_spec(label: &str, chain: &str, item: Option<&str>) -> tilo_ac
     .of_kind(tilo_actions::ActionKind::Read)
     .with_description(
         "What this holds as typed data: the items of its parts, the newest part first, a page at \
-         a time with `cursor` passing on where a page ended, each row with its item's address, \
-         its name and the fields asked for (`fields`), only the items `where` holds of; an \
-         item's own content when the read is of that item.",
+         a time with `cursor` passing on where a page ended, each as its collection holds it \
+         (`{id, value}`, the value kept to the fields asked for in `fields`), only the items \
+         `where` holds of; an item's own content when the read is of that item, by its id.",
     )
     // Typed data for a program to reason about; a person reads what the
     // app shows.
@@ -262,6 +262,8 @@ impl ChainState {
             let table = part
                 .table
                 .ok_or_else(|| format!("{} answer no reads", part.label))?;
+            let address = self.address(table, &parts, item);
+            let item = address.as_deref().unwrap_or(item);
             return self.read_item(table, &parts, &hidden, item, read.version.as_deref());
         }
         let base = (self.base)();
@@ -290,5 +292,35 @@ impl super::Chains {
             }
         }
         read_parts
+    }
+}
+
+impl ChainState {
+    /// The address of the item a listing row names by its own `id`
+    /// (`<kind>/<field>/<id>`), found in the part keeping it; `None` for an
+    /// address already, or an id no part held here keeps.
+    fn address(
+        &self,
+        table: &'static tilo_resource::table::ModelTable,
+        parts: &[(u64, Rc<dyn Any>)],
+        item: &str,
+    ) -> Option<String> {
+        if item.contains('/') {
+            return None;
+        }
+        let id = tilo_resource::Id::from(item);
+        let index = self.indexed(parts).holding(&id)?;
+        let (_, state) = parts.iter().find(|(at, _)| *at == index)?;
+        let mut field = None;
+        tilo_resource::stored_items::each_entry(table, &**state, &mut |name, found, _, _| {
+            if field.is_none() && found == id {
+                field = Some(name);
+            }
+        });
+        Some(tilo_resource::items::item_resource_id_in(
+            self.part().kind,
+            field?,
+            &id,
+        ))
     }
 }

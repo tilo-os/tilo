@@ -3953,7 +3953,7 @@ impl ResourceStore {
     /// changes it (a frame's read of a record holds it).
     #[must_use]
     pub fn takes_writes(&self) -> bool {
-        self.try_set_mut().is_ok()
+        self.0.try_borrow_mut().is_ok()
     }
 
     pub fn read<R>(&self, id: &DocumentId, f: impl FnOnce(&AutoCommit) -> R) -> Option<R> {

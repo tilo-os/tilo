@@ -57,8 +57,6 @@ pub(super) struct PartType {
     pub(super) kind: &'static str,
     pub(super) label: &'static str,
     pub(super) held_whole: bool,
-    /// The fields a row of the listing carries when its caller names none.
-    pub(super) listed: &'static [&'static str],
     pub(super) table: Option<&'static tilo_resource::table::ModelTable>,
     pub(super) initialize: fn(&mut AutoCommit) -> Result<(), String>,
     /// Read the part a document holds, brought up to the resource's storage
@@ -152,7 +150,6 @@ impl<P: Chained> Of<P> {
         kind: P::KIND,
         label: P::LABEL,
         held_whole: P::HELD_WHOLE,
-        listed: P::LISTED,
         table: P::RESOURCE_TABLE,
         initialize: initialize::<P>,
         read: read_part::<P>,

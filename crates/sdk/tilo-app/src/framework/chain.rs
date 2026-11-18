@@ -266,12 +266,6 @@ pub trait Chained: Resource {
     /// change costs, not on what a device holds.
     const HELD_WHOLE: bool = false;
 
-    /// The fields a row of the chain's listing carries of its item when its
-    /// caller names none (the read's `fields`): what a person scans a list
-    /// of them by, such as an issue's number, its status and who has it. By
-    /// default a row names its item and says nothing else of it.
-    const LISTED: &'static [&'static str] = &[];
-
     /// Turn what a read's `where` says in the kind's own words into
     /// equalities on its items' fields, where the read is answered: a
     /// project as people name it into the resource an issue keeps. What
@@ -861,8 +855,9 @@ impl ChainCore {
 
     /// Answer the read the chain publishes ([`read_spec`]) from the parts this
     /// device holds: the items of the newest part first, a page at a time,
-    /// each named by the id a read of it takes, with the fields it was asked
-    /// for and only the items its `where` holds of ([`Listing`], `prepare`
+    /// each as an inline collection holds it (`{id, value}`, the value kept
+    /// to the fields asked for), so one type reads both, and only the items
+    /// its `where` holds of ([`Listing`], `prepare`
     /// putting the kind's own words into fields first); or one item's
     /// content, from the part keeping it. A page that reached the oldest part
     /// this device holds asks for the part before it and says so (`earlier`),
@@ -1076,13 +1071,15 @@ impl ChainCore {
     fn follow_parts(&self) -> bool {
         let mut moved = false;
         let generation = self.workspace.store.write_generation();
+        // Nothing held changes, and no earlier part arrives, while the store
+        // takes no write.
         if generation == u64::MAX || self.followed_at.get() != Some(generation) {
             moved = self.follow_held();
+            if self.part.held_whole {
+                self.hold_earlier();
+            }
             self.followed_at
                 .set(Some(self.workspace.store.write_generation()));
-        }
-        if self.part.held_whole {
-            self.hold_earlier();
         }
         if self.due() {
             moved |= self.look();
