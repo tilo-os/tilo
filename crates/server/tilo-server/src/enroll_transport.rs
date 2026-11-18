@@ -31,11 +31,12 @@ use super::protocol::{
     decrypt_pair_offer, decrypt_response, encrypt_pair_offer, verify_ack, verify_finalized,
 };
 use super::{
-    ApprovalIdentity, ApprovalOptions, DeviceCapabilities, IdentityPaths, JoinOptions, PAIR_MAGIC,
-    PairSolicitation, PathBuf, PendingApproval, PreparedJoin, SelectedNearby, WindowClosed,
-    accept_request, commit_approval, deadline_after, expected_pair, install_answer,
-    load_approval_identity, now_ns, pairing_code, prepare_approval, prepare_join, socket_timeout,
-    valid_solicitation, validity_start_ns, verify_answer, verify_response,
+    ApprovalIdentity, ApprovalOptions, Console, Decision, DeviceCapabilities, IdentityPaths,
+    JoinOptions, PAIR_MAGIC, PairSolicitation, PathBuf, PendingApproval, Person, PreparedJoin,
+    SelectedNearby, WaitingMachine, WindowClosed, accept_request, commit_approval, deadline_after,
+    expected_pair, install_answer, load_approval_identity, now_ns, pairing_code, prepare_approval,
+    prepare_join, socket_timeout, valid_solicitation, validity_start_ns, verify_answer,
+    verify_response,
 };
 use anyhow::{Context, bail};
 
@@ -140,6 +141,15 @@ async fn receive(connection: &iroh::endpoint::Connection) -> anyhow::Result<Vec<
 /// the person's devices in the order the token names them until one answers.
 pub(super) fn join(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<Option<PathBuf>> {
     let prepared = prepare_join(token_text, options)?;
+    // The code this machine shows, which the person's device computes from the
+    // same keys: what they compare with what this machine printed.
+    println!(
+        "Enrollment code: {}",
+        pairing_code(
+            prepared.request.device_public_key,
+            prepared.request.server_node_id,
+        )
+    );
     let dial = prepared.token.dial.clone();
     if dial.is_empty() {
         bail!("the enrollment token names no device to dial");
@@ -264,6 +274,7 @@ pub(super) fn wait_for_approval(
             device_public_key: device.verifying_key().to_bytes(),
             server_node_id,
             label: options.label.chars().take(80).collect(),
+            hardware: super::hardware_summary(),
             kind: options.kind,
         };
         let accepting = tokio::time::timeout(socket_timeout(options.timeout), endpoint.accept())
@@ -366,17 +377,42 @@ fn qr(line: &str) -> Option<String> {
 
 /// Serve the person's devices' enrollments over iroh for `window`: answer the
 /// machines that dial this device with a token, and the ones this device dials
-/// that show a code.
+/// that show a code. With `ask`, each machine that dials is put to the person
+/// first, and serving goes on until the window closes.
 pub(super) fn serve(
     options: &ApprovalOptions<'_>,
     relays: Option<&RelayMap>,
     dial_machine: Option<&EndpointAddr>,
     code: Option<&str>,
+    ask: bool,
+) -> anyhow::Result<()> {
+    let mut person = ask.then_some(Console);
+    serve_with(
+        options,
+        relays,
+        dial_machine,
+        code,
+        person.as_mut().map(|person| person as &mut dyn Person),
+    )
+}
+
+/// [`serve`], with `person` answering the machines that dial this device: the
+/// console in production, whatever a test hands it.
+#[allow(
+    clippy::future_not_send,
+    reason = "the approving device's root signer stays on this thread; the enrollment is driven on one runtime thread"
+)]
+pub(super) fn serve_with(
+    options: &ApprovalOptions<'_>,
+    relays: Option<&RelayMap>,
+    dial_machine: Option<&EndpointAddr>,
+    code: Option<&str>,
+    mut person: Option<&mut dyn Person>,
 ) -> anyhow::Result<()> {
     let identity = load_approval_identity(options)?;
     let runtime = runtime()?;
     runtime.block_on(async {
-        let endpoint = endpoint_for(&identity.device, relays).await?;
+        let endpoint = endpoint_for(&serving_key(&identity.device), relays).await?;
         let _ = tokio::time::timeout(Duration::from_secs(15), endpoint.online()).await;
         // The port an iroh endpoint took is not what callers wait for; they
         // wait for it to be up, which is here.
@@ -389,6 +425,7 @@ pub(super) fn serve(
                 "endpoint": hex::encode(endpoint.id().as_bytes()),
             })
         );
+        let dial = dial_of(&endpoint);
         if let Some(machine) = dial_machine {
             // The machine printed its address before its endpoint finished
             // coming up, so the dial is retried while its window is open.
@@ -402,28 +439,66 @@ pub(super) fn serve(
                     Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
                 }
             };
-            approve_shown_code(&connection, options, &identity, &dial_of(&endpoint), code).await?;
+            approve_shown_code(&connection, options, &identity, &dial, code).await?;
             connection.close(0u32.into(), b"approved");
         } else {
-            let incoming = tokio::time::timeout(socket_timeout(options.timeout), endpoint.accept())
-                .await
-                .map_err(|_| {
-                    WindowClosed("no machine dialed this device before the window closed")
-                })?;
-            let connection = incoming
-                .context("this device's endpoint closed")?
-                .await
-                .map_err(|error| anyhow::anyhow!("a machine's connection failed: {error}"))?;
-            approve_connection(&connection, options, &identity, &dial_of(&endpoint)).await?;
-            connection.close(0u32.into(), b"approved");
+            let deadline = deadline_after(socket_timeout(options.timeout))?;
+            let asking = person.is_some();
+            loop {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Err(WindowClosed(
+                        "no machine dialed this device before the window closed",
+                    )
+                    .into());
+                }
+                let Ok(incoming) = tokio::time::timeout(left, endpoint.accept()).await else {
+                    return Err(WindowClosed(
+                        "no machine dialed this device before the window closed",
+                    )
+                    .into());
+                };
+                let connection = incoming
+                    .context("this device's endpoint closed")?
+                    .await
+                    .map_err(|error| anyhow::anyhow!("a machine's connection failed: {error}"))?;
+                let answered =
+                    approve_connection(&connection, options, &identity, &dial, &mut person).await;
+                connection.close(0u32.into(), b"enrolled");
+                match answered {
+                    Ok(Admission::Admitted) if !asking => return Ok(()),
+                    Ok(_) => {}
+                    Err(error) if asking => {
+                        // One machine that does not verify is not the window
+                        // closing: the person is still there to answer the next.
+                        eprintln!("{error:#}");
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
         }
         endpoint.close().await;
         Ok(())
     })
 }
 
+/// What became of one machine that dialed this device.
+enum Admission {
+    Admitted,
+    Declined,
+}
+
+/// The key the enrollment endpoint answers under: derived from the device's
+/// own key, so serving an enrollment never contends with the session's own
+/// endpoint for the device's iroh identity. A token names this endpoint, and
+/// it exists while this device serves an enrollment.
+fn serving_key(device: &ed25519_dalek::SigningKey) -> ed25519_dalek::SigningKey {
+    tilo_user_identity::enrollment_serving_key(device)
+}
+
 /// Answer one connection: a machine that dialed this device with its token, or
-/// one this device dialed for its code.
+/// one this device dialed for its code. With `person`, the machine is put to
+/// them before anything is admitted.
 #[allow(
     clippy::future_not_send,
     reason = "the approving device's root signer stays on this thread; the enrollment is driven on one runtime thread"
@@ -433,15 +508,40 @@ async fn approve_connection(
     options: &ApprovalOptions<'_>,
     identity: &ApprovalIdentity,
     dial: &Dial,
-) -> anyhow::Result<()> {
+    person: &mut Option<&mut dyn Person>,
+) -> anyhow::Result<Admission> {
     let first = receive(connection).await?;
     if let Ok(solicitation) = postcard::from_bytes::<PairSolicitation>(&first) {
+        if let Some(person) = person.as_deref_mut() {
+            let waiting = WaitingMachine::of(
+                solicitation.device_public_key,
+                solicitation.server_node_id,
+                &solicitation.label,
+                &solicitation.hardware,
+            );
+            if person.decide(&waiting)? == Decision::Decline {
+                return Ok(Admission::Declined);
+            }
+        }
         let selected = select(&solicitation, options, identity, dial)?;
-        answer(connection, options, identity, Some(&selected)).await
+        answer(connection, options, identity, Some(&selected)).await?;
+        Ok(Admission::Admitted)
     } else {
         let pending = accept_request(&first, options, identity, None, None)?
             .context("the machine's request did not verify")?;
-        finish(connection, options, identity, &pending).await
+        if let Some(person) = person.as_deref_mut() {
+            let waiting = WaitingMachine::of(
+                pending.request.device_public_key,
+                pending.request.server_node_id,
+                &pending.request.label,
+                &pending.request.hardware,
+            );
+            if person.decide(&waiting)? == Decision::Decline {
+                return Ok(Admission::Declined);
+            }
+        }
+        finish(connection, options, identity, &pending).await?;
+        Ok(Admission::Admitted)
     }
 }
 
