@@ -146,6 +146,41 @@ fn held_devices(sync: &PersonalSync) -> Vec<[u8; 32]> {
     })
 }
 
+/// Two of the person's devices in one process: their own stores, and the link between them as the
+/// session keeps it, carried by hand.
+#[cfg(test)]
+pub(crate) mod linked {
+    use std::sync::Arc;
+
+    use collab_types::signer::DeviceSigner;
+    use tilo_peer_state::{PeerPersonal, PersonalStore, PersonalSync};
+    use tilo_user_identity::DeviceCert;
+
+    /// The person's own store on the device `cert` names, which `signer` signs for, as the session
+    /// opens it.
+    pub(crate) fn store_of(cert: &DeviceCert, signer: Arc<dyn DeviceSigner>) -> PersonalSync {
+        let store = PersonalStore::open(cert.user_public_key, cert.clone(), tilo_clock::wall())
+            .expect("a store for one of the person's devices");
+        PersonalSync::over(PeerPersonal::new(store), signer)
+    }
+
+    /// `to` takes what `from` hands it on a link between the two: who `from` is, then every
+    /// resource of the person's it holds, each admitted as the link admits it.
+    pub(crate) fn hand(from: &PersonalSync, to: &PersonalSync) {
+        let device = |store: &PersonalSync| store.read(|store| store.device().device_public_key);
+        let (from_device, to_device) = (device(from), device(to));
+        from.take(to_device, to.read(PersonalStore::hello))
+            .expect("the person's other device says who it is");
+        for frame in from
+            .catch_up(to_device)
+            .expect("what the store hands the person's other device")
+        {
+            to.take(from_device, frame)
+                .expect("the person's own device's store is taken");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(

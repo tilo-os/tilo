@@ -93,7 +93,7 @@ pub use held::{MAX_HELD_BYTES, MAX_HELD_INPUTS};
 pub use native_publication::NativePublicationCut;
 pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use personal::scopes::{device_resource, resource_owner};
-pub use personal::{PeerPersonal, PersonalStore};
+pub use personal::{PeerPersonal, PersonalStore, SETTINGS_KIND, WORKSPACES_KIND};
 pub use seed::{seed_workspace, workspace_seed};
 mod compaction_set;
 mod sealed_compaction;

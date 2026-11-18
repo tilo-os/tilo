@@ -383,6 +383,16 @@ impl PersonalSync {
         Ok(())
     }
 
+    /// What this device hands `remote` when a link to it starts: who this
+    /// device is, then, once the store holds a certificate that makes
+    /// `remote` one of the person's devices, every resource it holds, signed
+    /// with this device's key.
+    pub fn catch_up(&self, remote: [u8; 32]) -> Result<Vec<NeighbourMsg>, String> {
+        self.0
+            .store
+            .write(|store| store.catch_up(self.0.key.as_ref(), remote, tilo_clock::wall()))
+    }
+
     /// Admit one frame `remote` sent, as a link to it does: the store decides
     /// it, what this device now refuses and the devices it now holds go to
     /// every open link, a store that moved says so ([`Self::changes`]), and a

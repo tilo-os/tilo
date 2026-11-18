@@ -73,7 +73,10 @@ const DEVICES_KIND: &str = "identity.devices";
 /// The kind of the person's resource that lists their workspaces: which they
 /// have, which of their devices holds, hosts and shows each, and where each
 /// is hosted (`tilo_user_identity::WorkspaceDirectory` reads and writes it).
-const WORKSPACES_KIND: &str = "identity.workspaces";
+pub const WORKSPACES_KIND: &str = "identity.workspaces";
+/// The kind of the person's resource that holds the settings that follow
+/// them between their devices: one value per setting, under its key.
+pub const SETTINGS_KIND: &str = "identity.settings";
 /// The most devices that resource names to this device: entries past it are
 /// not read, and this device adds none.
 const MAX_DEVICES: usize = 256;
@@ -694,35 +697,32 @@ impl PersonalStore {
             .collect()
     }
 
-    /// The resource that lists the person's workspaces, as this device holds
-    /// it: the whole document, which `tilo_user_identity::WorkspaceDirectory`
-    /// reads. `None` while no device of theirs wrote it.
+    /// The person's own resource of `kind` ([`WORKSPACES_KIND`],
+    /// [`SETTINGS_KIND`]) as this device holds it: the whole document. `None`
+    /// while no device of theirs wrote it. No app reads these: the session
+    /// keeps them for the person.
     #[must_use]
-    pub fn workspace_list(&self) -> Option<Vec<u8>> {
-        self.document(DEVICES_APP, &Self::workspaces_id())
+    pub fn person_resource(&self, kind: &str) -> Option<Vec<u8>> {
+        self.document(DEVICES_APP, &collab_types::person_document_id(kind))
     }
 
-    /// Write the list of the person's workspaces as `whole`, the document as
-    /// this device holds it once it took in the store's: signed with `key`,
-    /// admitted here, and returned as the frame for their other devices.
-    pub fn publish_workspace_list(
+    /// Write `mutation` of the person's own resource of `kind`: signed with
+    /// `key`, admitted here, and returned as the frame for their other
+    /// devices.
+    pub fn publish_person_resource(
         &mut self,
-        whole: Vec<u8>,
+        kind: &str,
+        mutation: &DocumentMutation,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         self.publish(
             DEVICES_APP,
-            &Self::workspaces_id(),
-            &DocumentMutation::Snapshot(whole),
+            &collab_types::person_document_id(kind),
+            mutation,
             key,
             now,
         )
-    }
-
-    /// The id of the resource that lists the person's workspaces.
-    fn workspaces_id() -> String {
-        collab_types::person_document_id(WORKSPACES_KIND)
     }
 
     fn route(app: &str, resource: &str) -> Route {

@@ -809,7 +809,7 @@ impl Personal {
         {
             return false;
         }
-        let held = personal.read(tilo_peer_state::PersonalStore::workspace_list);
+        let held = personal.read(|store| store.person_resource(tilo_peer_state::WORKSPACES_KIND));
         let taken = match held.as_deref().map(|bytes| self.directory.merge(bytes)) {
             Some(Ok(taken)) => taken,
             Some(Err(error)) => {
@@ -827,10 +827,10 @@ impl Personal {
             None => !self.directory.heads().is_empty(),
         };
         if owed {
-            let whole = self.directory.save();
-            if let Err(error) =
-                personal.publish(|store, key, now| store.publish_workspace_list(whole, key, now))
-            {
+            let whole = collab_types::DocumentMutation::Snapshot(self.directory.save());
+            if let Err(error) = personal.publish(|store, key, now| {
+                store.publish_person_resource(tilo_peer_state::WORKSPACES_KIND, &whole, key, now)
+            }) {
                 tracing::warn!(%error, "the person's list of workspaces was not written to their store");
             }
         }
@@ -1759,54 +1759,24 @@ impl crate::Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::personal::linked::store_of;
     use tilo_desktop_model::{IdMinter, Workspace, WorkspaceId};
     use tilo_desktop_surface::seed_tree;
-    use tilo_network_actor::HostIdentity;
-    use tilo_peer_state::{PeerPersonal, PersonalStore, PersonalSync};
+    use tilo_peer_state::PersonalSync;
     use tilo_user_identity::DeviceCert;
 
-    /// The person's own store on the device `identity` names, as the session opens it.
-    fn store_of(identity: &HostIdentity) -> PersonalSync {
-        let store = PersonalStore::open(
-            identity.device_cert.user_public_key,
-            identity.device_cert.clone(),
-            tilo_clock::wall(),
-        )
-        .expect("a store for one of the person's devices");
-        PersonalSync::over(
-            PeerPersonal::new(store),
-            std::sync::Arc::clone(&identity.signer),
-        )
-    }
-
     /// One of the person's devices: its list and its own store.
-    type Device<'a> = (&'a mut Personal, &'a PersonalSync, &'a HostIdentity);
+    type Device<'a> = (&'a mut Personal, &'a PersonalSync);
 
     /// `to` takes in what `from` keeps of the list: `from` writes its list to its store, the link
     /// between the two devices carries the store as it does between two sessions — who `from` is,
     /// then every resource of the person's it holds — and `to` takes its store's list in. Whether
     /// `to`'s list moved.
     fn hand_over(from: Device<'_>, to: Device<'_>) -> bool {
-        let (from_list, from_store, from_identity) = from;
-        let (to_list, to_store, _) = to;
+        let (from_list, from_store) = from;
+        let (to_list, to_store) = to;
         from_list.sync_store(from_store);
-        let now = tilo_clock::wall();
-        let (from_device, to_device) = (
-            from_identity.device_cert.device_public_key,
-            to_store.read(|store| store.device().device_public_key),
-        );
-        from_store
-            .take(to_device, to_store.read(PersonalStore::hello))
-            .expect("the person's other device says who it is");
-        let frames = from_store
-            .store()
-            .write(|store| store.catch_up(from_identity.signer.as_ref(), to_device, now))
-            .expect("what the store hands the person's other device");
-        for frame in frames {
-            to_store
-                .take(from_device, frame)
-                .expect("the person's own device's store is taken");
-        }
+        crate::personal::linked::hand(from_store, to_store);
         to_list.sync_store(to_store)
     }
 
@@ -1823,7 +1793,7 @@ mod tests {
     }
 
     /// A device of the person's, certified for their own root key.
-    fn identity(user: u8, device: u8, label: &str) -> HostIdentity {
+    fn identity(user: u8, device: u8, label: &str) -> tilo_network_actor::HostIdentity {
         let person = ed25519_dalek::SigningKey::from_bytes(&[user; 32]);
         let this = ed25519_dalek::SigningKey::from_bytes(&[device; 32]);
         let mut cert = DeviceCert {
@@ -2155,18 +2125,18 @@ mod tests {
                 panic!("the other device holds one workspace");
             };
             let (a_id, a_name) = (*a_id, a_name.clone());
-            let a_store = store_of(&a_identity);
+            let a_store = store_of(&a_identity.device_cert, std::sync::Arc::clone(&a_identity.signer));
 
             let b = session();
             let b_identity = identity(0x11, 0x22, "The desktop");
             let b_device = b_identity.device_cert.device_public_key;
-            let b_store = store_of(&b_identity);
+            let b_store = store_of(&b_identity.device_cert, std::sync::Arc::clone(&b_identity.signer));
             let mut b_list = open(b_identity.clone(), Some(b_state.path()));
             b_list.publish_local(&b);
             assert!(
                 hand_over(
-                    (&mut a_list, &a_store, &a_identity),
-                    (&mut b_list, &b_store, &b_identity),
+                    (&mut a_list, &a_store),
+                    (&mut b_list, &b_store),
                 ),
                 "the person's own device's list is taken"
             );
@@ -2175,8 +2145,8 @@ mod tests {
                 .try_into()
                 .expect("this device holds one workspace of its own");
             hand_over(
-                (&mut b_list, &b_store, &b_identity),
-                (&mut a_list, &a_store, &a_identity),
+                (&mut b_list, &b_store),
+                (&mut a_list, &a_store),
             );
             assert!(
                 listed(&a_list, b_id).is_some(),
@@ -2265,11 +2235,11 @@ mod tests {
 
             let b = session();
             let b_identity = identity(0x11, 0x22, "The desktop");
-            let (a_store, b_store) = (store_of(&a_identity), store_of(&b_identity));
+            let (a_store, b_store) = (store_of(&a_identity.device_cert, std::sync::Arc::clone(&a_identity.signer)), store_of(&b_identity.device_cert, std::sync::Arc::clone(&b_identity.signer)));
             let mut b_list = open(b_identity.clone(), Some(b_state.path()));
             hand_over(
-                (&mut a_list, &a_store, &a_identity),
-                (&mut b_list, &b_store, &b_identity),
+                (&mut a_list, &a_store),
+                (&mut b_list, &b_store),
             );
             let adoption = b_list.adopt_into(&b, &|_| false);
             for opened in &adoption.enter {
@@ -2287,8 +2257,8 @@ mod tests {
             a.replace_tree(tree);
             a_list.publish_local(&a);
             hand_over(
-                (&mut a_list, &a_store, &a_identity),
-                (&mut b_list, &b_store, &b_identity),
+                (&mut a_list, &a_store),
+                (&mut b_list, &b_store),
             );
             let adoption = b_list.adopt_into(&b, &|_| false);
             assert_eq!(
@@ -2317,15 +2287,15 @@ mod tests {
             let b_device = b_identity.device_cert.device_public_key;
             let mut b_list = open(b_identity.clone(), Some(b_state.path()));
             b_list.publish_local(&b);
-            let (a_store, b_store) = (store_of(&a_identity), store_of(&b_identity));
+            let (a_store, b_store) = (store_of(&a_identity.device_cert, std::sync::Arc::clone(&a_identity.signer)), store_of(&b_identity.device_cert, std::sync::Arc::clone(&b_identity.signer)));
             // Each device's store carries what it holds to the other's.
             hand_over(
-                (&mut a_list, &a_store, &a_identity),
-                (&mut b_list, &b_store, &b_identity),
+                (&mut a_list, &a_store),
+                (&mut b_list, &b_store),
             );
             hand_over(
-                (&mut b_list, &b_store, &b_identity),
-                (&mut a_list, &a_store, &a_identity),
+                (&mut b_list, &b_store),
+                (&mut a_list, &a_store),
             );
             for opened in b_list.adopt_into(&b, &|_| false).enter {
                 open_here(&b, opened.workspace, &opened.name);
@@ -2363,8 +2333,8 @@ mod tests {
             // The sessiontop learns of it and honours it: the workspace leaves its session and is not opened
             // there again.
             hand_over(
-                (&mut a_list, &a_store, &a_identity),
-                (&mut b_list, &b_store, &b_identity),
+                (&mut a_list, &a_store),
+                (&mut b_list, &b_store),
             );
             let adoption = b_list.adopt_into(&b, &|_| false);
             assert_eq!(

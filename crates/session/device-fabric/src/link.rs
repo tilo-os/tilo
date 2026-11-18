@@ -9,9 +9,7 @@ use tilo_network_actor::fabric::{
     DeviceId, DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect,
 };
 
-use crate::{
-    ClipboardEntry, DeviceFabric, OwnerSession, PersonalFabricAction, RoamingSetting, WakeRoute,
-};
+use crate::{ClipboardEntry, DeviceFabric, OwnerSession, PersonalFabricAction, WakeRoute};
 
 /// One of this device's files, staged in its private Nearby spool, on its way
 /// to one of the person's other devices: the checkpoint the stream resumes
@@ -118,11 +116,6 @@ pub trait FabricLink {
     /// devices. A link whose transport does not carry wake routes yet ignores the offer.
     fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
         let _ = routes;
-    }
-    /// Offer the person's settings this device holds to their other devices. A link
-    /// whose transport does not carry settings yet ignores the offer.
-    fn share_settings(&self, settings: Vec<RoamingSetting>) {
-        let _ = settings;
     }
     /// Say the person's session on this device to their other devices: whether it is
     /// locked, when they last locked or unlocked it themselves, and when they last used
@@ -231,10 +224,6 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         (**self).share_clipboard(entries);
-    }
-
-    fn share_settings(&self, settings: Vec<RoamingSetting>) {
-        (**self).share_settings(settings);
     }
 
     fn share_wake_routes(&self, routes: Vec<WakeRoute>) {

@@ -217,8 +217,6 @@ mod session;
 mod session_package;
 #[path = "settings_authorship.rs"]
 mod settings_authorship;
-#[path = "settings_sync.rs"]
-mod settings_sync;
 #[path = "shared_folder.rs"]
 mod shared_folder;
 #[path = "shared_input.rs"]

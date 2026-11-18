@@ -28,7 +28,7 @@ pub use tilo_device_fabric::{
     FabricInputEvent, InputLease, Ipv4Subnet, MAX_INPUT_LEASE_MS, MAX_WAKE_ROUTES,
     MediaSourceLocator, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession, PersonalFabricAction,
     PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
-    REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ, RoamingSetting, ScrollUnit,
-    WakeInterfaceKind, WakeOutcome, WakeRoute,
+    REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ, ScrollUnit, WakeInterfaceKind,
+    WakeOutcome, WakeRoute,
 };
 pub use tilo_device_fabric::{clock, wake};
