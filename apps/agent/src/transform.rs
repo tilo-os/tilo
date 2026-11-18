@@ -1309,7 +1309,7 @@ impl TransformService {
                 .map(|app| app.id.as_str()),
             group = context
                 .and_then(|c| c.group.as_ref())
-                .map(|group| group.label.as_str()),
+                .and_then(|group| group.label.as_deref()),
             purpose = context.and_then(|c| c.purpose.as_deref()),
             "running a transform"
         );

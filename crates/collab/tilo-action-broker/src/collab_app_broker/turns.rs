@@ -341,6 +341,7 @@ impl AppBrokerState {
             .in_workspace(workspace)
             .named(&name)
             .in_agent_session(turn.session.clone())
+            .asked(&turn.asked)
             .in_new_execution();
         let actor = BrokerActor::for_caller(&caller);
         let (surface, action) = self

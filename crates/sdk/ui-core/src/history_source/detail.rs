@@ -114,9 +114,9 @@ impl HistorySelectionDetail {
             }
             if let Some(group) = context.group.as_ref() {
                 detail.group_id.get_or_insert_with(|| group.id.clone());
-                detail
-                    .group_label
-                    .get_or_insert_with(|| group.label.clone());
+                if detail.group_label.is_none() {
+                    detail.group_label.clone_from(&group.label);
+                }
             }
             if let Some(resource) = context.resource.as_ref()
                 && resources.insert((resource.id.clone(), resource.kind.clone()))

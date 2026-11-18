@@ -222,7 +222,7 @@ tilo_test_env::scenario! {
             assert!(!failed, "{ran}");
             let other =
                 McpServer::for_agent(host.clone(), "workspace".into(), "another-agent", "ada")
-                    .with_agent_session("mcp:other", "Another agent");
+                    .with_agent_session("mcp:other");
             let (history, failed) = history(&other).await;
             assert!(!failed, "{history}");
             assert_eq!(

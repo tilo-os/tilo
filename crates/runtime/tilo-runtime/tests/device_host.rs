@@ -385,7 +385,7 @@ async fn a_key_lists_enters_and_acts_in_a_workspace_its_persons_device_hosts() {
     );
 
     // Its agent surface acts there, on the device's broker, in a run of its own.
-    let entered = Entered::on_host(key, workspace_id, &device.workspace, "Visa backend #1");
+    let entered = Entered::on_host(key, workspace_id, &device.workspace);
     let apps = entered
         .handle(tool(2, "tilo_ls", &json!({})))
         .await

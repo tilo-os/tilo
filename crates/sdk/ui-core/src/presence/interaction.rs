@@ -1262,7 +1262,7 @@ pub(super) fn same_or_made_in(
 /// member only by its key gives no name: a raw id is none, so it says what kind of member acts.
 fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> String {
     let Some(member) = interaction.actor.member_id() else {
-        let name = interaction.group.as_ref().map(|group| group.label.clone());
+        let name = interaction.group.as_ref().and_then(|group| group.label.clone());
         return crate::i18n::widget_format(
             "member-shortcut",
             &[("name", name.unwrap_or_default().into())],
@@ -2061,9 +2061,8 @@ pub(crate) mod tests {
             shortcut.actor = Acting::automation("morning");
             shortcut.group = Some(tilo_actions::WorkGroup {
                 id: "run-7".into(),
-                label: "Morning".into(),
+                label: Some("Morning".into()),
                 kind: "shortcut".into(),
-                title: None,
                 declared_id: None,
             });
             assert_eq!(

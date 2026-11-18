@@ -988,8 +988,11 @@ view history<R>(of: R) {
                                     }
                                 }
                             }
+                            // What the agent was asked, where it was asked anything.
                             if let run = s.run {
-                                ui.Text(run.title, role: .caption, secondary: true)
+                                if run.title != "" {
+                                    ui.Text(run.title, role: .caption, secondary: true)
+                                }
                             }
                             if s.changes == 1 {
                                 if let v = s.versions.last() {

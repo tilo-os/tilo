@@ -387,9 +387,8 @@ fn claimed_run() -> tilo_actions::ActionContext {
     tilo_actions::ActionContext {
         group: Some(tilo_actions::WorkGroup {
             id: "agent-session:claimed".into(),
-            label: "Not me".into(),
+            label: Some("Not me".into()),
             kind: tilo_actions::context::AGENT_SESSION_GROUP.into(),
-            title: None,
             declared_id: None,
         }),
         ..tilo_actions::ActionContext::default()
@@ -676,7 +675,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
                 && by_host == Admitted::Runs
                 && let Some(run) = caller.agent_session()
             {
-                agents.push(run.label);
+                agents.push((caller.agent_name().unwrap_or_default().to_owned(), run.id));
             }
             // A command the host runs for anyone runs in the workspace's
             // shell, and answers with how it ran: never left waiting.
@@ -702,7 +701,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
     assert!(
         ["Claude Code", "Visa backend", "Applicant 7", "Assistant"]
             .iter()
-            .all(|name| agents.iter().any(|agent| agent == name)),
+            .all(|name| agents.iter().any(|(agent, _)| agent == name)),
         "every agent and key made a note: {agents:?}"
     );
     // The notes are kept in parts beside the notebook, which the page's
@@ -713,17 +712,17 @@ async fn both_routes_decide_every_callers_actions_alike() {
         let runs = runs_of(&mut browser, notes);
         if agents
             .iter()
-            .all(|name| runs.iter().any(|run| &run.label == name))
+            .all(|(_, id)| runs.iter().any(|run| &run.id == id))
             || Instant::now() >= deadline
         {
             break runs;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    for name in &agents {
+    for (name, id) in &agents {
         let named: BTreeSet<_> = runs
             .iter()
-            .filter(|run| run.label == *name)
+            .filter(|run| run.id == *id)
             .map(|run| (run.id.clone(), run.kind.clone()))
             .collect();
         if named.len() != 1
@@ -734,7 +733,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
             differences.push(format!("{name}'s changes on the host: runs {named:?}"));
         }
     }
-    if runs.iter().any(|run| run.label == "Not me") {
+    if runs.iter().any(|run| run.id == "agent-session:claimed") {
         differences.push("the host took a run a client claimed".into());
     }
 
@@ -756,7 +755,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
             .iter()
             .map(|(_, work)| work.actor.by.clone())
             .collect();
-        let all = agents.iter().all(|name| {
+        let all = agents.iter().all(|(name, _)| {
             seen.get(name)
                 .is_some_and(|member| narrated.contains(&agent_actor(member)))
         });
@@ -765,7 +764,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    for name in &agents {
+    for (name, _) in &agents {
         match seen.get(name) {
             Some(member) if member.agent && narrated.contains(&agent_actor(member)) => {}
             other => differences.push(format!(
@@ -773,7 +772,10 @@ async fn both_routes_decide_every_callers_actions_alike() {
             )),
         }
     }
-    if seen.keys().any(|label| !agents.contains(label)) {
+    if seen
+        .keys()
+        .any(|label| !agents.iter().any(|(name, _)| name == label))
+    {
         differences.push(format!(
             "the host spoke for someone who ran nothing: {:?}",
             seen.keys().collect::<Vec<_>>()
@@ -867,7 +869,7 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
     );
     let server = tilo_mcp::McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(tilo_mcp::Surface::Agent)
-        .with_agent_session("session-codex", "Codex");
+        .with_agent_session("session-codex");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
     assert!(listed.contains("notes"), "{listed}");
     let made = super::hosted_documents::tool(
@@ -957,7 +959,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     );
     let server = tilo_mcp::McpServer::new(actions, cluster.clone(), person)
         .with_surface(tilo_mcp::Surface::Agent)
-        .with_agent_session("session-guest", "Claude Code");
+        .with_agent_session("session-guest");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
 
     // The host founded the workspace, so its operator owns it and the host

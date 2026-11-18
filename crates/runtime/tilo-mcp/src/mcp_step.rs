@@ -59,8 +59,7 @@ impl DeclaredInvocation {
     /// under its title, and naming its id.
     pub(super) fn onto(&self, group: &mut tilo_actions::WorkGroup) {
         if !self.title.is_empty() {
-            group.label.clone_from(&self.title);
-            group.title = Some(self.title.clone());
+            group.label = Some(self.title.clone());
         }
         group.declared_id = Some(self.id.clone());
     }
@@ -160,18 +159,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 title: String::new(),
             }));
         };
-        let title: String = title
+        let title = title
             .as_str()
-            .filter(|title| !title.trim().is_empty())
-            .ok_or("_meta so.tilo.mcp invocation title must be a non-empty string")?
-            .chars()
-            .filter(|character| !character.is_control())
-            .take(MAX_INVOCATION_TITLE)
-            .collect();
-        Ok(Some(DeclaredInvocation {
-            id,
-            title: title.trim().to_owned(),
-        }))
+            .and_then(|title| tilo_actions::context::one_line(title, MAX_INVOCATION_TITLE))
+            .ok_or("_meta so.tilo.mcp invocation title must be a non-empty string")?;
+        Ok(Some(DeclaredInvocation { id, title }))
     }
 }
 

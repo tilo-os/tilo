@@ -204,7 +204,9 @@ impl SemanticInteraction {
         }
         if let Some(group) = &self.group {
             validate_id("group.id", &group.id)?;
-            validate_label("group.label", &group.label)?;
+            if let Some(label) = &group.label {
+                validate_label("group.label", label)?;
+            }
             validate_id("group.kind", &group.kind)?;
         }
         validate_phase(&self.phase)?;
@@ -395,9 +397,8 @@ mod tests {
             anchor,
             group: Some(WorkGroup {
                 id: "task:42".into(),
-                label: "Prepare budget".into(),
+                label: Some("Prepare budget".into()),
                 kind: "task".into(),
-                title: None,
                 declared_id: None,
             }),
         }

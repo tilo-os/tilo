@@ -570,7 +570,7 @@ impl AuthorDirectory {
         let task = entry
             .and_then(|entry| entry.group.as_ref())
             .filter(|group| group.kind == crate::history_source::steps::AGENT_SESSION)
-            .map(|task| task.label.clone())
+            .and_then(|task| task.label.clone())
             .filter(|label| !label.trim().is_empty());
         let attribution = software.then(|| {
             let mut attribution = HistoryAttribution::new(invoker.acting.clone());

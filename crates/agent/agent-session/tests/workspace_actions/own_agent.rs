@@ -122,7 +122,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         person.clone(),
     )
     .with_surface(Surface::Agent)
-    .with_agent_session("session-3", "Claude Code");
+    .with_agent_session("session-3");
 
     // Terminal: what it lists, it runs, as listed; a session first, then
     // that session's own listing.
@@ -419,7 +419,7 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
         person,
     )
     .with_surface(Surface::Agent)
-    .with_agent_session("session-7", "Claude Code");
+    .with_agent_session("session-7");
 
     // Nobody started Notes: the listing says how to, and that works.
     let (stopped, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
@@ -547,7 +547,7 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
                     .all(|group| group.as_ref().is_some_and(|group| {
                         group.kind == "agent-session"
                             && group.id.starts_with("agent-session:")
-                            && group.label == "Claude Code"
+                            && group.label.is_none()
                     })),
                 "every change the agent made is its run: {groups:?}"
             );
@@ -578,7 +578,7 @@ fn agent_runs(
         .map(|run| {
             McpServer::new(session.clone(), WORKSPACE.into(), person.to_owned())
                 .with_surface(Surface::Agent)
-                .with_agent_session(*run, "Claude Code")
+                .with_agent_session(*run)
         })
         .collect()
 }

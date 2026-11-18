@@ -201,10 +201,7 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
         person,
     )
     .with_surface(Surface::Agent)
-    .with_agent_session(
-        hosted_documents::INVOCATION,
-        hosted_documents::INVOCATION_LABEL,
-    );
+    .with_agent_session(hosted_documents::INVOCATION);
 
     // The workspace lists Browser like any app: an agent names it `browser`.
     let listing = agent

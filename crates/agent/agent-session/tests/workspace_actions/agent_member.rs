@@ -36,7 +36,7 @@ async fn note_by(hosted: &Hosted, computer: &Device, host: &Device, name: &str, 
         &id,
         &person,
     )
-    .with_agent_session(format!("session-{title}"), name);
+    .with_agent_session(format!("session-{title}"));
     let answer = server
         .handle(
             serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",

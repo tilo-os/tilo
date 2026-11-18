@@ -358,7 +358,7 @@ impl Core {
             mark.props.insert("noun_one".to_owned(), Value::Text(one));
             mark.props.insert("noun".to_owned(), Value::Text(many));
         }
-        if let Some(run) = &newest.run {
+        if let Some(run) = newest.run.as_ref().filter(|run| !run.title.is_empty()) {
             mark.props
                 .insert("run".to_owned(), Value::Text(run.title.clone()));
         }
@@ -839,12 +839,16 @@ impl Core {
             many.props.insert("secondary".to_owned(), Value::Bool(true));
             held.children.push(many);
         }
-        // A step of a run offers the run, as the mark did: pressing it shows what the run did.
+        // A step of a run offers the run, as the mark did: pressing it shows what the run did. It
+        // says what the run was asked, where it was asked anything.
         if let Some(run) = newest.run.as_ref() {
             let mut review = UiNode::empty("ui.Button", &format!("{row_key}~run"));
-            review
-                .props
-                .insert("label".to_owned(), Value::text(run.title.clone()));
+            let label = if run.title.is_empty() {
+                self.word("tilolang-history-show", "Show changes")
+            } else {
+                run.title.clone()
+            };
+            review.props.insert("label".to_owned(), Value::text(label));
             review.props.insert("role".to_owned(), Value::text("plain"));
             review.events.insert(
                 "press".to_owned(),

@@ -125,47 +125,11 @@ tilo_test_env::scenario! {
         assert_eq!(groups.len(), 2);
         assert_ne!(groups[0].id, groups[1].id);
         assert_eq!(
-            (groups[0].label.as_str(), groups[1].label.as_str()),
-            ("Painter", "Critic")
+            (groups[0].label.as_deref(), groups[1].label.as_deref()),
+            (None, None),
+            "a connection is asked nothing, whatever its client calls itself"
         );
         assert!(groups.iter().all(|group| group.kind == "agent-session"));
-    }
-
-    phase a_client_label_is_bounded_and_printable;
-    // The label a session's run carries is the client's declared name, bounded
-    // and printable; one that names nothing is an MCP agent.
-    {
-        let host = StubHost::default();
-        let invoked = Arc::clone(&host.invoked);
-        run(async {
-            for name in [Some(format!("a\u{7}b{}", "x".repeat(500))), None] {
-                let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-                server
-                    .handle(
-                        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-                            "protocolVersion":"2025-06-18","capabilities":{},
-                            "clientInfo":{"name":name,"version":"1"},
-                        }}),
-                    )
-                    .await
-                    .unwrap();
-                tool(
-                    &server,
-                    "tilo_invoke",
-                    json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY}),
-                )
-                .await;
-            }
-        });
-        let labels: Vec<_> = invoked
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|request| request.context.clone().unwrap().group.unwrap().label)
-            .collect();
-        assert!(labels[0].starts_with("ab"), "{labels:?}");
-        assert_eq!(labels[0].chars().count(), 64, "a long name is bounded");
-        assert_eq!(labels[1], "MCP agent");
     }
 
     phase continued_history_and_client_names_cannot_select_execution_identity;
@@ -323,10 +287,7 @@ tilo_test_env::scenario! {
             groups.iter().all(|group| group.id == groups[0].id),
             "{groups:?}"
         );
-        assert!(
-            groups.iter().all(|group| group.label == "Painter"),
-            "{groups:?}"
-        );
+        assert!(groups.iter().all(|group| group.label.is_none()), "{groups:?}");
     }
 }
 
