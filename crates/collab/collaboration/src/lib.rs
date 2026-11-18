@@ -106,6 +106,7 @@ pub mod invocation_scope;
 pub mod local_document_action;
 pub mod local_identity;
 pub mod portable_storage;
+pub mod resource;
 pub mod state;
 
 // The clock, wake routing and host inputs, under the paths the toolkit
