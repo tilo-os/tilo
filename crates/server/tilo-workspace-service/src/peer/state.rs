@@ -431,11 +431,23 @@ pub(super) async fn handle_delta(
             "author does not match authenticated device".into(),
         ));
     }
+    let refused = |refusal| {
+        refused_change(
+            peer,
+            session.own_device_public_key,
+            attached,
+            *author_device_public_key,
+            &env,
+            refusal,
+        )
+    };
     if super::over_storage(peer, session, &ws).await {
         // Neither kept nor forwarded, and the session stays, as for a
         // refused change below.
         tracing::warn!(device = %hex::encode(peer.device_public_key), "refused a change to a full workspace");
-        return Ok(None);
+        let refusal = tilo_server_protocol::refusal::Refusal::Full;
+        file_refusal_of(&ws, &env, &refusal.to_string()).await;
+        return Ok(refused(refusal));
     }
     // A page asks a record's channel for access on a protocol of its own, and is
     // refused there by name.
@@ -466,7 +478,7 @@ pub(super) async fn handle_delta(
         // refused change below.
         return Ok(None);
     }
-    if change_refusal(
+    if let Some(refusal) = change_refusal(
         &ws,
         peer,
         session.own_device_public_key,
@@ -475,11 +487,11 @@ pub(super) async fn handle_delta(
         &env,
     )
     .await
-    .is_some()
     {
         // Neither kept nor forwarded. The session stays: one bad change is
-        // not a membership decision.
-        return Ok(None);
+        // not a membership decision. Its author's session is told which
+        // changes of which document did not land, and why.
+        return Ok(refused(refusal));
     }
     let observed = match (&env, session.compactor) {
         (Envelope::Delta { delta, .. }, Some(compactor)) => compactor.observe(delta),
@@ -548,6 +560,76 @@ async fn change_refusal(
         return Some(reason);
     }
     governor_refusal(ws, author, env).await
+}
+
+/// What `author`'s own session is told of `env`, a change the workspace
+/// refuses for `refusal`: the document the change writes, the changes it
+/// carries as their hashes, and why. `None` for a change that names no
+/// document, and for one another connection carried: a server attached to the
+/// workspace carries a member's changes under the member's key, and that
+/// member reads the verdict the workspace filed ([`file_refusal_of`]), since
+/// this connection is not its session.
+fn refused_change(
+    peer: &AuthenticatedPeer,
+    own_device: &[u8; 32],
+    attached: bool,
+    claimed: [u8; 32],
+    env: &Envelope,
+    refusal: tilo_server_protocol::refusal::Refusal,
+) -> Option<Envelope> {
+    if deciding_author(peer, attached, own_device, &claimed) != peer.device_public_key {
+        return None;
+    }
+    let body = governor_notice(env)?;
+    let Ok(neighbour_wire::NeighbourMsg::AppDocument {
+        app_id,
+        cluster_id,
+        document_id,
+        ..
+    }) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body)
+    else {
+        return None;
+    };
+    let Envelope::Delta { workspace_id, .. } = env else {
+        return None;
+    };
+    Some(Envelope::ChangeRefused {
+        workspace_id: *workspace_id,
+        app_id,
+        cluster_id,
+        document_id,
+        changes: changes_of(&body),
+        refusal,
+    })
+}
+
+/// The changes `body`, a document write, carries, as their hashes: those its
+/// envelope claims, else the changes of its payload itself (a writer that
+/// claims none, and every snapshot).
+fn changes_of(body: &[u8]) -> Vec<[u8; 32]> {
+    let claimed = tilo_peer_state::document_frame::claimed_changes(body);
+    if !claimed.is_empty() {
+        return claimed;
+    }
+    let Ok(neighbour_wire::NeighbourMsg::AppDocument { envelope, .. }) =
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+    else {
+        return Vec::new();
+    };
+    let Ok(mutation) = collab_types::DocumentMutation::decode(&envelope.payload) else {
+        return Vec::new();
+    };
+    let bytes = match mutation {
+        collab_types::DocumentMutation::Snapshot(bytes)
+        | collab_types::DocumentMutation::Incremental(bytes) => bytes,
+    };
+    tilo_failure::ignored!(
+        "a payload that is not automerge bytes names no change",
+        collab_types::parse_changes(&bytes).unwrap_or_default()
+    )
+    .iter()
+    .map(|change| change.hash().0)
+    .collect()
 }
 
 /// Why the workspace refuses `env`, `author`'s change, as its own copy of the
@@ -740,10 +822,11 @@ pub(super) async fn handle_delta_prefix(
         }));
     };
     trace_all(&envelopes, "server_authorized");
-    if writes_for_an_environment(peer, session, &envelopes)
-        || refused_prefix(&workspace, peer, session, &envelopes).await
-    {
+    if writes_for_an_environment(peer, session, &envelopes) {
         return Ok(None);
+    }
+    if let Err(answer) = refused_prefix(&workspace, peer, session, &envelopes).await {
+        return Ok(answer);
     }
     let governor_tap = workspace.lock().await.governor_tap.clone();
     // Every change of the prefix reaches the workspace's governor once it is
@@ -775,13 +858,14 @@ pub(super) async fn handle_delta_prefix(
 
 /// Whether the server keeps none of `envelopes`, a checkpoint prefix: a change
 /// of it the workspace refuses decides the whole prefix, which is kept whole
-/// or not at all.
+/// or not at all. `Err` carries what the refused change's author's session is
+/// told of it, when its own connection sent it.
 async fn refused_prefix(
     workspace: &SharedWorkspace,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     envelopes: &[Envelope],
-) -> bool {
+) -> Result<(), Option<Envelope>> {
     let attached = workspace.lock().await.attached(&peer.device_public_key);
     for envelope in envelopes {
         let Envelope::Delta {
@@ -797,17 +881,28 @@ async fn refused_prefix(
             session.own_device_public_key,
             author_device_public_key,
         );
-        if desktop_refusal(workspace, author, envelope).await.is_some() {
-            return true;
+        if let Some(refusal) = desktop_refusal(workspace, author, envelope).await {
+            return Err(refused_change(
+                peer,
+                session.own_device_public_key,
+                attached,
+                *author_device_public_key,
+                envelope,
+                refusal,
+            ));
         }
-        if governor_refusal(workspace, author, envelope)
-            .await
-            .is_some()
-        {
-            return true;
+        if let Some(refusal) = governor_refusal(workspace, author, envelope).await {
+            return Err(refused_change(
+                peer,
+                session.own_device_public_key,
+                attached,
+                *author_device_public_key,
+                envelope,
+                refusal,
+            ));
         }
     }
-    false
+    Ok(())
 }
 
 pub(super) async fn authorized_state_source(

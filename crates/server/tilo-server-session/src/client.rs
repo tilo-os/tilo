@@ -192,6 +192,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::Commit { workspace_id, .. }
         | Envelope::Committed { workspace_id, .. }
         | Envelope::CommitRefused { workspace_id, .. }
+        | Envelope::ChangeRefused { workspace_id, .. }
         | Envelope::RetiredLiveJoin { workspace_id }
         | Envelope::LiveLeave { workspace_id }
         | Envelope::RetiredLive { workspace_id, .. }

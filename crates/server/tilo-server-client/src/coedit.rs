@@ -230,6 +230,20 @@ pub enum Inbound {
         /// Why.
         refusal: tilo_server_protocol::refusal::Refusal,
     },
+    /// The server kept none of the document changes this session published:
+    /// the document they write, the changes as their hashes, and why.
+    ChangeRefused {
+        /// The app whose document the changes write.
+        app_id: String,
+        /// The workspace the document belongs to, as the change named it.
+        cluster_id: String,
+        /// The document.
+        document_id: String,
+        /// The changes the refused change carried, as their hashes.
+        changes: Vec<[u8; 32]>,
+        /// Why.
+        refusal: tilo_server_protocol::refusal::Refusal,
+    },
 }
 
 /// What the governor of a workspace says about its calls; see

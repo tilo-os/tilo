@@ -173,6 +173,7 @@ pub(super) async fn handle_envelope(
         | Envelope::RemoteActionUndeliverable { .. }
         | Envelope::Committed { .. }
         | Envelope::CommitRefused { .. }
+        | Envelope::ChangeRefused { .. }
         | Envelope::LiveLeave { .. }
         | Envelope::RetiredLive { .. }
         | Envelope::RetiredLiveMember { .. }

@@ -3593,6 +3593,26 @@ fn host_event(
             tracing::warn!(ws = %ws, host = %host, %refusal, "the host did not keep a sealed write");
             return None;
         }
+        // The server kept none of what this device published on the session:
+        // its verdict is the workspace's own state, filed where this device
+        // reads the change it is not on.
+        tilo_server_session::Inbound::ChangeRefused {
+            app_id,
+            document_id,
+            changes,
+            refusal,
+            ..
+        } => {
+            tracing::debug!(
+                ws = %ws,
+                app = %app_id,
+                document = %document_id,
+                refused = changes.len(),
+                %refusal,
+                "the server did not keep published changes"
+            );
+            return None;
+        }
         HostInbound::RemoteAction { from, frame } => {
             let Ok(author) = EndpointId::from_bytes(&from) else {
                 return None;

@@ -694,6 +694,26 @@ pub enum Envelope {
         #[serde(with = "serde_bytes")]
         list: Vec<u8>,
     },
+
+    /// The server kept none of a [`Self::Delta`]'s document changes: the
+    /// document they write, the changes themselves, and why. Only the device
+    /// that sent them sees it, so peers that predate it never receive it.
+    ChangeRefused {
+        /// The workspace the changes were sent to.
+        workspace_id: WorkspaceId,
+        /// The app whose document the changes write.
+        app_id: String,
+        /// The workspace the document belongs to, as the change named it: one
+        /// a change names but is not sent to is refused all the same.
+        cluster_id: String,
+        /// The document.
+        document_id: String,
+        /// The changes the refused change carried, as their hashes: what a
+        /// reader withdraws and a person's history names as missing.
+        changes: Vec<[u8; 32]>,
+        /// Why.
+        refusal: crate::refusal::Refusal,
+    },
 }
 
 /// A member's own record a device opens ([`Envelope::OpenDocument`]): the app
@@ -795,6 +815,7 @@ impl Envelope {
             Self::HostSaid { .. } => "HostSaid",
             Self::KeyFollower => "KeyFollower",
             Self::PersonalList { .. } => "PersonalList",
+            Self::ChangeRefused { .. } => "ChangeRefused",
         }
     }
 
@@ -820,6 +841,7 @@ impl Envelope {
             | Self::Commit { workspace_id, .. }
             | Self::Committed { workspace_id, .. }
             | Self::CommitRefused { workspace_id, .. }
+            | Self::ChangeRefused { workspace_id, .. }
             | Self::RetiredLiveJoin { workspace_id }
             | Self::LiveLeave { workspace_id }
             | Self::RetiredLive { workspace_id, .. }

@@ -507,6 +507,10 @@ impl ServerCoeditSession {
     /// (`Ping`/`Pong`) and other non-co-edit frames are skipped; a
     /// `NotAuthorised` reply or a closed connection ends the stream
     /// (`None`).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per frame a server sends: the translation is read top to bottom"
+    )]
     pub async fn recv(&self) -> Option<Inbound> {
         loop {
             let envelope = self.client.recv().await?;
@@ -596,6 +600,22 @@ impl ServerCoeditSession {
                     refusal,
                 } if workspace_id == self.workspace_id => {
                     return Some(Inbound::CommitRefused { op, refusal });
+                }
+                Envelope::ChangeRefused {
+                    workspace_id,
+                    app_id,
+                    cluster_id,
+                    document_id,
+                    changes,
+                    refusal,
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::ChangeRefused {
+                        app_id,
+                        cluster_id,
+                        document_id,
+                        changes,
+                        refusal,
+                    });
                 }
                 Envelope::NotAuthorised { .. } => return None,
                 Envelope::RemoteActionUndeliverable {
