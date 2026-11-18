@@ -36,8 +36,8 @@ use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
+use tilo_session_actions::SessionActions;
 use tilo_session_client::device::Device as Entered;
-use tilo_session_client::remote::SessionActions;
 
 use crate::login::{Device, NOT_LOGGED_IN};
 

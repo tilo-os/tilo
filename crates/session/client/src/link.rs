@@ -6,9 +6,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
-use crate::remote::Heard;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_actions::Heard;
 
 use crate::engine::Engine;
 use crate::network::{Closed, Cmd, Event, Outbox};
@@ -800,7 +800,7 @@ impl Outbox for Link {
 /// This session as what asking another device's actions needs ([`Heard`]): the frames it carries
 /// to a device's key, and what it heard back, on a queue of its own, so any number of askers on
 /// one session each hear every answer.
-impl From<&Link> for Arc<dyn crate::remote::RemoteSession> {
+impl From<&Link> for Arc<dyn tilo_session_actions::RemoteSession> {
     fn from(link: &Link) -> Self {
         Arc::new(Asking {
             outbox: Arc::clone(&link.outbox),
@@ -817,7 +817,7 @@ struct Asking {
     events: Events,
 }
 
-impl crate::remote::RemoteSession for Asking {
+impl tilo_session_actions::RemoteSession for Asking {
     fn send_remote_action(
         &self,
         workspace_id: WorkspaceId,

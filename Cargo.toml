@@ -67,6 +67,7 @@ default-members = [
 ]
 members = [
     "crates/session/client",
+    "crates/session/session-actions",
     "crates/lang/tilolang",
     "crates/lang/tilolang-lex",
     "crates/lang/tilolang-cli",
@@ -437,6 +438,7 @@ members = [
     "crates/runtime/tilo-file-provider",
     "crates/runtime/tilo-identity",
     "crates/runtime/tilo-mcp",
+    "crates/runtime/device-mcp",
     "crates/runtime/tilo-runtime",
     "crates/runtime/environment",
     "crates/runtime/egress",

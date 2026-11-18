@@ -3,7 +3,6 @@
 //! `tilo` command and the API serve it without the app toolkit.
 
 pub mod devices;
-pub mod enter;
 mod images;
 pub mod lines;
 pub mod session_api;

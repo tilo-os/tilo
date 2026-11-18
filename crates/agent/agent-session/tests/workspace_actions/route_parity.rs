@@ -873,7 +873,7 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
     let codex = Browser::open(&hosted, &computer, &host).await;
     let _ = tilo_session_client::device::session_as_agent(&codex.peer, "Codex").await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let actions = tilo_session_client::remote::SessionActions::new(
+    let actions = tilo_session_actions::SessionActions::new(
         &codex.peer,
         codex.workspace,
         host.cert.device_public_key,
@@ -962,7 +962,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         super::resource_support::open_admitted_peer(&hosted, &computer, &host, &cluster).await;
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(guest.verifying_key().to_bytes());
-    let actions = tilo_session_client::remote::SessionActions::new(
+    let actions = tilo_session_actions::SessionActions::new(
         &agent.peer,
         agent.workspace,
         host.cert.device_public_key,

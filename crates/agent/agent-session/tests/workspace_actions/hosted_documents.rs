@@ -23,7 +23,7 @@ use super::*;
 use serde_json::{Value, json};
 use tilo_desktop_search::Source as _;
 use tilo_mcp::McpServer;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 /// The apps the agent works in.
 pub const PDF: &str = "so.tilo.pdf-viewer";

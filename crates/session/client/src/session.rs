@@ -20,12 +20,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use crate::remote::{Heard, NOT_CONNECTED};
 use crate::{
     CallPicture, CallShown, Closed, Cmd, Event, Failure, FailureKind, Link, Outbox, PageShown,
     PeerStatus, Reports, TransportPhase, content::Kept,
 };
 use std::time::Duration;
+use tilo_session_actions::{Heard, NOT_CONNECTED};
 
 use tilo_server_client::{CoeditPayload, DeviceSigner};
 use tilo_server_protocol::Envelope;

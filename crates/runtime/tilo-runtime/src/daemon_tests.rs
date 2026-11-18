@@ -742,7 +742,7 @@ tilo_test_env::scenario! {
             ])
             .unwrap()
             .forward,
-            Some(tilo_mcp::devices::Forward {
+            Some(tilo_device_mcp::Forward {
                 device: "Build box".into(),
                 workspace: None
             })

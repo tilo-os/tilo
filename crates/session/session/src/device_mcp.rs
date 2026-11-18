@@ -1,6 +1,6 @@
 //! The MCP server toward the person's other devices.
 //!
-//! This device's endpoint answers [`tilo_mcp::devices::ALPN`]: an
+//! This device's endpoint answers [`tilo_device_mcp::ALPN`]: an
 //! agent on another of the person's own devices connects to this session's
 //! MCP server over iroh, and is asked about and served exactly as a program of
 //! this login is ([`crate::mcp_server`]), as an agent the person delegates to,
@@ -33,10 +33,9 @@
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use tilo_device_mcp::{Arrival, Arrivals, DeviceServer, Forward, OtherDevices, PersonsDevices};
 use tilo_lock::MutexRecover as _;
-use tilo_mcp::devices::{
-    Arrival, Arrivals, DeviceDirectory, DeviceServer, Forward, OtherDevices, PersonsDevices, Reach,
-};
+use tilo_mcp::devices::{DeviceDirectory, Reach};
 use tilo_service::Wake;
 
 use crate::mcp_server::{PeerRefusal, Place, Room};
@@ -83,7 +82,7 @@ impl DeviceAgents {
         devices: Arc<dyn PersonsDevices>,
     ) -> (Vec<u8>, Box<dyn iroh::protocol::DynProtocolHandler>) {
         (
-            tilo_mcp::devices::ALPN.to_vec(),
+            tilo_device_mcp::ALPN.to_vec(),
             Box::<dyn iroh::protocol::DynProtocolHandler>::from(self.server(devices)),
         )
     }
@@ -116,7 +115,7 @@ impl DeviceAgents {
     pub(crate) fn forward(&self, stream: UnixStream, forward: &Forward) {
         match self.servers.get() {
             Some(servers) => servers.serve_forward(stream, forward),
-            None => tilo_mcp::devices::refuse_forward(
+            None => tilo_device_mcp::refuse_forward(
                 stream,
                 "this desktop reaches none of your other devices: it takes no part in the \
                  peer network"

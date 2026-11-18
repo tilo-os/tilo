@@ -16,7 +16,7 @@ use tilo_server::hosted_browser::{
     APP, BrowserMeter, BrowserSessions, HostedBrowsers, TITLE, Window,
 };
 use tilo_server_protocol::hosted::Material;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 /// The provider a fake environment's window publishes under: its peer
 /// in the session holding it, as a window's is.

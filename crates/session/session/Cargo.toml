@@ -81,6 +81,7 @@ tilo-desktop = { path = "../desktop" }
 # The member's own client of the peer network: the boards of who is here and this
 # device's own word, which this session hosts with its own endpoint.
 tilo-session-client = { path = "../client" }
+tilo-session-actions = { path = "../session-actions" }
 # The roles every host runs: the shell's document and the layout it holds.
 tilo-session-core = { path = "../core" }
 tilo-desktop-model = { path = "../desktop-model" }
@@ -347,6 +348,7 @@ tilo-native-media = { path = "../native-media" }
 # program of this login through once the person admits it.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 tilo-mcp = { path = "../../runtime/tilo-mcp" }
+tilo-device-mcp = { path = "../../runtime/device-mcp" }
 # The files daemon's link to the network: the session answers and dials for it
 # on the device's endpoint (`fs::net`).
 fs = { package = "tilo-fs", path = "../../system/fs", default-features = false, features = ["filesystem"] }

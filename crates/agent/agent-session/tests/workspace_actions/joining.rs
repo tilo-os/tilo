@@ -5,8 +5,8 @@
 //! that workspace admits it, and the request is answered then.
 use super::*;
 use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+use tilo_session_actions::Heard;
 use tilo_session_client::Event;
-use tilo_session_client::remote::Heard;
 use tilo_session_client::{Cmd, Outbox};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

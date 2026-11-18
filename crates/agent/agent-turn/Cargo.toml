@@ -12,7 +12,7 @@ tilo-mcp = { path = "../../runtime/tilo-mcp" }
 agent-provider-config = { path = "../provider-config" }
 # The provider an agent's process reaches the session's actions by, carried over whatever link
 # the process has to its host.
-tilo-session-client = { path = "../../session/client" }
+tilo-session-actions = { path = "../../session/session-actions" }
 tilo-actions = { path = "../../collab/actions" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-lock = { path = "../../platform/tilo-lock" }

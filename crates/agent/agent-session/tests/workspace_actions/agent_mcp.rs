@@ -5,8 +5,8 @@
 use super::*;
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
+use tilo_session_actions::SessionActions;
 use tilo_session_client::Outbox;
-use tilo_session_client::remote::SessionActions;
 
 /// The app the agent writes in.
 const WRITER: &str = "so.tilo.word-processor";

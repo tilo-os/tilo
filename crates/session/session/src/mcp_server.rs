@@ -102,7 +102,7 @@ struct Facts {
     app: Option<String>,
     /// The other device of the person's it connected from, over iroh ([`crate::device_mcp`]);
     /// `None` for a program of this login.
-    origin: Option<tilo_mcp::devices::Origin>,
+    origin: Option<tilo_device_mcp::Origin>,
     /// The socket of this login it came in by: the session's own, or an environment's.
     entrance: Origin,
 }
@@ -1858,17 +1858,13 @@ fn certify(
         now_ns.saturating_add(MAX_AGENT_CERT_NS),
     )
     .map_err(|error| format!("the agent certificate does not sign: {error}"))?;
+    let digest = runtime_identity::collaboration_join_digest(admitted.workspace)
+        .map_err(|error| error.to_string())?;
     runtime_collab::AgentJoinIdentity {
         workspace_id: admitted.workspace.to_owned(),
         device_certificate: serde_json::to_vec(certificate).map_err(|error| error.to_string())?,
         certificate: cert.encode(),
-        proof: key
-            .sign(
-                &runtime_identity::collaboration_join_digest(admitted.workspace)
-                    .map_err(|error| format!("the workspace's join cannot be signed: {error}"))?,
-            )
-            .to_bytes()
-            .to_vec(),
+        proof: key.sign(&digest).to_bytes().to_vec(),
     }
     .encode()
     .map_err(|error| error.to_string())
@@ -2455,7 +2451,7 @@ enum From {
     /// own socket ([`environments`]).
     Environment(u32, Arc<environments::Environment>),
     /// Another of the person's devices, over iroh ([`crate::device_mcp`]).
-    Device(Box<tilo_mcp::devices::Origin>),
+    Device(Box<tilo_device_mcp::Origin>),
     /// The login's confined shell runtime, by the pid that opened it ([`is_shell_runtime`]): it
     /// asks for its environments' sockets, and is served nothing else.
     ShellRuntime(u32),
@@ -2530,13 +2526,13 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     else {
         return;
     };
-    if let Some(forward) = tilo_mcp::devices::forward_request(&first) {
+    if let Some(forward) = tilo_device_mcp::forward_request(&first) {
         // A client of this login asks to be carried to another of the person's devices, which
         // decides whether it works there.
         tracing::info!(pid, device = %forward.device, "MCP server: a client asks to work on another device");
         match device_agents {
             Some(device_agents) => device_agents.forward(stream, &forward),
-            None => tilo_mcp::devices::refuse_forward(
+            None => tilo_device_mcp::refuse_forward(
                 stream,
                 "this desktop reaches none of your other devices".into(),
             ),

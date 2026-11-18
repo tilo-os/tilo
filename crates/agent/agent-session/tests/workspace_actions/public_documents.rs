@@ -29,7 +29,7 @@ use tilo_actions::remote::{CataloguePage, ReceiptStatus};
 use tilo_mcp::McpServer;
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::directory::Listing;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 use tilo_user_identity::DeviceCapabilities;
 
 const NOTES: &str = "so.tilo.notes";
@@ -351,7 +351,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
 /// channel it opens with is where a post goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_sent() {
-    let (hosted, host, workspace, _state) = lounge_with_chat().await;
+    let (hosted, host, workspace, _state) = Box::pin(lounge_with_chat()).await;
 
     // A member of the workspace, through its action API.
     let (member_root, _) = tilo_user_identity::UserIdentity::generate("Member", 2);
@@ -452,7 +452,7 @@ async fn chat_history(hosted: &Hosted, workspace: &str) -> (Vec<u8>, usize) {
 /// chat's genesis over the one people talk in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
-    let (hosted, host, workspace, _state) = lounge_with_chat().await;
+    let (hosted, host, workspace, _state) = Box::pin(lounge_with_chat()).await;
     let before = chat_history(&hosted, &workspace).await;
 
     // A member of the workspace, whose device runs their agent.

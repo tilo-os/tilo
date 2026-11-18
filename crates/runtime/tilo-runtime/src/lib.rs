@@ -142,7 +142,7 @@ pub trait RuntimeServices: Sized {
     /// The MCP servers of the person's other devices, as this host reaches
     /// them from its own endpoint: what a `--connect --device` client is
     /// carried to. `None` for a host that reaches none.
-    fn other_devices(&self) -> Option<std::sync::Arc<tilo_mcp::devices::OtherDevices>> {
+    fn other_devices(&self) -> Option<std::sync::Arc<tilo_device_mcp::OtherDevices>> {
         None
     }
 }

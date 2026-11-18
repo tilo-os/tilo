@@ -7,7 +7,7 @@ use super::*;
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
 use tilo_peer_state::join::Role;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 const TASKS: &str = "so.tilo.tasks";
 const NOTES: &str = "so.tilo.notes";
@@ -176,7 +176,7 @@ async fn ended(mcp: &mut super::api::Mcp<'_>, path: &str, args: Value) -> Value 
 async fn a_group_whose_write_is_refused_is_answered_failed() {
     use super::api::{ISSUER, Mcp};
     use super::api_on_server::{api_on_server, approved_key, headers, json_of};
-    let on_server = api_on_server(ISSUER).await;
+    let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&root, "Ada's browser", DeviceCapabilities::member());

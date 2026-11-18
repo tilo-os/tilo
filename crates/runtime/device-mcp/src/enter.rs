@@ -5,7 +5,7 @@
 //! enters it there, over iroh, wherever it is hosted:
 //!
 //! - **A device of the person's** (their desktop, a paired box) hosts it: the
-//!   key dials that device's MCP server ([`crate::devices`]), which admits
+//!   key dials that device's MCP server ([`crate`]), which admits
 //!   it as the person's server does (`tilo_workspace_service::workspace_access`): a
 //!   certificate the person's root signed, unrevoked, current, its scope
 //!   reaching the workspace, and the person's "allow this agent?" where the
@@ -15,7 +15,7 @@
 //!   one of the person's devices and enters the workspace as every device does
 //!   ([`tilo_session_client::device::Device::enter_workspace`]): the server
 //!   invites it in on that session and it redeems the invitation there. The
-//!   agent surface ([`crate::McpServer`]) runs here over the server's actions.
+//!   agent surface ([`McpServer`]) runs here over the server's actions.
 //!
 //! Either way the caller gets an [`Entered`], which answers MCP JSON-RPC.
 
@@ -24,12 +24,12 @@ use iroh::Endpoint;
 use serde_json::Value;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_server_session::workspaces::KeepingDeviceAddress;
+use tilo_session_actions::SessionActions;
 use tilo_session_client::device::Device;
-use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::DeviceCert;
 
-use crate::McpServer;
 use collab_types::WorkspaceId;
+use tilo_mcp::McpServer;
 
 /// A key of the person's: its signing key and the certificate their root (or
 /// a grant of theirs) signed for it.
@@ -108,7 +108,7 @@ pub async fn enter(
     if *endpoint.id().as_bytes() != key.cert.device_public_key {
         return Err("the endpoint dials as another key than the one entering".to_owned());
     }
-    let dialed = crate::devices::open(
+    let dialed = crate::open(
         endpoint,
         device.endpoint_addr.clone(),
         &key.cert,
@@ -117,10 +117,10 @@ pub async fn enter(
     )
     .await
     .map_err(|why| match why {
-        crate::devices::NotOpened::Refused(reason) => {
+        crate::NotOpened::Refused(reason) => {
             format!("{} did not let this key in: {reason}", address.name)
         }
-        crate::devices::NotOpened::Unreachable(reason) => {
+        crate::NotOpened::Unreachable(reason) => {
             tracing::debug!(%reason, name = %address.name, "a key did not enter its workspace");
             "The device that keeps this workspace is offline. Ask the person to open Tilo on \
              it, then try again."
@@ -142,14 +142,14 @@ impl Entered {
         let actions = device.actions(workspace_id);
         // The apps the device lists for this workspace: what a task's programs compile against
         // there.
-        let catalogue = crate::task_hosts::WorkspaceCatalogue::new(
+        let catalogue = tilo_mcp::task_hosts::WorkspaceCatalogue::new(
             actions.clone(),
             tilo_actions::remote::Caller::authenticated(user, key),
         );
         let server = McpServer::new(actions, workspace.to_owned(), person.clone())
             .with_agent_session(uuid::Uuid::new_v4().simple().to_string())
             .with_task_hosts(Some(std::sync::Arc::new(
-                crate::task_hosts::TaskHosts::new(Some(&person), std::sync::Arc::new(catalogue)),
+                tilo_mcp::task_hosts::TaskHosts::new(Some(&person), std::sync::Arc::new(catalogue)),
             )));
         Self::Server {
             server: Box::new(server),
@@ -163,12 +163,12 @@ impl Entered {
 /// request a line out, its answer the line back with its id; what the device
 /// says in between (a notification) is not an answer.
 pub struct DeviceLines {
-    lines: crate::devices::Lines,
+    lines: crate::Lines,
     live: std::sync::atomic::AtomicBool,
 }
 
 impl DeviceLines {
-    fn new(dialed: crate::devices::Dialed) -> Self {
+    fn new(dialed: crate::Dialed) -> Self {
         Self {
             lines: dialed.into_lines(),
             live: std::sync::atomic::AtomicBool::new(true),

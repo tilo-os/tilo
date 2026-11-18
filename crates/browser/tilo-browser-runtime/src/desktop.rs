@@ -22,7 +22,7 @@ use tilo_desktop_model::{IdMinter, Layout, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_lock::MutexRecover as _;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 use tilo_session_core::layout::{LayoutDocument, Store};
 use ui::application::{
     AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,

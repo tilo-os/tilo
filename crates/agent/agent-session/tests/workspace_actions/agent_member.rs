@@ -4,7 +4,7 @@
 //! agent under another name is another agent.
 use super::*;
 use tilo_mcp::McpServer;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 const NOTES: &str = "so.tilo.notes";
 

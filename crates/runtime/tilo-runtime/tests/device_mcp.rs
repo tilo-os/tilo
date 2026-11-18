@@ -28,10 +28,11 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
     ReceiptStatus,
 };
-use tilo_mcp::devices::{
-    ALPN, Arrival, Arrivals, DeviceServer, Forward, Origin, OtherDevices, PersonsDevices, agent_id,
+use tilo_device_mcp::{
+    ALPN, Arrival, Arrivals, DeviceServer, Forward, Origin, OtherDevices, PersonsDevices,
     ask_forward, forward_request, open, read_list,
 };
+use tilo_mcp::devices::agent_id;
 use tilo_mcp::session_api::{Beside, Consent, read_first_line, serve_with};
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_runtime::personal_devices::PersonalDevices;
@@ -512,10 +513,10 @@ async fn dial(
     b: &B,
     key: &SigningKey,
     certificate: &DeviceCert,
-) -> Result<(), tilo_mcp::devices::NotOpened> {
+) -> Result<(), tilo_device_mcp::NotOpened> {
     let endpoint = endpoint(key).await;
     let dialed = open(&endpoint, addr(&b.endpoint), certificate, None, false).await;
-    dialed.map(tilo_mcp::devices::Dialed::close)
+    dialed.map(tilo_device_mcp::Dialed::close)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -822,7 +823,7 @@ fn address_on_b(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_list_names() {
-    use tilo_mcp::enter::{Key, enter};
+    use tilo_device_mcp::enter::{Key, enter};
     let person = Person::new();
     let b = b(&person, &[]).await;
     let all = grant(
@@ -875,7 +876,7 @@ async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_key_for_another_workspace_or_a_revoked_key_is_refused_at_the_device() {
-    use tilo_mcp::enter::{Key, enter};
+    use tilo_device_mcp::enter::{Key, enter};
     let person = Person::new();
     let revoked = grant(
         &person.root,

@@ -39,7 +39,6 @@ pub mod message_policy;
 pub mod narration;
 pub mod network;
 pub mod presence;
-pub mod remote;
 mod replica;
 /// This session's presence tracks, as a member's client says on them.
 pub mod saying;

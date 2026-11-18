@@ -36,7 +36,7 @@ use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use runtime_portal::environment_socket::{self, Lease, Request};
 use serde_json::{Value, json};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_mcp::devices::{ALPN, NotOpened, open};
+use tilo_device_mcp::{ALPN, NotOpened, open};
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_runtime::personal_devices::PersonalDevices;
 use tilo_service::Questions;

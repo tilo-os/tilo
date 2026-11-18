@@ -65,7 +65,7 @@ struct Told {
     stepped: AtomicBool,
 }
 
-impl Doing<tilo_session_client::remote::SessionActions> for Told {
+impl Doing<tilo_session_actions::SessionActions> for Told {
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
     }
@@ -80,7 +80,7 @@ impl Doing<tilo_session_client::remote::SessionActions> for Told {
     }
     async fn went_on(
         &self,
-    ) -> Result<Option<WentOn<tilo_session_client::remote::SessionActions>>, String> {
+    ) -> Result<Option<WentOn<tilo_session_actions::SessionActions>>, String> {
         if !self.stepped.swap(true, Ordering::SeqCst) {
             return Ok(None);
         }
@@ -99,7 +99,7 @@ impl Doing<tilo_session_client::remote::SessionActions> for Told {
 
 /// A server whose provider is reached through a carried link that a thread of the test carries to
 /// `provider`, as a host would.
-fn served(provider: Arc<TestProvider>) -> McpServer<tilo_session_client::remote::SessionActions> {
+fn served(provider: Arc<TestProvider>) -> McpServer<tilo_session_actions::SessionActions> {
     let workspace = WorkspaceIdOf::new();
     let (actions, carried) = carried(workspace, || {});
     let caller = Caller::local_person("person").in_workspace(workspace.to_string());
