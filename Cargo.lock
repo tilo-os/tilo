@@ -7911,6 +7911,7 @@ dependencies = [
  "tilo-endpoint-reachability",
  "tilo-server-protocol",
  "tilo-user-identity",
+ "workspace-hack",
 ]
 
 [[package]]
