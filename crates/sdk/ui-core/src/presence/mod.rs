@@ -1327,6 +1327,17 @@ impl PresenceCtx {
     }
 
     fn kind_label(&self, user: &MemberId, name: &str) -> String {
+        self.named_for(user, name, false)
+    }
+
+    /// `name` for `user` where the agent's own mark stands beside it (a card, a chip): its name
+    /// alone, the mark saying what it is, never a kind word joined to the name. A person and
+    /// software acting for someone read as [`Self::display_name`] has them.
+    pub(crate) fn name_beside_mark(&self, user: &MemberId, name: &str) -> String {
+        self.named_for(user, name, true)
+    }
+
+    fn named_for(&self, user: &MemberId, name: &str, marked: bool) -> String {
         if let MemberId::Person(person) = user {
             return self.labels.label(person.as_str(), name);
         }
@@ -1346,6 +1357,8 @@ impl PresenceCtx {
         }
         if user.is_bot() {
             crate::i18n::widget_format("member-bot", &[("name", name.into())])
+        } else if marked {
+            name.to_owned()
         } else {
             crate::history_source::agent_display_label(name)
         }

@@ -685,7 +685,7 @@ impl PresenceCtx {
         if matches!(interaction.phase, InteractionPhase::Locating) {
             return None;
         }
-        let actor = actor_label(self, interaction);
+        let actor = actor_label(self, interaction, false);
         let state = match &interaction.phase {
             InteractionPhase::Waiting {
                 reason: Some(reason),
@@ -973,7 +973,7 @@ impl PresenceCtx {
             scene.fill(Fill::NonZero, transform, actor_color, None, &dot);
             scene.stroke(&Stroke::new(1.2), transform, glyph_outline, None, &dot);
         }
-        let actor_label = actor_label(self, interaction);
+        let actor_label = actor_label(self, interaction, true);
         let style = theme.text(TextRole::Caption);
         let first = tr.elide_to_width_style(&actor_label, (rect.width() - 40.0) as f32, &style);
         tr.draw_style(
@@ -1307,12 +1307,17 @@ fn roster_name<'a>(
     }
 }
 
-fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> String {
+/// Who acts in `interaction`. On the card (`marked`) the agent's own mark stands beside its name,
+/// so the name stands alone; a reader, who sees no mark, hears its kind with it.
+fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction, marked: bool) -> String {
     let roster_name = roster_name(presence, interaction);
     // A roster that knows a member only by its key names it by that key; a
     // raw hex id is no name, so the card says what kind of member acts
     // instead.
     match (interaction.actor.member_id(), roster_name) {
+        (Some(member), Some(name)) if !member.is_person() && marked => {
+            presence.name_beside_mark(member, name)
+        }
         (Some(member), Some(name)) if !member.is_person() => presence.kind_label(member, name),
         (Some(_), Some(name)) => name.to_owned(),
         (None, name) => crate::i18n::widget_format(
@@ -2226,7 +2231,7 @@ mod tests {
                 declared_id: None,
             });
             assert_eq!(
-                actor_label(&presence, &shortcut),
+                actor_label(&presence, &shortcut, true),
                 "Morning · Shortcut",
                 "named by its run"
             );
@@ -2446,9 +2451,11 @@ mod tests {
                 let mut agent = interaction(13, 1, InteractionPhase::Applying);
                 agent.actor = Acting::agent("opaque-runtime-id");
                 let mut presence = PresenceCtx::empty();
-                assert_eq!(actor_label(&presence, &agent), "Agent");
+                assert_eq!(actor_label(&presence, &agent, true), "Agent");
                 presence.names.insert(user.clone(), "Quill".into());
-                assert_eq!(actor_label(&presence, &agent), "Quill · Agent");
+                // The card names it beside its mark; a reader hears what it is.
+                assert_eq!(actor_label(&presence, &agent, true), "Quill");
+                assert_eq!(actor_label(&presence, &agent, false), "Quill · Agent");
             }
             // A roster that knows a member only by its key hands that key
             // back as its name; the card names the kind of member instead.
@@ -2459,7 +2466,7 @@ mod tests {
                 presence.set_display_name(user.clone(), key);
                 let mut keyed = interaction(12, 1, InteractionPhase::Committed);
                 keyed.actor = Acting::person(key);
-                assert_eq!(actor_label(&presence, &keyed), "Member");
+                assert_eq!(actor_label(&presence, &keyed, true), "Member");
                 assert_eq!(
                     presence.interaction_status_label(&keyed),
                     "Member: Working in Draft.md"
