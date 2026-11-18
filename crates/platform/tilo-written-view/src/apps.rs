@@ -161,7 +161,8 @@ fn words(verb: &str) -> String {
 /// collection as the list of its items in their order, each with its id; an enum as its case's
 /// name, with the values the case carries where it carries any ([`case`]); a map as its
 /// entries by key ([`entries`]); an actor as the actor it is ([`actor`]); a record as its
-/// declared fields under their names.
+/// declared fields under their names, one a store keeps without a key as the value its absent
+/// key stands for ([`kept_without_a_key`]).
 fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
     let ty = ty.trim();
     if ty == "RichText" {
@@ -212,11 +213,27 @@ fn normal(meta: &PackageMeta, ty: &str, json: &Json) -> Json {
     let mut fields = Map::new();
     for field in &declared.fields {
         let key = field.id.rsplit('.').next().unwrap_or(&field.name);
-        if let Some(value) = held.get(key).or_else(|| held.get(&field.name)) {
-            fields.insert(field.name.clone(), normal(meta, &field.ty, value));
+        let read = match held.get(key).or_else(|| held.get(&field.name)) {
+            Some(value) => Some(normal(meta, &field.ty, value)),
+            None => kept_without_a_key(&field.ty),
+        };
+        if let Some(read) = read {
+            fields.insert(field.name.clone(), read);
         }
     }
     Json::Object(fields)
+}
+
+/// What a store keeps a field of the type `ty` as by leaving its key out, which is what the
+/// absent key reads as there (`tilo_resource`'s `Model::missing` of a value kept whole): a
+/// number at 0, a flag that is off. `None` for a type whose key a store always keeps.
+fn kept_without_a_key(ty: &str) -> Option<Json> {
+    match ty.trim() {
+        "Int" => Some(Json::from(0)),
+        "Float" => Some(Json::from(0.0)),
+        "Bool" => Some(Json::Bool(false)),
+        _ => None,
+    }
 }
 
 /// `json`, a stored value of `meta`'s enum `name`, as a reading holds it: a plain case as its
