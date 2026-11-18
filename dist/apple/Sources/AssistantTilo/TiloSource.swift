@@ -1637,8 +1637,20 @@ public final class TiloSource: AssistantSource {
         } while tasksWanted
     }
 
+    /// Give the assistant a task: an issue of the workspace's tracker, filed by the person and
+    /// given to their assistant through Tasks' own action. Their server starts the work.
     public func addTask(_ title: String) async throws {
-        throw SourceProblem.refused("Tasks cannot be reached from this app yet")
+        let wanted = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !wanted.isEmpty else { return }
+        guard let assistant else { throw noAssistant }
+        do {
+            try await engine.giveIssue(wanted, to: assistant)
+        } catch TiloEngine.Problem.refused(let code, let reason) {
+            // A server that keeps no tracker says so in words a person reads.
+            if TiloSource.offersNone(code) { throw SourceProblem.refused("Tilo keeps no tasks for your assistant in this workspace yet") }
+            throw SourceProblem.refused(reason.isEmpty ? code : reason)
+        }
+        await readTasks()
     }
 
     public nonisolated func automations() -> AsyncStream<[Automation]> { automationList.stream() }

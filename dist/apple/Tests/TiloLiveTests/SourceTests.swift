@@ -640,7 +640,7 @@ final class TiloSourceTests: XCTestCase {
         try await start()
         try await enter()
         let refused: [(String, () async throws -> Void)] = [
-            ("Tasks cannot be reached from this app yet", { try await self.source.addTask("Renew the passport") }),
+            ("You have no assistant in this workspace yet", { try await self.source.addTask("Renew the passport") }),
             ("Tilo cannot pause an assistant yet", { try await self.source.setAssistantOn(false) }),
             ("No password manager is connected to Tilo yet", { try await self.source.fetchSecret(for: "k1") }),
             ("A file cannot be fetched into this app yet", { _ = try await self.source.file(of: "f1") }),

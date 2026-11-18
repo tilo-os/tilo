@@ -310,7 +310,7 @@ public enum EngineScript {
       // The chain the workspace's tracker keeps its issues in (Tasks' `tasks.issues`), as every
       // device of the workspace names it, and what is asked of it for the app.
       const issues = 'chain:derived:issues@derived:default@tab:0000000000000000';
-      const issueActions = new Set(['read']);
+      const issueActions = new Set(['read', 'create']);
       const holds = given => {
         if (typeof given !== 'string' || !pass || given.length !== pass.length) return false;
         let differs = 0;
@@ -434,7 +434,8 @@ public enum EngineScript {
         },
         // The tasks of the person's assistant are issues of the workspace's tracker, which this
         // page does not hold: it shows Chat. They are asked of the workspace's server as the
-        // person on this device: the read of the tracker's issues, and nothing else of Tasks.
+        // person on this device: the read of the tracker's issues and the action that files one,
+        // and nothing else of Tasks.
         async tasks(given, action, argument) {
           if (!holds(given) || !issueActions.has(action)) return unknown('tasks.issues', action);
           if (!device) return noDevice();
