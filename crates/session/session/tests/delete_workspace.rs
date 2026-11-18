@@ -27,27 +27,6 @@ fn settle(session: &mut Session) {
     }
 }
 
-/// Write what the session shows where a person can look at it, when the run asked for shots:
-/// `TILO_SURFACE_SHOTS` names where they go.
-fn capture(session: &mut Session, name: &str) {
-    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
-    else {
-        return;
-    };
-    let frame = session
-        .compositor()
-        .screenshot("HEADLESS-1")
-        .expect("a frame of the session");
-    let pixels = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
-        .expect("the frame's pixels fill it");
-    let mut png = Vec::new();
-    pixels
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .expect("the shot");
-    std::fs::create_dir_all(&directory).expect("the directory for shots");
-    std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
-}
-
 /// The workspace shown on the shell, by id.
 fn front(session: &Session) -> String {
     session
@@ -119,7 +98,7 @@ fn deleting_a_workspace_asks_in_its_own_question_and_keep_deletes_nothing() {
         !asking_on_a_banner(&session),
         "deleting is a question of its own, not a banner"
     );
-    capture(&mut session, "delete-asked");
+    crate::common::shot(&mut session, "delete-asked");
 
     // Keep: the question goes and the workspace stays, with everything in it.
     let state = session

@@ -137,21 +137,6 @@ fn press(session: &mut Session, (x, y, width, height): (f64, f64, f64, f64)) {
     }
 }
 
-/// Write what the sheet shows where a person can look at it, when the run asked for shots:
-/// `TILO_SURFACE_SHOTS` names where they go.
-fn capture(app: &mut HeadlessApp<InviteApp>, name: &str) {
-    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
-    else {
-        return;
-    };
-    // Draw what the sheet holds now: the link arrives while the sheet is up,
-    // and the frame may still be the one from before it.
-    app.settle();
-    std::fs::create_dir_all(&directory).expect("the directory for shots");
-    app.harness()
-        .render_png(&directory.join(format!("{name}.png")));
-}
-
 /// The invitations the shell's own action lists for the workspace in front.
 fn invitations_at_the_shell(session: &mut Session) -> Vec<serde_json::Value> {
     let listed = session
@@ -362,7 +347,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         1,
         "the link is the shell's own invitation"
     );
-    capture(&mut app, "invite-sheet");
+    crate::common::app_shot(&mut app, "invite-sheet");
 
     // The link is shown as a code to scan: a scanner reads back exactly what the person hands over.
     let made = session
@@ -564,7 +549,7 @@ fn a_link_left_on_the_community_site_is_short_and_the_site_never_sees_its_key() 
     // kilobytes need.
     let made = state.invite().created.expect("the link the sheet made");
     assert_eq!(made.link, link, "the sheet shows the link it hands over");
-    capture(&mut app, "invite-sheet-short");
+    crate::common::app_shot(&mut app, "invite-sheet-short");
     let (read, version) = scanned(made.link.as_bytes()).expect("a scanner reads the short code");
     assert_eq!(
         read,

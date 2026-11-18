@@ -631,27 +631,6 @@ fn strip_width(session: &Session, strip: u64) -> Option<u32> {
         .map(|strip| u32::try_from(strip.width).expect("a width of per-mille fits its count"))
 }
 
-/// Keep the screen as `name.png` where `TL_SHELL_SHOTS` names.
-fn keep(session: &mut Session, name: &str) {
-    let Some(dir) = std::env::var_os("TL_SHELL_SHOTS") else {
-        return;
-    };
-    let shot = session
-        .compositor()
-        .screenshot("HEADLESS-1")
-        .expect("the screen");
-    let dir = std::path::PathBuf::from(dir);
-    std::fs::create_dir_all(&dir).expect("the shots' directory");
-    image::save_buffer(
-        dir.join(format!("{name}.png")),
-        &shot.rgba,
-        shot.width,
-        shot.height,
-        image::ColorType::Rgba8,
-    )
-    .expect("the shot is written");
-}
-
 /// The strip and place controls press the place they name, on a device whose every id is above
 /// `i64::MAX` : a key read as a number reaches nothing of this session.
 #[test]
@@ -683,7 +662,7 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
     until(&mut session, "the width menu", |session| {
         on_screen(session, "Wide").is_some()
     });
-    keep(&mut session, "layout-window-menu");
+    crate::common::shot(&mut session, "layout-window-menu");
     press(&mut session, "Wide");
     until(&mut session, "the window widened", |session| {
         strip_width(session, strip) == Some(1000)
@@ -710,7 +689,7 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
     until(&mut session, "the rows to move to", |session| {
         on_screen(session, "Move to Elsewhere").is_some()
     });
-    keep(&mut session, "layout-move-to-row-menu");
+    crate::common::shot(&mut session, "layout-move-to-row-menu");
     press(&mut session, "Move to Elsewhere");
     until(&mut session, "the place moved", |session| {
         place_row(session, placed) == Some(second)
@@ -764,7 +743,7 @@ fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
     until(&mut session, "the strips to move into", |session| {
         on_screen(session, &menu).is_some()
     });
-    keep(&mut session, "tabs-move-into-strip-menu");
+    crate::common::shot(&mut session, "tabs-move-into-strip-menu");
     press(&mut session, &menu);
     until(&mut session, "both places in one strip", |session| {
         place_strip(session, one) == Some(strip_of_two)
@@ -783,7 +762,7 @@ fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
     until(&mut session, "both tab titles", |session| {
         on_screen(session, &one_name).is_some() && on_screen(session, &two_name).is_some()
     });
-    keep(&mut session, "tabs-two-in-one-strip");
+    crate::common::shot(&mut session, "tabs-two-in-one-strip");
     assert_eq!(
         strip.active,
         one.to_string(),
@@ -871,7 +850,7 @@ fn a_found_resource_opens_as_a_tab_of_the_strip_in_front() {
         on_screen(session, &shown_as(session, TITLES[0])).is_some()
             && on_screen(session, &title).is_some()
     });
-    keep(&mut session, "tabs-found-opens-as-a-tab");
+    crate::common::shot(&mut session, "tabs-found-opens-as-a-tab");
 }
 
 /// A place arriving on the shell is drawn over the frames between rather than switching in one
@@ -917,7 +896,7 @@ fn a_place_arrives_over_the_frames_between() {
         changes > 0,
         "the window comes in over the frames between, so the screen changes as it arrives"
     );
-    keep(&mut session, "motion-place-arrived");
+    crate::common::shot(&mut session, "motion-place-arrived");
 }
 
 /// An app the shell opens stands on the framed canvas: the canvas draws a window group by the place
@@ -981,7 +960,7 @@ fn an_app_the_shell_opens_stands_on_the_framed_canvas() {
     until(&mut session, &format!("{name} on the canvas"), |session| {
         on_screen(session, &name).is_some()
     });
-    keep(&mut session, "frames-opened-app");
+    crate::common::shot(&mut session, "frames-opened-app");
 }
 
 /// The shell draws the workspace in front and no other. A shell holds every workspace the person is
@@ -1083,7 +1062,7 @@ fn the_shell_draws_the_workspace_in_front_and_no_other_and_carries_no_strip_labe
         "the other workspace's empty state stands nowhere on this shell: {:?}",
         on_screen(&session, NO_WINDOW)
     );
-    keep(&mut session, "workspace-in-front");
+    crate::common::shot(&mut session, "workspace-in-front");
 }
 
 /// A window beside a place on the canvas is the window the person's own press reaches: a client's

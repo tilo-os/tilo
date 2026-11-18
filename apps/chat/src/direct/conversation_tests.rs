@@ -542,6 +542,14 @@ fn a_persons_card_opens_the_conversation_chat_keeps() {
     let ada = "ad".repeat(32);
     let bob = "b0".repeat(32);
     let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+    // Bob's window has the keyboard, and he is answering in a thread.
+    bob_window.with_chat(|chat| {
+        ui::widget::Widget::set_focus(chat, true);
+        chat.thread_open = Some("m_earlier".to_owned());
+        chat.focus = crate::app::Focus::Thread;
+        chat.set_composer_focus();
+        assert!(chat.composer_thread.is_focused(), "he writes in the thread");
+    });
     bob_window
         .effect(&ChatEffect::OpenDirectConversation {
             public_key: ada.clone(),
@@ -550,7 +558,11 @@ fn a_persons_card_opens_the_conversation_chat_keeps() {
     bob_window.with_chat(|chat| {
         assert!(
             matches!(chat.focus, crate::app::Focus::Main),
-            "the conversation opens with its composer ready"
+            "the conversation opens on its own composer"
+        );
+        assert!(
+            chat.composer_main.is_focused() && !chat.composer_thread.is_focused(),
+            "what Bob types next goes to Ada"
         );
     });
     bob_window.with_chat(|chat| {

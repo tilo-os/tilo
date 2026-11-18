@@ -258,6 +258,20 @@ pub fn shot(session: &mut Session, name: &str) -> tilo_compositor::Screenshot {
     shot
 }
 
+/// A window of an app as it draws now, settled, kept as `name.png` where `TL_SHELL_SHOTS` names.
+pub fn app_shot<A: tilo_app::framework::ResourceApp>(
+    app: &mut tilo_app::framework::testing::HeadlessApp<A>,
+    name: &str,
+) {
+    let Some(dir) = std::env::var_os("TL_SHELL_SHOTS") else {
+        return;
+    };
+    app.settle();
+    std::fs::create_dir_all(&dir).expect("the captures' directory");
+    app.harness()
+        .render_png(&std::path::Path::new(&dir).join(format!("{name}.png")));
+}
+
 /// How many pixels differ between two frames of the display: how much of the screen moved.
 #[track_caller]
 pub fn changed(before: &tilo_compositor::Screenshot, after: &tilo_compositor::Screenshot) -> usize {

@@ -110,32 +110,15 @@ fn listing(session: &Session, name: &str) -> Listing {
         .unwrap_or_else(|| panic!("the sheet lists {name}"))
 }
 
-/// Write what the session shows where a person can look at it, when the run asked for shots:
-/// `TILO_SURFACE_SHOTS` names where they go.
+/// The join sheet as the person sees it, kept as `name.png` where the run asked for shots: a site's
+/// listings arrive after the sheet opens, and the frame on screen may still be the one before them.
 fn capture(session: &mut Session, name: &str) {
-    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
-    else {
-        return;
-    };
-    // Draw what the sheet holds now: a site's listings arrive after the sheet opens, and the frame
-    // on screen may still be the one before them.
     for _ in 0..3 {
         session
             .step(std::time::Duration::from_millis(1))
             .expect("step");
     }
-    let frame = session
-        .compositor()
-        .screenshot("HEADLESS-1")
-        .expect("a frame of the session");
-    let pixels = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
-        .expect("the frame's pixels fill it");
-    let mut png = Vec::new();
-    pixels
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .expect("the shot");
-    std::fs::create_dir_all(&directory).expect("the directory for shots");
-    std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
+    crate::common::shot(session, name);
 }
 
 /// What the shell says to the person now, each notice's title and body, live or kept behind its

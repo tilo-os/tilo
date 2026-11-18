@@ -66,6 +66,8 @@ impl ChatApp {
         self.composer_main
             .set_placeholder(&self.conversation_placeholder(&channel));
         self.messages = chat.message_rows(&self.held_messages(), &channel);
+        // Opened to write in: the keyboard goes to its composer, away from a thread or an edit.
+        self.set_composer_focus();
         // The conversation in view is read by the pass that follows, as a
         // channel is ([`ChatApp::mark_active_read`]): a read receipt sent from
         // here would continue this view's invocation, whose reach is reading,

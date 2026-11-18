@@ -137,27 +137,6 @@ fn avatar(tree: &TreeUpdate) -> (NodeId, (f64, f64, f64, f64)) {
     (id, at)
 }
 
-/// The screen now, kept as `name.png` where `TL_SHELL_SHOTS` names.
-fn keep(session: &mut Session, name: &str) {
-    let Some(dir) = std::env::var_os("TL_SHELL_SHOTS") else {
-        return;
-    };
-    let shot = session
-        .compositor()
-        .screenshot("HEADLESS-1")
-        .expect("a screenshot of the display");
-    let dir = std::path::PathBuf::from(dir);
-    std::fs::create_dir_all(&dir).expect("the captures' directory");
-    image::save_buffer(
-        dir.join(format!("{name}.png")),
-        &shot.rgba,
-        shot.width,
-        shot.height,
-        image::ColorType::Rgba8,
-    )
-    .expect("the capture written");
-}
-
 #[test]
 fn an_ask_about_the_person_waits_on_their_avatar_until_they_answer_it() {
     let _settled = ui::motion::testing::settled();
@@ -265,7 +244,7 @@ fn an_ask_that_does_not_fit_the_bar_opens_across_its_band() {
         x1 <= avatar_left,
         "the ask's answer stops short of the person's own face, which begins at {avatar_left}: {x0}..{x1}"
     );
-    keep(&mut session, "ask-narrow-420");
+    crate::common::shot(&mut session, "ask-narrow-420");
 
     press(&mut session, (f64::midpoint(x0, x1), f64::midpoint(y0, y1)));
     assert!(
@@ -276,7 +255,7 @@ fn an_ask_that_does_not_fit_the_bar_opens_across_its_band() {
         session.handle().take_host_choices().is_empty(),
         "the session performed the answer rather than leaving it in the shell"
     );
-    keep(&mut session, "ask-narrow-420-answered");
+    crate::common::shot(&mut session, "ask-narrow-420-answered");
 }
 
 /// Folded, the ask waits as the avatar's dot, and a press on the avatar opens the person's own card,
@@ -310,7 +289,7 @@ fn a_folded_ask_leaves_the_avatar_to_open_the_own_card() {
             .any(|label| label.contains("Keep your name and work?")),
         "the dot says the ask waits: {said:?}"
     );
-    keep(&mut session, "ask-narrow-420-folded");
+    crate::common::shot(&mut session, "ask-narrow-420-folded");
     let (_, (x0, y0, x1, y1)) = avatar(&tree);
     press(&mut session, (f64::midpoint(x0, x1), f64::midpoint(y0, y1)));
     session.step(REFRESH).expect("a frame");
@@ -327,5 +306,5 @@ fn a_folded_ask_leaves_the_avatar_to_open_the_own_card() {
         labels.iter().any(|label| label == "Keep with passkey"),
         "and the card offers what the ask asks: {labels:?}"
     );
-    keep(&mut session, "ask-narrow-420-folded-card");
+    crate::common::shot(&mut session, "ask-narrow-420-folded-card");
 }

@@ -1478,19 +1478,49 @@ impl Apps {
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
             .map(str::to_owned);
         let open = target.address.action == APPLICATION_OPEN_ACTION && arguments.is_empty();
-        match (open, app) {
-            (true, Some(app)) => {
-                let workspace = self.workspace_named(&workspace);
-                let launch = Launch::Package { app, open: None };
-                match place {
-                    // A tab of the window in front is the shell's to arrange: the session opens the
-                    // app the way it opens, and the shell puts the tab where the person asked.
-                    OpenPlace::Focus | OpenPlace::TabHere => self.start(&launch, &workspace),
-                    OpenPlace::Beside => self.start_beside(&launch, &workspace, None, None),
-                }
-            }
-            _ => self.deliver(target, arguments, &workspace),
+        if open && let Some(app) = app {
+            let workspace = self.workspace_named(&workspace);
+            let launch = Launch::Package { app, open: None };
+            return match place {
+                // A tab of the window in front is the shell's to arrange: the session opens the
+                // app the way it opens, and the shell puts the tab where the person asked.
+                OpenPlace::Focus | OpenPlace::TabHere => self.start(&launch, &workspace),
+                OpenPlace::Beside => self.start_beside(&launch, &workspace, None, None),
+            };
         }
+        // The person's own action that takes them somewhere in an app (a conversation, a page, a
+        // message) shows them where it took them: the app's window comes forward here, as its
+        // `open` brings it, and the keyboard with it. A closed app starts for the action in front
+        // already.
+        if let Some(app) = self.navigates(&target)
+            && self.active_workspace().id == workspace
+            && let Some(desktop) = self.desktop.borrow().clone()
+            && desktop.with_policy(|policy| {
+                let shown = policy.app_tabs_in_front();
+                (shown.into_iter().find(|(_, shows)| *shows == app))
+                    .is_some_and(|(tab, _)| policy.focus_tab(tab))
+            })
+        {
+            desktop.with_widgets(WidgetSurface::relayout);
+        }
+        self.deliver(target, arguments, &workspace)
+    }
+
+    /// The app whose own view `target` changes, when it is one: an action of the
+    /// [`tilo_actions::OperationKind::View`] kind, as the app published it (a live surface's word
+    /// before the one kept from before the app closed).
+    fn navigates(&self, target: &RemoteActionTarget) -> Option<String> {
+        let (workspace, app) = application_provider(&target.provider)?;
+        let broker = self.state.borrow().broker.clone()?;
+        let address = &target.address;
+        let kind = broker
+            .published_surfaces()
+            .into_iter()
+            .filter(|surface| surface.app_id == app && surface.route.cluster_id == workspace)
+            .flat_map(|surface| surface.actions)
+            .find(|action| action.resource == address.resource && action.action == address.action)?
+            .operation_kind;
+        (kind == tilo_actions::OperationKind::View).then(|| app.to_owned())
     }
 
     /// Start `launch` in `workspace`, unless the app already has a window there: that

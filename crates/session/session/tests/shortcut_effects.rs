@@ -252,27 +252,6 @@ fn menu_tab(session: &Session) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Write the screen as `<dir>/<name>.png` when the person running the test asks for captures: what
-/// the chord looks like where they read it.
-fn capture(session: &mut Session, name: &str) {
-    let Some(dir) = std::env::var_os("SHORTCUT_SHOTS").map(PathBuf::from) else {
-        return;
-    };
-    std::fs::create_dir_all(&dir).expect("the shots directory");
-    let shot = session
-        .compositor()
-        .screenshot("HEADLESS-1")
-        .expect("screenshot");
-    image::save_buffer(
-        dir.join(format!("{name}.png")),
-        &shot.rgba,
-        shot.width,
-        shot.height,
-        image::ColorType::Rgba8,
-    )
-    .expect("write the frame");
-}
-
 /// Type `text` as the keyboard attached to the state types it.
 fn type_at_the_seat(session: &mut Session, text: &str) {
     for ch in text.chars() {
@@ -687,7 +666,7 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
         None,
         "a row no shortcut does says nothing"
     );
-    capture(&mut session, "window-menu");
+    crate::common::shot(&mut session, "window-menu");
 
     // A window of one tab is its tab: closing either is the same command, so its Close row reads
     // the chord that closes a tab.
@@ -710,7 +689,7 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
         row_chord(&lone, "window-close").is_none(),
         "no tab to close"
     );
-    capture(&mut lone, "window-menu-close");
+    crate::common::shot(&mut lone, "window-menu-close");
 }
 
 /// A window's menu belongs to its window: one still up when the window in front closes goes with
@@ -781,7 +760,7 @@ fn the_search_shows_the_chord_beside_the_action() {
     until(&mut session, "the search", |session| searching(session));
     type_at_the_seat(&mut session, "reopen");
     until_a_row(&mut session, "Reopen the closed window");
-    capture(&mut session, "search");
+    crate::common::shot(&mut session, "search");
 }
 
 /// The chords of the shell's side reach the shell of a real session: the tab in front moves, a tab
