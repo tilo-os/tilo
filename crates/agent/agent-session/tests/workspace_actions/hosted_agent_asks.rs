@@ -484,7 +484,6 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
         .await
         .expect("the reminder asks");
     agents.look(&workspace).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(1100)).await;
     let second = write_to_agent(
         &actions,
         &workspaces,
