@@ -551,6 +551,25 @@ impl SessionSearch {
         self.moved_recipients();
     }
 
+    /// What `who` is called in the one list search and the send box read ([`Self::recipients`]),
+    /// in whichever workspace lists them.
+    pub(crate) fn member_name(&self, who: &ui::MemberId) -> Option<String> {
+        use ui::floating_surface::RecipientKind::{Agent, Person};
+        let kind = if who.is_agent() { Agent } else { Person };
+        let workspaces: Vec<String> = self
+            .workspaces
+            .borrow()
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
+        workspaces.iter().find_map(|workspace| {
+            self.recipients(workspace)
+                .into_iter()
+                .find(|found| found.kind == kind && found.id == who.id())
+                .map(|found| found.name)
+        })
+    }
+
     /// The workspaces this device shows, by id and the name the shell gives it: what a row says of a
     /// record the workspace in front does not hold.
     pub fn set_workspaces(&self, workspaces: Vec<(String, String)>) {

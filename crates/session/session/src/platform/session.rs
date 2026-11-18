@@ -1536,7 +1536,6 @@ impl Session {
         // The person's mentions in the workspaces' records: told through those notifications, kept
         // in the records' store, and opened through this session's own API to the apps.
         let mentions = records_store.clone().map(|store| {
-            let naming = handle.clone();
             crate::mentions::Mentions::over(crate::mentions::Given {
                 person: vec![options.person.clone()],
                 store: Some(store),
@@ -1546,17 +1545,11 @@ impl Session {
                     Rc::new(Held::over(Arc::clone(engine), changes.clone())) as Rc<_>
                 }),
                 notices: Some(crate::notifications::RoleNotices::of(&notifications)),
-                name: Rc::new(move |person: &str| {
-                    let mut tree = naming.read(Clone::clone);
-                    place_here(&mut tree);
-                    tree.workspaces
-                        .iter()
-                        .flat_map(|workspace| workspace.members.iter())
-                        .find(|member| member.id == collab_types::MemberId::person(person))
-                        .map(|member| member.name.clone())
-                        .filter(|name| !name.is_empty())
-                        .unwrap_or_else(tilo_desktop::here::guest_label)
-                }),
+                name: crate::mentions::member_names(Rc::clone(&search)),
+                shown: {
+                    let shell = handle.clone();
+                    Rc::new(move |app: &str, item: &str| shell.shows_item(app, item))
+                },
                 wake: Some(options.wake.handle()),
             })
         });

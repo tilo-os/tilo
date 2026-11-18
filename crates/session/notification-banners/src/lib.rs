@@ -26,26 +26,6 @@ pub const APP_ID: &str = "so.tilo.notification-banners";
 
 pub use tilo_desktop::notifications::INLINE_REPLY;
 
-/// Whether `key` is one the banners act on while they hold the keyboard:
-/// any other goes back to the person's window, and takes focus with it.
-#[must_use]
-pub fn banner_key(key: &ui::winit::keyboard::Key) -> bool {
-    use ui::winit::keyboard::{Key, NamedKey};
-    matches!(
-        key,
-        Key::Named(
-            NamedKey::ArrowUp
-                | NamedKey::ArrowDown
-                | NamedKey::ArrowLeft
-                | NamedKey::ArrowRight
-                | NamedKey::Tab
-                | NamedKey::Enter
-                | NamedKey::Space
-                | NamedKey::Escape
-        )
-    )
-}
-
 /// The banners' toolkit definition, the one every host mounts, carrying
 /// their committed surface.
 #[must_use]

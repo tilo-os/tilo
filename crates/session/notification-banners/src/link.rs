@@ -41,7 +41,8 @@ pub struct Placement {
     pub viewport: Rect,
     /// Everything above this stays clear (the follow bar while it is up).
     pub clear_top: f64,
-    /// The windows' bars on screen: a banner never covers one.
+    /// What a banner never covers: the windows' bars on screen, and the windows floating over
+    /// the shell whole.
     pub window_bars: Vec<Rect>,
     /// The displays other than the one in use.
     pub others: Vec<OtherDisplay>,
