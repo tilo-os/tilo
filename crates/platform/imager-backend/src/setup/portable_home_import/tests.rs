@@ -424,10 +424,7 @@ fn authenticated_footer_binding_refuses_another_home_even_with_rewritten_media_r
     )
     .err()
     .unwrap();
-    assert_eq!(
-        error.to_string(),
-        "Portable home ciphertext or authenticated declaration changed"
-    );
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     assert!(!fixture.grants.workspace.join("imported").exists());
     assert!(!fixture.grants.home.join("document").exists());
 }

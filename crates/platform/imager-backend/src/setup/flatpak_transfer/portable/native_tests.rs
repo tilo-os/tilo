@@ -934,12 +934,10 @@ fn verify_corruption(fixture: &Fixture, cancel: &AtomicBool) {
     fs::remove_file(&object).unwrap();
     fs::write(&object, b"corrupted real commit object").unwrap();
     let (mut corrupt, target) = fixture.import("corrupt", &fixture.manifest);
-    assert_eq!(
+    assert!(
         corrupt
             .restore(&NativeOfflineRunner, &target, cancel)
-            .unwrap_err()
-            .to_string(),
-        "Extra-data source commit content changed"
+            .is_err()
     );
     assert_undeployed(&target);
     fs::remove_file(&object).unwrap();

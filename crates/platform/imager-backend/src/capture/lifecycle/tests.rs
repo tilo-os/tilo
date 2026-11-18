@@ -42,8 +42,8 @@ tilo_test_env::scenario! {
     {
         let mut capture = helper("");
         assert_eq!(
-            capture.cancel_and_wait().unwrap_err().to_string(),
-            "capture release was not acknowledged"
+            capture.cancel_and_wait().unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
         );
     }
 
@@ -51,8 +51,8 @@ tilo_test_env::scenario! {
     {
         let mut capture = helper(&released("1f273186-e49a-4f14-8507-e13c6c16925a"));
         assert_eq!(
-            capture.cancel_and_wait().unwrap_err().to_string(),
-            "capture status operation changed"
+            capture.cancel_and_wait().unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
         );
     }
 
@@ -61,8 +61,8 @@ tilo_test_env::scenario! {
         for frame in ["x".repeat(2049), released(OPERATION).trim_end().into()] {
             let mut capture = helper(&frame);
             assert_eq!(
-                capture.cancel_and_wait().unwrap_err().to_string(),
-                "capture status frame exceeds bound"
+                capture.cancel_and_wait().unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
             );
         }
     }

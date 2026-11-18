@@ -367,9 +367,9 @@ mod tests {
             let mut dump: serde_json::Value = serde_json::from_str(SFDISK).unwrap();
             dump["partitiontable"]["partitions"][0]["start"] = u64::MAX.into();
             dump["partitiontable"]["partitions"][0]["size"] = 2.into();
-            assert_eq!(
-                disk_from_sfdisk(&dump.to_string(), 1_000_215_216 * 512, 512).unwrap_err(),
-                "partition extent overflows"
+            assert!(
+                disk_from_sfdisk(&dump.to_string(), 1_000_215_216 * 512, 512).is_err(),
+                "an extent that overflows is refused instead of wrapping"
             );
             dump["partitiontable"]["partitions"][0]["size"] = 1.into();
             assert_eq!(

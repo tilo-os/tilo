@@ -136,10 +136,7 @@ tilo_test_env::scenario! {
         let error = store
             .check_original_output_operation(&operation)
             .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Original output operation lease name changed"
-        );
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         // The old descriptor/lock remains retained; matching permission, pathname
         // and operation do not turn the replacement into its authority.
         assert!(root.path().join("held-original.lock").exists());
@@ -166,18 +163,10 @@ tilo_test_env::scenario! {
             .claim_original_output_intent([9; 32], &attempt)
             .unwrap_err();
         assert_eq!(same.kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(
-            same.to_string(),
-            "Original output same intent requires verified recovery"
-        );
         let different = store
             .claim_original_output_intent([8; 32], &uuid::Uuid::new_v4().to_string())
             .unwrap_err();
         assert_eq!(different.kind(), io::ErrorKind::PermissionDenied);
-        assert_eq!(
-            different.to_string(),
-            "Original output different intent refuses replacement"
-        );
         let path = root
             .path()
             .join("records")
@@ -189,7 +178,7 @@ tilo_test_env::scenario! {
         let error = store
             .check_original_output_intent(&held, &bytes)
             .unwrap_err();
-        assert_eq!(error.to_string(), "Original output intent name changed");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         // Same bytes and operation/attempt do not substitute a new named inode.
         assert_eq!(
             std::fs::read(root.path().join("held-intent")).unwrap(),

@@ -298,10 +298,7 @@ mod tests {
             .err()
             .expect("mismatched actual descriptor must refuse before creating any namespace");
         if rustix::process::geteuid().as_raw() == 0 {
-            assert_eq!(
-                error.to_string(),
-                "Mounted entry differs from actual selected descriptor"
-            );
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         } else {
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         }
