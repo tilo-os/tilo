@@ -659,7 +659,7 @@ pub(super) fn merge_sealed(
             }
         }
     }
-    let (mut merged, _) = merge_writes(base, writes, LeftOut::ForkOnly, None)?;
+    let (mut merged, _) = merge_each(base, writes, LeftOut::ForkOnly, None)?;
     Ok(merged.save())
 }
 
@@ -828,15 +828,66 @@ pub(super) struct Signers<'a> {
     pub(super) held: &'a dyn Fn() -> super::unsent_bases::HeldThrough,
 }
 
-/// Merge the writes of a sealed history, each decided on its own
-/// ([`merge_write`]), over `base`; the writes that wait for changes not here yet
-/// are tried again once the rest are in.
+/// Merge the writes of a sealed history over `base`: all of them in one isolated call where
+/// that takes every one of them in ([`merged_at_once`]), else each decided on its own
+/// ([`merge_each`]).
 ///
 /// Returns the record and every write it leaves out with why, sorted in history
 /// order. `policy` decides whether a write left out for any reason other than a
 /// fork aborts. With `signers`, a write still waiting at the end that is stuck behind a change its
 /// writer never sent is named so ([`UnmergedReason::BehindUnsent`]).
 pub(super) fn merge_writes(
+    mut merged: AutoCommit,
+    writes: Vec<(usize, DocumentMutation)>,
+    policy: LeftOut,
+    signers: Option<&Signers<'_>>,
+) -> Result<(AutoCommit, Vec<LeftWrite>), String> {
+    if merged_at_once(&mut merged, &writes) {
+        return Ok((merged, Vec::new()));
+    }
+    merge_each(merged, writes, policy, signers)
+}
+
+/// Merge every one of `writes` over `merged` in one call of the isolated worker, and answer
+/// whether that took them all in.
+///
+/// A history is a sequence of changes. Handed over as one it merges in causal order whatever
+/// order its writes were admitted in, and costs one call, where a call for each write made a
+/// read cost as many calls as the history holds writes. Anything short of all of them (a
+/// write refused, a change one of them builds on not here, this device failing) leaves `merged`
+/// as it was: [`merge_each`] then decides every write on its own and names what it leaves out.
+fn merged_at_once(merged: &mut AutoCommit, writes: &[(usize, DocumentMutation)]) -> bool {
+    // One write is one call either way.
+    if writes.len() < 2 {
+        return false;
+    }
+    let mut history = Vec::new();
+    for (_, mutation) in writes {
+        match mutation {
+            DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => {
+                history.extend_from_slice(bytes);
+            }
+        }
+    }
+    match crate::document::merge_committed_with_status(
+        merged,
+        &DocumentMutation::Incremental(history),
+    ) {
+        Ok(crate::document::MergeOutcome::Changed(_)) => true,
+        Ok(crate::document::MergeOutcome::MissingDependencies) => false,
+        Err(refused) => {
+            tilo_failure::ignored!(
+                "the merge of each write reports a refusal that is real",
+                tracing::debug!(error = ?refused, "a sealed history does not merge in one pass")
+            );
+            false
+        }
+    }
+}
+
+/// [`merge_writes`] with each write decided on its own ([`merge_write`]); the writes that wait
+/// for changes not here yet are tried again once the rest are in.
+fn merge_each(
     mut merged: AutoCommit,
     writes: Vec<(usize, DocumentMutation)>,
     policy: LeftOut,

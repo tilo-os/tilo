@@ -121,6 +121,40 @@ pub enum Applied {
     MissingDependencies,
 }
 
+/// What a thread asked of isolation: how often it handed bytes over to be applied or loaded
+/// ([`Isolate::apply`], [`Isolate::load`]), and how many bytes those calls carried. On Linux
+/// each call is at least one request to a worker process. Numbers only: nothing of the bytes
+/// is kept.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Asked {
+    pub calls: u64,
+    pub bytes: u64,
+}
+
+thread_local! {
+    static ASKED: std::cell::Cell<Asked> = const { std::cell::Cell::new(Asked { calls: 0, bytes: 0 }) };
+}
+
+/// What the calling thread asked of isolation since it started. A caller measures a read or a
+/// step by the difference across it: by the work done, with no clock and none of another
+/// thread's work in it.
+#[must_use]
+pub fn asked_by_this_thread() -> Asked {
+    ASKED.with(std::cell::Cell::get)
+}
+
+fn count_asked(bytes: usize) {
+    ASKED.with(|asked| {
+        let so_far = asked.get();
+        asked.set(Asked {
+            calls: so_far.calls.saturating_add(1),
+            bytes: so_far
+                .bytes
+                .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX)),
+        });
+    });
+}
+
 /// Admission of untrusted Automerge bytes under one set of [`Limits`].
 pub struct Isolate {
     #[cfg(target_os = "linux")]
@@ -160,6 +194,7 @@ impl Isolate {
         dependencies: Dependencies,
     ) -> Result<Applied, Rejected> {
         precheck::check(incoming, self.limits())?;
+        count_asked(incoming.len());
         #[cfg(target_os = "linux")]
         return self.pool.apply(doc, incoming, dependencies);
         #[cfg(not(target_os = "linux"))]
@@ -173,6 +208,7 @@ impl Isolate {
     /// A [`Rejected`] reason.
     pub fn load(&self, bytes: &[u8]) -> Result<AutoCommit, Rejected> {
         precheck::check(bytes, self.limits())?;
+        count_asked(bytes.len());
         #[cfg(target_os = "linux")]
         return self.pool.load(bytes);
         #[cfg(not(target_os = "linux"))]

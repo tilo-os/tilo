@@ -153,7 +153,7 @@ tilo_test_env::scenario! {
         let mut kept = KeptDocument::default();
         let message = write(&f.host, &f.owner, &keys, &first.edit("value", "one"), f.now);
         admit(&mut f.host, &f.owner, message, f.now);
-        let (mut replica, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
+        let (mut replica, opened) = read_kept(peer(&f), reader, &[&keys], &mut kept).unwrap();
         assert_eq!(opened, 1);
         for round in 0..4 {
             // What a reader that merged the last read holds.
@@ -182,7 +182,7 @@ tilo_test_env::scenario! {
                 f.now,
             );
             admit(&mut f.host, &f.owner, message, f.now);
-            let (mut document, opened) = read_kept(&f.host, reader, &[&keys], &mut kept).unwrap();
+            let (mut document, opened) = read_kept(peer(&f), reader, &[&keys], &mut kept).unwrap();
             assert_eq!(opened, 3, "round {round} opens only its own writes");
             let mut whole = read_whole(&f.host, reader, &[&keys]);
             same(&mut document, &mut whole);
@@ -444,6 +444,138 @@ tilo_test_env::scenario! {
                 Some("two")
             );
             assert!(document.get(ROOT, "file").unwrap().is_none());
+        }
+    }
+}
+
+/// The peer of `f` that holds the document.
+fn peer(f: &Fixture) -> &StatePeer {
+    &f.host
+}
+
+/// One more sealed write of the owner, `edit`, admitted.
+fn seal(f: &mut Fixture, keys: &ContentKeys, edit: &[u8]) {
+    let message = write(peer(f), &f.owner, keys, edit, f.now);
+    admit(&mut f.host, &f.owner, message, f.now);
+}
+
+/// A document whose sealed history holds `writes` writes of one author, each a change on the
+/// one before: with its keys, that author, and the bytes of the writes together.
+fn history_of(writes: usize) -> (Fixture, ContentKeys, Author, usize) {
+    let mut f = fixture();
+    let keys = f.keys();
+    let mut author = Author::new(peer(&f));
+    let mut bytes = 0_usize;
+    for number in 0..writes {
+        let edit = author.edit("value", &format!("write {number}"));
+        bytes = bytes.saturating_add(edit.len());
+        seal(&mut f, &keys, &edit);
+    }
+    (f, keys, author, bytes)
+}
+
+/// What a read of the document through `kept` asks of the isolated worker: how many calls, and
+/// the bytes they carry. Counted on this thread alone, by the work done.
+fn asked_by_a_read(
+    peer: &StatePeer,
+    reader: [u8; 32],
+    keys: &ContentKeys,
+    kept: &mut KeptDocument,
+) -> tilo_automerge_isolate::Asked {
+    let before = tilo_automerge_isolate::asked_by_this_thread();
+    read_kept(peer, reader, &[keys], kept).unwrap();
+    let after = tilo_automerge_isolate::asked_by_this_thread();
+    tilo_automerge_isolate::Asked {
+        calls: after.calls.saturating_sub(before.calls),
+        bytes: after.bytes.saturating_sub(before.bytes),
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_read_costs_the_isolated_worker_no_more_for_a_longer_history;
+
+    phase a_history_ten_times_as_long_opens_in_as_many_calls_of_the_isolated_worker;
+    {
+        let (short, short_keys, _, _) = history_of(12);
+        let (long, long_keys, _, long_bytes) = history_of(120);
+        let reader = short.authority.device_public_key;
+        let of_short = asked_by_a_read(
+            peer(&short),
+            reader,
+            &short_keys,
+            &mut KeptDocument::default(),
+        );
+        let of_long = asked_by_a_read(
+            peer(&long),
+            reader,
+            &long_keys,
+            &mut KeptDocument::default(),
+        );
+        assert_eq!(
+            of_short.calls, 1,
+            "a history of twelve writes is merged in one call: {of_short:?}"
+        );
+        assert_eq!(
+            of_long.calls, 1,
+            "and so is one of a hundred and twenty: {of_long:?}"
+        );
+        assert!(
+            of_long.bytes <= u64::try_from(long_bytes).unwrap(),
+            "the history's bytes pass the worker once: {of_long:?} of {long_bytes}"
+        );
+        // Merged as one, it reads as a whole read of the same history does.
+        let (mut document, opened) = read_kept(
+            peer(&long),
+            reader,
+            &[&long_keys],
+            &mut KeptDocument::default(),
+        )
+        .unwrap();
+        assert_eq!(opened, 120);
+        same(
+            &mut document,
+            &mut read_whole(peer(&long), reader, &[&long_keys]),
+        );
+        assert!(
+            document.get_changes(&[]).len() >= 120,
+            "every write is in it"
+        );
+    }
+
+    phase a_kept_document_asks_nothing_for_a_read_and_one_call_for_a_write_whatever_its_history;
+    {
+        for writes in [12, 120] {
+            let (mut f, keys, mut author, _) = history_of(writes);
+            let reader = f.authority.device_public_key;
+            let mut kept = KeptDocument::default();
+            asked_by_a_read(peer(&f), reader, &keys, &mut kept);
+            assert_eq!(
+                asked_by_a_read(peer(&f), reader, &keys, &mut kept),
+                tilo_automerge_isolate::Asked::default(),
+                "nothing was sealed since: a read of {writes} kept writes asks nothing"
+            );
+            let edit = author.edit("value", "one more");
+            seal(&mut f, &keys, &edit);
+            let of_write = asked_by_a_read(peer(&f), reader, &keys, &mut kept);
+            assert_eq!(
+                of_write.calls, 1,
+                "one write sealed since is one call: {of_write:?}"
+            );
+            assert!(
+                of_write.bytes <= u64::try_from(edit.len()).unwrap(),
+                "it carries that write alone, nothing of the {writes} before: {of_write:?}"
+            );
+            // What its holder reads once it let the document go for memory: nothing kept. The
+            // same document as the kept read, and one call for its whole history.
+            let mut gone = KeptDocument::default();
+            let of_gone = asked_by_a_read(peer(&f), reader, &keys, &mut gone);
+            assert_eq!(
+                of_gone.calls, 1,
+                "a document let go is opened again in one call: {of_gone:?}"
+            );
+            let (mut kept_read, _) = read_kept(peer(&f), reader, &[&keys], &mut kept).unwrap();
+            let (mut read_again, _) = read_kept(peer(&f), reader, &[&keys], &mut gone).unwrap();
+            same(&mut kept_read, &mut read_again);
         }
     }
 }
