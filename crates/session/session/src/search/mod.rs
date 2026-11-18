@@ -40,6 +40,7 @@ use tilo_desktop_search::providers::downloaded::Downloaded;
 use tilo_desktop_search::providers::happening::{Happening, WorkspaceHere};
 use tilo_desktop_search::providers::host_apps;
 use tilo_desktop_search::providers::jobs::{JobEntry, Jobs};
+use tilo_desktop_search::providers::people::People;
 use tilo_desktop_search::providers::places::{Continue, Place, RecentPlaces};
 use tilo_desktop_search::providers::records as record_rows;
 use tilo_desktop_search::providers::settings::Settings;
@@ -298,6 +299,11 @@ pub struct SessionSearch {
     agents: RefCell<Option<Vec<crate::agents::Kept>>>,
     /// Every agent each workspace's record lists, whoever keeps it: whom a message can go to.
     listed_agents: RefCell<Vec<ListedAgent>>,
+    /// Every person each workspace's governance lists, by the name it knows them by: who can be
+    /// found in it before they are here.
+    members: RefCell<Vec<(String, Vec<collab_types::Member>)>>,
+    /// The person searching, by their root: whom search never offers to themselves.
+    person: String,
     /// How often who is here or what the agents' records list moved: what a box that reads whom a
     /// message can go to is told again for.
     recipients_moved: Cell<u64>,
@@ -446,6 +452,8 @@ impl SessionSearch {
             #[cfg(target_os = "linux")]
             agents: RefCell::default(),
             listed_agents: RefCell::default(),
+            members: RefCell::default(),
+            person: person.to_owned(),
             recipients_moved: Cell::default(),
             ask: crate::search_ask::Shared::default(),
             workers,
@@ -534,6 +542,15 @@ impl SessionSearch {
         self.moved_recipients();
     }
 
+    /// Keep the people each workspace's governance lists, as the engine admitted them.
+    pub(crate) fn set_members(&self, members: Vec<(String, Vec<collab_types::Member>)>) {
+        if *self.members.borrow() == members {
+            return;
+        }
+        *self.members.borrow_mut() = members;
+        self.moved_recipients();
+    }
+
     /// The workspaces this device shows, by id and the name the shell gives it: what a row says of a
     /// record the workspace in front does not hold.
     pub fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
@@ -607,6 +624,7 @@ impl SessionSearch {
             )),
             Held::new(Waiting::new(workspace, self.notifications.borrow().clone())),
             Held::new(continue_places),
+            Held::new(People::new(workspace, self.recipients(workspace))),
         ];
         sources.push(settings);
         sources.extend(catalogue);
@@ -1028,54 +1046,77 @@ impl SessionSearch {
         edits
     }
 
-    /// The agents, people and conversations a message can go to, the most recent first.
-    /// The agents, people and conversations a message can go to in `workspace`: what its apps
-    /// published, the people present there, and every agent its record lists — each once, by kind
-    /// and id.
+    /// Who can be found in `workspace`, the one list desktop search and every box that sends a
+    /// message read: what its apps published (agents, people, conversations; the most recent
+    /// first), the people present there, every person its governance lists and every agent it
+    /// lists. Each member once, by kind and id, never the person searching, named by the
+    /// one rule every surface names a member by ([`ui::presence::MemberLabels`]).
     pub(crate) fn recipients(&self, workspace: &str) -> Vec<ui::floating_surface::Recipient> {
-        use ui::floating_surface::{Recipient, RecipientKind};
-        let mut found = self
+        use ui::floating_surface::Recipient;
+        use ui::floating_surface::RecipientKind::{Agent, Conversation, Person};
+        let members = self.members.borrow();
+        let governed = members
+            .iter()
+            .filter(|(held, _)| held == workspace)
+            .flat_map(|(_, people)| people)
+            .filter(|member| !member.removed);
+        let here = self.here.borrow();
+        let listed = self.listed_agents.borrow();
+        // Who is here first: the name a person chose for themselves comes with their presence.
+        let members = here
+            .iter()
+            .filter(|here| here.workspace == workspace)
+            .flat_map(|here| &here.people)
+            .map(|person| (person.agent, person.id.as_str(), person.name.as_str()))
+            .chain(
+                governed
+                    .clone()
+                    .map(|member| (!member.id.is_person(), member.id.id(), member.name.as_str())),
+            )
+            .chain(
+                listed
+                    .iter()
+                    .filter(|agent| agent.workspace == workspace)
+                    .map(|agent| (true, agent.id.as_str(), agent.name.as_str())),
+            )
+            .map(|(agent, id, name)| {
+                Recipient::found(if agent { Agent } else { Person }, id, name)
+            });
+        let published = self
             .indexes
             .as_ref()
             .map_or_else(Vec::new, |indexes| indexes.recipients());
-        for here in self
-            .here
-            .borrow()
-            .iter()
-            .filter(|here| here.workspace == workspace)
-        {
-            for person in &here.people {
-                found.push(Recipient::found(
-                    if person.agent {
-                        RecipientKind::Agent
-                    } else {
-                        RecipientKind::Person
-                    },
-                    person.id.clone(),
-                    person.name.clone(),
-                ));
-            }
-        }
-        for agent in self
-            .listed_agents
-            .borrow()
-            .iter()
-            .filter(|agent| agent.workspace == workspace)
-        {
-            found.push(Recipient::found(
-                RecipientKind::Agent,
-                agent.id.clone(),
-                agent.name.clone(),
-            ));
-        }
         let mut out: Vec<Recipient> = Vec::new();
-        for recipient in found {
-            if !out
-                .iter()
-                .any(|kept| kept.kind == recipient.kind && kept.id == recipient.id)
-            {
-                out.push(recipient);
+        for recipient in published.into_iter().chain(members) {
+            if recipient.kind == Person && recipient.id == self.person {
+                continue;
             }
+            match out
+                .iter_mut()
+                .find(|kept| kept.kind == recipient.kind && kept.id == recipient.id)
+            {
+                Some(kept) if ui::presence::shown_name(&kept.name).is_none() => {
+                    kept.name = recipient.name;
+                }
+                Some(_) => {}
+                None => out.push(recipient),
+            }
+        }
+        let joined = |id: &str| {
+            governed
+                .clone()
+                .find(|member| member.id.id() == id)
+                .and_then(|member| member.joined_at)
+        };
+        let labels = ui::presence::MemberLabels::by_joining(
+            out.iter()
+                .filter(|r| r.kind != Conversation)
+                .map(|r| (r.id.as_str(), r.name.as_str(), joined(&r.id))),
+        );
+        for recipient in out.iter_mut().filter(|r| r.kind != Conversation) {
+            let name = ui::presence::shown_name(&recipient.name)
+                .map_or_else(ui::presence::guest_label, str::to_owned);
+            recipient.name = labels.label(&recipient.id, &name);
         }
         out
     }
@@ -2698,6 +2739,76 @@ mod tests {
                 .flat_map(|source| source.query("voice"))
                 .any(|hit| hit.title == "voice"),
             "the one index also answers the search over everything"
+        );
+    }
+
+    /// Who can be found in a workspace is one list: a member, named by their presence where the
+    /// governance has no name for them, is found by desktop search, which opens the conversation
+    /// with them, and addressed by a box; an agent both present and listed by the workspace is one
+    /// row; the person searching is neither.
+    #[test]
+    fn people_and_agents_are_found_once_from_one_list() {
+        use tilo_desktop_search::providers::happening::PersonHere;
+        use ui::floating_surface::RecipientKind::{Agent, Person};
+
+        let (ada, ben, ws) = ("ad".repeat(32), "be".repeat(32), "garden".to_owned());
+        let search = SessionSearch::new(SearchOptions::default(), None, &ada, None, None, None);
+        let member = |root: &str| {
+            collab_types::Member::of_person(&collab_types::Person::new(root, ""), None)
+        };
+        search.set_members(vec![(ws.clone(), vec![member(&ada), member(&ben)])]);
+        let (id, name) = ("helper".to_owned(), "Helper".to_owned());
+        let workspace = ws.clone();
+        search.set_listed_agents(&[ListedAgent {
+            workspace,
+            id: id.clone(),
+            name: name.clone(),
+        }]);
+        let here = |id: &str, name: &str, agent| PersonHere {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            colour: (0, 0, 0),
+            agent,
+            away: false,
+            tab: None,
+        };
+        search.set_here(vec![WorkspaceHere {
+            workspace: ws.clone(),
+            name: "Garden".to_owned(),
+            active: true,
+            people: vec![here(&ben, "Ben", false), here(&id, &name, true)],
+            windows: Vec::new(),
+            calls: Vec::new(),
+        }]);
+
+        let found: Vec<_> = search
+            .recipients(&ws)
+            .into_iter()
+            .map(|r| (r.kind, r.id, r.name))
+            .collect();
+        assert_eq!(
+            found,
+            [(Person, ben.clone(), "Ben".to_owned()), (Agent, id, name)]
+        );
+        let people = |needle: &str| -> Vec<tilo_desktop_search::Hit> {
+            let hits = search.find_in(needle, Some(&ws));
+            hits.into_iter()
+                .filter(|hit| hit.provider == "people")
+                .collect()
+        };
+        let ben_rows = people("Ben");
+        assert_eq!(
+            ben_rows.iter().map(|hit| &hit.id).collect::<Vec<_>>(),
+            [&ben]
+        );
+        let Target::Invoke(open) = &ben_rows[0].target else {
+            panic!("a person's row opens something: {:?}", ben_rows[0].target);
+        };
+        let opened = (open.app.as_str(), open.address.action.as_str());
+        assert_eq!(opened, ("so.tilo.chat", "open-direct-conversation"));
+        assert!(
+            people("Guest").is_empty(),
+            "nobody is offered to themselves"
         );
     }
 }

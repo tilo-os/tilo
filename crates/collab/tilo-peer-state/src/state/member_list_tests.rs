@@ -109,3 +109,17 @@ fn a_members_row_counts_the_permissions_given_beyond_their_role() {
     assert!(listed.administrator);
     assert_eq!(listed.grants, 1, "the one permission beyond their role");
 }
+
+#[test]
+fn a_device_nobody_named_names_no_person() {
+    let (_, _, _, cert, _) = crate::admission_tests::seeded();
+    let mut naming = governance::Naming::default();
+    naming.learn(
+        &cert,
+        true,
+        Some(tilo_user_identity::UNNAMED_PRIMARY_DEVICE),
+    );
+    assert_eq!(naming.name(), None, "the stand-in is no name of theirs");
+    naming.learn(&cert, true, Some("Ben"));
+    assert_eq!(naming.name(), Some("Ben"));
+}

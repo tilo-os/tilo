@@ -202,8 +202,6 @@ pub const BROWSE_RANK_LATER: u8 = 16;
 /// The rows about what is happening now: who is where, and the calls to
 /// join. The empty palette opens with them.
 pub const BROWSE_RANK_NOW: u8 = 0;
-/// The people doing something in the workspace.
-pub const BROWSE_RANK_PEOPLE: u8 = 1;
 /// What the person reached for last.
 pub const BROWSE_RANK_RECENT: u8 = 2;
 /// The ways in: the apps they have, then the windows open.
