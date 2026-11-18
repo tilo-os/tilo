@@ -283,3 +283,180 @@ async fn a_persons_own_key_removes_a_member_as_they_may_and_no_further() {
     );
     server.shutdown().await;
 }
+
+/// `answer` for every outside effect of `app`, set for the agent `claude` by
+/// `owner` in the workspace's settings, under Agents: the bound the
+/// workspace's list of its agents keeps for it.
+async fn set_under_agents(
+    workspaces: &Workspaces,
+    workspace: &str,
+    owner: &DeviceCert,
+    app: &str,
+    answer: &str,
+) {
+    use tilo_resource::{Id, NonBlank, Replica};
+    use tilo_workspace_agent::{Bound, WorkspaceAgents, workspace_agents};
+    let person = hex::encode(owner.user_public_key);
+    let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let bound = vec![Bound {
+        node: format!("workspace:{workspace}/app:{app}"),
+        kinds: vec!["outside".into()],
+        answer: answer.into(),
+    }];
+    workspaces
+        .author_workspace_document(
+            workspace,
+            workspaces.governor(),
+            (tilo_workspace_agent::OWNER, &list),
+            |doc| {
+                let agents = if doc.get_heads().is_empty() {
+                    Replica::<WorkspaceAgents>::new()
+                } else {
+                    Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                };
+                let mut agents = agents
+                    .as_author(&person)
+                    .in_app(tilo_workspace_agent::OWNER, "Chat");
+                let listed = agents.state().map_err(|error| error.to_string())?;
+                if listed.agents.find(&Id::from_raw("claude")).is_none() {
+                    agents
+                        .apply(
+                            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                                name: NonBlank::parse("Claude").unwrap(),
+                                keeper: None,
+                                id: Some("claude".into()),
+                                model: None,
+                                mcp_client: None,
+                            }),
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                agents
+                    .apply(
+                        WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
+                            agent: Id::from_raw("claude"),
+                            bound,
+                        }),
+                    )
+                    .map_err(|error| error.to_string())?;
+                std::mem::swap(doc, agents.doc_mut());
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn what_its_person_allows_under_agents_runs_unasked_within_their_account() {
+    use tilo_action_policy::agent_answers::ACCOUNT_APP;
+    use tilo_server_session::workspaces::CREATE_WORKSPACE;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let here = (workspace.as_str(), workspace_id);
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let agent = agent_of(&owner);
+    let declining = Person::answering(ConfirmationAnswer::Deny);
+    workspaces.ask_people(declining.clone());
+    let make = || {
+        let mut asked = request("", CREATE_WORKSPACE, json!({"name": "The agent's"}));
+        asked.target = tilo_actions::remote::RemoteActionTarget {
+            provider: ACCOUNT_APP.into(),
+            address: tilo_actions::api::ActionAddress::new(
+                tilo_server_session::workspaces::HOST_WORKSPACES_RESOURCE,
+                CREATE_WORKSPACE,
+            ),
+        };
+        asked
+    };
+    let in_workspace = actions.in_workspace_as(workspace_id, &owner);
+
+    // By default it asks its person first, who says no here.
+    assert!(demote(&actions, here, &agent, &ada).await.is_err());
+    let refused = settled(in_workspace.invoke(&agent, make())).await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(declining.asked().len(), 2);
+
+    // Allowed under Agents for the workspace's members and for their own
+    // workspaces, it moves a member and makes a workspace unasked: what the
+    // person may do themselves.
+    set_under_agents(
+        workspaces,
+        &workspace,
+        &owner,
+        WORKSPACE_GOVERNANCE_PROVIDER,
+        "allow",
+    )
+    .await;
+    demote(&actions, here, &agent, &ada).await.unwrap();
+    set_under_agents(workspaces, &workspace, &owner, ACCOUNT_APP, "allow").await;
+    let made = settled(in_workspace.invoke(&agent, make())).await;
+    assert!(made.is_ok(), "{made:?}");
+    assert_eq!(declining.asked().len(), 2, "allowed, nobody is asked");
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn its_person_is_asked_last_once_their_own_checks_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    let allowing = Person::answering(ConfirmationAnswer::AllowOnce);
+    workspaces.ask_people(allowing.clone());
+
+    // Ada moves nobody herself, so her agent is refused before she is asked:
+    // her yes would be refused after.
+    let set_role = WorkspacesRequest::SetRole {
+        workspace: workspace.clone(),
+        request_id: rand::random(),
+        user_public_key: bo.user_public_key,
+        role: tilo_action_policy::Role::Viewer,
+    };
+    let refused = workspaces
+        .admit_page(&ada, &agent_of(&ada), &set_role)
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+
+    // Only the owner removes someone by asking: an administrator's agent is
+    // refused before its person is asked.
+    workspaces
+        .set_member_administrator(
+            &workspace,
+            &owner,
+            rand::random(),
+            ada.user_public_key,
+            None,
+        )
+        .await
+        .unwrap();
+    let remove = request(
+        &workspace,
+        tilo_action_policy::roles::governance::REMOVE_MEMBER,
+        json!({"person": hex::encode(bo.user_public_key)}),
+    );
+    let refused = settled(
+        actions
+            .in_workspace(workspace_id)
+            .invoke(&agent_of(&ada), remove),
+    )
+    .await;
+    assert_eq!(
+        refused.unwrap_err(),
+        ActionCallError::confirmation_required()
+    );
+    assert!(allowing.asked().is_empty(), "{:?}", allowing.asked());
+
+    // What passes her checks is hers to answer.
+    demote(&actions, (&workspace, workspace_id), &agent_of(&ada), &bo)
+        .await
+        .unwrap();
+    assert_eq!(allowing.asked().len(), 1);
+    server.shutdown().await;
+}

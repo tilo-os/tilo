@@ -1054,7 +1054,9 @@ impl HostAgents {
         app: &str,
         document: &str,
     ) -> Result<Option<R::State>, String> {
-        read_document::<R>(&self.workspaces, workspace, (app, document)).await
+        self.workspaces
+            .read_resource::<R>(workspace, (app, document))
+            .await
     }
 
     /// Answer `turn` in `workspace`: tell the person it is taken, work through the agent's tools
@@ -1784,27 +1786,8 @@ pub async fn workspace_agent(
         return Vec::new();
     }
     let workspace = workspace.to_string();
-    let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-    let kept = match read_document::<WorkspaceAgents>(workspaces, &workspace, (CHAT, &document))
-        .await
-    {
-        Ok(agents) => agents.and_then(|agents| {
-            agents
-                .agents
-                .find(&tilo_resource::Id::from_raw(agent.to_owned()))
-                .cloned()
-        }),
-        Err(error) => {
-            tracing::warn!(%workspace, %agent, %error, "the workspace's agents could not be read: the agent may do nothing");
-            return nothing(&workspace);
-        }
-    };
-    if let Some(kept) = kept {
-        return if kept.is_active() {
-            kept.turn_rules(&workspace)
-        } else {
-            nothing(&workspace)
-        };
+    if let Some(bound) = workspaces.kept_bound(&workspace, agent).await {
+        return bound;
     }
     let (Some(user), Some(name)) = (caller.user_public_key(), caller.agent_name()) else {
         return Vec::new();
@@ -1815,33 +1798,6 @@ pub async fn workspace_agent(
         tracing::warn!(%workspace, %agent, %error, "a computer's agent is not listed in the workspace's agents");
     }
     Vec::new()
-}
-
-/// The document `document` of `app` in `workspace` as the governor holds it, read as `R`; `None`
-/// where the workspace has none.
-async fn read_document<R: tilo_resource::Resource>(
-    workspaces: &Workspaces,
-    workspace: &str,
-    (app, document): (&str, &str),
-) -> Result<Option<R::State>, String> {
-    let Some(bytes) = workspaces
-        .resource_document(workspace, app, document)
-        .await
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(None);
-    };
-    let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-    crate::workspace_bots::opened::<R>(&mut doc).map(Some)
-}
-
-/// Every action anywhere in `workspace` refused: what a retired agent may do.
-fn nothing(workspace: &str) -> Vec<tilo_action_policy::Rule> {
-    vec![tilo_action_policy::Rule::new(
-        tilo_action_policy::TreePath::workspace(workspace).rest(),
-        tilo_action_policy::KindSet::ALL,
-        tilo_action_policy::Answer::Deny,
-    )]
 }
 
 /// Add the computer's agent `agent` named `name` to `workspace`'s list of its agents, kept by

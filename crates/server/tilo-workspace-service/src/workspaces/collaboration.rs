@@ -68,13 +68,29 @@ pub(super) use tilo_peer_state::join_log::JoinLog as CollaborationState;
 
 /// A change to who is in a workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-enum Membership {
+pub(super) enum Membership {
     Remove,
     Ban,
     Unban,
     /// No changes until this Unix millisecond; reading stays allowed.
     Restrict(u64),
     Unrestrict,
+}
+
+impl Membership {
+    /// This change of the person with the root key `person`, as the
+    /// workspace's policy decides it.
+    pub(super) fn change(self, person: [u8; 32]) -> tilo_action_policy::Change {
+        use tilo_action_policy::Change;
+        let person = hex::encode(person);
+        match self {
+            Self::Remove => Change::RemoveMember { person },
+            Self::Ban => Change::Ban { person },
+            Self::Unban => Change::Unban { person },
+            Self::Restrict(until_ms) => Change::Restrict { person, until_ms },
+            Self::Unrestrict => Change::Unrestrict { person },
+        }
+    }
 }
 
 /// A committed governance change.
@@ -577,26 +593,7 @@ impl Workspaces {
             MemberPlace::Administrator => (Role::Editor, true, false),
             MemberPlace::Owner => (Role::Editor, true, true),
         };
-        let op_change;
-        let op = if makes_owner {
-            WorkspaceOp::MakeOwner
-        } else if makes_administrator {
-            WorkspaceOp::MakeAdministrator
-        } else {
-            let person = hex::encode(person);
-            let member = workspace
-                .peer()
-                .governance()
-                .governed_policy()
-                .map_err(CollaborationError::new)?
-                .is_member(&person);
-            op_change = if member {
-                tilo_action_policy::Change::SetRole { person, role }
-            } else {
-                tilo_action_policy::Change::AddMember { person, role }
-            };
-            WorkspaceOp::Change(&op_change)
-        };
+        let op = WorkspaceOp::Place(person, request.place);
         self.authorize(administrator, Some(&workspace), op, now)?;
         let key = self.inner.host.key.clone();
         let name = request.name.as_deref();
@@ -932,24 +929,7 @@ impl Workspaces {
         self.ensure_keeper(&mut workspace, administrator.user_public_key, now)
             .await?;
         let person = hex::encode(request.user_public_key);
-        let change = match membership {
-            Membership::Remove => tilo_action_policy::Change::RemoveMember {
-                person: person.clone(),
-            },
-            Membership::Ban => tilo_action_policy::Change::Ban {
-                person: person.clone(),
-            },
-            Membership::Unban => tilo_action_policy::Change::Unban {
-                person: person.clone(),
-            },
-            Membership::Restrict(until_ms) => tilo_action_policy::Change::Restrict {
-                person: person.clone(),
-                until_ms,
-            },
-            Membership::Unrestrict => tilo_action_policy::Change::Unrestrict {
-                person: person.clone(),
-            },
-        };
+        let change = membership.change(request.user_public_key);
         let identity = workspace.workspace().to_owned();
         let by = self.authorize(
             administrator,

@@ -1219,29 +1219,23 @@ impl Workspaces {
             && let Some(workspace_id) = workspace_id
             && let Some((governed, device)) = self.governed_by(workspace_id, caller).await
         {
+            // What an agent's grants here refuse it is not offered to it.
+            let person = agents::is_the_person(caller, &device);
+            let grants = if person {
+                None
+            } else {
+                Some(self.agent_grants(Some(workspace_id), caller).await)
+            };
             let workspace = governed.lock().await;
             offer.generation = workspace.record.generation;
             let now = tilo_clock::unix_now_ns();
             let resource = workspace_governance_resource(workspace.workspace());
             let owner = device.user_public_key == self.inner.host.cert.user_public_key;
             let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
-            // What an agent's grants here refuse it is not offered to it.
-            let person = agents::is_the_person(caller, &device);
-            let policy = workspace
-                .peer()
-                .permissions(device.device_public_key, super::system_time(now))
-                .ok()
-                .map(|member| member.policy);
             let agent_may = |verb: &Verb| {
-                person
-                    || policy.as_ref().is_some_and(|policy| {
-                        agents::agent_answer(
-                            Some(&**policy),
-                            caller,
-                            &verb.operation(GOVERNANCE),
-                            now,
-                        ) != Answer::Deny
-                    })
+                grants.as_ref().is_none_or(|grants| {
+                    grants.answer(&verb.operation(GOVERNANCE), now) != Answer::Deny
+                })
             };
             let rows: Vec<CatalogueRow> = VERBS
                 .iter()
@@ -1276,8 +1270,8 @@ impl Workspaces {
             && let Some(certificate) = certificate
             && agents::acts_for_its_person(caller)
         {
-            let rows = self.host_rows(workspace_id, caller, certificate).await;
-            offer.add(host::HOST, "", rows);
+            let rows = self.account_rows(workspace_id, caller, certificate).await;
+            offer.add(host::ACCOUNT, "", rows);
         }
         // An agent its person named for a mail or a calendar account finds
         // what it may do with it here. A page asks directly, and is offered
@@ -1347,7 +1341,7 @@ impl Workspaces {
                             && caller.user_public_key() == Some(&certificate.user_public_key)
                     })
                     .ok_or(ActionCallError::UnknownAction)?;
-                self.host_invoke(workspace_id, caller, certificate, request)
+                self.account_invoke(workspace_id, caller, certificate, request)
                     .await
             }
             (mcp_server::PROVIDER, _) => {
@@ -1530,14 +1524,22 @@ impl Workspaces {
             }
             workspace.workspace().to_owned()
         };
+        let args = Args::of(&request.argument)?;
+        let owner = device.user_public_key == self.inner.host.cert.user_public_key;
+        if unconfirmed(&address.action, &args, owner) {
+            return Err(ActionCallError::confirmation_required());
+        }
         // A key's own grant is its own business; anything else an agent asks
-        // is decided by its grants here first.
+        // is decided by its grants here, and by its person's own checks, before
+        // its person is asked: last, so their yes is never refused after.
         if !listed_key
             && let Some(verb) = VERBS
                 .iter()
                 .chain(&OWNER_CONFIRMED)
                 .find(|verb| verb.id == address.action)
         {
+            self.check_governance(&device, &workspace, verb.id, &args)
+                .await?;
             self.admit_operation(
                 Some(workspace_id),
                 caller,
@@ -1547,11 +1549,6 @@ impl Workspaces {
             )
             .await?;
         }
-        let args = Args::of(&request.argument)?;
-        let owner = device.user_public_key == self.inner.host.cert.user_public_key;
-        if unconfirmed(&address.action, &args, owner) {
-            return Err(ActionCallError::confirmation_required());
-        }
         let call = GovernanceCall {
             workspace: &workspace,
             device: &device,
@@ -1559,6 +1556,40 @@ impl Workspaces {
             args: &args,
         };
         self.governance_run(&address.action, call).await
+    }
+
+    /// The person's own checks of the governance action `action` with `args`
+    /// by `device`, beyond the action itself, as carrying it out makes them: the place
+    /// a person is given or invited to, and whom a removal or a ban reaches.
+    async fn check_governance(
+        &self,
+        device: &DeviceCert,
+        workspace: &str,
+        action: &str,
+        args: &Args,
+    ) -> Result<(), ActionCallError> {
+        let change;
+        let op = match action {
+            ADD_MEMBER => WorkspaceOp::Place(args.required_key("person")?, args.place_at("role")?),
+            governance::INVITE => match args.place_at("role")? {
+                super::MemberPlace::Role(role) => WorkspaceOp::Invite(role),
+                super::MemberPlace::Administrator => WorkspaceOp::InviteAdministrator,
+                super::MemberPlace::Owner => WorkspaceOp::MakeOwner,
+            },
+            governance::REMOVE_MEMBER | governance::BAN | governance::UNBAN => {
+                let membership = match action {
+                    governance::REMOVE_MEMBER => super::collaboration::Membership::Remove,
+                    governance::BAN => super::collaboration::Membership::Ban,
+                    _ => super::collaboration::Membership::Unban,
+                };
+                change = membership.change(args.required_key("person")?);
+                WorkspaceOp::Change(&change)
+            }
+            _ => return Ok(()),
+        };
+        self.check_now(device, Some(workspace), op)
+            .await
+            .map_err(|error| refused(&error))
     }
 
     async fn governance_run(

@@ -13,17 +13,21 @@
 //! The person acting themselves is the person here, and so is a key they made
 //! for their own programs ([`tilo_user_identity::DeviceCapabilities::server_key`]).
 
+use std::sync::Arc;
+
 use serde_json::Value;
 use tilo_action_policy::agent_answers::AnswerScope;
-use tilo_action_policy::roles::{GOVERNANCE_KIND, governance};
-use tilo_action_policy::{ActionKind, Answer, Context, Grantee, Party, WorkspacePolicy};
+use tilo_action_policy::roles::{GOVERNANCE_KIND, Rule, governance};
+use tilo_action_policy::{ActionKind, Answer, Context, Grant, Grantee, Party, WorkspacePolicy};
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_server_protocol::workspaces::WorkspacesRequest;
 use tilo_server_session::workspaces::{CREATE_WORKSPACE, ENTER_WORKSPACE, LIST_WORKSPACES};
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_agent::WorkspaceAgents;
 
+use super::super::authority::WorkspaceOp;
 use super::Workspaces;
 
 /// How long the person has to answer.
@@ -59,62 +63,140 @@ pub(crate) fn acts_for_its_person(caller: &Caller) -> bool {
     caller.acting().is_person() || caller.acting().is_agent()
 }
 
-/// The answer the grants of the workspace `policy` governs give `caller`'s
-/// agent for `operation` at `now`, Unix nanoseconds; without a workspace,
-/// what its delegation alone answers.
-pub(crate) fn agent_answer(
-    policy: Option<&WorkspacePolicy>,
-    caller: &Caller,
-    operation: &Operation<'_>,
-    now: u64,
-) -> Answer {
-    let acting = caller.acting();
-    let Some(agent) = acting.agent_id() else {
-        return Answer::Deny;
+/// What decides an agent's calls in one workspace: the grants there naming it,
+/// the bound the workspace's list of its agents keeps for it, as its person set
+/// it under Agents, and its delegation. Asked in no workspace, or in one not
+/// governed here, its delegation alone.
+pub(crate) struct AgentGrants {
+    /// The agent; `None` may do nothing here.
+    agent: Option<String>,
+    workspace: String,
+    policy: Option<Arc<WorkspacePolicy>>,
+    granted: Vec<Grant>,
+}
+
+impl AgentGrants {
+    const NONE: Self = Self {
+        agent: None,
+        workspace: String::new(),
+        policy: None,
+        granted: Vec::new(),
     };
-    let workspace = policy.map_or("", |policy| policy.workspace.as_str());
-    let granted = acting.handed_preset(workspace);
-    let node =
-        AnswerScope::action(operation.provider, operation.kind, operation.action).node(workspace);
-    let cx = Context::at_time(super::super::system_time(now));
-    policy
-        .map_or_else(
-            || Party::new(vec![Grantee::agent(agent)], &[]),
-            |policy| policy.party_of(Grantee::agent(agent)),
-        )
-        .with_grants(&granted)
-        .decide(&node, operation.effect, &cx)
-        .answer
+
+    /// The answer for `operation` at `now`, Unix nanoseconds.
+    pub(crate) fn answer(&self, operation: &Operation<'_>, now: u64) -> Answer {
+        let Some(agent) = &self.agent else {
+            return Answer::Deny;
+        };
+        let node = AnswerScope::action(operation.provider, operation.kind, operation.action)
+            .node(&self.workspace);
+        let cx = Context::at_time(super::super::system_time(now));
+        self.policy
+            .as_deref()
+            .map_or_else(
+                || Party::new(vec![Grantee::agent(agent)], &[]),
+                |policy| policy.party_of(Grantee::agent(agent)),
+            )
+            .with_grants(&self.granted)
+            .decide(&node, operation.effect, &cx)
+            .answer
+    }
 }
 
 impl Workspaces {
-    /// The answer for `caller`'s agent's `operation`, by the grants of the
-    /// workspace `workspace_id` carries. Asked in no workspace, or in one not
-    /// governed here, no grant names the agent and its delegation answers.
-    /// An agent of a device the workspace does not hold may do nothing there.
-    pub(crate) async fn agent_answer_in(
+    /// What decides `caller`'s agent's calls in the workspace `workspace_id`
+    /// carries. An agent of a device the workspace does not hold may do
+    /// nothing there.
+    pub(crate) async fn agent_grants(
         &self,
         workspace_id: Option<WorkspaceId>,
         caller: &Caller,
-        operation: &Operation<'_>,
-    ) -> Answer {
-        let now = tilo_clock::unix_now_ns();
+    ) -> AgentGrants {
+        let acting = caller.acting();
+        let Some(agent) = acting.agent_id() else {
+            return AgentGrants::NONE;
+        };
         let governed = match workspace_id {
             Some(id) => self.held(id).await,
             None => None,
         };
         let (Some(governed), Some(device)) = (governed, caller.device_public_key()) else {
-            return agent_answer(None, caller, operation, now);
+            return AgentGrants {
+                agent: Some(agent.to_owned()),
+                workspace: String::new(),
+                policy: None,
+                granted: acting.handed_preset(""),
+            };
         };
+        let now = tilo_clock::unix_now_ns();
         let member = governed
             .lock()
             .await
             .peer()
             .permissions(*device, super::super::system_time(now));
-        match member {
-            Ok(member) => agent_answer(Some(&*member.policy), caller, operation, now),
-            Err(_) => Answer::Deny,
+        let Ok(member) = member else {
+            return AgentGrants::NONE;
+        };
+        let workspace = member.policy.workspace.clone();
+        let mut granted = acting.handed_preset(&workspace);
+        let kept = self.kept_bound(&workspace, agent).await;
+        granted.extend(caller.granted(&kept.unwrap_or_default()));
+        AgentGrants {
+            agent: Some(agent.to_owned()),
+            workspace,
+            policy: Some(member.policy),
+            granted,
         }
+    }
+
+    /// The resource `document` of `app` in `workspace` as this server holds it,
+    /// read as `R`; `None` where the workspace has none.
+    ///
+    /// # Errors
+    /// The workspace is not governed here, or the resource does not read as `R`.
+    pub async fn read_resource<R: tilo_resource::Resource>(
+        &self,
+        workspace: &str,
+        (app, document): (&str, &str),
+    ) -> Result<Option<R::State>, String> {
+        let Some(bytes) = self
+            .resource_document(workspace, app, document)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+        tilo_resource::evolution::migrate::<R>(&mut doc)
+            .map_err(|error| format!("bring the resource up to version {}: {error}", R::VERSION))?;
+        R::read(&doc).map(Some).map_err(|error| error.to_string())
+    }
+
+    /// What the agent `agent` is held to in `workspace`, as the workspace's
+    /// list of its agents keeps it: the bound kept for it there, and nothing
+    /// at all once it was retired. A list this server cannot read holds it to
+    /// nothing: what it may do is never more than the list says. `None` while
+    /// the list does not name it.
+    pub async fn kept_bound(&self, workspace: &str, agent: &str) -> Option<Vec<Rule>> {
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        let kept = match self
+            .read_resource::<WorkspaceAgents>(workspace, (tilo_workspace_agent::OWNER, &list))
+            .await
+        {
+            Ok(agents) => agents?
+                .agents
+                .find(&tilo_resource::Id::from_raw(agent.to_owned()))
+                .cloned()?,
+            Err(error) => {
+                tracing::warn!(%workspace, %agent, %error, "the workspace's agents could not be read: the agent may do nothing");
+                return Some(nothing(workspace));
+            }
+        };
+        Some(if kept.is_active() {
+            kept.turn_rules(workspace)
+        } else {
+            nothing(workspace)
+        })
     }
 
     /// Let `caller`, on the device `certificate` certifies, take `operation`
@@ -138,7 +220,12 @@ impl Workspaces {
         let Some(agent) = caller.acting().agent_id() else {
             return Err(ActionCallError::UnknownAction);
         };
-        match self.agent_answer_in(workspace_id, caller, operation).await {
+        let now = tilo_clock::unix_now_ns();
+        match self
+            .agent_grants(workspace_id, caller)
+            .await
+            .answer(operation, now)
+        {
             Answer::Allow => Ok(()),
             Answer::Deny => Err(ActionCallError::Refused {
                 reason: format!(
@@ -175,7 +262,7 @@ impl Workspaces {
                     kind: "outside".into(),
                     undoable: false,
                     workspace: workspace_id.map(|id| id.to_string()).unwrap_or_default(),
-                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(QUESTION_WAIT_NS),
+                    expires_at_ns: now.saturating_add(QUESTION_WAIT_NS),
                     page: None,
                 };
                 self.ask_person(certificate.user_public_key, question).await
@@ -210,6 +297,15 @@ impl Workspaces {
             Err(_) => Err(ActionCallError::confirmation_required()),
         }
     }
+}
+
+/// Every action anywhere in `workspace` refused: what a retired agent may do.
+fn nothing(workspace: &str) -> Vec<Rule> {
+    vec![Rule::new(
+        tilo_action_policy::TreePath::workspace(workspace).rest(),
+        tilo_action_policy::KindSet::ALL,
+        Answer::Deny,
+    )]
 }
 
 /// A fresh question's id.
@@ -256,11 +352,11 @@ const PAGE_ACTIONS: [(&str, bool, &str); 24] = [
 /// what no verb publishes as the workspace's governance all the same.
 fn operation_of(own: bool, action: &'static str) -> Operation<'static> {
     let (publisher, verb) = if own {
-        let verb = super::host::HOST_VERBS
+        let verb = super::host::ACCOUNT_VERBS
             .iter()
             .map(|(verb, _)| verb)
             .find(|verb| verb.id == action);
-        (super::host::HOST, verb)
+        (super::host::ACCOUNT, verb)
     } else {
         let verb = super::VERBS
             .iter()
@@ -312,6 +408,11 @@ impl Workspaces {
         let Some(&(_, own, action)) = PAGE_ACTIONS.iter().find(|(page, ..)| *page == name) else {
             return Err(format!("an agent does not ask for {name} here"));
         };
+        // What the person's own checks refuse is refused before they are
+        // asked about it.
+        self.check_page(device, request)
+            .await
+            .map_err(|refused| refused.to_string())?;
         let operation = operation_of(own, action);
         let workspace_id = fields
             .get("workspace")
@@ -337,6 +438,81 @@ impl Workspaces {
         self.admit_operation(workspace_id, caller, device, &operation, &arguments)
             .await
             .map_err(|refused| refused.to_string())
+    }
+}
+
+/// Making a workspace, as a page asks for it.
+const CREATING: WorkspaceOp<'static> =
+    WorkspaceOp::Host(crate::host_authority::HostOperation::CreateWorkspace);
+
+impl Workspaces {
+    /// The person's own checks of the page request `request` by `device`, as
+    /// the request makes them when it is carried out: whom a role or a removal reaches,
+    /// the role an invitation gives, making a workspace, and the governance
+    /// action an invitation's or the workspace's name's change is decided by.
+    async fn check_page(
+        &self,
+        device: &DeviceCert,
+        request: &WorkspacesRequest,
+    ) -> Result<(), super::super::CollaborationError> {
+        use super::super::collaboration::Membership;
+        use WorkspacesRequest as Asked;
+        let change;
+        let (workspace, op) = match request {
+            Asked::SetRole {
+                workspace,
+                user_public_key,
+                role,
+                ..
+            } => {
+                change = tilo_action_policy::Change::SetRole {
+                    person: hex::encode(user_public_key),
+                    role: *role,
+                };
+                (Some(workspace), WorkspaceOp::Change(&change))
+            }
+            Asked::Remove {
+                workspace,
+                user_public_key,
+                ..
+            }
+            | Asked::Ban {
+                workspace,
+                user_public_key,
+                ..
+            }
+            | Asked::Unban {
+                workspace,
+                user_public_key,
+                ..
+            } => {
+                let membership = match request {
+                    Asked::Remove { .. } => Membership::Remove,
+                    Asked::Ban { .. } => Membership::Ban,
+                    _ => Membership::Unban,
+                };
+                change = membership.change(*user_public_key);
+                (Some(workspace), WorkspaceOp::Change(&change))
+            }
+            Asked::Invite {
+                workspace,
+                role,
+                administrator,
+                ..
+            } => (Some(workspace), WorkspaceOp::invite(*role, *administrator)),
+            Asked::Create { .. } | Asked::Place { .. } => (None, CREATING),
+            Asked::Cancel { workspace, .. }
+            | Asked::Unlist { workspace, .. }
+            | Asked::MailInvite { workspace, .. } => {
+                (Some(workspace), WorkspaceOp::Govern(governance::INVITE))
+            }
+            Asked::Rename { workspace, .. } => {
+                (Some(workspace), WorkspaceOp::Govern(governance::RENAME))
+            }
+            _ => return Ok(()),
+        };
+        self.check_now(device, workspace.map(String::as_str), op)
+            .await
     }
 }
 

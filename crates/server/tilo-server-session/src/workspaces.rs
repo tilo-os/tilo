@@ -119,7 +119,7 @@ pub async fn enter_invitation(
 /// listing and entering the workspaces it governs. Only the devices of the
 /// server's own person are offered them, and invoking one is decided as
 /// every action API decides a host operation.
-pub const HOST_ACTIONS_PROVIDER: &str = "tilo.host";
+pub const HOST_ACTIONS_PROVIDER: &str = tilo_actions::policy::agent_answers::ACCOUNT_APP;
 /// The one resource the host operations are published on.
 pub const HOST_WORKSPACES_RESOURCE: &str = "host.workspaces";
 /// Create a governed workspace. Arguments: `name`, and the terms of its first

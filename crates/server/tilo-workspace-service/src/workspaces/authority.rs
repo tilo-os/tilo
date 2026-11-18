@@ -27,7 +27,10 @@
 use tilo_action_policy::{Change, Context, Role, roles};
 use tilo_user_identity::DeviceCert;
 
-use super::{CollaborationError, GovernedWorkspace, SetMemberRoleRequest, Workspaces, system_time};
+use super::{
+    CollaborationError, GovernedWorkspace, MemberPlace, SetMemberRoleRequest, Workspaces,
+    system_time,
+};
 use crate::host_authority::HostOperation;
 use tilo_lock::RwLockRecover as _;
 
@@ -53,6 +56,9 @@ pub(super) enum WorkspaceOp<'a> {
     MakeOwner,
     /// A change to who is in the workspace or what they hold.
     Change(&'a Change),
+    /// Give the person with this root key a place: a role, which adds them
+    /// when they are not in yet, or the workspace's administration.
+    Place([u8; 32], MemberPlace),
 }
 
 impl WorkspaceOp<'_> {
@@ -74,6 +80,7 @@ impl WorkspaceOp<'_> {
             Self::MakeAdministrator => "make-administrator",
             Self::MakeOwner => "make-owner",
             Self::Change(change) => change.action(),
+            Self::Place(..) => roles::governance::ADD_MEMBER,
         }
     }
 }
@@ -109,6 +116,34 @@ impl Workspaces {
             );
         }
         result
+    }
+
+    /// Whether `device` may do `op` in the workspace `workspace` names
+    /// (`None`: of the server itself) now, as [`Self::authorize`] decides once
+    /// the request is carried out: what an agent's call is checked for before its person
+    /// is asked ([`super::actions::agents`]), so they are never asked about
+    /// what would be refused anyway.
+    ///
+    /// # Errors
+    ///
+    /// Why the device may not.
+    pub(super) async fn check_now(
+        &self,
+        device: &DeviceCert,
+        workspace: Option<&str>,
+        op: WorkspaceOp<'_>,
+    ) -> Result<(), CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        let Some(workspace) = workspace else {
+            return self.authorize(device, None, op, now).map(drop);
+        };
+        let governed = self.workspace(workspace).await?;
+        let mut governed = governed.lock().await;
+        // The person a workspace of their own is kept for administers it, as
+        // the request itself makes them first.
+        self.ensure_keeper(&mut governed, device.user_public_key, now)
+            .await?;
+        self.authorize(device, Some(&governed), op, now).map(drop)
     }
 
     /// Whether [`Self::authorize`] would let `device` do `op` in `workspace` at
@@ -279,6 +314,31 @@ fn decide_by_governance(
             }
         }
         WorkspaceOp::Change(change) => member.policy.check(person, &authority, change, &cx, false),
+        // A place is a role, or the workspace's administration; a role a member
+        // holds already is set, and anyone else is added with it.
+        WorkspaceOp::Place(target, place) => {
+            let target = hex::encode(target);
+            let change;
+            let op = match place {
+                MemberPlace::Owner => WorkspaceOp::MakeOwner,
+                MemberPlace::Administrator => WorkspaceOp::MakeAdministrator,
+                MemberPlace::Role(role) => {
+                    change = if member.policy.is_member(&target) {
+                        Change::SetRole {
+                            person: target,
+                            role,
+                        }
+                    } else {
+                        Change::AddMember {
+                            person: target,
+                            role,
+                        }
+                    };
+                    WorkspaceOp::Change(&change)
+                }
+            };
+            return decide_by_governance(workspace, device, op, now);
+        }
     };
     decided.map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
     Ok(person.to_owned())

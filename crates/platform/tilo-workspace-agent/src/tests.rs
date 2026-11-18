@@ -187,16 +187,16 @@ fn nobody_is_made_an_agents_keeper_by_a_name_somebody_else_wrote() {
 }
 
 #[test]
-fn a_bound_narrows_and_never_allows_an_outside_effect_unasked() {
-    let mut record = as_person(ADA);
-    record.apply(make("Claude")).unwrap();
-    let agent = record.state().unwrap().agents[0].id.0.clone();
+fn a_bound_allows_an_outside_effect_unasked_only_within_the_persons_account() {
+    let mut agents = as_person(ADA);
+    agents.apply(make("Claude")).unwrap();
+    let agent = agents.state().unwrap().agents[0].id.0.clone();
     let rule = |node: &str, kinds: &[&str], answer: &str| Bound {
         node: node.to_owned(),
         kinds: kinds.iter().map(|kind| (*kind).to_owned()).collect(),
         answer: answer.to_owned(),
     };
-    record
+    agents
         .apply(set_bound(
             &agent,
             vec![
@@ -213,7 +213,7 @@ fn a_bound_narrows_and_never_allows_an_outside_effect_unasked() {
             ],
         ))
         .unwrap();
-    let state = record.state().unwrap();
+    let state = agents.state().unwrap();
     let rules = state.agents[0].bound_rules().expect("a bound of its own");
     assert_eq!(rules.len(), 2);
     assert_eq!(rules[0].answer, tilo_action_policy::Answer::Allow);
@@ -222,20 +222,42 @@ fn a_bound_narrows_and_never_allows_an_outside_effect_unasked() {
         tilo_action_policy::KindSet::READ.union(tilo_action_policy::KindSet::OUTSIDE)
     );
 
+    // Within the person's own account, their workspaces and a workspace's
+    // governance, the agent may go unasked: the server holds it to what they may.
+    for own in [
+        tilo_action_policy::agent_answers::ACCOUNT_APP,
+        tilo_action_policy::agent_answers::WORKSPACE_GOVERNANCE_APP,
+    ] {
+        agents
+            .apply(set_bound(
+                &agent,
+                vec![rule(
+                    &format!("workspace:ws/app:{own}"),
+                    &["outside"],
+                    "allow",
+                )],
+            ))
+            .unwrap();
+    }
     for bad in [
         rule("workspace:ws", &["outside"], "allow"),
+        rule(
+            "workspace:ws/app:so.tilo.file-explorer",
+            &["outside"],
+            "allow",
+        ),
         rule("workspace:ws", &["write"], "allow"),
         rule("workspace:ws", &[], "allow"),
         rule("workspace:ws", &["read"], "maybe"),
     ] {
-        let refused = record
+        let refused = agents
             .apply(set_bound(&agent, vec![bad.clone()]))
             .unwrap_err();
         assert!(!refused.to_string().is_empty());
     }
-    record.apply(set_bound(&agent, Vec::new())).unwrap();
+    agents.apply(set_bound(&agent, Vec::new())).unwrap();
     assert_eq!(
-        record.state().unwrap().agents[0].bound_rules(),
+        agents.state().unwrap().agents[0].bound_rules(),
         None,
         "an empty bound follows the default"
     );

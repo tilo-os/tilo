@@ -7,7 +7,7 @@
 //! Allow; only an Allow on the action itself lifts that, and those exceptions are listed here to
 //! take back.
 
-use tilo_action_policy::agent_answers::AnswerScope;
+use tilo_action_policy::agent_answers::{self, AnswerScope};
 use tilo_action_policy::roles::{Rule, is_agent_bound};
 use tilo_action_policy::{ActionKind, Answer, Grantee, KindSet, decide};
 use tilo_desktop_model::Workspace;
@@ -74,6 +74,20 @@ impl AgentAccessRow {
     pub fn customised(&self) -> bool {
         self.cells.iter().any(|cell| cell.explicit)
     }
+
+    /// The answers offered for `cell`, by their place in [`ANSWERS`]: the one it holds, and every
+    /// one its person may give it in this app ([`agent_answers::may_give`]).
+    #[must_use]
+    pub fn choices(&self, cell: &AnswerCell) -> Vec<usize> {
+        ANSWERS
+            .iter()
+            .enumerate()
+            .filter(|(_, answer)| {
+                **answer == cell.answer || agent_answers::may_give(&self.app, cell.kind, **answer)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
 }
 
 /// An action the person always allows the agent, without asking first.
@@ -115,7 +129,8 @@ pub fn answer_at(
 }
 
 /// The apps an agent's answers are offered for: every app installed for the workspace, every app
-/// it shows or holds capabilities for, and every app its bound names, by display name.
+/// it shows or holds capabilities for, and every app its bound names, by display name; then the
+/// person's own account.
 #[must_use]
 pub fn agent_access_rows(
     ws: &Workspace,
@@ -143,21 +158,45 @@ pub fn agent_access_rows(
     );
     ids.compact_sort();
     ids.dedup();
+    ids.retain(|app| !ACCOUNT.iter().any(|(own, _)| own == app));
+    let row = |app: String, label: String| {
+        let scope = AnswerScope::app(&app);
+        AgentAccessRow {
+            cells: KINDS.map(|kind| answer_at(ws, agent, admission, &scope, kind)),
+            label,
+            scope,
+            app,
+        }
+    };
     let mut rows: Vec<AgentAccessRow> = ids
         .into_iter()
         .map(|app| {
-            let scope = AnswerScope::app(&app);
-            AgentAccessRow {
-                cells: KINDS.map(|kind| answer_at(ws, agent, admission, &scope, kind)),
-                label: app_display_name(apps, &app),
-                scope,
-                app,
-            }
+            let label = app_display_name(apps, &app);
+            row(app, label)
         })
         .collect();
     rows.compact_sort_by_key(|row| row.label.to_lowercase());
+    // What the person's own account holds follows the apps, in every workspace: the agent
+    // makes and deletes their workspaces, and governs this one, as these rows answer.
+    rows.extend(
+        ACCOUNT
+            .iter()
+            .map(|(app, label)| row((*app).to_owned(), t(label))),
+    );
     rows
 }
+
+/// The person's own account, as the rows after the apps name it.
+const ACCOUNT: [(&str, &str); 2] = [
+    (
+        agent_answers::ACCOUNT_APP,
+        "workspace-settings-agent-access-workspaces",
+    ),
+    (
+        agent_answers::WORKSPACE_GOVERNANCE_APP,
+        "workspace-settings-agent-access-members",
+    ),
+];
 
 /// The actions `bound` always allows its agent, without asking first.
 #[must_use]
@@ -429,11 +468,21 @@ mod tests {
                 &admission(&ws, &bound),
                 &super::super::NoAppDirectory,
             );
-            assert_eq!(rows.len(), 1);
+            assert_eq!(rows.len(), 3, "Mail, then the person's own account");
             assert_eq!(rows[0].scope, AnswerScope::app(MAIL));
             assert_eq!(rows[0].app, MAIL);
             assert_eq!(rows[0].label, "Mail", "an app is named, not shown by id");
             assert!(!rows[0].customised(), "an action's answer is not the app's");
+            // The person may let it go unasked within their own account, never elsewhere.
+            let outside = |row: &AgentAccessRow| row.choices(&row.cells[2]);
+            assert_eq!(outside(&rows[0]), [1, 2], "Mail's outside effects ask or are denied");
+            assert_eq!(
+                (rows[1].app.as_str(), rows[1].label.as_str()),
+                (agent_answers::ACCOUNT_APP, "Your workspaces")
+            );
+            assert_eq!(outside(&rows[1]), [0, 1, 2], "making a workspace may be allowed");
+            assert_eq!(rows[2].app, agent_answers::WORKSPACE_GOVERNANCE_APP);
+            assert_eq!(outside(&rows[2]), [0, 1, 2]);
             let exceptions = agent_exceptions(&bound, &super::super::NoAppDirectory);
             assert_eq!(exceptions.len(), 1, "a Deny is no exception to list");
             assert_eq!(exceptions[0].scope, send);
