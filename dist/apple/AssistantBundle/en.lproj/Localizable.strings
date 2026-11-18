@@ -129,6 +129,7 @@
 "tokens-today" = "Tokens today";
 "of-limit" = "Of {limit} a day";
 "spent-today" = "Spent today";
+"not-counted" = "Not counted yet";
 "connections" = "Connections";
 "connection-line" = "{name} · added {date} · {count} commands";
 "logins" = "Logins";

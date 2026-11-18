@@ -147,6 +147,17 @@ public struct Wording: Sendable {
         return count.formatted(.number.locale(locale))
     }
 
+    /// The day's messages as the view's figure: the count the person's server said, or that
+    /// their server counts none. Never a nought that nobody counted.
+    public func messages(_ usage: Supervision.Usage) -> String {
+        usage.messagesToday.map { $0.formatted(.number.locale(locale)) } ?? W.notCounted.said
+    }
+
+    /// The day's tokens as the view's figure, said the same way.
+    public func tokens(_ usage: Supervision.Usage) -> String {
+        usage.tokensToday.map(tokens) ?? W.notCounted.said
+    }
+
     /// "3.12 $", "10 $"
     public func money(micros: Int, currency: String) -> String {
         let whole = micros % 1_000_000 == 0

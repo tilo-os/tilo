@@ -53,7 +53,7 @@ final class TiloSourceTests: XCTestCase {
     /// send and the answer to a question, and names the person's row. With `enter(true)` it
     /// hands a native host its device's entry, behind which a host keeps a vault, the person's
     /// models and their events.
-    private static let page = #"""
+    static let page = #"""
     <!doctype html><html data-arrival="load"><title>Tilo</title><span id="status"></span><div id="semantics"></div>
     <script>
       const root = document.documentElement;
