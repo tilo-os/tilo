@@ -1067,7 +1067,7 @@ impl Layout {
         // What the text finds stands where the person pointed: at the point at its own size, or
         // laid out to the rectangle they dragged (canvas.md §1). A second place of a note is the
         // person's to make.
-        let (width, height, hugs) = self.found_size(at, size, seen);
+        let (at, width, height, hugs) = self.found_size(at, size, seen);
         let surface = self.surface_at_strip(strip)?;
         let action = LayoutAction::Place {
             workspace: surface.workspace,

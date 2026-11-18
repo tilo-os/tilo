@@ -1,6 +1,7 @@
 //! How big a place stands: what a click or an agent's step names no size for takes the room it
 //! finds, and hugs what it shows up to it (canvas.md §1, §7).
 
+use super::beside::canvas_place;
 use super::turns::CanvasRect;
 use super::{DEFAULT_HEIGHT, DEFAULT_WIDTH, Layout, clamp_coord, clamp_side};
 
@@ -35,40 +36,52 @@ impl Layout {
         at: (i64, i64),
         size: Option<(i64, i64)>,
         seen: Option<CanvasRect>,
-    ) -> (i64, i64, bool) {
-        match size {
-            Some((width, height)) => (width, height, false),
-            None => (
-                self.width_at_click(at, DEFAULT_WIDTH, DEFAULT_HEIGHT, seen),
-                DEFAULT_HEIGHT,
-                true,
-            ),
+    ) -> ((i64, i64), i64, i64, bool) {
+        if let Some((width, height)) = size {
+            (at, width, height, false)
+        } else {
+            let (at, width, height) = self.spot_at_click(at, DEFAULT_WIDTH, DEFAULT_HEIGHT, seen);
+            (at, width, height, true)
         }
     }
 
-    /// How wide a thing put at a click at `at`, at most `height` tall, stands (canvas.md §1, a
-    /// click places what is found at the click): its own width `want`, narrowed to the room to
-    /// the edge of what the person sees ([`width_in_view`]) and to the free room before the next
-    /// place to its right (`free_width_at`), down to a window's least width, so it stands at the
-    /// click. Where not even that is free, its width in view, and the place action stands it in
-    /// the free spot nearest the click (`free_place_near`).
-    pub(super) fn width_at_click(
+    /// Where and how big a thing put at a click at `at`, at most `height` tall, stands
+    /// (canvas.md §1, a click places what is found at the click): at the click, its own width
+    /// `want` narrowed to the room to the edge of what the person sees ([`width_in_view`]) and to
+    /// the free room before the next place to its right (`free_width_at`), down to a window's
+    /// least width. Where not even that is free at the click, the free spot nearest it that stands
+    /// whole in what the person sees (`free_place_in_view`), so the camera does not pan away from
+    /// what they were looking at; only where nothing in view is free does the place action stand
+    /// it in the free spot nearest the click (`free_place_near`).
+    pub(super) fn spot_at_click(
         &self,
         at: (i64, i64),
         want: i64,
         height: i64,
         seen: Option<CanvasRect>,
-    ) -> i64 {
+    ) -> ((i64, i64), i64, i64) {
         let in_view = width_in_view(at.0, want, seen);
         self.handle
             .read(|tree| {
-                tree.active_workspace()?.layout.free_width_at(
-                    (clamp_coord(at.0), clamp_coord(at.1)),
-                    clamp_side(in_view),
-                    clamp_side(height),
-                )
+                let layout = &tree.active_workspace()?.layout;
+                let click = (clamp_coord(at.0), clamp_coord(at.1));
+                if let Some(width) =
+                    layout.free_width_at(click, clamp_side(in_view), clamp_side(height))
+                {
+                    return Some((at, i64::from(width), height));
+                }
+                let spot = layout.free_place_in_view(
+                    click,
+                    (clamp_side(want), clamp_side(height)),
+                    canvas_place(seen?),
+                )?;
+                Some((
+                    (i64::from(spot.x), i64::from(spot.y)),
+                    i64::from(spot.width),
+                    i64::from(spot.height),
+                ))
             })
-            .map_or(in_view, i64::from)
+            .unwrap_or((at, in_view, height))
     }
 }
 
