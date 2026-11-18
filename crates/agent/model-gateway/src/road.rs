@@ -4,7 +4,9 @@
 //! a model from several places is told by which measure to choose among
 //! them; one that finds its cache by a key is given the same key for every
 //! call of a conversation; a model that caches only what is marked has its
-//! instruction marked. Each field is one its provider documents, added in
+//! instruction marked; one that thinks before it answers and returns the
+//! answer alone is asked for its thought, so a wait shows the model
+//! thinking. Each field is one its provider documents, added in
 //! this one place, and none names another model: the checked model id goes
 //! as it is.
 //!
@@ -30,7 +32,9 @@ enum Spoken {
     OpenRouter,
     /// Finds its prompt cache by `prompt_cache_key`.
     OpenAi,
-    /// May write a thought into the content of the answer it belongs to.
+    /// Thinks before it answers and returns the answer alone unless it is
+    /// asked for its thought, which it writes into the content of the answer
+    /// it belongs to.
     Google,
 }
 
@@ -151,8 +155,21 @@ pub(super) fn beside(
                 object.insert("prompt_cache_key".into(), key.into());
             }
         }
-        // Asked nothing of its own.
-        Spoken::Google => {}
+        Spoken::Google => {
+            // Its thought, where the answer streams. An answer that comes
+            // whole shows nothing while it is made, and what is read of it
+            // is its provider's own body.
+            if object.get("stream") == Some(&serde_json::Value::Bool(true))
+                && wanted(object, "extra_body")
+            {
+                object.insert(
+                    "extra_body".into(),
+                    serde_json::json!({
+                        "google": { "thinking_config": { "include_thoughts": true } }
+                    }),
+                );
+            }
+        }
     }
 }
 
