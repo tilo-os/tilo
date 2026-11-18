@@ -181,7 +181,7 @@ pub enum Request {
     SecretStatus {
         profile_id: String,
     },
-    /// Detailed status, including unbound keys that require explicit migration.
+    /// Whether the profile's key is stored and bound to its provider origin.
     CredentialStatus {
         profile_id: String,
     },
@@ -190,15 +190,6 @@ pub enum Request {
     /// (`ModelDescriptor`s); a failure names its kind, never what the
     /// provider wrote. Older gateways reject this verb.
     ListModels {
-        profile_id: String,
-    },
-    /// Confirm the original endpoint independently of editable profile details.
-    MigrateApiKey {
-        profile_id: String,
-        original_endpoint: String,
-    },
-    /// Delete only the selected legacy entry, never a bound replacement.
-    RemoveLegacyApiKey {
         profile_id: String,
     },
     SetApiKey {
@@ -997,30 +988,13 @@ pub fn cluster_faces(
 /// Compatibility alias for the shared administration contract.
 pub use agent_provider_config::management::CredentialStatus;
 
-/// Query detailed status without treating an unbound key as absent.
+/// Query whether the profile's key is stored on this device.
 pub fn credential_status(profile_id: &str) -> Result<CredentialStatus, ClientError> {
     let response = request(Request::CredentialStatus {
         profile_id: profile_id.into(),
     })?;
     serde_json::from_str(response.output.as_deref().unwrap_or(""))
         .map_err(|_| ClientError::Protocol("gateway returned invalid credential status".into()))
-}
-
-/// Adopt an unbound key only after confirming its original endpoint.
-pub fn migrate_api_key(profile_id: &str, original_endpoint: &str) -> Result<(), ClientError> {
-    request(Request::MigrateApiKey {
-        profile_id: profile_id.into(),
-        original_endpoint: original_endpoint.into(),
-    })?;
-    Ok(())
-}
-
-/// Delete just the user-selected unbound key, even after editing the endpoint.
-pub fn remove_legacy_api_key(profile_id: &str) -> Result<(), ClientError> {
-    request(Request::RemoveLegacyApiKey {
-        profile_id: profile_id.into(),
-    })?;
-    Ok(())
 }
 
 /// Find the subject of one bounded picture with the installed on-device

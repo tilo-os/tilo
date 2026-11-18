@@ -73,19 +73,6 @@ impl ProviderAdmin for Administration {
     fn remove_api_key(&self, _: String) -> agent_provider_config::management::AdminFuture<'_, ()> {
         Box::pin(async { Err(ModelError::new(ErrorKind::PermissionDenied)) })
     }
-    fn migrate_api_key(
-        &self,
-        _: String,
-        _: String,
-    ) -> agent_provider_config::management::AdminFuture<'_, ()> {
-        Box::pin(async { Err(ModelError::new(ErrorKind::PermissionDenied)) })
-    }
-    fn remove_legacy_api_key(
-        &self,
-        _: String,
-    ) -> agent_provider_config::management::AdminFuture<'_, ()> {
-        Box::pin(async { Err(ModelError::new(ErrorKind::PermissionDenied)) })
-    }
 }
 
 #[test]

@@ -412,15 +412,6 @@ impl ProviderAdmin for PageService {
     fn remove_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
         Box::pin(async move { self.keys.delete(&key_slot(&profile(&profile_id)?)?) })
     }
-
-    fn migrate_api_key(&self, _: String, _: String) -> AdminFuture<'_, ()> {
-        // A page never kept keys the old, unbound way: nothing to migrate.
-        Box::pin(async { Err(ModelError::new(ErrorKind::Unsupported)) })
-    }
-
-    fn remove_legacy_api_key(&self, _: String) -> AdminFuture<'_, ()> {
-        Box::pin(async { Ok(()) })
-    }
 }
 
 /// A window's models: the page's service, for one choice or the default.

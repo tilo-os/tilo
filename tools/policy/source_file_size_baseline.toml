@@ -40,7 +40,6 @@
 "apps/video-editor/src/model.rs" = 4500
 "apps/word-processor/src/widget/tests.rs" = 8000
 "crates/agent/local-model-service/src/lib.rs" = 3500
-"crates/agent/model-gateway/src/service.rs" = 3500
 "crates/browser/tilo-browser-runtime/src/browser.rs" = 3500
 "crates/collab/collaboration/src/broker.rs" = 7500
 "crates/collab/collaboration/src/broker_tests.rs" = 6000

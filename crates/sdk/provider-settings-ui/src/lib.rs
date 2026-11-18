@@ -237,20 +237,6 @@ pub enum ProviderEffect {
         #[param(secret, "The API key; what the key field holds when omitted")]
         key: Option<String>,
     },
-    /// Bind a legacy key only after independently confirming its original endpoint.
-    #[effect(job, row, label = "agent-migrate-key")]
-    MigrateProviderKey {
-        #[param("The provider's id")]
-        provider: String,
-        #[param("Original endpoint used with this key, not a newly edited endpoint")]
-        original_endpoint: String,
-    },
-    /// Remove a legacy key that is not bound to a provider origin.
-    #[effect(job, row, destructive, label = "agent-remove-legacy-key")]
-    RemoveLegacyProviderKey {
-        #[param("The provider's id")]
-        provider: String,
-    },
     /// Remove a provider's stored API key.
     #[effect(job, row, destructive)]
     RemoveProviderKey {
@@ -375,16 +361,6 @@ fn provider_row(profile: &ProviderProfile) -> LiveRow {
             }
             .bound_asking(&["key"]),
         )
-        .operation(
-            ProviderEffect::MigrateProviderKey {
-                provider: profile.id.clone(),
-                original_endpoint: String::new(),
-            }
-            .bound_asking(&["original_endpoint"]),
-        )
-        .operation(offer(ProviderEffect::RemoveLegacyProviderKey {
-            provider: profile.id.clone(),
-        }))
         .operation(offer(ProviderEffect::RemoveProviderKey {
             provider: profile.id.clone(),
         }))
@@ -751,9 +727,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
             && profile.sign_in.is_none()
             && matches!(
                 self.keys.get(&profile.id),
-                Some(Ok(
-                    CredentialStatus::Missing | CredentialStatus::MigrationRequired
-                ))
+                Some(Ok(CredentialStatus::Missing))
             )
     }
 
@@ -917,7 +891,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
         let fields = buffers
             .entry(profile.id.clone())
             .or_insert_with(|| HostedFieldBuffers {
-                original_endpoint: Arc::new(Mutex::new(String::new())),
                 label: Arc::new(Mutex::new(stored[0].clone())),
                 endpoint: Arc::new(Mutex::new(stored[1].clone())),
                 model: Arc::new(Mutex::new(stored[2].clone())),
@@ -1260,62 +1233,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
         )));
     }
 
-    fn key_migration(&self, body: &mut Vec<Item>, profile: &ProviderProfile, can_admin: bool) {
-        let profile_id = profile.id.clone();
-        let fields = self.field_buffers(profile);
-        if matches!(
-            self.keys.get(&profile_id),
-            Some(Ok(CredentialStatus::MigrationRequired))
-        ) {
-            body.push(note(&t("agent-key-migration-required")));
-            let original = Arc::clone(&fields.original_endpoint);
-            let initial_original = original
-                .lock()
-                .map(|value| value.clone())
-                .unwrap_or_default();
-            body.push(field_row(
-                &t("agent-original-endpoint"),
-                Box::new(
-                    TextInput::local()
-                        .with_id(&format!("agent-models-original-endpoint-{profile_id}"))
-                        .with_external_buffer(Arc::clone(&original))
-                        .with_initial_value(&initial_original)
-                        .with_placeholder(t("agent-original-endpoint")),
-                ),
-            ));
-            let migrate_id = profile_id.clone();
-            body.push(row(Box::new(
-                self.bind_row(
-                    Button::new(
-                        &format!("agent-models-migrate-key-{profile_id}"),
-                        &t("agent-migrate-key"),
-                    )
-                    .with_enabled(can_admin),
-                    provider_row(profile),
-                    identity(ProviderEffect::MIGRATE_PROVIDER_KEY).map(move |()| {
-                        let endpoint = original
-                            .lock()
-                            .map(|value| value.clone())
-                            .unwrap_or_default();
-                        (migrate_id.clone(), endpoint)
-                    }),
-                ),
-            )));
-            body.push(row(Box::new(
-                self.bind_invocation(
-                    Button::new(
-                        &format!("agent-models-remove-legacy-key-{profile_id}"),
-                        &t("agent-remove-legacy-key"),
-                    )
-                    .with_enabled(can_admin),
-                    ProviderEffect::RemoveLegacyProviderKey {
-                        provider: profile_id,
-                    },
-                ),
-            )));
-        }
-    }
-
     fn profile_credentials(
         &self,
         body: &mut Vec<Item>,
@@ -1339,7 +1256,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
                     &[("error", error.into())],
                 ))));
             }
-            self.key_migration(body, profile, can_admin);
             body.push(field_row(
                 &t("agent-placeholder-key"),
                 Box::new(
@@ -1844,7 +1760,6 @@ fn location_shown(location: EndpointLocation) -> String {
 
 #[derive(Clone)]
 pub struct HostedFieldBuffers {
-    pub original_endpoint: Arc<Mutex<String>>,
     pub label: Arc<Mutex<String>>,
     pub endpoint: Arc<Mutex<String>>,
     pub model: Arc<Mutex<String>>,

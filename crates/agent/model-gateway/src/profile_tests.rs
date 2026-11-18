@@ -458,10 +458,6 @@ fn child_mints_from_ownership() {
         !store.status(&reference, &authorization).unwrap(),
         "a sign-in never writes the bound API-key slot"
     );
-    assert!(
-        !store.legacy_agent_provider_status(&profile.id).unwrap(),
-        "a sign-in never writes the legacy API-key slot"
-    );
 
     // Phase: a revoked grant (ownership keeps it empty) means sign in again.
     seal_grant("vertex-provider", "");

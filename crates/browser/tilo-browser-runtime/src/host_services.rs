@@ -383,23 +383,6 @@ impl ProviderAdmin for LazyAdministration {
     fn remove_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
         Box::pin(async move { self.client().await?.remove_api_key(profile_id).await })
     }
-
-    fn migrate_api_key(
-        &self,
-        profile_id: String,
-        original_endpoint: String,
-    ) -> AdminFuture<'_, ()> {
-        Box::pin(async move {
-            self.client()
-                .await?
-                .migrate_api_key(profile_id, original_endpoint)
-                .await
-        })
-    }
-
-    fn remove_legacy_api_key(&self, profile_id: String) -> AdminFuture<'_, ()> {
-        Box::pin(async move { self.client().await?.remove_legacy_api_key(profile_id).await })
-    }
 }
 
 /// Lend administration to the window only when it is the exact registered

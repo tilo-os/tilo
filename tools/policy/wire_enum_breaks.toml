@@ -451,3 +451,8 @@ reason = "the rate-limited answer a spent change budget sent goes with that budg
 file = "crates/agent/model-client/src/lib.rs"
 enum = "Request"
 reason = "the raw-body plan request had no caller left once every model turn went through the neutral complete request; a request is JSON (named by its verb) on a live socket between an app and its gateway, which ship together, and nothing keeps it, so an app that still sent the verb is refused as an unknown request rather than misread"
+
+[[break]]
+file = "crates/agent/provider-config/src/management.rs"
+enum = "CredentialStatus"
+reason = "an unbound provider key is no longer read or adopted, so there is no state left to report; the status is JSON (renamed by a snake_case name) on a live socket between an app and its gateway, which ship together, and nothing keeps it, so a person with an old unbound key enters it again"

@@ -167,9 +167,9 @@ and answers only model ids, names and context sizes.
 Provider keys use `accounts::ServiceCredentials`, bound to the model-gateway
 service, provider-key purpose and exact canonical endpoint origin. Storage and
 durable-write failures are reported, not treated as missing credentials or
-successful writes. Legacy unbound keys are not silently adopted from the
-current editable endpoint. Re-enter the key, or use the accounts migration API
-with an independently known original origin. Remove a bound key before changing
-its origin; if already changed, restore the original endpoint to remove it.
+successful writes. A key from before origin binding is not read or adopted from
+the current editable endpoint: re-enter the key. Remove a bound key before
+changing its origin; if already changed, restore the endpoint it was saved with
+to remove it.
 Provider diagnostics use fixed actionable advice, never provider messages,
 arbitrary identifiers, headers or credential bytes.

@@ -385,8 +385,6 @@ fn management_mutation(request: &Request) -> bool {
         Request::SetProviderConfig { .. }
             | Request::SetApiKey { .. }
             | Request::RemoveApiKey { .. }
-            | Request::MigrateApiKey { .. }
-            | Request::RemoveLegacyApiKey { .. }
     )
 }
 
@@ -730,27 +728,6 @@ async fn settings_request(http: &reqwest::Client, request: Request) -> Result<Re
         })
         .await
         .map(output),
-        Request::MigrateApiKey {
-            profile_id,
-            original_endpoint,
-        } => blocking(move || {
-            let _serial = management_write()?;
-            let profile = credential_profile(&profile_id)?;
-            migrate_key_in(&ServiceCredentials::open(), &profile, &original_endpoint)
-        })
-        .await
-        .map(done),
-        Request::RemoveLegacyApiKey { profile_id } => blocking(move || {
-            let _serial = management_write()?;
-            credential_profile(&profile_id)?;
-            PLAN_PROFILES.forget(&profile_id);
-            ServiceCredentials::open()
-                .remove_legacy_agent_provider(&profile_id)
-                .map(|_| ())
-                .map_err(|error| credential_error(&error))
-        })
-        .await
-        .map(done),
         Request::SetApiKey {
             profile_id,
             api_key,
@@ -991,9 +968,8 @@ fn credential_error(error: &accounts::secrets::BrokerError) -> String {
     use accounts::secrets::BrokerError;
     match error {
         BrokerError::Denied | BrokerError::OriginMismatch =>
-            "provider credential origin does not match; restore the original endpoint before migrating or using the key".into(),
-        BrokerError::InvalidOrigin => "a valid original provider endpoint is required".into(),
-        BrokerError::NotFound => "legacy API key is no longer present; refresh credential status".into(),
+            "provider credential origin does not match; restore the endpoint this key was saved with".into(),
+        BrokerError::InvalidOrigin => "a valid provider endpoint is required".into(),
         _ => "provider credential storage is unavailable; restore vault access and retry".into(),
     }
 }
@@ -1018,23 +994,11 @@ fn resolve_key_in(
     let reference = authorization
         .credential_ref(&profile.id)
         .map_err(|_| resolution_error(ErrorKind::InvalidRequest, "invalid provider profile id"))?;
-    // Legacy entries had no origin binding. Never adopt them using an edited
-    // endpoint. Explicit migration requires an independently known original
-    // origin through ServiceCredentials::migrate_agent_provider.
     if let Some(key) = store
         .resolve(&reference, &authorization)
         .map_err(|error| credential_model_error(&error))?
     {
         return Ok(key);
-    }
-    if store
-        .legacy_agent_provider_status(&profile.id)
-        .map_err(|error| credential_model_error(&error))?
-    {
-        return Err(resolution_error(
-            ErrorKind::Authentication,
-            "API key migration required; confirm its original endpoint in Settings → Agent Models",
-        ));
     }
     Err(resolution_error(
         ErrorKind::Authentication,
@@ -1077,12 +1041,6 @@ fn credential_status_in(
             crate::CredentialStatus::Missing
         });
     }
-    if store
-        .legacy_agent_provider_status(&profile.id)
-        .map_err(|error| credential_error(&error))?
-    {
-        return Ok(crate::CredentialStatus::MigrationRequired);
-    }
     let (reference, authorization) = credential_binding(profile)?;
     Ok(
         if store
@@ -1096,28 +1054,11 @@ fn credential_status_in(
     )
 }
 
-fn migrate_key_in(
-    store: &ServiceCredentials,
-    profile: &ProviderProfile,
-    original_endpoint: &str,
-) -> Result<(), String> {
-    let (_, authorization) = credential_binding(profile)?;
-    store
-        .migrate_agent_provider(&profile.id, &authorization, original_endpoint)
-        .map_err(|error| credential_error(&error))?;
-    PLAN_PROFILES.forget(&profile.id);
-    Ok(())
-}
-
 fn secret_status(profile_id: &str) -> Result<bool, String> {
     let profile = credential_profile(profile_id)?;
     match credential_status_in(&ServiceCredentials::open(), &profile)? {
         crate::CredentialStatus::Configured => Ok(true),
         crate::CredentialStatus::Missing => Ok(false),
-        crate::CredentialStatus::MigrationRequired => Err(
-            "API key migration required; confirm its original endpoint in Settings → Agent Models"
-                .into(),
-        ),
     }
 }
 
@@ -2450,156 +2391,6 @@ mod tests {
                 "on-device subject segmentation is unavailable in this gateway build"
             };
             assert_eq!(response.error.as_deref(), Some(expected));
-        }
-    }
-
-    tilo_test_env::scenario! {
-        /// Migrating and removing a legacy API key, each case in a settings root of its own.
-        fn a_legacy_key_migrates_only_explicitly_and_is_never_lost_or_overreached;
-
-        phase existing_user_profile_requires_explicit_original_endpoint_migration;
-        {
-            let root = tempfile::tempdir().unwrap();
-            let settings = settings_store::profile(root.path());
-            let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
-            profile.endpoint = "https://original.example/v1".into();
-            let config = ProviderConfig {
-                profiles: vec![profile.clone()],
-                default_profile: Some(profile.id.clone()),
-                ..Default::default()
-            };
-            config.save_in(&settings).unwrap();
-            let store = ServiceCredentials::open_in(root.path());
-            assert_eq!(
-                credential_status_in(&store, &profile).unwrap(),
-                crate::CredentialStatus::Missing
-            );
-            assert!(migrate_key_in(&store, &profile, &profile.endpoint).is_err());
-            let legacy = accounts::AccountId::new(format!("agent-provider-{}", profile.id));
-            let mut vault = accounts::SecretVault::open_in(root.path());
-            vault.put(&legacy, &accounts::Secret::password("old-key"));
-            vault.try_save().unwrap();
-            let mut loaded = ProviderConfig::load_in(&settings).profiles.remove(0);
-            assert_eq!(
-                credential_status_in(&store, &loaded).unwrap(),
-                crate::CredentialStatus::MigrationRequired
-            );
-            assert!(
-                resolve_key_in(&store, &loaded)
-                    .unwrap_err()
-                    .message
-                    .contains("migration required")
-            );
-
-            assert_eq!(
-                resolve_key_in(&store, &loaded).unwrap_err().kind,
-                ErrorKind::Authentication
-            );
-
-            // Editing the profile must not give its new origin ownership of the old key.
-            loaded.endpoint = "https://edited.example/v1".into();
-            assert_eq!(
-                credential_status_in(&store, &loaded).unwrap(),
-                crate::CredentialStatus::MigrationRequired
-            );
-            assert!(migrate_key_in(&store, &loaded, "https://original.example/v1").is_err());
-            assert!(
-                accounts::SecretVault::open_in(root.path())
-                    .get(&legacy)
-                    .is_some()
-            );
-            assert!(resolve_key_in(&store, &loaded).is_err());
-
-            loaded.endpoint = "https://original.example/v1".into();
-            migrate_key_in(&store, &loaded, "https://original.example/v1").unwrap();
-            assert_eq!(
-                credential_status_in(&store, &loaded).unwrap(),
-                crate::CredentialStatus::Configured
-            );
-            assert_eq!(resolve_key_in(&store, &loaded).unwrap().as_str(), "old-key");
-            assert!(
-                accounts::SecretVault::open_in(root.path())
-                    .get(&legacy)
-                    .is_none()
-            );
-            migrate_key_in(&store, &loaded, "https://original.example/v1").unwrap();
-            loaded.endpoint = "https://edited.example/v1".into();
-            assert_eq!(
-                resolve_key_in(&store, &loaded).unwrap_err().kind,
-                ErrorKind::PermissionDenied
-            );
-        }
-
-        phase failed_migration_keeps_the_legacy_key_durable;
-        {
-            let root = tempfile::tempdir().unwrap();
-            let store = ServiceCredentials::open_in(root.path());
-            let profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-            let legacy = accounts::AccountId::new(format!("agent-provider-{}", profile.id));
-            let mut vault = accounts::SecretVault::open_in(root.path());
-            vault.put(&legacy, &accounts::Secret::password("old-key"));
-            vault.try_save().unwrap();
-            let lock = accounts::vault_dir_in(root.path()).join("vault.lock");
-            std::fs::remove_file(&lock).unwrap();
-            std::fs::create_dir(&lock).unwrap();
-            assert!(migrate_key_in(&store, &profile, &profile.endpoint).is_err());
-            assert_eq!(
-                credential_status_in(&store, &profile).unwrap(),
-                crate::CredentialStatus::MigrationRequired
-            );
-            assert_eq!(
-                accounts::SecretVault::open_in(root.path())
-                    .get(&legacy)
-                    .unwrap()
-                    .password,
-                "old-key"
-            );
-            let (reference, authorization) = credential_binding(&profile).unwrap();
-            assert!(!store.status(&reference, &authorization).unwrap());
-        }
-
-        phase selected_legacy_removal_does_not_touch_bound_or_other_profile_keys;
-        {
-            let root = tempfile::tempdir().unwrap();
-            let store = ServiceCredentials::open_in(root.path());
-            let mut profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
-            profile.endpoint = "https://original.example".into();
-            let (reference, authorization) = credential_binding(&profile).unwrap();
-            store
-                .store(&reference, &authorization, "bound-key")
-                .unwrap();
-            let mut vault = accounts::SecretVault::open_in(root.path());
-            let selected = accounts::AccountId::new(format!("agent-provider-{}", profile.id));
-            let other = accounts::AccountId::new("agent-provider-other");
-            vault.put(&selected, &accounts::Secret::password("old-key"));
-            vault.put(&other, &accounts::Secret::password("other-key"));
-            vault.try_save().unwrap();
-            profile.endpoint = "https://edited.example".into();
-            store.remove_legacy_agent_provider(&profile.id).unwrap();
-            assert!(!store.legacy_agent_provider_status(&profile.id).unwrap());
-            assert!(store.legacy_agent_provider_status("other").unwrap());
-            assert_eq!(
-                store
-                    .resolve(&reference, &authorization)
-                    .unwrap()
-                    .unwrap()
-                    .as_str(),
-                "bound-key"
-            );
-            assert!(store.remove_legacy_agent_provider("../other").is_err());
-
-            // Explicit adoption of a leftover legacy entry preserves the bound
-            // replacement while durably cleaning up the obsolete copy.
-            let mut vault = accounts::SecretVault::open_in(root.path());
-            vault.put(&selected, &accounts::Secret::password("obsolete-key"));
-            vault.try_save().unwrap();
-            profile.endpoint = "https://original.example".into();
-            migrate_key_in(&store, &profile, &profile.endpoint).unwrap();
-            assert!(!store.legacy_agent_provider_status(&profile.id).unwrap());
-            assert_eq!(
-                resolve_key_in(&store, &profile).unwrap().as_str(),
-                "bound-key"
-            );
         }
     }
 

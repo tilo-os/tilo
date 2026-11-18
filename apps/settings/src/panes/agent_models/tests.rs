@@ -332,40 +332,6 @@ fn a_hosted_provider_without_a_key_here_asks_for_one() {
 }
 
 #[test]
-fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
-    let (_app, mut pane) = hosted_model(mock(snapshot(None)));
-    pane.change_providers(AgentModelsEffect::AddProvider {
-        preset: "anthropic".into(),
-    })
-    .unwrap();
-    let profile = pane.providers.config().profiles[0].clone();
-    pane.keys
-        .insert(profile.id.clone(), Ok(CredentialStatus::MigrationRequired));
-    assert!(pane.needs_key(&profile));
-    let text = announced(&mut pane);
-    assert!(
-        text.iter()
-            .any(|line| line.contains("unbound legacy API key")),
-        "{text:#?}"
-    );
-    assert!(
-        text.iter().any(|line| line == "Remove unbound legacy key"),
-        "{text:#?}"
-    );
-    let migration = SettingsEffect::from(AgentModelsEffect::MigrateProviderKey {
-        provider: profile.id,
-        original_endpoint: String::new(),
-    })
-    .bound_asking(&["original_endpoint"]);
-    assert!(
-        migration
-            .params()
-            .iter()
-            .any(|param| param.name == "original_endpoint")
-    );
-}
-
-#[test]
 fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
     use account_credentials::TokenSet;
     use account_credentials::cloud_projects::CloudProject;

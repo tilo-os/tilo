@@ -13,7 +13,6 @@ use crate::{ModelDescriptor, ProviderConfig, protocol::ModelError};
 pub enum CredentialStatus {
     Missing,
     Configured,
-    MigrationRequired,
 }
 
 /// Authoritative backend settings and their compare-and-swap revision.
@@ -46,7 +45,4 @@ pub trait ProviderAdmin: Send + Sync {
     fn list_models(&self, profile_id: String) -> AdminFuture<'_, Vec<ModelDescriptor>>;
     fn set_api_key(&self, profile_id: String, api_key: String) -> AdminFuture<'_, ()>;
     fn remove_api_key(&self, profile_id: String) -> AdminFuture<'_, ()>;
-    fn migrate_api_key(&self, profile_id: String, original_endpoint: String)
-    -> AdminFuture<'_, ()>;
-    fn remove_legacy_api_key(&self, profile_id: String) -> AdminFuture<'_, ()>;
 }

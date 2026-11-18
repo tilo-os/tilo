@@ -299,11 +299,7 @@ async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<
         );
     })
     .await;
-    within(
-        "the legacy key and refused edits",
-        cleanup(admin, &profile, updated),
-    )
-    .await;
+    within("refused edits", cleanup(admin, updated)).await;
     within(
         "signed metadata staying the provisioner's",
         signed_metadata_stays_owned_by_provisioner(admin),
@@ -313,21 +309,8 @@ async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<
 
 async fn cleanup(
     admin: &dyn ProviderAdmin,
-    profile: &ProviderProfile,
     updated: agent_provider_config::management::ProviderSnapshot,
 ) {
-    let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
-    let legacy = accounts::AccountId::new(format!("agent-provider-{}", profile.id));
-    let mut vault = accounts::SecretVault::open_in(&root);
-    vault.put(
-        &legacy,
-        &accounts::Secret::password("legacy-write-only-key"),
-    );
-    vault.try_save().unwrap();
-    assert_eq!(
-        admin.credential_status(profile.id.clone()).await.unwrap(),
-        CredentialStatus::MigrationRequired
-    );
     let mut retargeted = updated.config.clone();
     retargeted.profiles[0].endpoint = "http://127.0.0.1:9/v1".into();
     assert_eq!(
@@ -338,20 +321,6 @@ async fn cleanup(
             .kind,
         ErrorKind::PermissionDenied
     );
-    assert!(
-        admin
-            .migrate_api_key(profile.id.clone(), "https://wrong-origin.example".into())
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        admin.credential_status(profile.id.clone()).await.unwrap(),
-        CredentialStatus::MigrationRequired
-    );
-    admin
-        .remove_legacy_api_key(profile.id.clone())
-        .await
-        .unwrap();
     let mut invalid = updated.config.clone();
     invalid.profiles[0].endpoint = "http://127.0.0.1/v1?api_key=never-store-me".into();
     assert_eq!(

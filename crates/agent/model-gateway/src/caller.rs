@@ -46,8 +46,6 @@ pub(crate) fn permitted(session: &dyn Session, request: &crate::Request) -> bool
         | crate::Request::SecretStatus { .. }
         | crate::Request::CredentialStatus { .. }
         | crate::Request::ListModels { .. }
-        | crate::Request::MigrateApiKey { .. }
-        | crate::Request::RemoveLegacyApiKey { .. }
         | crate::Request::SetApiKey { .. }
         | crate::Request::RemoveApiKey { .. } => {
             matches!(session.caller(), Caller::Settings) && session.may_manage_credentials()
@@ -117,8 +115,6 @@ mod tests {
             serde_json::json!({"verb":"cluster_faces", "profile_id":"p", "model_id":"m", "images":[]}),
             serde_json::json!({"verb":"secret_status", "profile_id":"p"}),
             serde_json::json!({"verb":"credential_status", "profile_id":"p"}),
-            serde_json::json!({"verb":"migrate_api_key", "profile_id":"p", "original_endpoint":"https://example.com"}),
-            serde_json::json!({"verb":"remove_legacy_api_key", "profile_id":"p"}),
             serde_json::json!({"verb":"set_api_key", "profile_id":"p", "api_key":"x"}),
             serde_json::json!({"verb":"remove_api_key", "profile_id":"p"}),
         ];
@@ -219,7 +215,7 @@ mod tests {
             }
         }
 
-        phase legacy_management_requires_live_settings_ownership_permission;
+        phase management_requires_live_settings_ownership_permission;
         {
             for request in [
                 crate::Request::GetProviderConfig,
@@ -228,13 +224,6 @@ mod tests {
                     config: agent_provider_config::ProviderConfig::default(),
                 },
                 crate::Request::CredentialStatus {
-                    profile_id: "profile".into(),
-                },
-                crate::Request::MigrateApiKey {
-                    profile_id: "profile".into(),
-                    original_endpoint: "https://original.example".into(),
-                },
-                crate::Request::RemoveLegacyApiKey {
                     profile_id: "profile".into(),
                 },
             ] {

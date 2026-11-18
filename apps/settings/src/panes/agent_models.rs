@@ -456,20 +456,6 @@ pub enum AgentModelsEffect {
         #[param(secret, "The API key; what the key field holds when omitted")]
         key: Option<String>,
     },
-    /// Bind a legacy key only after independently confirming its original endpoint.
-    #[effect(job, row)]
-    MigrateProviderKey {
-        #[param("The provider's id")]
-        provider: String,
-        #[param("Original endpoint used with this key, not a newly edited endpoint")]
-        original_endpoint: String,
-    },
-    /// Remove a legacy key that is not bound to a provider origin.
-    #[effect(job, row, destructive)]
-    RemoveLegacyProviderKey {
-        #[param("The provider's id")]
-        provider: String,
-    },
     /// Remove a provider's stored API key.
     #[effect(job, row, destructive)]
     RemoveProviderKey {
@@ -710,8 +696,6 @@ pub(crate) fn answer(
                     provider,
                     AgentModelsEffect::SaveProviderKey { .. }
                         | AgentModelsEffect::RemoveProviderKey { .. }
-                        | AgentModelsEffect::RemoveLegacyProviderKey { .. }
-                        | AgentModelsEffect::MigrateProviderKey { .. }
                         | AgentModelsEffect::ListProviderModels { .. }
                         | AgentModelsEffect::RefreshProviders
                 ) {

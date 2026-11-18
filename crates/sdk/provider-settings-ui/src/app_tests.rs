@@ -58,9 +58,7 @@ fn invoke(
 fn run(app: &mut TestApp<ProviderSettingsApp>, effect: ProviderEffect) {
     if matches!(
         effect,
-        ProviderEffect::RemoveProvider { .. }
-            | ProviderEffect::RemoveProviderKey { .. }
-            | ProviderEffect::RemoveLegacyProviderKey { .. }
+        ProviderEffect::RemoveProvider { .. } | ProviderEffect::RemoveProviderKey { .. }
     ) {
         app.call_confirmed_on(&row_for(&effect), effect.id(), serde_json::json!({}))
             .unwrap();
