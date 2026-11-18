@@ -84,6 +84,76 @@ fn reasoning_history_grows_linearly_with_received_content() {
     assert_eq!(kept.sequence, 192);
 }
 
+/// The bytes the newest change of the part saved as `saved` carries.
+fn newest_change_bytes(saved: &[u8]) -> usize {
+    let mut loaded = automerge::AutoCommit::load(saved).unwrap();
+    loaded
+        .get_changes(&[])
+        .last()
+        .map_or(0, |change| change.raw_bytes().len())
+}
+
+/// A reply that grows a piece at a time is stored as the pieces it received: the sixtieth
+/// piece's change carries what the first's did, not the fifty-nine before it once more.
+#[test]
+fn a_growing_replys_history_grows_linearly_with_received_content() {
+    let mut doc = fixture();
+    let part = |doc: &Workspace| doc.part_bytes(0).unwrap();
+    let baseline = part(&doc).len();
+    let mut expected = String::new();
+    let mut random = 11_u64;
+    let mut halfway = 0;
+    let mut first = 0;
+    // Sixty pieces of a thousand bytes: an answer just under what one message holds.
+    for sequence in 1..=60 {
+        // Incompressible across pieces: repeated prose can conceal a text written whole again.
+        let piece: String = (0..1000)
+            .map(|_| {
+                random = random
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
+                char::from(b' ' + ((random >> 32) % 95) as u8)
+            })
+            .collect();
+        expected.push_str(&piece);
+        apply(&mut doc, sequence, AgentOutput::TextDelta { text: piece });
+        if sequence == 1 {
+            first = newest_change_bytes(&part(&doc));
+        }
+        if sequence == 30 {
+            halfway = part(&doc).len() - baseline;
+        }
+    }
+    let saved = part(&doc);
+    let growth = saved.len() - baseline;
+    let mut loaded = automerge::AutoCommit::load(&saved).unwrap();
+    let changes = loaded.get_changes(&[]);
+    let last = changes.last().unwrap();
+    eprintln!(
+        "sixty pieces of 1,000 bytes grew the part by {growth} bytes ({halfway} after thirty); \
+         the last piece's change is {} bytes, of which its message {} bytes, in {} operations",
+        last.raw_bytes().len(),
+        last.message().map_or(0, str::len),
+        last.len()
+    );
+    assert!(
+        last.raw_bytes().len() <= first * 2,
+        "a piece's change carries the piece, not the reply so far: the first piece's change is \
+         {first} bytes, the sixtieth's {}",
+        last.raw_bytes().len()
+    );
+    assert!(
+        growth < expected.len() * 4,
+        "{growth} bytes for {} content bytes",
+        expected.len()
+    );
+    assert!(
+        growth < halfway * 3,
+        "doubling content grew history from {halfway} to {growth}"
+    );
+    assert_eq!(message(&doc).text, expected);
+}
+
 tilo_test_env::scenario! {
     /// What a streamed reply resources of its events.
     /// Each case was a test of its own, on a fixture of its own; a failure
