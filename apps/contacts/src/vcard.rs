@@ -129,7 +129,7 @@ pub fn to_vcard(c: &Contact, version: VCardVersion) -> String {
         let cats: Vec<String> = c.groups.iter().map(|group| esc(&group.value)).collect();
         lines.push(format!("CATEGORIES:{}", cats.join(",")));
     }
-    if c.photo_bytes().is_some() {
+    if crate::model::photo_bytes(c).is_some() {
         lines.push(match version {
             VCardVersion::V3 => format!("PHOTO;ENCODING=b;TYPE=JPEG:{}", c.photo),
             VCardVersion::V4 => format!("PHOTO:data:image/jpeg;base64,{}", c.photo),
@@ -491,7 +491,7 @@ fn apply_property(c: &mut Contact, line: &ContentLine) {
                         .then_some(value)
                 });
             if let Some(bytes) = embedded.and_then(ui::held_images::picture_bytes) {
-                c.set_photo(&bytes);
+                crate::model::set_photo(c, &bytes);
             }
         }
         "URL" => c.website = unescape(strip_uri(value)),
@@ -942,14 +942,17 @@ mod tests {
         for card in [v3, v4] {
             let contacts = parse_vcards(&card);
             assert_eq!(contacts.len(), 1);
-            let photo = contacts[0].photo_bytes().expect("the picture imported");
+            let photo = crate::model::photo_bytes(&contacts[0]).expect("the picture imported");
             let portrait = image::load_from_memory(&photo).unwrap();
             assert_eq!(portrait.width(), ui::held_images::PORTRAIT_SIDE);
             assert_eq!(portrait.width(), portrait.height());
 
             for version in [VCardVersion::V3, VCardVersion::V4] {
                 let back = parse_vcards(&to_vcard(&contacts[0], version));
-                assert!(back[0].photo_bytes().is_some(), "{version:?} keeps it");
+                assert!(
+                    crate::model::photo_bytes(&back[0]).is_some(),
+                    "{version:?} keeps it"
+                );
             }
         }
 
