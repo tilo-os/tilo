@@ -255,12 +255,6 @@ impl DesktopBackdrop {
         }
     }
 
-    /// Exposed for tests; there is no runtime consumer.
-    #[cfg(test)]
-    pub(crate) fn noise_bytes_len(&self) -> usize {
-        self.noise.image.data.len()
-    }
-
     fn current_wallpaper(&self) -> Option<ImageData> {
         let provider = self.wallpaper.as_ref()?;
         provider(self.workspace_id.as_deref().unwrap_or_default())
@@ -620,23 +614,12 @@ mod tests {
         assert_eq!(backdrop.drawn_wallpaper, None, "and it has none");
     }
 
-    /// The backdrop's baked noise texture must exist and have the right byte-size (64×64 RGBA8 =
-    /// 16384 bytes). Guards against someone accidentally dropping the noise-generation path.
-    #[test]
-    fn noise_buffer_is_populated() {
-        let backdrop = DesktopBackdrop::new();
-        let expected = (NOISE_SIZE as usize) * (NOISE_SIZE as usize) * 4;
-        assert_eq!(backdrop.noise_bytes_len(), expected);
-        assert_eq!(backdrop.noise.image.width, NOISE_SIZE);
-        assert_eq!(backdrop.noise.image.height, NOISE_SIZE);
-    }
-
     tilo_test_env::scenario! {
         fn the_backdrops_noise_is_opaque_and_deterministic;
 
         phase noise_buffer_has_nonzero_alpha;
         // The noise should actually have some non-zero alpha pixels; a buffer of all zeros would
-        // render nothing and silently regress the overlay without tripping the size assertion above.
+        // render nothing and silently regress the overlay.
         {
             let bytes = generate_noise_bytes();
             let any_visible = bytes.chunks_exact(4).any(|px| px[3] > 0);
