@@ -327,10 +327,9 @@ async fn catch_up_first_connection(
     doc_b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
     let mut got_delta = false;
     let mut got_ready = false;
-    for _ in 0..8 {
-        if got_delta && got_ready {
-            break;
-        }
+    // A held workspace sends its own state beside the co-edit: read until
+    // both arrived, however many frames of the workspace's come first.
+    while !(got_delta && got_ready) {
         let inbound = tilo_test_env::within("B catch-up timeout", b_session.recv())
             .await
             .expect("B closed");
@@ -410,4 +409,82 @@ async fn a_pinged_host_answers_and_resets_the_silence() {
     );
     // The host serves until here.
     drop(host);
+}
+
+/// A member's document write, sent through its co-edit session, reaches another
+/// member of a workspace the server holds, as the author signed it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_members_document_write_reaches_another_member_of_a_held_workspace() {
+    use collab_types::CommitNamed as _;
+    const WS: WorkspaceId = WorkspaceId::from_u128(24);
+
+    let user = TestUser::fresh("Alice");
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let b = user.enrol("phone", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server_dev = user.enrol("home-server", DeviceCapabilities::member());
+    let server = spawn_server_on(state.path(), &user, server_dev, &[WS], &[&a.cert, &b.cert]).await;
+    let join = async |device: &crate::common::TestDevice| {
+        let client = ServerClient::connect(
+            client_endpoint().await,
+            server.node_addr(),
+            user.user_pk,
+            device.cert.clone(),
+            device.sk.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .expect("connect");
+        let session = ServerCoeditSession::join(client, WS, device.device_pubkey()).unwrap();
+        tilo_test_env::within("Ready timeout", async {
+            while !matches!(session.recv().await, Some(Inbound::Ready { .. })) {}
+        })
+        .await;
+        session
+    };
+    let a_session = join(&a).await;
+    let b_session = join(&b).await;
+
+    // A's write names the workspace it is sent to, as A's replica of that
+    // workspace writes it.
+    let mut replica = tilo_peer_state::StatePeer::new(
+        &WS.to_string(),
+        a.cert.clone(),
+        vec![a.cert.clone(), b.cert.clone()],
+        RevocationList::new(),
+        std::time::SystemTime::now(),
+    )
+    .unwrap();
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "topic", "from A").unwrap();
+    doc.commit_edit("fixture", "topic");
+    let message = replica
+        .publication_mut()
+        .publish_incremental(
+            "so.tilo.notes",
+            "",
+            doc.save_after(&[]),
+            &a.sk,
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+    let body = postcard::to_stdvec(&message).unwrap();
+    let (route, _) = neighbour_wire::retention(&message, false).unwrap();
+    a_session
+        .publish_retained_delta(route, body.clone())
+        .unwrap();
+
+    tilo_test_env::within("A's write at B", async {
+        loop {
+            match b_session.recv().await.expect("B's session stays open") {
+                Inbound::Delta { author, data } if author == a.device_pubkey() => {
+                    assert_eq!(data, body, "B reads the write A signed");
+                    return;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await;
+    drop(server);
 }

@@ -14,8 +14,8 @@
 //! copy was drained and deleted. The lagging peer advertises its heads
 //! (`SyncRequest`); the host replies with the missing changes
 //! (`SyncResponse`) computed against that materialized doc; the peer
-//! applies them and converges — asserted on Automerge documents (identical
-//! `get_heads()`) through the `Server` / `ServerClient` path.
+//! applies them and converges — asserted on Automerge documents (B holds
+//! A's heads) through the `Server` / `ServerClient` path.
 
 #![allow(
     clippy::unwrap_used,
@@ -222,9 +222,17 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
         "host backfilled the lost change via anti-entropy"
     );
 
-    // B holds A's edit: the server re-authors what it materializes, so the
-    // change arrives as the workspace's own, and its text is the proof.
+    // B converges on A: it holds A's very change, not a copy of its text. The
+    // held workspace's materialized document carries the workspace's own
+    // state too, so B holds more than A, never less.
     assert_eq!(doc_b.str_at(&ROOT, "note").as_deref(), Some("recover-me"));
+    assert!(
+        doc_a
+            .get_heads()
+            .iter()
+            .all(|head| doc_b.get_change_by_hash(head).is_some()),
+        "anti-entropy gives B A's own change despite the drained-and-lost delta"
+    );
 
     drop(a_client);
     drop(host);

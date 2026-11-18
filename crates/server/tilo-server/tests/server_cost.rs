@@ -49,11 +49,15 @@ use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_server::Envelope;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestServer, TestUser, client_endpoint, publisher, spawn_server};
+use crate::common::{
+    TestDevice, TestServer, TestUser, client_endpoint, found_documents, publisher, spawn_server,
+};
 use tilo_server::WorkspaceId;
 
+const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(0x5e11_f00d_7110_4625_8000_0000_0000_0625);
+/// [`WORKSPACE`] as its members' replicas name it: a write names the
+/// workspace it is sent to, and the server refuses one naming another.
 const SEEDED_WORKSPACE: &str = "5e11f00d-7110-4625-8000-000000000625";
-const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(625);
 /// Four routes, as in a workspace with four open documents.
 const ROUTES: [(&str, &str); 4] = [
     ("so.tilo.word-processor", "tab:0000000000000001"),
@@ -395,8 +399,11 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         })
         .collect();
 
-    let mut coded_peer = CodedSubscriber::open(&server, &coding).await;
+    // The author's documents are the workspace's before anyone types:
+    // the subscriber reads them in its catch-up, and then only keystrokes.
     let publisher = publisher(&server, &user, &author, WORKSPACE).await;
+    found_documents(&server, &publisher, &mut owner, &author, WORKSPACE, &ROUTES).await;
+    let mut coded_peer = CodedSubscriber::open(&server, &coding).await;
 
     let store = server
         .state_root

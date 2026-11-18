@@ -506,6 +506,59 @@ pub async fn publisher(
     publisher
 }
 
+/// `author`'s documents at `routes`, as its `replica` holds them, enter
+/// `workspace` as a member's first write of a document does: whole, through
+/// `publisher`. Returns once the server holds every one.
+pub async fn found_documents(
+    server: &TestServer,
+    publisher: &tilo_server::ServerCoeditSession,
+    replica: &mut tilo_peer_state::StatePeer,
+    author: &TestDevice,
+    workspace: WorkspaceId,
+    routes: &[(&str, &str)],
+) {
+    let workspaces = server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces");
+    let mut changes = workspaces.governance_changes();
+    for (app, id) in routes {
+        let document = replica
+            .document(app, id)
+            .expect("the replica holds the document");
+        let message = replica
+            .publication_mut()
+            .publish_document(app, id, document, &author.sk, std::time::SystemTime::now())
+            .unwrap();
+        let (route, kind) = neighbour_wire::retention(&message, false).unwrap();
+        assert_eq!(
+            kind,
+            neighbour_wire::Retention::Checkpoint,
+            "a whole document"
+        );
+        publisher
+            .publish_checkpoint(route, postcard::to_allocvec(&message).unwrap())
+            .unwrap();
+    }
+    let workspace = workspace.to_string();
+    tilo_test_env::within("the server to hold the founded documents", async {
+        loop {
+            let held = workspaces
+                .document_routes(&workspace)
+                .await
+                .unwrap_or_default();
+            if routes
+                .iter()
+                .all(|(app, id)| held.iter().any(|(a, d)| a == app && d == id))
+            {
+                return;
+            }
+            let _ = changes.recv().await;
+        }
+    })
+    .await;
+}
+
 /// A client of `device` subscribed to `workspace` on the server at `addr`, once
 /// the server admits it.
 pub async fn connect(
