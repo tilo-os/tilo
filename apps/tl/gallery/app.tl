@@ -13,8 +13,6 @@ type Item {
     reactions: Map<Set<Actor>>
 }
 
-/// The everyday parts of a window: navigation, text and buttons, chips, a card of facts, an
-///
 /// The gallery: a window of every group. A group's file adds its page to the gallery's sidebar
 /// and, where a control on it is bound to a field, the field here. The root is made with the
 /// package and holds every value the pages show, so a window opens on its components from the

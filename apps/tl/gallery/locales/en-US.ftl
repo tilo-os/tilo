@@ -19,7 +19,7 @@ d-xttl6aec = Stage
 d-44yujnht = Reactions
 
 d-x3epwv5u = Gallery
-    .doc = The everyday parts of a window: navigation, text and buttons, chips, a card of facts, an
+    .doc = The gallery: a window of every group.
     .noun = { $count ->
         [one] gallery
        *[other] galleries
