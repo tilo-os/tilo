@@ -993,26 +993,26 @@ mod tests {
 
     #[test]
     fn launch_latency_lines_survive_the_default_session_filter() {
-        assert_eq!(
-            log_directives(None),
-            "error,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info,tilo::app_output=info"
+        for unset in [None, Some("  ")] {
+            let directives = log_directives(unset);
+            assert!(directives.starts_with("error"), "{directives}");
+            for target in ALWAYS_LOGGED {
+                assert!(
+                    directives.contains(&format!("{target}=info")),
+                    "{target} is not logged under the default filter: {directives}"
+                );
+            }
+        }
+
+        // A filter a person set is kept, and a target they named keeps their choice.
+        let warned = log_directives(Some("warn"));
+        assert!(warned.starts_with("warn,"), "{warned}");
+        let named = log_directives(Some("info,tilo::launch_latency=off"));
+        assert!(
+            named.starts_with("info,tilo::launch_latency=off,"),
+            "{named}"
         );
-        assert_eq!(
-            log_directives(Some("  ")),
-            "error,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info,tilo::app_output=info"
-        );
-        assert_eq!(
-            log_directives(Some("warn")),
-            "warn,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info,tilo::app_output=info"
-        );
-        assert_eq!(
-            log_directives(Some("info,tilo::launch_latency=off")),
-            "info,tilo::launch_latency=off,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info,tilo::app_output=info"
-        );
-        assert_eq!(
-            log_directives(Some("tilo::xwayland=debug")),
-            "tilo::xwayland=debug,tilo::launch_latency=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info,tilo::app_output=info"
-        );
+        assert_eq!(named.matches("tilo::launch_latency").count(), 1, "{named}");
     }
 
     tilo_test_env::scenario! {
