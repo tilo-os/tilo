@@ -1309,6 +1309,27 @@ impl Checker<'_> {
                 }
             }
         }
+        // A type the package declares no default view of: opening one of its resources shows the
+        // platform's page of its fields, and the app cannot say what that page should hold.
+        if view_id.is_empty()
+            && key.app == self.env.app
+            && !self
+                .env
+                .default_views
+                .iter()
+                .any(|(declared, _)| *declared == key)
+        {
+            self.err(
+                "E141",
+                target.value.span,
+                format!(
+                    "`{}` declares no default view, so opening one of its resources shows the \
+                     platform's page of its fields; add `default view <view> for {0}`, or open a \
+                     view of it here (`open(r, view: <view>)`)",
+                    key.name
+                ),
+            );
+        }
         Ex::host(Imp::ActOpen, vec![r, Ex::str(&view_id), front], Ty::Action)
     }
 
