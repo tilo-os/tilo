@@ -258,6 +258,7 @@ words = ["channel"]
 paths = [
     "apps/chat/*",
     "apps/tl/chat/*",
+    "crates/agent/agent-session/tests/workspace_actions/carried_names.rs",
     "crates/sdk/ui-core/src/mentions.rs",
     "crates/session/session/src/mentions.rs",
 ]
@@ -1045,3 +1046,9 @@ reason = "A nextest filter names the ush test module `served_runs::`; the word i
 words = ["run"]
 identifiers = ["served_runs"]
 paths = ["tools/tests/test_test_environment.py"]
+
+[[allow]]
+reason = "Chat's share-window names the shared document by its `record` argument, and the agent tools' last read names the document it read as `record`: the server's document-sharing step passes both on by those names."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/server/tilo-server/src/workspace_agents/shares.rs"]

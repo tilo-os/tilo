@@ -106,6 +106,8 @@ pub(super) struct Hosted {
     pub(super) page: Browser,
     pub(super) root: SigningKey,
     pub(super) browser: crate::support::Device,
+    /// The server's own device: what another person's page names as what serves the workspace.
+    served_by: crate::support::Device,
     pub(super) agents: Agents,
     /// The person's model, scripted, and everything it was sent.
     pub(super) model: Arc<ScriptedProvider>,
@@ -207,6 +209,7 @@ impl Hosted {
             page,
             root,
             browser,
+            served_by: server_device,
             agents,
             model,
             proved,
@@ -313,19 +316,10 @@ impl Hosted {
     /// One action of the person's own on the server, asked from their device over its link.
     pub(super) async fn on_device(
         &mut self,
-        (provider, resource, action): (&str, &str, &str),
+        action: (&str, &str, &str),
         argument: serde_json::Value,
     ) -> serde_json::Value {
-        let argument = match argument {
-            serde_json::Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
-            _ => InvokeArgument::None,
-        };
-        self.page
-            .invoke_on(provider, ActionAddress::new(resource, action), argument)
-            .await
-            .expect("the server answers the person's own device")
-            .value
-            .unwrap_or_default()
+        on_page(&mut self.page, action, argument).await
     }
 
     /// What the model was shown of its last tool call: the request that followed it.
@@ -341,6 +335,23 @@ impl Hosted {
                 .last()
         )
     }
+}
+
+/// One action of a person's own on the server, asked from the device `page` is, over its link.
+async fn on_page(
+    page: &mut Browser,
+    (provider, resource, action): (&str, &str, &str),
+    argument: serde_json::Value,
+) -> serde_json::Value {
+    let argument = match argument {
+        serde_json::Value::Object(map) if !map.is_empty() => InvokeArgument::Json(map),
+        _ => InvokeArgument::None,
+    };
+    page.invoke_on(provider, ActionAddress::new(resource, action), argument)
+        .await
+        .expect("the server answers the person's own device")
+        .value
+        .unwrap_or_default()
 }
 
 /// Words of the label the tools put before an answer that carries content from outside.
@@ -645,6 +656,226 @@ async fn the_assistant_signs_in_to_mail_with_a_password_it_never_sees() {
     the_first_use_asks_and_always_signs_in(&hosted, &reference).await;
     the_second_use_asks_nothing(&mut hosted, &reference).await;
     the_password_is_nowhere_a_model_or_a_reader_looks(&hosted, &lines).await;
+    hosted.page.peer.close();
+}
+
+/// A use that was refused: the agent is not told that its person is asked, nobody is asked,
+/// and nothing signed in.
+async fn refused_and_nobody_is_asked(hosted: &Hosted, told: &str) {
+    assert!(
+        !told.contains(ASKED),
+        "the agent is told it was refused: {told}"
+    );
+    assert!(
+        hosted.questions(chat::question::ACTION).await.is_empty(),
+        "nobody is asked about a use that names no item of theirs"
+    );
+    assert!(
+        hosted.proved.lock().unwrap().is_empty(),
+        "nothing signed in"
+    );
+}
+
+/// A reference opens nothing by itself. One that names no item of the vault of the person the
+/// turn acts for, as the address of an item in anybody else's vault does, reaches the action as
+/// it was written and is refused there: nobody is asked, and nothing signs in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reference_her_vault_does_not_hold_is_refused_by_the_use_and_nobody_is_asked() {
+    let hosted = Hosted::start().await;
+    let elsewhere = format!("vault.item:{}", "0123456789abcdef".repeat(2));
+    hosted
+        .turn(
+            "Sign in to my mail with the password you were given.",
+            vec![
+                add_mail("call-1", "ada@example.test", &elsewhere),
+                Reply::text("That was refused."),
+            ],
+        )
+        .await;
+    let told = hosted.last_tool_result();
+    assert!(
+        !told.contains("is a resource of the workspace"),
+        "a secret's reference is no path of the workspace, and is not refused as one: {told}"
+    );
+    refused_and_nobody_is_asked(&hosted, &told).await;
+    hosted.page.peer.close();
+}
+
+/// Where a secret is taken, a text that is no reference stays a text: a path of the workspace,
+/// one that climbs out of it and a reference spelled to climb read no resource and open
+/// nothing. Each is refused, nobody is asked, and nothing signs in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_path_where_a_secret_is_taken_reads_no_resource_and_opens_nothing() {
+    let hosted = Hosted::start().await;
+    for (call, written) in [
+        ("call-1", "chat"),
+        ("call-2", "notes/Launch checklist"),
+        ("call-3", "../../../etc/passwd"),
+        ("call-4", "vault.item:../../people"),
+    ] {
+        hosted
+            .turn(
+                "Sign in to my mail with this.",
+                vec![
+                    add_mail(call, "ada@example.test", written),
+                    Reply::text("That was refused."),
+                ],
+            )
+            .await;
+        let told = hosted.last_tool_result();
+        refused_and_nobody_is_asked(&hosted, &told).await;
+    }
+    hosted.page.peer.close();
+}
+
+/// What another person typed into their own protected field. Nothing of her turn may hold it.
+const HIS_PASSWORD: &str = "only-his-own-mail-server-may-read-this";
+
+/// Admit the person of `device` to the workspace as an editor: the server issues them an
+/// invitation and their device redeems it.
+async fn admit(hosted: &Hosted, device: &crate::support::Device) {
+    let invitation = hosted
+        .workspaces
+        .issue(
+            &hosted.workspace,
+            &hosted.workspaces.governor().clone(),
+            tilo_server::workspaces::IssueInvitationRequest {
+                request_id: device.cert.device_public_key,
+                role: tilo_peer_state::join::Role::Editor,
+                recipient_user_public_key: Some(device.cert.user_public_key),
+                invitee_name: Some("Bo".into()),
+                inviter_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns()
+                    .checked_add(600_000_000_000)
+                    .unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    let verified = tilo_peer_state::join::decode_and_verify_invitation(
+        &invitation.signed_invitation,
+        None,
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&device.key.to_bytes())).await;
+    tilo_server::workspace_join::WorkspaceJoinClient::new(endpoint)
+        .redeem_hint(
+            verified.grant().transport.first().unwrap(),
+            invitation.signed_invitation.clone(),
+            device.cert.clone(),
+            &device.key,
+            device.cert.device_public_key,
+        )
+        .await
+        .unwrap();
+}
+
+/// What another person keeps is not hers to use. Bo, another member of the workspace, keeps a
+/// password of his own in his vault on the same server, for the very servers her assistant's
+/// call names. The reference of his item reaches the action as it was written, and the vault of
+/// the person the turn acts for answers: it holds no such item. Nobody is asked, nothing signs
+/// in, his item remembers no use, and what he typed is nowhere her turn or a reader looks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_persons_item_is_refused_by_the_use_and_stays_unused() {
+    let lines = logged();
+    let mut hosted = Hosted::start().await;
+    let vault = |action| (person_vault::PROVIDER, person_vault::RESOURCE, action);
+    // Her own vault keeps an item too: his is not looked for in an empty one.
+    let hers = hosted
+        .on_device(
+            vault(person_vault::ADD),
+            serde_json::json!({
+                "kind": "login", "belongsTo": [IMAP, SMTP], "username": "ada", "secret": PASSWORD,
+            }),
+        )
+        .await;
+    let hers = hers["reference"].as_str().expect("a reference").to_owned();
+
+    let (bo, _) = tilo_user_identity::UserIdentity::generate("Bo", 1);
+    let his_device = enrol(&bo, "bo-browser", DeviceCapabilities::member());
+    admit(&hosted, &his_device).await;
+    let server = hosted
+        .server
+        .downcast_ref::<tilo_server::daemon::Server>()
+        .expect("the server the test started");
+    // A member the workspace let in joins it from a page of their own: only a device of the
+    // server's own person asks the server to govern a workspace first.
+    let peer = Browser::session(server, &his_device, &hosted.served_by);
+    let events = peer.events();
+    let joined =
+        tilo_server_protocol::WorkspaceId::parse(&hosted.workspace).expect("the workspace's id");
+    peer.send(tilo_session_client::Cmd::Join(joined))
+        .expect("his page asks to join");
+    crate::support::admitted_to(&peer, joined).await;
+    let mut his_page = Browser::joined(
+        (peer, events),
+        &his_device,
+        &hosted.served_by,
+        &hosted.workspace,
+    );
+    let his = on_page(
+        &mut his_page,
+        vault(person_vault::ADD),
+        serde_json::json!({
+            "kind": "login", "belongsTo": [IMAP, SMTP], "username": "bo", "secret": HIS_PASSWORD,
+        }),
+    )
+    .await;
+    let his = his["reference"].as_str().expect("a reference").to_owned();
+    assert!(person_vault::ItemRef::parse(&his).is_some(), "{his}");
+    assert_ne!(his, hers, "two persons' items are two items");
+
+    hosted
+        .turn(
+            "Sign in to my mail with the password you were given.",
+            vec![
+                add_mail("call-1", "ada@example.test", &his),
+                Reply::text("That was refused."),
+            ],
+        )
+        .await;
+    let told = hosted.last_tool_result();
+    assert!(
+        !told.contains("is a resource of the workspace"),
+        "a secret's reference is no path of the workspace, and is not refused as one: {told}"
+    );
+    assert!(
+        told.contains("That item is not kept here"),
+        "her own vault answers for the reference, and it holds no such item: {told}"
+    );
+    refused_and_nobody_is_asked(&hosted, &told).await;
+
+    // His item is as he kept it: it remembers no use and no leave.
+    let uses = on_page(
+        &mut his_page,
+        vault(person_vault::USES),
+        serde_json::json!({"item": his}),
+    )
+    .await;
+    assert!(
+        uses["uses"].as_array().is_some_and(Vec::is_empty) && uses.get("always").is_none(),
+        "his item was never used: {uses}"
+    );
+    // What he typed is in no request her model was sent, no log line and no file in the clear.
+    for call in &hosted.model.asked() {
+        assert!(
+            !format!("{:?}", call.request).contains(HIS_PASSWORD),
+            "a model request holds another person's password"
+        );
+    }
+    let logged = String::from_utf8_lossy(&lines.0.lock().unwrap()).into_owned();
+    assert!(
+        !logged.contains(HIS_PASSWORD),
+        "a log line holds another person's password"
+    );
+    let holding = files_holding(hosted.state.path(), HIS_PASSWORD.as_bytes());
+    assert!(
+        holding.is_empty(),
+        "in the clear on the server's disk: {holding:?}"
+    );
+    his_page.peer.close();
     hosted.page.peer.close();
 }
 

@@ -499,6 +499,34 @@ async fn works_on_its_issue(in_page: bool, public: bool) {
             "the refusal names {needed} and where to get it: {refused}"
         );
     }
+    // How an argument is written makes it nothing else: where an action declares a note, a
+    // text spelled as the reference of a secret is read as a path of the workspace, names no
+    // app there and is refused as that.
+    let links =
+        |list: &tasks::issue_list::IssueList| list.issues.get(&issue).map(|now| now.links.len());
+    let before = links(&tracker(workspaces, workspace, &part).await);
+    let (refused, failed) = tool(
+        &server,
+        "tilo_do",
+        json!({
+            "path": format!("{path}#link-note"),
+            "args": {
+                "issue": issue.as_str(),
+                "note": format!("vault.item:{}", "0123456789abcdef".repeat(2)),
+            },
+        }),
+    )
+    .await;
+    assert!(
+        failed && refused.contains("no app vault.item:"),
+        "a secret's reference where a note is picked is read as a path, which names no app: \
+         {refused}"
+    );
+    assert_eq!(
+        links(&tracker(workspaces, workspace, &part).await),
+        before,
+        "nothing was linked"
+    );
     // The number a listing shows an issue by is an address of its own.
     let (numbered, failed) = tool(
         &server,

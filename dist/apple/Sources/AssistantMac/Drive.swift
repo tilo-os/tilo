@@ -221,6 +221,8 @@ final class AssistantDrive {
         }
         // Whether the window offers the way in where it would say that Tilo cannot be reached.
         once("joinStops", .bool(model.joinStops))
+        // Whether the way in goes on from an approval: the device was approved and has not got in.
+        once("joinApproved", .bool(model.joinApproved != nil))
         switch model.setup {
         case .unknown: once("setup", ["is": "unknown"])
         case .findingAssistant: once("setup", ["is": "findingAssistant"])

@@ -88,6 +88,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case unreachable, cameraNotAllowed = "camera-not-allowed", tryAgain = "try-again", notReachable = "not-reachable"
     case joinStops = "join-stops", signOutToPair = "sign-out-to-pair"
     case technicalDetails = "technical-details", copyDetails = "copy-details"
+    case wayInApproved = "way-in-approved", wayInGoesOn = "way-in-goes-on", approvedWhen = "approved-when"
+    case wayInApprovedHelp = "way-in-approved-help"
     // The menu bar and the menus.
     case openApp = "open-app", waitsOne = "waits-one", waitsMany = "waits-many", waitsNone = "waits-none"
     case pauseAssistant = "pause-assistant", resumeAssistant = "resume-assistant", quit, viewMenu = "view-menu"
@@ -105,6 +107,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     // What a push says in the open while the app is closed. The person's Tilo names it by this
     // key, and the system reads it from the bundle, so it takes no value.
     case toldWaits = "TOLD_WAITS"
+    // Which build the app is, where the app says so itself.
+    case versionAndBuild = "version-and-build", versionAlone = "version-alone"
 
     public var english: String {
         switch self {
@@ -335,6 +339,10 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .signOutToPair: "Sign out and pair again"
         case .technicalDetails: "Technical details"
         case .copyDetails: "Copy details"
+        case .wayInApproved: "This device was approved, but Tilo stopped before it opened here. Try again goes on as that device: nothing is paired twice."
+        case .wayInGoesOn: "This device was approved. Tilo is opening on it, and nothing has to be paired again."
+        case .approvedWhen: "Approved: {when}"
+        case .wayInApprovedHelp: "Or pair it afresh with “Pair a new device” on a device where you are signed in."
         case .openApp: "Open {app}"
         case .waitsOne: "1 thing waits for you"
         case .waitsMany: "{count} things wait for you"
@@ -372,6 +380,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .allow: "Allow"
         case .deny: "Deny"
         case .toldWaits: "Something from your assistant waits for you"
+        case .versionAndBuild: "Version {version} ({build})"
+        case .versionAlone: "Version {version}"
         case .sinceLeft: "Since you left"
         case .sinceWaits: "Waits for you"
         case .sinceDidAlone: "Done without asking"

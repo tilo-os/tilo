@@ -83,6 +83,7 @@ mod issue_work;
 mod learned;
 mod mail;
 mod mail_connect;
+mod shares;
 mod skills;
 mod steps;
 mod sub_agents;
@@ -377,6 +378,9 @@ impl ActionProvider for WorkspaceActionProvider {
             && !sub_agents::admits(own, caller, &request)
         {
             return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
+        if let Some(reason) = shares::refuses(caller, &request) {
+            return Pending::ready(Err(ActionCallError::InvalidRequest { reason }));
         }
         if let Some(events) = &self.events
             && request.target.provider == person_events::PROVIDER
@@ -1831,6 +1835,7 @@ impl TurnScope {
             workspace: self.workspace.clone(),
             ask: turn.ask.clone(),
             written: written::Written::of(turn, followed),
+            shows_in: shares::shows_in(turn),
         }
     }
 }
@@ -1844,6 +1849,8 @@ struct Reply {
     ask: Ask,
     /// How far the reply has grown while its model wrote it.
     written: written::Written,
+    /// The conversation the turn may show a document in, where it has one ([`shares::shows_in`]).
+    shows_in: Option<String>,
 }
 
 impl Reply {
@@ -2303,7 +2310,7 @@ async fn work(
     // What the turn keeps about its keeper, and in a conversation the view it may answer with,
     // are its own tools beside the agent tools.
     let mut own_tools = learned::with_tools(Vec::new(), keeping);
-    own_tools.extend(view_tool(turn));
+    own_tools.extend([view_tool(turn), shares::tool(turn)].into_iter().flatten());
     let asked = tilo_agent_turn::Asked {
         own_tools,
         sees: turns.sees(),
@@ -2324,6 +2331,7 @@ async fn work(
         reads: Mutex::new(steps::reads(&server).await),
         noted: Mutex::default(),
         at: tokio::sync::Mutex::new((turn, reply)),
+        server: &server,
     };
     let (outcome, cost) = tilo_agent_turn::work(&server, model, &asked, &answering).await;
     if let Outcome::Answered(words) = &outcome {
@@ -2373,6 +2381,8 @@ struct Answering<'a> {
     noted: Mutex<(Option<String>, Option<String>)>,
     /// The ask the turn answers now, and where its answer is written.
     at: tokio::sync::Mutex<(&'a mut Turn, &'a mut Reply)>,
+    /// The turn's agent tools, which a document it answers with is read through.
+    server: &'a McpServer<WorkspaceActionProvider>,
 }
 
 impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_> {
@@ -2450,12 +2460,16 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         answer
     }
 
-    /// What the turn keeps about its keeper is carried out here, and the view it answers with;
+    /// What the turn keeps about its keeper is carried out here, and the view or document it
+    /// answers with;
     /// every other tool is the agent tools'.
     async fn own(&self, call: &ToolCall) -> Option<tilo_agent_turn::Answer> {
         let (text, is_error) = if call.name == ANSWER_WITH_VIEW {
             let at = self.at.lock().await;
             Box::pin(at.1.view(&call.input)).await
+        } else if call.name == shares::ANSWER_WITH_DOCUMENT {
+            let at = self.at.lock().await;
+            Box::pin(at.1.document(self.server, &call.input)).await
         } else {
             learned::call(self.keeping, &call.name, &call.input).await?
         };
@@ -2581,7 +2595,8 @@ fn instructions(turn: &Turn, workspace: &str) -> String {
         ""
     };
     format!(
-        "{every}{view}{}{}{}{told}",
+        "{every}{view}{}{}{}{}{told}",
+        shares::told(turn),
         learned::told_how(turn),
         skills::told_how(turn, workspace),
         sub_agents::told(turn)

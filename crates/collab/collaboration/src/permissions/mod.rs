@@ -1204,6 +1204,16 @@ fn sift_actions(
         .map(|action| permits(action, &action.contract.need()))
         .collect();
     offer_carriers(resource, &mut allowed, &mut permits);
+    // What a carrier beside them names is cut by these same answers: an action dropped here,
+    // or listed as not allowed, is one the actor's call of it through a typed edit or a group
+    // is refused for too, so neither names it to them.
+    let denied: Vec<String> = resource
+        .actions
+        .iter()
+        .zip(&allowed)
+        .filter(|(_, allowed)| allowed.is_err())
+        .map(|(action, _)| action.id.clone())
+        .collect();
     if refused && allowed.iter().any(Result::is_ok) {
         for (action, allowed) in resource.actions.iter_mut().zip(allowed) {
             if let Err(by) = allowed {
@@ -1213,6 +1223,12 @@ fn sift_actions(
     } else {
         let mut allowed = allowed.into_iter();
         resource.retain_actions(|_| allowed.next().is_some_and(|allowed| allowed.is_ok()));
+    }
+    if !denied.is_empty() {
+        let denied: Vec<&str> = denied.iter().map(String::as_str).collect();
+        for action in &mut resource.actions {
+            action.without_carried(&denied);
+        }
     }
 }
 
@@ -1692,6 +1708,102 @@ mod own_resource_tests {
                 policy::Refuser::Settings
             ))),
             "its person's setting refuses it"
+        );
+    }
+
+    /// A typed edit says which actions it carries, and each call of it is decided by the one
+    /// it carries. What it names to an actor is cut by the answers that decide those actions
+    /// by their own names: to pin is a moderator's, so an editor's typed edit does not
+    /// name it, and their agent, listed it as not allowed, is not named it there either.
+    #[test]
+    fn a_carrier_names_to_an_actor_only_what_they_may_take_by_name() {
+        let person = crate::permissions::MemberId::person("ad".repeat(32));
+        let edit = |id: &str| {
+            let mut spec =
+                ActionSpec::operation(id, id, OperationKind::Effect, format!("t.{id}"), &())
+                    .unwrap();
+            spec.type_mut().contract.kind = ActionKind::Undoable;
+            spec
+        };
+        let carrier = ActionSpec::typed(
+            "apply",
+            "Apply",
+            "Action as JSON",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            vec![
+                tilo_actions::ActionParam::required(
+                    "action",
+                    tilo_actions::ParamType::Object,
+                    "An edit",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["post", "pin"]},
+                        "args": {"type": "object"},
+                    },
+                })),
+            ],
+            |_| tilo_actions::EncodedAction {
+                type_id: "t.apply".to_owned(),
+                payload: Vec::new(),
+            },
+        )
+        .carrying()
+        .of_kind(ActionKind::Undoable);
+        let chat = tilo_actions::ResourceSpec::new("chat", "chat:1", "Chat")
+            .with_action(edit("post"))
+            .with_action(edit("pin").below_field(policy::roles::MODERATION_FIELD))
+            .with_action(carrier);
+        let named = |shown: &tilo_actions::ResourceSpec| {
+            shown
+                .actions
+                .iter()
+                .find(|action| action.id == "apply")
+                .and_then(|apply| apply.params().first()?.schema.clone())
+                .map(|schema| schema["properties"]["action"]["enum"].clone())
+        };
+        let both = Some(serde_json::json!(["post", "pin"]));
+        let post_alone = Some(serde_json::json!(["post"]));
+        let moderator = PermissionContext::member(&person, Role::Moderator)
+            .permitted_resource("so.tilo.chat", chat.clone())
+            .expect("a moderator edits it");
+        assert_eq!(named(&moderator), both, "a moderator may both");
+        let editor = PermissionContext::member(&person, Role::Editor);
+        let shown = editor
+            .permitted_resource("so.tilo.chat", chat.clone())
+            .expect("an editor edits it");
+        assert!(
+            shown.actions.iter().all(|action| action.id != "pin"),
+            "an editor is not listed the pin"
+        );
+        assert_eq!(named(&shown), post_alone, "nor named it by the typed edit");
+        let agent = editor.acting_as(
+            policy::Actor::Member(crate::permissions::MemberId::agent("scribe")),
+            vec![policy::Grant::new(
+                "scribe-chat",
+                policy::Grantee::agent("scribe"),
+                TreePath::workspace(LOCAL_WORKSPACE),
+                policy::KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                policy::Grantee::person(person.id()),
+            )],
+        );
+        let listed = agent
+            .permitted_resource("so.tilo.chat", chat)
+            .expect("the agent edits it");
+        assert!(
+            listed
+                .actions
+                .iter()
+                .find(|action| action.id == "pin")
+                .is_some_and(|action| !action.contract.availability.is_available()),
+            "the agent is listed the pin as not allowed"
+        );
+        assert_eq!(
+            named(&listed),
+            post_alone,
+            "and its typed edit does not name it"
         );
     }
 }

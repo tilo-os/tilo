@@ -228,6 +228,10 @@
 "sign-out-to-pair" = "Sign out and pair again";
 "technical-details" = "Technical details";
 "copy-details" = "Copy details";
+"way-in-approved" = "This device was approved, but Tilo stopped before it opened here. Try again goes on as that device: nothing is paired twice.";
+"way-in-goes-on" = "This device was approved. Tilo is opening on it, and nothing has to be paired again.";
+"approved-when" = "Approved: {when}";
+"way-in-approved-help" = "Or pair it afresh with “Pair a new device” on a device where you are signed in.";
 "open-app" = "Open {app}";
 "waits-one" = "1 thing waits for you";
 "waits-many" = "{count} things wait for you";
@@ -270,3 +274,5 @@
 "since-came-in" = "Came in";
 "since-more" = "{count} more";
 "TOLD_WAITS" = "Something from your assistant waits for you";
+"version-and-build" = "Version {version} ({build})";
+"version-alone" = "Version {version}";

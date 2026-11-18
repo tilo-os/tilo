@@ -315,6 +315,18 @@ fn signed_write_at(
     key: &SigningKey,
     seq: u64,
 ) -> NeighbourMsg {
+    signed_write_stamped(doc, heads, key, seq, now())
+}
+
+/// [`signed_write_at`] naming `at` as its time: a write's time is whatever
+/// its author stamps.
+fn signed_write_stamped(
+    doc: &mut AutoCommit,
+    heads: &[automerge::ChangeHash],
+    key: &SigningKey,
+    seq: u64,
+    at: std::time::SystemTime,
+) -> NeighbourMsg {
     let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(heads));
     let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let mut envelope = collab_types::SignedOp::new_unsigned(
@@ -323,7 +335,7 @@ fn signed_write_at(
         author,
         collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
         collab_types::OpKind::Change,
-        now(),
+        at,
         seq,
     )
     .with_surface(Some(PINNED));
@@ -984,6 +996,18 @@ fn server_write(
     value: &str,
     invoker: tilo_actions::ActionInvoker,
 ) -> NeighbourMsg {
+    server_write_stamped(peer, key, seq, value, invoker, now())
+}
+
+/// [`server_write`] naming `at` as its time.
+fn server_write_stamped(
+    peer: &StatePeer,
+    key: &SigningKey,
+    seq: u64,
+    value: &str,
+    invoker: tilo_actions::ActionInvoker,
+    at: std::time::SystemTime,
+) -> NeighbourMsg {
     let mut doc = AutoCommit::load(&peer.document(APP, "tab:1").unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
@@ -996,7 +1020,7 @@ fn server_write(
     }
     .with_invoker(invoker);
     doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
-    signed_write_at(&mut doc, &heads, key, seq)
+    signed_write_stamped(&mut doc, &heads, key, seq, at)
 }
 
 /// The invoker history files for a server's write of the member's work.
@@ -1946,4 +1970,409 @@ fn a_write_citing_governance_from_before_its_writers_removal_is_refused() {
         receive(&mut peer, &guest, write).is_err(),
         "a removed writer's write is refused, whatever governance it names"
     );
+}
+
+/// Whether `copy` holds `text` as the document's value once `work` is handed
+/// over as `origin` while the copy's clock reads `at`, and what it answered.
+fn handed(
+    copy: &StatePeer,
+    origin: TransportOrigin,
+    work: &NeighbourMsg,
+    at: std::time::SystemTime,
+    text: &str,
+) -> (bool, String) {
+    let mut copy = copy.clone();
+    let answered = copy
+        .receive_from(origin, work.clone(), at)
+        .map_or_else(|error| error.to_string(), |_| "taken in".to_owned());
+    (value(&copy).contains(text), answered)
+}
+
+/// A member's withdrawal stops their work on a server at once, whatever time
+/// a write names. What the member's device held of the server's work when it
+/// withdrew is history: a copy that joins late replays it. A write the server
+/// stamps before the withdrawal and hands over after it is taken by no copy
+/// that holds the withdrawal: not as kept history, and not by a copy whose
+/// clock still reads before the withdrawal.
+#[test]
+fn a_withdrawal_stops_the_servers_work_whatever_time_a_write_names() {
+    let second = std::time::Duration::from_secs(1);
+    let (mut peer, guest_key, guest) = workspace_with(Role::Editor);
+    let owner_key = SigningKey::from_bytes(&[2; 32]);
+    let (server_key, server) = named_server(&mut peer, &owner_key);
+    let device = server.device_public_key;
+    let invoker = || the_servers_invoker(&hex::encode(guest.user_public_key), device);
+    let first = delegating(&guest_key, guest.user_public_key, device, APP);
+    let given = peer
+        .workspace_mut()
+        .author_work_delegation(&first, &guest_key, now());
+    assert_eq!(given, Ok(true), "the member delegates");
+    let joining = peer.clone();
+
+    // The server works for the member, and the member's device holds that
+    // work when it takes the work back a second later.
+    let stood = server_write(&peer, &server_key, 1, "before the withdrawal", invoker());
+    receive(&mut peer, &server, stood.clone()).unwrap();
+    assert_eq!(value(&peer), "\"before the withdrawal\"");
+    let withdrawn_at = now() + second;
+    let withdrawal = workspace_changes(&mut peer, |copy| {
+        let written = copy.workspace_mut().revoke_work_delegation(
+            &device,
+            &guest.user_public_key,
+            &guest_key,
+            withdrawn_at,
+        );
+        assert_eq!(written, Ok(true), "the member withdraws");
+    });
+    let after = withdrawn_at + second;
+    let kept = || TransportOrigin::RetainedServerDelta(device);
+    let live = || TransportOrigin::ServerDelta(device);
+
+    // The setup tells a refusal from an admission: work the server stamps
+    // after the withdrawal is refused.
+    let later = server_write_stamped(&peer, &server_key, 2, "later", invoker(), after);
+    let (taken, answer) = handed(&peer, live(), &later, after, "later");
+    assert!(!taken, "work after the withdrawal: {answer}");
+
+    // A copy that joins late takes the withdrawal in, then the history the
+    // workspace keeps.
+    let mut wrong = Vec::new();
+    let mut late = joining;
+    take_workspace_changes(&mut late, guest.device_public_key, withdrawal).unwrap();
+    let replayed = late
+        .receive_from(kept(), stood, after)
+        .map_or_else(|error| error.to_string(), |_| "taken in".to_owned());
+    if value(&late) != "\"before the withdrawal\"" {
+        wrong.push(format!(
+            "work that stood before the withdrawal does not replay on a late joiner: {replayed}"
+        ));
+    }
+
+    // After the withdrawal the server writes on and names a time before it.
+    let stamped = server_write_stamped(&peer, &server_key, 2, "stamped", invoker(), now());
+    for (which, copy, origin, at) in [
+        ("the member's device, as kept history", &peer, kept(), after),
+        ("a late joiner, as kept history", &late, kept(), after),
+        ("a copy whose clock reads before it", &peer, live(), now()),
+    ] {
+        let (taken, answer) = handed(copy, origin, &stamped, at, "stamped");
+        if taken {
+            wrong.push(format!(
+                "{which} takes work the server stamps before the withdrawal: {answer}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+}
+
+/// A member's work on a server, taken back: the member delegated, the server
+/// wrote once while the delegation stood, and the member's device took the
+/// work back a second later.
+struct TakenBack {
+    /// The member's device, which signed the withdrawal.
+    peer: StatePeer,
+    /// A copy as it stood when the work was given: it holds the delegation
+    /// and nothing that came after.
+    joining: StatePeer,
+    guest: DeviceCert,
+    owner_key: SigningKey,
+    server_key: SigningKey,
+    server: DeviceCert,
+    /// The server's write while the delegation stood, its first.
+    stood: NeighbourMsg,
+    /// The changes of the workspace's document that carry the withdrawal.
+    withdrawal: Vec<Vec<u8>>,
+    withdrawn_at: std::time::SystemTime,
+}
+
+impl TakenBack {
+    /// The story; `held` says whether the member's device had taken the
+    /// server's write in when it took the work back.
+    fn made(held: bool) -> Self {
+        let (mut peer, guest_key, guest) = workspace_with(Role::Editor);
+        let owner_key = SigningKey::from_bytes(&[2; 32]);
+        let (server_key, server) = named_server(&mut peer, &owner_key);
+        let device = server.device_public_key;
+        let first = delegating(&guest_key, guest.user_public_key, device, APP);
+        let given = peer
+            .workspace_mut()
+            .author_work_delegation(&first, &guest_key, now());
+        assert_eq!(given, Ok(true), "the member delegates");
+        let joining = peer.clone();
+        let invoker = the_servers_invoker(&hex::encode(guest.user_public_key), device);
+        let stood = server_write(&peer, &server_key, 1, "before the withdrawal", invoker);
+        if held {
+            receive(&mut peer, &server, stood.clone()).unwrap();
+            assert_eq!(value(&peer), "\"before the withdrawal\"");
+        }
+        let withdrawn_at = now()
+            .checked_add(std::time::Duration::from_secs(1))
+            .unwrap();
+        let withdrawal = workspace_changes(&mut peer, |copy| {
+            let written = copy.workspace_mut().revoke_work_delegation(
+                &device,
+                &guest.user_public_key,
+                &guest_key,
+                withdrawn_at,
+            );
+            assert_eq!(written, Ok(true), "the member withdraws");
+        });
+        Self {
+            peer,
+            joining,
+            guest,
+            owner_key,
+            server_key,
+            server,
+            stood,
+            withdrawal,
+            withdrawn_at,
+        }
+    }
+
+    fn device(&self) -> [u8; 32] {
+        self.server.device_public_key
+    }
+
+    /// A second after the withdrawal.
+    fn after(&self) -> std::time::SystemTime {
+        self.withdrawn_at
+            .checked_add(std::time::Duration::from_secs(1))
+            .unwrap()
+    }
+
+    /// The server's work as a copy is handed what the workspace kept of it.
+    fn kept(&self) -> TransportOrigin {
+        TransportOrigin::RetainedServerDelta(self.device())
+    }
+
+    /// The server's work as it arrives fresh.
+    fn live(&self) -> TransportOrigin {
+        TransportOrigin::ServerDelta(self.device())
+    }
+
+    /// What the server writes after the withdrawal, its second write, naming
+    /// a time before the withdrawal.
+    fn stamped(&self) -> NeighbourMsg {
+        let invoker = the_servers_invoker(&hex::encode(self.guest.user_public_key), self.device());
+        server_write_stamped(&self.peer, &self.server_key, 2, "stamped", invoker, now())
+    }
+
+    /// `copy` once the withdrawal reached it.
+    fn withdrawn(&self, mut copy: StatePeer) -> StatePeer {
+        take_workspace_changes(
+            &mut copy,
+            self.guest.device_public_key,
+            self.withdrawal.clone(),
+        )
+        .unwrap();
+        copy
+    }
+}
+
+/// The heads of the test's document on `copy`: two copies that hold the same
+/// document read the same ones.
+fn document_heads(copy: &StatePeer) -> Vec<automerge::ChangeHash> {
+    copy.document(APP, "tab:1").map_or_else(Vec::new, |bytes| {
+        AutoCommit::load(&bytes).unwrap().get_heads()
+    })
+}
+
+/// Every copy that holds a withdrawal decides the server's work alike, from
+/// what the member signed and from nothing else. Whether the withdrawal
+/// reached a copy before the history the workspace keeps or between two kept
+/// writes, the copy ends with the document the member's device held when it
+/// took the work back.
+#[test]
+fn copies_that_hold_a_withdrawal_end_alike_whatever_order_they_met_it_in() {
+    let story = TakenBack::made(true);
+    let stamped = story.stamped();
+    let hand = |copy: &mut StatePeer, work: &NeighbourMsg| {
+        copy.receive_from(story.kept(), work.clone(), story.after())
+            .map_or_else(|error| error.to_string(), |_| "taken in".to_owned())
+    };
+
+    // The withdrawal first, then the history the workspace keeps.
+    let mut first = story.withdrawn(story.joining.clone());
+    let stood_first = hand(&mut first, &story.stood);
+    let stamped_first = hand(&mut first, &stamped);
+    // The write that stood, then the withdrawal, then what the server wrote
+    // after it.
+    let mut between = story.joining.clone();
+    let stood_between = hand(&mut between, &story.stood);
+    let mut between = story.withdrawn(between);
+    let stamped_between = hand(&mut between, &stamped);
+
+    let mut wrong = Vec::new();
+    for (which, copy, stood, stamped) in [
+        ("the withdrawal first", &first, stood_first, stamped_first),
+        (
+            "the withdrawal between the two writes",
+            &between,
+            stood_between,
+            stamped_between,
+        ),
+    ] {
+        if value(copy) != "\"before the withdrawal\""
+            || document_heads(copy) != document_heads(&story.peer)
+        {
+            wrong.push(format!(
+                "{which}: the copy does not end with the document the member's device held \
+                 ({}): what stood: {stood}; what the server stamped: {stamped}",
+                value(copy)
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+}
+
+/// A document the withdrawal names no cut for keeps nothing of the server's
+/// work. The member's device took the work back before the server's write
+/// reached it, so the form it signed names nothing there, and no copy that
+/// holds the withdrawal takes that write, kept or fresh, although the server
+/// made it while the delegation stood. That is the safe side: a copy cannot
+/// tell work the member's device never held from work the server made after
+/// the withdrawal and stamped before it, and taking either would let a server
+/// write on for a member who took their work back.
+#[test]
+fn a_document_the_withdrawal_names_no_cut_for_takes_nothing_of_the_server() {
+    let story = TakenBack::made(false);
+    let late = story.withdrawn(story.joining.clone());
+    let mut wrong = Vec::new();
+    for (which, copy, origin, at) in [
+        (
+            "the member's device, as kept history",
+            &story.peer,
+            story.kept(),
+            story.after(),
+        ),
+        (
+            "the member's device, as a fresh write",
+            &story.peer,
+            story.live(),
+            story.after(),
+        ),
+        (
+            "a late joiner, as kept history",
+            &late,
+            story.kept(),
+            story.after(),
+        ),
+        (
+            "a copy whose clock reads before the withdrawal",
+            &late,
+            story.live(),
+            now(),
+        ),
+    ] {
+        let (taken, answer) = handed(copy, origin, &story.stood, at, "before the withdrawal");
+        if taken {
+            wrong.push(format!(
+                "{which} takes the server's work in a document the withdrawal names no cut for: {answer}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+}
+
+/// Nothing reads a withdrawal live. Asked about a time before the stamp its
+/// member's device gave it, a copy that holds the withdrawal answers what it
+/// answers for every other time: the work is withdrawn, and the server takes
+/// none of it.
+#[test]
+fn a_withdrawal_is_read_live_at_no_time() {
+    use crate::DelegatedWork;
+    let story = TakenBack::made(true);
+    let (server, person) = (story.device(), story.guest.user_public_key);
+    let mut wrong = Vec::new();
+    for (which, copy) in [
+        ("the member's device", &story.peer),
+        ("a late joiner", &story.withdrawn(story.joining.clone())),
+    ] {
+        for (when, at) in [
+            ("before the withdrawal's stamp", now()),
+            ("at its stamp", story.withdrawn_at),
+            ("after it", story.after()),
+        ] {
+            let workspace = copy.workspace();
+            if workspace.work_delegation(&server, &person, at).is_some() {
+                wrong.push(format!("{which} reads the delegation live {when}"));
+            }
+            if copy
+                .workspace()
+                .delegation_for_server(&server, at)
+                .is_some()
+            {
+                wrong.push(format!("{which} lets the server take work {when}"));
+            }
+            let work = copy.workspace().delegated_work(&server, &person, at);
+            if !matches!(work, DelegatedWork::Withdrawn { .. }) {
+                wrong.push(format!("{which} does not say withdrawn {when}: {work:?}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+}
+
+/// Only a device of the member signs the cut of their withdrawal. The
+/// member's device signs what it held of the server's work. A form that keeps
+/// more, signed in the member's name by the server or by another member's
+/// device, is no form of theirs, and the member's own form with a larger
+/// number put into it no longer verifies: whoever writes one into the row,
+/// the row keeps the cut its member signed, and the server's work above it
+/// stays refused.
+#[test]
+fn only_a_device_of_the_member_signs_the_cut_of_their_withdrawal() {
+    use collab_types::work_delegation::HeldWork;
+    let story = TakenBack::made(true);
+    let (device, person) = (story.device(), story.guest.user_public_key);
+    let stamped = story.stamped();
+    let route = crate::coverage::route_key(APP, "tab:1");
+    let signed = story.peer.workspace().work_delegations();
+    assert_eq!(signed.len(), 1);
+    assert_eq!(
+        signed[0].held,
+        vec![HeldWork {
+            route: route.clone(),
+            last: 1,
+            compactions: Vec::new(),
+        }],
+        "the member's device signs what it held of the server's work"
+    );
+    let at = signed[0]
+        .revoked_at_ns
+        .expect("the row holds the withdrawal");
+    let more = || {
+        vec![HeldWork {
+            route: route.clone(),
+            last: 2,
+            compactions: Vec::new(),
+        }]
+    };
+    let owner = story.owner_key.verifying_key().to_bytes();
+    let by_the_server = delegating(&story.server_key, person, device, APP)
+        .withdrawn(&story.server_key, at, more())
+        .unwrap();
+    let by_another = delegating(&story.owner_key, person, device, APP)
+        .withdrawn(&story.owner_key, at, more())
+        .unwrap();
+    let mut raised = signed[0].clone();
+    raised.held = more();
+    for (who, writer, form) in [
+        ("the server", device, &by_the_server),
+        ("another member's device", owner, &by_another),
+        ("the member's own form with a larger number", owner, &raised),
+    ] {
+        let mut copy = story.peer.clone();
+        let changes = delegation_written_straight(&copy, writer, form);
+        let taken = take_workspace_changes(&mut copy, writer, changes);
+        assert!(taken.is_err(), "{who} writes a cut into the row: {taken:?}");
+        assert_eq!(
+            copy.workspace().work_delegations(),
+            signed,
+            "{who}: the row keeps the cut its member signed"
+        );
+        let (taken, answer) = handed(&copy, story.kept(), &stamped, story.after(), "stamped");
+        assert!(!taken, "{who} raised the cut: {answer}");
+    }
 }

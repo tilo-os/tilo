@@ -1,8 +1,8 @@
 //! The API's `/v1` routes against a workspace's server, as tilo.sh runs them: a
 //! person's key makes a workspace (a retry of the same request makes no
 //! second one), puts a form in, runs actions on it, follows its runs and
-//! reads the workspace's events as they happen, has them posted to a webhook
-//! (signed, retried until taken), mints a key for that workspace alone, and
+//! reads the workspace's events as they happen, is refused a webhook to the
+//! API's own machine, mints a key for that workspace alone, and
 //! deletes the workspace. Every route is one of the calls an agent makes
 //! over MCP, so this is that same path through HTTP and JSON.
 
@@ -57,52 +57,6 @@ impl V1<'_> {
             .await;
         json_of(reply).await
     }
-}
-
-/// A webhook's receiver on loopback: each delivery's headers and body, the
-/// first one answered 500 so the server must try it again.
-async fn receiver() -> (
-    String,
-    tokio::sync::mpsc::UnboundedReceiver<(hyper::HeaderMap, Vec<u8>)>,
-) {
-    use hyper::service::service_fn;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!(
-        "http://127.0.0.1:{}/hook",
-        listener.local_addr().unwrap().port()
-    );
-    let (sender, received) = tokio::sync::mpsc::unbounded_channel();
-    let refused_once = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    tokio::spawn(async move {
-        loop {
-            let (stream, _) = listener.accept().await.unwrap();
-            let sender = sender.clone();
-            let refused_once = Arc::clone(&refused_once);
-            tokio::spawn(async move {
-                let service = service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
-                    let sender = sender.clone();
-                    let refused_once = Arc::clone(&refused_once);
-                    async move {
-                        let (parts, body) = request.into_parts();
-                        let body = body.collect().await.unwrap().to_bytes().to_vec();
-                        let first = !refused_once.swap(true, std::sync::atomic::Ordering::SeqCst);
-                        let _ = sender.send((parts.headers, body));
-                        let mut answer = hyper::Response::new(http_body_util::Full::new(
-                            hyper::body::Bytes::new(),
-                        ));
-                        if first {
-                            *answer.status_mut() = hyper::StatusCode::INTERNAL_SERVER_ERROR;
-                        }
-                        Ok::<_, std::convert::Infallible>(answer)
-                    }
-                });
-                let _ = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
-                    .await;
-            });
-        }
-    });
-    (url, received)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -189,17 +143,36 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
         .await;
     assert_eq!(stream.headers()["content-type"], "text/event-stream");
     let mut stream = stream.into_body();
-    // And posted to a webhook, signed.
-    let (url, mut deliveries) = receiver().await;
-    let (status, hook) = backend
-        .post(
-            &format!("{base}/webhooks"),
-            &json!({"url": url, "events": ["invocation"]}),
-            &[],
-        )
-        .await;
-    assert_eq!(status, 201, "{hook}");
-    let secret = hook["secret"].as_str().unwrap().to_owned();
+    // A hosted API posts webhooks to the public internet only. A URL on its own machine or
+    // network is refused, over plain http and over https, whatever the request says of where
+    // it comes from, and nothing of it is kept. (Inside a desktop the API posts to that
+    // computer's own loopback: signed, and tried again the same, in tilo-api's own tests.)
+    let claims = [
+        ("x-forwarded-for", "127.0.0.1"),
+        ("forwarded", "for=127.0.0.1;proto=http"),
+    ];
+    for own in [
+        "http://127.0.0.1:8080/hook",
+        "http://localhost:8080/hook",
+        "https://127.0.0.1:8443/hook",
+        "https://169.254.169.254/hook",
+        "https://10.0.0.7/hook",
+    ] {
+        let (status, refused) = backend
+            .post(
+                &format!("{base}/webhooks"),
+                &json!({"url": own, "events": ["invocation"]}),
+                &claims,
+            )
+            .await;
+        assert_eq!(
+            (status, &refused["error"]["code"]),
+            (400, &json!("invalid_arguments")),
+            "a hosted API kept a webhook to {own}: {refused}"
+        );
+    }
+    let (status, kept) = backend.get(&format!("{base}/webhooks")).await;
+    assert_eq!((status, &kept["webhooks"]), (200, &json!([])), "{kept}");
 
     let run_headers = [
         ("tilo-invocation", "fill-jane"),
@@ -274,40 +247,6 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
     assert!(
         seen.contains("\"invocation\":"),
         "an invocation's event names it: {seen}"
-    );
-
-    // The webhook was refused once, and the same delivery came again.
-    let (first_headers, first_body) =
-        tokio::time::timeout(std::time::Duration::from_secs(60), deliveries.recv())
-            .await
-            .expect("a run reached the webhook")
-            .unwrap();
-    let (again_headers, again_body) =
-        tokio::time::timeout(std::time::Duration::from_secs(30), deliveries.recv())
-            .await
-            .expect("the refused delivery is tried again")
-            .unwrap();
-    assert_eq!(
-        first_headers["tilo-delivery"],
-        again_headers["tilo-delivery"]
-    );
-    assert_eq!(first_body, again_body);
-    let signed = again_headers["tilo-signature"].to_str().unwrap();
-    let time: u64 = signed
-        .strip_prefix("t=")
-        .and_then(|rest| rest.split(',').next())
-        .and_then(|time| time.parse().ok())
-        .unwrap();
-    assert_eq!(
-        signed,
-        tilo_api::v1::webhooks::signature(&secret, time, &again_body),
-        "the delivery is signed with the webhook's secret"
-    );
-    let event: Value = serde_json::from_slice(&again_body).unwrap();
-    assert_eq!(
-        (&event["type"], &event["workspace"]),
-        (&json!("invocation"), &json!(workspace)),
-        "{event}"
     );
 
     // A refusal has one shape.

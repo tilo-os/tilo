@@ -5,6 +5,7 @@ import SwiftUI
 /// link, that "Pair a new device" shows on a device where the person is signed in.
 public struct WayIn: View {
     @Environment(AssistantModel.self) private var model
+    @Environment(\.wording) private var wording
     @State private var scans = false
 
     public init() {}
@@ -21,10 +22,15 @@ public struct WayIn: View {
                     .accessibilityAddTraits(.isHeader)
                 // While a code is compared, the code is what the window is about.
                 if !comparing {
-                    // A device whose workspace is gone is told so, in the place of what a first pairing promises.
-                    Text((model.session == .reset ? AssistantWords.wayInReset : AssistantWords.wayInLead).said).font(.tilo(15))
+                    // A device whose workspace is gone is told so, in the place of what a first pairing
+                    // promises. So is one that was approved and stopped before it got in.
+                    Text(lead.said).font(.tilo(15))
                         .foregroundStyle(Token.ink2).multilineTextAlignment(.center)
                         .frame(maxWidth: 420)
+                    if let approved = model.joinApproved {
+                        Text(AssistantWords.approvedWhen.said(["when": wording.mark(approved)])).font(.small125)
+                            .foregroundStyle(Token.ink3).multilineTextAlignment(.center)
+                    }
                 }
             }
             if case .asked(let ask) = model.session {
@@ -35,6 +41,11 @@ public struct WayIn: View {
                     Text(AssistantWords.pairing.said).font(.body14).foregroundStyle(Token.ink2)
                 }
                 .padding(.top, 6)
+                // A device that goes on from an approval can be paired afresh while it does:
+                // no count of seconds ends its try, so its person is never left without a way.
+                if model.joinApproved != nil {
+                    Flow(spacing: 10, lineSpacing: 10) { pairButtons(isMain: false) }
+                }
             } else if case .confirming(let code) = model.session {
                 // The code the other device asks about, large enough to compare at a glance.
                 VStack(spacing: 10) {
@@ -54,13 +65,11 @@ public struct WayIn: View {
                 .padding(.top, 6)
             } else {
                 Flow(spacing: 10, lineSpacing: 10) {
-                    #if os(iOS)
-                    Button(AssistantWords.scanCode.said) { scans = true }.buttonStyle(WayButton(isMain: true))
-                    Button(AssistantWords.pasteLink.said, action: paste).buttonStyle(WayButton())
-                    #else
-                    Button(AssistantWords.pasteLink.said, action: paste).buttonStyle(WayButton(isMain: true))
-                        .keyboardShortcut("v")
-                    #endif
+                    // The device that was approved goes on as itself: that is the first way on.
+                    if model.joinApproved != nil {
+                        Button(AssistantWords.tryAgain.said) { model.goOn() }.buttonStyle(WayButton(isMain: true))
+                    }
+                    pairButtons(isMain: model.joinApproved == nil)
                 }
                 .padding(.top, 6)
             }
@@ -74,6 +83,8 @@ public struct WayIn: View {
                 Text(help.said).font(.small125).foregroundStyle(Token.ink3)
                     .multilineTextAlignment(.center).frame(maxWidth: 420)
             }
+            // On a phone the app says which build it is: its Settings show the version alone.
+            BuildLine()
             }
             .padding(32)
             .frame(maxWidth: .infinity, minHeight: space.size.height)
@@ -100,12 +111,34 @@ public struct WayIn: View {
         }
     }
 
-    /// A phone scans or pastes; a Mac pastes.
+    /// What stands under the title: what a first pairing promises, that the workspace is gone,
+    /// or that this device was approved and goes on from there. While a try of that device is
+    /// in work and nothing is said of the one before, it says that Tilo is opening.
+    private var lead: AssistantWords {
+        if model.joinApproved != nil { return model.session == .pairing && model.problem == nil ? .wayInGoesOn : .wayInApproved }
+        return model.session == .reset ? .wayInReset : .wayInLead
+    }
+
+    /// A phone scans or pastes; a Mac pastes. A device that was approved is told that pairing
+    /// it afresh is the other way.
     private var help: AssistantWords {
+        if model.joinApproved != nil { return .wayInApprovedHelp }
         #if os(iOS)
-        .wayInHelp
+        return .wayInHelp
         #else
-        .wayInHelpOne
+        return .wayInHelpOne
+        #endif
+    }
+
+    /// The ways to pair: a phone scans or pastes, a Mac pastes. The first is the window's main
+    /// button unless going on is.
+    @ViewBuilder private func pairButtons(isMain: Bool) -> some View {
+        #if os(iOS)
+        Button(AssistantWords.scanCode.said) { scans = true }.buttonStyle(WayButton(isMain: isMain))
+        Button(AssistantWords.pasteLink.said, action: paste).buttonStyle(WayButton())
+        #else
+        Button(AssistantWords.pasteLink.said, action: paste).buttonStyle(WayButton(isMain: isMain))
+            .keyboardShortcut("v")
         #endif
     }
 

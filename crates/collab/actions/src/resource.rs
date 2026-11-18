@@ -2958,6 +2958,9 @@ fn flatten_into<'a>(resource: &'a ResourceSpec, depth: usize, out: &mut Vec<Flat
     }
 }
 
+#[path = "resource/carried.rs"]
+mod carried;
+
 #[cfg(test)]
 #[path = "resource/tests.rs"]
 mod tests;

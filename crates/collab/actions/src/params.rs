@@ -32,7 +32,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 
+mod carried;
 mod refused;
+
+pub(crate) use carried::without_named;
 
 /// Marks the legacy single-string invocation slot as carrying a canonical
 /// JSON argument object. The record-separator prefix cannot be produced by a

@@ -4734,6 +4734,13 @@
               "null"
             ],
             "description": "What deliveries are signed with: answered once, when it is made."
+          },
+          "undelivered": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why nothing is posted to its URL, where nothing is: it is not one this API posts to."
           }
         },
         "required": [

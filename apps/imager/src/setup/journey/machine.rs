@@ -354,25 +354,24 @@ pub(super) fn questions(plan: &Plan, drives: &[plan::Drive]) -> Vec<Question> {
         let text = match choice {
             "name" => crate::setup::strings::t("installer-plan-answer-name"),
             "network" => crate::setup::strings::t("installer-plan-answer-network"),
-            "disk" => match drives.is_empty() {
-                false => match plan::choose(&plan.disk, drives) {
-                    plan::Choice::Drive(drive) => {
-                        let size = ui::format::size(drive.bytes);
-                        crate::setup::strings::t_args(
-                            "installer-plan-answer-disk-drive",
-                            &[
-                                ("model", drive.model.as_str().into()),
-                                ("size", (&size).into()),
-                            ],
-                        )
-                    }
-                    plan::Choice::Open { reason, .. } => crate::setup::strings::t_args(
-                        "installer-plan-answer-disk-open",
-                        &[("reason", reason.as_str().into())],
-                    ),
-                },
-                true => crate::setup::strings::t("installer-plan-answer-disk"),
+            "disk" if drives.is_empty() => crate::setup::strings::t("installer-plan-answer-disk"),
+            "disk" => match plan::choose(&plan.disk, drives) {
+                plan::Choice::Drive(drive) => {
+                    let size = ui::format::size(drive.bytes);
+                    crate::setup::strings::t_args(
+                        "installer-plan-answer-disk-drive",
+                        &[
+                            ("model", drive.model.as_str().into()),
+                            ("size", (&size).into()),
+                        ],
+                    )
+                }
+                plan::Choice::Open { reason, .. } => crate::setup::strings::t_args(
+                    "installer-plan-answer-disk-open",
+                    &[("reason", reason.as_str().into())],
+                ),
             },
+
             "unlock" => crate::setup::strings::t("installer-plan-answer-unlock"),
             "updates" => crate::setup::strings::t("installer-plan-answer-updates"),
             "hosting" => crate::setup::strings::t("installer-plan-answer-hosting"),

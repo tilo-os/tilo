@@ -12,6 +12,14 @@
 //! set, so it stops the work on every holder at once and needs no one to
 //! delete a row.
 //!
+//! A withdrawal carries its cut: what the member's device held of the server's
+//! work when it took the work back, by document
+//! ([`collab_types::work_delegation::HeldWork`]). A copy that holds a
+//! withdrawal takes of that server's work for that member what the cut keeps,
+//! as history, and refuses the rest, whoever hands it over and whatever time
+//! it names: its place in the document decides, never a clock. What a copy
+//! took before the withdrawal reached it, it keeps.
+//!
 //! A row is whatever its writers put there, and both forms of a delegation
 //! verify. So what a row holds is decided by what the member's own devices
 //! signed, never by who wrote the row or when
@@ -44,7 +52,9 @@ use crate::state::copies::CopyRole;
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjType, ReadDoc as _, ScalarValue, Value};
 use collab_types::signer::DeviceSigner;
-use collab_types::work_delegation::{MAX_LIFETIME_NS, WORK_DELEGATIONS_KEY, WorkDelegation};
+use collab_types::work_delegation::{
+    HeldWork, MAX_LIFETIME_NS, WORK_DELEGATIONS_KEY, WorkDelegation,
+};
 use std::collections::BTreeMap;
 
 /// What a batch that takes a delegation out of its row is refused with.
@@ -498,7 +508,9 @@ impl PeerWorkspaceMut<'_> {
     /// Revoke `server`'s delegation of `person`'s work at `now`, as that
     /// member's device `key`: from then on every holder refuses the work the
     /// server takes for them. Any device of the member's revokes it: one that
-    /// did not sign the form held signs the withdrawal as its own. Returns
+    /// did not sign the form held signs the withdrawal as its own. The
+    /// withdrawal carries its cut: what this device holds of the server's
+    /// work, by document. Returns
     /// whether a delegation was revoked; `false` when the member delegated
     /// nothing to it, or already revoked it.
     ///
@@ -540,7 +552,22 @@ impl PeerWorkspaceMut<'_> {
                 .renewed(key, (issued, expires))
                 .map_err(|error| error.to_string())?
         };
-        let revoked = own.revoked(key, at).map_err(|error| error.to_string())?;
+        // What this device holds of the server's work is what the withdrawal
+        // keeps: every holder takes that much of it as history and nothing
+        // else, whatever time a write names.
+        let held = self
+            .peer
+            .taken_from(server)
+            .into_iter()
+            .map(|(route, held)| HeldWork {
+                route,
+                last: held.last,
+                compactions: held.compactions,
+            })
+            .collect();
+        let revoked = own
+            .withdrawn(key, at, held)
+            .map_err(|error| error.to_string())?;
         self.author_work_delegation(&revoked, key, now)
     }
 

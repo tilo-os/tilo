@@ -16,7 +16,7 @@
 //!
 //! The targets: a single action is local work plus at most one round trip,
 //! so its time does not grow with what the workspace holds; a bulk call
-//! moves at least a thousand records a second; a file goes in at disk or
+//! moves at least a thousand items a second; a file goes in at disk or
 //! network speed. With `TILO_THROUGHPUT_ASSERT=1` the test fails when a
 //! target does not hold; either way it prints the table, and writes it as
 //! JSON to `TILO_THROUGHPUT_OUT` when set.
@@ -155,11 +155,11 @@ impl Agent<'_> {
 /// The most members one `group` call carries, as the SDK sends them.
 const GROUP_MEMBERS: usize = 500;
 
-/// One kind of record the benchmark makes: where it lives, the action that
+/// One kind of thing the benchmark makes: where it lives, the action that
 /// makes one and that action's arguments for the `index`th.
 struct Kind {
     name: &'static str,
-    /// The app whose `open` founds its records.
+    /// The app whose `open` founds what it keeps.
     app: &'static str,
     /// The app id the second device hears its changes under.
     app_id: &'static str,
@@ -224,15 +224,15 @@ async fn issue_ids(
     }
 }
 
-/// The channel chat messages go to, in the workspace being measured.
+/// Where chat messages go, in the workspace being measured.
 static CHANNEL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
-/// A channel of the workspace's chat for the messages, by its id.
+/// A place in the workspace's chat for the messages, by its id.
 async fn channel(agent: &Agent<'_>, base: &str) -> String {
     let chat = resource_of(agent, base, "chat", "chat.workspace", "create-channel").await;
     let read = agent.get(&format!("{base}/resources/{chat}")).await;
     let id = find_channel(&read).unwrap_or_else(|| {
-        panic!("the chat has a channel: {read}");
+        panic!("the chat has a place for messages: {read}");
     });
     CHANNEL.lock().unwrap().clone_from(&id);
     id
@@ -441,7 +441,7 @@ async fn heard_by(
 #[ignore = "fills workspaces to thousands of records and times every path; run with \
             --ignored in a release build (`TILO_THROUGHPUT_SIZES=0,1000,25000`)"]
 async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
-    // Where the time goes, as the host logs it, when `RUST_LOG` asks.
+    // Where the time goes, as the server logs it, when `RUST_LOG` asks.
     if std::env::var_os("RUST_LOG").is_some() {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
