@@ -112,7 +112,7 @@ fn replace<T: PartialEq>(held: &mut T, next: T) -> bool {
 #[cfg(test)]
 mod tests {
     use super::adopt_workspace;
-    use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
+    use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable as _};
     use tilo_desktop_model::{Workspace, WorkspaceId, projection};
 
     fn shortcut(id: &str) -> tilo_automation::SavedShortcut {
@@ -135,6 +135,9 @@ mod tests {
         doc.put(ROOT, "workspace", workspace.id().to_string())
             .unwrap();
         doc.put(ROOT, "name", "Garden").unwrap();
+        // The map a workspace is founded with, which its shortcuts sit in.
+        doc.put_object(ROOT, projection::WORKSPACE_AUTOMATIONS_KEY, ObjType::Map)
+            .unwrap();
         doc
     }
 

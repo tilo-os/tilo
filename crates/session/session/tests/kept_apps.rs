@@ -111,16 +111,19 @@ struct Rig {
     app: PathBuf,
     keeper: PathBuf,
     root: PathBuf,
+    /// The session serves its workspaces X11 displays, so a launch is given one and its keeper
+    /// serves the app a display of its own.
+    x11: bool,
 }
 
 /// One run of the desktop: its session, its apps, and how it ends when dropped.
-struct Run {
+struct Pass {
     session: Session,
     apps: Rc<Apps>,
     ending: Rc<Cell<Teardown>>,
 }
 
-impl Run {
+impl Pass {
     /// End the run as `teardown` does.
     fn end(self, teardown: Teardown) {
         self.ending.set(teardown);
@@ -132,6 +135,16 @@ impl Run {
 
 impl Rig {
     fn new(titles: &[&str]) -> Self {
+        Self::with_x11(titles, false)
+    }
+
+    /// A rig whose session serves X11, so each launch is given a display and its keeper asks for
+    /// one of its own.
+    fn keeping_x11(titles: &[&str]) -> Self {
+        Self::with_x11(titles, true)
+    }
+
+    fn with_x11(titles: &[&str], x11: bool) -> Self {
         let mut home = tilo_test_env::TestHome::new().expect("a home");
         let workspaces = [(1, "Home"), (2, "Two"), (3, "Three")].map(|(n, name)| {
             let mut workspace = Workspace::new(WorkspaceId::from_u128(n), name);
@@ -178,12 +191,13 @@ impl Rig {
             app,
             keeper,
             root,
+            x11,
         }
     }
 
     /// A run of the desktop, taking up what the keepers hold as the session's `main` does:
     /// `following` an in-place restart, or a start of its own.
-    fn run(&self, following: bool) -> Run {
+    fn desktop(&self, following: bool) -> Pass {
         let mut environment = tilo_app_launch::SessionEnvironment::from_process();
         environment.wayland_socket = Some(self.home.runtime().join("wayland-7"));
         let apps = Rc::new(Apps::with_launcher(
@@ -201,6 +215,11 @@ impl Rig {
             teardown: Box::new(move || asked.get()),
             ..Options::default()
         });
+        let x11 = self
+            .x11
+            .then(|| session.compositor().x11_displays())
+            .flatten();
+        apps.set_displays(self.home.runtime().join("wayland-7"), x11, None);
         let connector = session.compositor().client_connector();
         apps.keep_behind(tilo_app_launch::kept::Keeping {
             keeper: self.keeper.clone(),
@@ -209,7 +228,7 @@ impl Rig {
         });
         apps.take_up_kept(following);
         session.step(Duration::from_millis(1)).expect("step");
-        Run {
+        Pass {
             session,
             apps,
             ending,
@@ -217,19 +236,19 @@ impl Rig {
     }
 
     /// Start the app in the workspace in front.
-    fn launch(&self, run: &Run) {
-        let workspace = run
+    fn launch(&self, pass: &Pass) {
+        let workspace = pass
             .session
             .handle()
             .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
             .expect("a workspace in front");
-        run.apps
+        pass.apps
             .start(
                 &tilo_app_launch::Launch::Host {
                     desktop_id: APP.to_owned(),
                     open: None,
                 },
-                &run.apps.workspace_named(&workspace),
+                &pass.apps.workspace_named(&workspace),
             )
             .expect("the app starts");
     }
@@ -295,9 +314,9 @@ fn tab_showing(session: &mut Session, title: &str) -> Option<TabId> {
 
 /// Wait until every window `titles` names stands in a tab, and the keeper was told each one: the
 /// tabs by title.
-fn shown_and_told(rig: &Rig, run: &mut Run, titles: &[&str]) -> Vec<(String, TabId)> {
+fn shown_and_told(rig: &Rig, pass: &mut Pass, titles: &[&str]) -> Vec<(String, TabId)> {
     let mut placed = Vec::new();
-    crate::common::wait_for(&mut run.session, "every window is in a tab", |session| {
+    crate::common::wait_for(&mut pass.session, "every window is in a tab", |session| {
         placed = titles
             .iter()
             .map(|title| Some(((*title).to_owned(), tab_showing(session, title)?)))
@@ -310,7 +329,7 @@ fn shown_and_told(rig: &Rig, run: &mut Run, titles: &[&str]) -> Vec<(String, Tab
         .map(|(title, tab)| (title.clone(), Some(tab.to_string())))
         .collect();
     expected.sort();
-    until(&mut run.session, "the keeper is told each tab", |_| {
+    until(&mut pass.session, "the keeper is told each tab", |_| {
         rig.told() == expected
     });
     placed
@@ -370,7 +389,7 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
     let _settled = ui::motion::testing::settled();
     let titles = ["First", "Second", "Third"];
     let rig = Rig::new(&titles);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     let placed = shown_and_told(&rig, &mut first, &titles);
     let (dir, pid, at) = rig.kept();
@@ -396,7 +415,7 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
         "the app outlives the desktop that started it"
     );
 
-    let mut second = rig.run(true);
+    let mut second = rig.desktop(true);
     let back = shown_and_told(&rig, &mut second, &titles);
     assert_eq!(
         places(&second.session, &back),
@@ -437,7 +456,7 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
 fn the_launcher_takes_the_command_line_the_session_starts_an_app_with() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     let stand_in = rig.home.home().join("tilo-launcher");
     until(&mut first.session, "the launcher was started", |_| {
@@ -468,13 +487,13 @@ fn the_launcher_takes_the_command_line_the_session_starts_an_app_with() {
 fn a_start_that_follows_no_restart_ends_what_a_restart_left() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     shown_and_told(&rig, &mut first, &["Only"]);
     let (dir, pid, _) = rig.kept();
     first.end(Teardown::InPlaceRestart);
 
-    let second = rig.run(false);
+    let second = rig.desktop(false);
     tilo_test_env::exited("an app a restart left that no run takes back", pid);
     assert!(!dir.exists(), "and its keeper's directory is gone");
     second.end(Teardown::Logout);
@@ -485,7 +504,7 @@ fn a_window_the_app_closed_while_no_desktop_was_there_closes_its_tab() {
     let _settled = ui::motion::testing::settled();
     let titles = ["Stays", "Closes"];
     let rig = Rig::new(&titles);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     let placed = shown_and_told(&rig, &mut first, &titles);
     let (_, pid, _) = rig.kept();
@@ -494,7 +513,7 @@ fn a_window_the_app_closed_while_no_desktop_was_there_closes_its_tab() {
     signal(pid, libc::SIGUSR1);
     tilo_test_env::wait_until("the app closed its window", || rig.told().len() == 1);
 
-    let mut second = rig.run(true);
+    let mut second = rig.desktop(true);
     let back = shown_and_told(&rig, &mut second, &["Stays"]);
     assert_eq!(back[0], placed[0], "the window it kept is back in its tab");
     until(
@@ -514,7 +533,7 @@ fn a_window_the_app_closed_while_no_desktop_was_there_closes_its_tab() {
 fn a_restart_ends_an_app_whose_keeper_stopped_answering() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     shown_and_told(&rig, &mut first, &["Only"]);
     let (dir, pid, _) = rig.kept();
@@ -534,7 +553,7 @@ fn a_restart_ends_an_app_whose_keeper_stopped_answering() {
 fn an_app_from_before_an_update_says_so_in_its_tab_and_restart_opens_it_again() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     let placed = shown_and_told(&rig, &mut first, &["Only"]);
     let (dir, pid, at) = rig.kept();
@@ -542,7 +561,7 @@ fn an_app_from_before_an_update_says_so_in_its_tab_and_restart_opens_it_again() 
     // The update changed how the desktop speaks to the app's keeper.
     testing::age(&dir, true).expect("aged");
 
-    let mut second = rig.run(true);
+    let mut second = rig.desktop(true);
     crate::common::wait_for(
         &mut second.session,
         "its tab says it is from before the update",
@@ -575,13 +594,13 @@ fn an_app_from_before_an_update_says_so_in_its_tab_and_restart_opens_it_again() 
 fn a_logout_ends_an_app_from_before_an_update() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     shown_and_told(&rig, &mut first, &["Only"]);
     let (dir, pid, _) = rig.kept();
     first.end(Teardown::InPlaceRestart);
     testing::age(&dir, true).expect("aged");
-    let mut second = rig.run(true);
+    let mut second = rig.desktop(true);
     crate::common::wait_for(
         &mut second.session,
         "its tab says it is from before the update",
@@ -596,7 +615,7 @@ fn a_logout_ends_an_app_from_before_an_update() {
 fn an_app_from_before_an_update_that_left_no_tab_says_so_in_a_tab_of_its_own() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
-    let mut first = rig.run(false);
+    let mut first = rig.desktop(false);
     rig.launch(&first);
     shown_and_told(&rig, &mut first, &["Only"]);
     let (dir, pid, at) = rig.kept();
@@ -614,7 +633,7 @@ fn an_app_from_before_an_update_that_left_no_tab_says_so_in_a_tab_of_its_own() {
     };
     fs::write(dir.join("launch"), launch.encode()).expect("the launch rewritten");
 
-    let mut second = rig.run(true);
+    let mut second = rig.desktop(true);
     crate::common::wait_for(&mut second.session, "a tab of its own says so", |session| {
         crate::common::control_on_screen(session, "Restart").map(|_| ())
     });
@@ -630,4 +649,97 @@ fn an_app_from_before_an_update_that_left_no_tab_says_so_in_a_tab_of_its_own() {
     assert!(running(pid, at), "it goes on with what it holds");
     second.end(Teardown::Logout);
     tilo_test_env::exited("the app from before the update at logout", pid);
+}
+
+/// A kept launch that is given an X11 display has one of its keeper's own, and the session serves
+/// it to the composing input method once its server is up: the cookie that admits a client is in
+/// the engine's authority file while the launch lives, the session that follows an in-place
+/// restart serves it again, and it leaves the file once the keeper ends.
+#[test]
+fn a_kept_launchs_own_x11_display_is_served_to_the_input_method() {
+    tilo_test_env::require_capability!(XServer, x_servers(), "the keeper's X server");
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::keeping_x11(&["Only"]);
+    let merged = || {
+        rig.home
+            .runtime()
+            .join("tilo-session")
+            .join("input-method")
+            .join("Xauthority")
+    };
+    let cookie = |dir: &Path| fs::read(dir.join("Xauthority")).unwrap_or_default();
+    let mut first = rig.desktop(false);
+    rig.launch(&first);
+    let handed = crate::common::wait_for(
+        &mut first.session,
+        "the launcher is handed the launch",
+        |_| {
+            let handed = testing::launcher_handed(&rig.home.home().join("tilo-launcher"));
+            (!handed.is_empty()).then_some(handed)
+        },
+    );
+    assert!(
+        handed.iter().any(|arg| arg == "--x11-display"),
+        "the launch is given a display: {handed:?}"
+    );
+    // The keeper binds its display as it starts and names it in its directory.
+    let dir = crate::common::wait_for(&mut first.session, "the keeper names its display", |_| {
+        testing::described(&rig.root)
+            .into_iter()
+            .find_map(|(dir, _)| fs::read_to_string(dir.join("x11")).ok().map(|_| dir))
+    });
+    let display = fs::read_to_string(dir.join("x11")).expect("the display's name");
+    assert!(display.starts_with(':'), "{display:?} names an X11 display");
+    // A display whose server is not up yet is not served: a client would start one the app
+    // never asked for.
+    assert!(
+        !merged().exists() || fs::read(merged()).unwrap_or_default() != cookie(&dir),
+        "nothing is served before the launch starts an X program"
+    );
+    // The app's first X program starts the server; from then on the session serves the display.
+    let x11 = connect_to_kept_display(&dir);
+    crate::common::wait_for(
+        &mut first.session,
+        "the engine is given the kept display's cookie",
+        |_| (fs::read(merged()).unwrap_or_default() == cookie(&dir)).then_some(()),
+    );
+
+    // A logout ends the launch, its X server with it.
+    let (_, pid, at) = rig.kept();
+    first.end(Teardown::Logout);
+    tilo_test_env::exited("the kept app at logout", pid);
+    assert!(!running(pid, at), "the app ended with the run");
+    let _x11 = x11;
+}
+
+/// The X servers a keeper can start here, so a machine without them skips the test.
+fn x_servers() -> Result<(), String> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for program in ["xwayland-satellite", "Xwayland"] {
+        if !std::env::split_paths(&path).any(|dir| dir.join(program).is_file()) {
+            return Err(format!("{program} is not on PATH"));
+        }
+    }
+    Ok(())
+}
+
+/// A client of the display a keeper bound in `dir`: connecting starts its server, as the launch's
+/// own X program would.
+fn connect_to_kept_display(dir: &Path) -> x11rb::rust_connection::RustConnection {
+    use x11rb::rust_connection::{DefaultStream, RustConnection};
+
+    let display = fs::read_to_string(dir.join("x11")).expect("the display's name");
+    let display = display.trim().trim_start_matches(':');
+    let authority = fs::read(dir.join("Xauthority")).expect("the display's cookie");
+    let cookie = authority[authority.len() - 16..].to_vec();
+    let stream = std::os::unix::net::UnixStream::connect(format!("/tmp/.X11-unix/X{display}"))
+        .expect("the display listens");
+    let (stream, _) = DefaultStream::from_unix_stream(stream).expect("the display's socket");
+    RustConnection::connect_to_stream_with_auth_info(
+        stream,
+        0,
+        b"MIT-MAGIC-COOKIE-1".to_vec(),
+        cookie,
+    )
+    .expect("the cookie admits the client")
 }

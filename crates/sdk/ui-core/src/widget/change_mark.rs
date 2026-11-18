@@ -126,7 +126,7 @@ impl ChangeMarkProps {
         let hue = mark.by.hue;
         let chip = Chip::new(String::new())
             .with_id(key.to_owned())
-            .with_face(mark.by.name.clone(), face_colour(hue))
+            .with_face(mark.by.clone(), face_colour(hue))
             .style(ChipStyle::Tinted(Tone::Presence(hue)))
             .tooltip(mark.spoken.clone())
             .with_accessible_name(mark.spoken);
@@ -185,16 +185,11 @@ impl ChangeMarkProps {
                 who.push(person);
             }
         }
-        let faces: Vec<(String, String)> = if window {
-            who.iter()
-                .map(|person| (person.name.clone(), person.identity.id().to_owned()))
-                .collect()
-        } else {
-            who.iter()
-                .take(1)
-                .map(|person| (person.name.clone(), person.identity.id().to_owned()))
-                .collect()
-        };
+        let faces: Vec<Person> = who
+            .iter()
+            .take(if window { who.len() } else { 1 })
+            .cloned()
+            .collect();
         let count = count.max(1);
         let label = if window {
             let names = names(&who);

@@ -15,7 +15,7 @@ use crate::store::{
 const PREFIX_MOUNT: &str = "/run/tilo/capsule/prefix";
 pub(crate) const HOME_MOUNT: &str = "/run/tilo/capsule/home";
 const FILES_MOUNT: &str = "/run/tilo/files";
-const SHIM_HOST: &str = "/usr/libexec/tilo/tilo-launcher";
+pub(crate) const SHIM_HOST: &str = "/usr/libexec/tilo/tilo-launcher";
 const SHIM_MOUNT: &str = "/tilo-launcher";
 const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
 const PINNED_PROTON: &str = "UMU-Proton-10.0-4";
@@ -391,6 +391,8 @@ pub struct KeptProgram<'a> {
     /// Its entry in the manager's list: what a later desktop reopens.
     pub entry_id: &'a str,
     pub workspace_id: &'a str,
+    /// It shows its windows through X11: the keeper serves it an X11 display of its own as well.
+    pub x11: bool,
 }
 
 /// The display a kept program shows on, and what starts the program behind it.
@@ -475,6 +477,9 @@ pub struct ResourceRequest<'a> {
 pub struct LaunchLease {
     pub id: String,
     pub audio: Vec<AudioBinding>,
+    /// The private audio graph prepared for the launch (`launcher::audio_graph`), which the
+    /// launch starts right before its sandbox: the directory the lease names.
+    pub audio_graph: Option<PathBuf>,
     pub egress_proxy: Option<EgressProxyBind>,
 }
 
@@ -484,6 +489,7 @@ impl LaunchLease {
         Self {
             id: id.into(),
             audio: Vec::new(),
+            audio_graph: None,
             egress_proxy: None,
         }
     }
@@ -498,6 +504,13 @@ impl LaunchLease {
         let microphone = capabilities
             .devices
             .contains(&collab_types::caps::DeviceCap::Microphone);
+        if self
+            .audio_graph
+            .as_ref()
+            .is_some_and(|graph| *graph != root)
+        {
+            return Err(PlanError::ResourceEscalation("audio graph"));
+        }
         let mut protocols = HashSet::new();
         for audio in &self.audio {
             if !audio.host_socket.starts_with(&root) {
@@ -554,6 +567,8 @@ pub struct CapsuleCommandPlan {
     /// Tilo-owned game classification, never a package-manifest request.
     pub latency_sensitive: bool,
     pub lease_id: String,
+    /// The private audio graph to start right before the sandbox, whose sockets it binds.
+    pub audio_graph: Option<PathBuf>,
     // Open directory descriptors backing the prefix/home bind sources. Kept
     // private so a plan cannot be copied after its authority-bearing handles.
     launch_paths: LaunchPaths,
@@ -799,6 +814,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             audio_output: !lease.audio.is_empty(),
             latency_sensitive: route.runtime.layer == Layer::Proton,
             lease_id: lease.id.clone(),
+            audio_graph: lease.audio_graph.clone(),
             launch_paths,
             runtime_lock_required: runtime.runtime_lock_mount.is_some(),
             identity_uid: self.display.uid,
@@ -1834,6 +1850,78 @@ mod tests {
         std::fs::write(destination, bytes).unwrap();
     }
 
+    /// A Proton program shows through X11: the display its keeper picks once it starts is added
+    /// to the planned sandbox, inside its private `/tmp`, after the environment is emptied, and
+    /// reachable through Landlock, and nothing else of the plan moves.
+    #[test]
+    fn a_proton_sandbox_is_given_its_keepers_x11_display() {
+        let route = route(Layer::Proton);
+        let (_directory, store, state, program) = setup(&route);
+        let host = session();
+        let planned = SandboxPlanner::new(&store, &TEST_REGISTRY, &host)
+            .unwrap()
+            .plan(
+                &route,
+                &state,
+                &program,
+                &CapabilityPlan::empty(),
+                "workspace",
+                &LaunchLease::deny_all("lease"),
+            )
+            .unwrap()
+            .bwrap_argv;
+        let mut given: Vec<std::ffi::OsString> = planned.iter().map(Into::into).collect();
+        let cookie = Path::new("/home/me/kept/3/Xauthority");
+        launcher::sandbox::give_x11_display(&mut given, ":7", cookie).unwrap();
+        let given: Vec<String> = given
+            .into_iter()
+            .map(|arg| arg.into_string().unwrap())
+            .collect();
+        let at = |wanted: &[&str]| {
+            given
+                .windows(wanted.len())
+                .position(|args| args == wanted)
+                .unwrap_or_else(|| panic!("{wanted:?} in {given:?}"))
+        };
+        let socket = "/tmp/.X11-unix/X7";
+        let mount = launcher::sandbox::X11_AUTHORITY_MOUNT;
+        let tmp = at(&["--tmpfs", "/tmp"]);
+        let bound = at(&["--ro-bind", socket, socket]);
+        let cookie_bound = at(&["--ro-bind", cookie.to_str().unwrap(), mount]);
+        let display = at(&["--setenv", "DISPLAY", ":7"]);
+        let authority = at(&["--setenv", "XAUTHORITY", mount]);
+        let shim = at(&[launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND]);
+        let read = at(&["--ro", mount]);
+        let reached = at(&["--rw", socket]);
+        let program = at(&["--"]);
+        assert!(
+            at(&["--clearenv"]) < display,
+            "set after the environment is emptied"
+        );
+        assert!(
+            tmp < bound && tmp < cookie_bound,
+            "bound over the private /tmp"
+        );
+        assert!(authority < shim && shim < read && shim < reached && reached < program);
+        assert_eq!(given.len(), planned.len() + 16, "nothing else is added");
+        let mut rest = given.clone();
+        rest.drain(shim + 1..shim + 5);
+        rest.drain(tmp + 2..tmp + 14);
+        assert_eq!(rest, planned, "and nothing of the plan moves");
+
+        for (display, cookie) in [
+            ("wayland-0", Path::new("/var/cookie")),
+            (":7", Path::new("cookie")),
+            ("remote:7", Path::new("/var/cookie")),
+        ] {
+            let mut args: Vec<std::ffi::OsString> = planned.iter().map(Into::into).collect();
+            assert!(
+                launcher::sandbox::give_x11_display(&mut args, display, cookie).is_err(),
+                "{display} {cookie:?}"
+            );
+        }
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1963,6 +2051,7 @@ mod tests {
                         input_enabled: true,
                     },
                 ],
+                audio_graph: Some(PathBuf::from(LEASE_ROOT).join("audio-lease")),
                 egress_proxy: None,
             };
             let command = planner

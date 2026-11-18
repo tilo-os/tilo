@@ -243,10 +243,12 @@ fn draw_trailing(
             .faces
             .iter()
             .take(shown)
-            .map(|face| crate::presence::Face {
-                is_agent: face.is_agent,
-                dimmed: face.dimmed,
-                ..crate::presence::Face::new(&face.name, &face.identity, face.colour)
+            .map(|face| {
+                let shown = crate::presence::Face::new(&face.name, &face.identity, face.colour);
+                crate::presence::Face {
+                    dimmed: face.dimmed,
+                    ..if face.is_agent { shown.agent() } else { shown }
+                }
             })
             .collect();
         stack.paint(

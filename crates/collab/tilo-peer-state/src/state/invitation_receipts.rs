@@ -140,24 +140,26 @@ pub(crate) fn part_key(digest: &[u8; 32]) -> String {
 }
 
 /// The invitation parts `doc` keeps, by key. A part two devices wrote at
-/// once is the same bytes under the same key, kept once.
+/// once is the same bytes under the same key, kept once. The map exists from
+/// the founding; an empty one holds no parts.
 pub(crate) fn parts(doc: &AutoCommit) -> Result<BTreeMap<String, Vec<Vec<u8>>>, String> {
     let mut parts: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
-    for (value, object) in doc.get_all(ROOT, PARTS_KEY).map_err(err)? {
-        if !matches!(value, Value::Object(automerge::ObjType::Map)) {
-            return Err("governed invitation parts are not a map".into());
-        }
-        for key in doc.keys(&object) {
-            for (value, _) in doc.get_all(&object, &key).map_err(err)? {
-                let Value::Scalar(value) = value else {
-                    return Err("governed invitation part is not bytes".into());
-                };
-                let ScalarValue::Bytes(bytes) = value.as_ref() else {
-                    return Err("governed invitation part is not bytes".into());
-                };
-                parts.entry(key.clone()).or_default().push(bytes.clone());
+    match doc.get(ROOT, PARTS_KEY).map_err(err)? {
+        None => return Ok(parts),
+        Some((Value::Object(automerge::ObjType::Map), object)) => {
+            for key in doc.keys(&object) {
+                for (value, _) in doc.get_all(&object, &key).map_err(err)? {
+                    let Value::Scalar(value) = value else {
+                        return Err("governed invitation part is not bytes".into());
+                    };
+                    let ScalarValue::Bytes(bytes) = value.as_ref() else {
+                        return Err("governed invitation part is not bytes".into());
+                    };
+                    parts.entry(key.clone()).or_default().push(bytes.clone());
+                }
             }
         }
+        Some(_) => return Err("governed invitation parts are not a map".into()),
     }
     Ok(parts)
 }
@@ -181,13 +183,7 @@ pub(crate) fn put_parts(doc: &mut AutoCommit, parts: &[Vec<u8>]) -> Result<(), S
     if parts.is_empty() {
         return Ok(());
     }
-    let map = match doc.get(ROOT, PARTS_KEY).map_err(err)? {
-        Some((Value::Object(automerge::ObjType::Map), object)) => object,
-        Some(_) => return Err("governed invitation parts are not a map".into()),
-        None => doc
-            .put_object(ROOT, PARTS_KEY, automerge::ObjType::Map)
-            .map_err(err)?,
-    };
+    let map = super::governed_map(doc, PARTS_KEY)?;
     for part in parts {
         let key = part_key(blake3::hash(part).as_bytes());
         if doc.get(&map, &key).map_err(err)?.is_none() {

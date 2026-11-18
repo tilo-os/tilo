@@ -401,6 +401,20 @@ impl Person {
     }
 }
 
+impl Person {
+    /// Someone a view knows only by `name`: a person by that name when it can be one's id, else
+    /// a name that carries no member, which still wears its initials in the hue it derives.
+    #[must_use]
+    pub fn named(name: impl Into<String>) -> Self {
+        let name = name.into();
+        let identity = tilo_action_policy::PersonId::parse(&name).map_or_else(
+            |_| tilo_actions::Actor::automation(name.clone()),
+            |person| tilo_actions::MemberId::Person(person).into(),
+        );
+        Self::new(identity, name)
+    }
+}
+
 /// `actor` as a bound control's text holds it: its serde form, as the runtime reads it back.
 #[must_use]
 pub fn actor_text(actor: &tilo_actions::Actor) -> String {

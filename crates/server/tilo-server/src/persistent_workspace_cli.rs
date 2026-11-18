@@ -1445,7 +1445,7 @@ pub(crate) async fn run(
         config.wait_list.clone_from(&page);
         let web = hosted
             .server
-            .serve_web(config)
+            .serve_web_also_at(config, args.web.public_origins_also.clone())
             .await
             .context("start the browser listener")?;
         println!(

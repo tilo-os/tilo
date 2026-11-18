@@ -35,7 +35,9 @@ public struct Composer: View {
                             .lineLimit(textSize.isAccessibilitySize ? 2 : 1).minimumScaleFactor(textSize.isAccessibilitySize ? 0.7 : 1)
                             .allowsHitTesting(false).accessibilityHidden(true)
                     }
-                    MarkdownField(text: text, label: placeholder, focus: model.fieldCalls) { model.send(in: chat) }
+                    MarkdownField(text: text, label: placeholder, focus: model.fieldCalls, sent: { model.conversation(chat).items }) {
+                        model.send(in: chat)
+                    }
                         // As tall as its words up to its tallest, whatever room is left: the conversation gives way, not the field.
                         .fixedSize(horizontal: false, vertical: true)
                         .offset(y: -FieldStyle.rise)
@@ -54,9 +56,13 @@ public struct Composer: View {
                 .accessibilityLabel((stops ? AssistantWords.stop : AssistantWords.send).said)
             }
             .padding(16)
-            .background(Token.content, in: RoundedRectangle(cornerRadius: Measure.bubbleRadius))
+            .background {
+                // The shadow is the ground's alone. Set on the field whole, its line cast one onto the
+                // ground inside it, and on an iPhone its words and its arrow each cast one too.
+                RoundedRectangle(cornerRadius: Measure.bubbleRadius).fill(Token.content)
+                    .shadow(color: Token.fieldShadow.color(scheme), radius: 1.5, y: 1)
+            }
             .overlay { RoundedRectangle(cornerRadius: Measure.bubbleRadius).strokeBorder(Token.line, lineWidth: 1) }
-            .shadow(color: Token.fieldShadow.color(scheme), radius: 1.5, y: 1)
 
             if !files.isEmpty {
                 Flow(spacing: 8, lineSpacing: 6) {
@@ -398,6 +404,63 @@ final class FieldLayout: NSLayoutManager {
     }
 }
 
+/// Stepping through what the person sent in a conversation, from its empty field: Up brings the
+/// newest message back, Up again the one before, Down the next, and past the newest the field is
+/// empty again. The messages are the conversation's own pieces, read again at every step: this
+/// keeps only which of them stands in the field, and nothing once the person types, moves the
+/// caret or presses Escape.
+struct Stepping {
+    /// The message whose words stand in the field.
+    private var message: Item.ID?
+    /// The words as they were put in the field.
+    private var words: String?
+
+    var isOn: Bool { message != nil }
+
+    /// Whether the field still holds what a step put there, the caret at its end: the next Up or
+    /// Down is a step. Anything else in the field is the person's own writing.
+    func stands(_ text: String, caret: NSRange) -> Bool {
+        words == text && caret == NSRange(location: (text as NSString).length, length: 0)
+    }
+
+    /// What the person wrote in these pieces, oldest first. A message sent again right after
+    /// itself is one step, not two that look alike.
+    static func own(in items: [Item]) -> [(message: Item.ID, words: String)] {
+        var found: [(message: Item.ID, words: String)] = []
+        for item in items {
+            guard case .message(let said) = item.content, said.author == .person,
+                  !said.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { continue }
+            if found.last?.words == said.text { found.removeLast() }
+            found.append((message: item.id, words: said.text))
+        }
+        return found
+    }
+
+    /// One step back: the words to put in the field. Nil where nothing older was sent.
+    mutating func older(in items: [Item]) -> String? {
+        let own = Stepping.own(in: items)
+        let before = message.flatMap { shown in own.firstIndex { $0.message == shown } } ?? own.count
+        guard before > 0 else { return nil }
+        message = own[before - 1].message
+        words = own[before - 1].words
+        return words
+    }
+
+    /// One step forward: the words to put in the field. Past the newest there are none, and the
+    /// stepping is over.
+    mutating func newer(in items: [Item]) -> String {
+        let own = Stepping.own(in: items)
+        guard let shown = message, let at = own.firstIndex(where: { $0.message == shown }), at + 1 < own.count else {
+            self = Stepping()
+            return ""
+        }
+        message = own[at + 1].message
+        words = own[at + 1].words
+        return own[at + 1].words
+    }
+}
+
 #if os(macOS)
 import AppKit
 
@@ -418,6 +481,8 @@ struct MarkdownField: NSViewRepresentable {
     let label: String
     /// Counts up when the field should take the caret.
     let focus: Int
+    /// The conversation's pieces as the app holds them now: what Up in an empty field steps through.
+    let sent: () -> [Item]
     let onSend: () -> Void
     @Environment(\.colorScheme) private var scheme
 
@@ -463,7 +528,12 @@ struct MarkdownField: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let view = scroll.documentView as? NSTextView else { return }
-        if view.string != text { view.string = text }
+        if view.string != text {
+            view.string = text
+            // The app put other words in the field (a message went out, words were dictated or begun
+            // for the person): what Undo remembered was said of words that are gone.
+            context.coordinator.history.removeAllActions()
+        }
         view.setAccessibilityLabel(label)
         context.coordinator.style(view, scheme)
         if context.coordinator.focus != focus {
@@ -485,19 +555,31 @@ struct MarkdownField: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MarkdownField
         var focus = 0
+        /// Which sent message stands in the field, while the person steps through them.
+        private var stepping = Stepping()
+        /// While a step puts its words in the field: the changes it makes are not the person's.
+        private var puts = false
+        /// What Undo takes back in this field: the field's own, apart from the window's.
+        let history = UndoManager()
 
         init(_ parent: MarkdownField) {
             self.parent = parent
         }
 
+        func undoManager(for view: NSTextView) -> UndoManager? {
+            history
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let view = notification.object as? NSTextView else { return }
             parent.text = view.string
+            leaveSteppingIfTheirs(view)
             style(view, parent.scheme)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let view = notification.object as? NSTextView else { return }
+            leaveSteppingIfTheirs(view)
             style(view, parent.scheme)
         }
 
@@ -507,14 +589,67 @@ struct MarkdownField: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-            guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
-            let flags = (textView as? FieldTextView)?.keyFlags ?? NSApp.currentEvent?.modifierFlags ?? []
-            if flags.contains(.shift) {
-                textView.insertNewlineIgnoringFieldEditor(nil)
-            } else {
-                parent.onSend()
+            // While a letter is being put together, every key is the input method's and the system's.
+            guard !textView.hasMarkedText() else { return false }
+            switch selector {
+            case #selector(NSResponder.insertNewline(_:)):
+                let flags = (textView as? FieldTextView)?.keyFlags ?? NSApp.currentEvent?.modifierFlags ?? []
+                if flags.contains(.shift) {
+                    textView.insertNewlineIgnoringFieldEditor(nil)
+                } else {
+                    parent.onSend()
+                }
+                return true
+            case #selector(NSResponder.moveUp(_:)):
+                return step(textView, older: true)
+            case #selector(NSResponder.moveDown(_:)):
+                return step(textView, older: false)
+            case #selector(NSResponder.cancelOperation(_:)):
+                // Escape lets a message that was brought back go. Anything else in the field is not its to take.
+                guard stepping.stands(textView.string, caret: textView.selectedRange()) else { return false }
+                stepping = Stepping()
+                put("", in: textView)
+                return true
+            default:
+                return false
             }
+        }
+
+        /// Up or Down in an empty field, or while a sent message stands in it as it was brought
+        /// back: a step through what the person sent in this conversation. False: the key is the
+        /// text field's own, and moves the caret.
+        private func step(_ view: NSTextView, older: Bool) -> Bool {
+            let stands = stepping.stands(view.string, caret: view.selectedRange())
+            if !stands { stepping = Stepping() }
+            if older {
+                guard stands || view.string.isEmpty else { return false }
+                // Where nothing older was sent, the key is still the stepping's and the field stays.
+                if let words = stepping.older(in: parent.sent()) { put(words, in: view) }
+                return stepping.isOn
+            }
+            guard stands else { return false }
+            put(stepping.newer(in: parent.sent()), in: view)
             return true
+        }
+
+        /// Put words in the field as an edit of the person's own: the draft follows, and Undo takes it back.
+        private func put(_ words: String, in view: NSTextView) {
+            let whole = NSRange(location: 0, length: (view.string as NSString).length)
+            view.breakUndoCoalescing()
+            guard view.shouldChangeText(in: whole, replacementString: words) else { return }
+            puts = true
+            view.textStorage?.replaceCharacters(in: whole, with: words)
+            view.didChangeText()
+            let end = NSRange(location: (words as NSString).length, length: 0)
+            view.setSelectedRange(end)
+            puts = false
+            view.scrollRangeToVisible(end)
+        }
+
+        /// The person typed or moved the caret: what stands in the field is theirs, and the arrows
+        /// are a text field's again.
+        private func leaveSteppingIfTheirs(_ view: NSTextView) {
+            if !puts, stepping.isOn, !stepping.stands(view.string, caret: view.selectedRange()) { stepping = Stepping() }
         }
 
         func style(_ view: NSTextView, _ scheme: ColorScheme, writing: Bool? = nil) {
@@ -535,6 +670,8 @@ struct MarkdownField: UIViewRepresentable {
     @Binding var text: String
     let label: String
     let focus: Int
+    /// The conversation's pieces as the app holds them now.
+    let sent: () -> [Item]
     let onSend: () -> Void
     @Environment(\.colorScheme) private var scheme
 

@@ -1,6 +1,7 @@
 //! Grant sets in plain language, for the people who give them and the agents
 //! that hold them.
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
 use crate::{ActionKind, Answer, Grant, Level, Lifetime, Segment, TreePath};
@@ -56,11 +57,12 @@ pub fn describe_node(node: &TreePath, labels: &dyn Labels) -> String {
 /// than until-revoked say so.
 #[must_use]
 pub fn describe(grants: &[Grant], labels: &dyn Labels) -> String {
-    let mut by_node: BTreeMap<(&TreePath, LifetimeKey<'_>), BTreeMap<ActionKind, Answer>> =
+    // The longest-lived first under each node.
+    let mut by_node: BTreeMap<(&TreePath, Reverse<Lifetime>), BTreeMap<ActionKind, Answer>> =
         BTreeMap::new();
     for grant in grants {
         let answers = by_node
-            .entry((&grant.node, LifetimeKey(&grant.lifetime)))
+            .entry((&grant.node, Reverse(grant.lifetime)))
             .or_default();
         for kind in grant.kinds.iter() {
             answers
@@ -74,11 +76,11 @@ pub fn describe(grants: &[Grant], labels: &dyn Labels) -> String {
     }
     by_node
         .into_iter()
-        .map(|((node, lifetime), answers)| {
+        .map(|((node, Reverse(lifetime)), answers)| {
             format!(
                 "{}{}: {}.",
                 describe_node(node, labels),
-                lifetime.suffix(),
+                lifetime_suffix(lifetime),
                 clauses(&answers)
             )
         })
@@ -118,39 +120,13 @@ fn join_and(items: &[&str]) -> String {
     }
 }
 
-/// Orders lifetimes for grouping without requiring `Ord` on the public type.
-#[derive(PartialEq, Eq)]
-struct LifetimeKey<'a>(&'a Lifetime);
-
-impl LifetimeKey<'_> {
-    fn rank(&self) -> (u8, &str, u64) {
-        match self.0 {
-            Lifetime::UntilRevoked => (0, "", 0),
-            Lifetime::Session(session) => (1, session, 0),
-            Lifetime::Until(at) => (3, "", *at),
-            Lifetime::Once => (4, "", 0),
-        }
-    }
-
-    fn suffix(&self) -> String {
-        match self.0 {
-            Lifetime::UntilRevoked => String::new(),
-            Lifetime::Session(_) => " (this session)".to_owned(),
-            Lifetime::Until(at) => format!(" (until {at} ms)"),
-            Lifetime::Once => " (once)".to_owned(),
-        }
-    }
-}
-
-impl PartialOrd for LifetimeKey<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for LifetimeKey<'_> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.rank().cmp(&other.rank())
+/// What a sentence adds for a grant that lasts `lifetime`: nothing until revoked.
+fn lifetime_suffix(lifetime: Lifetime) -> String {
+    match lifetime {
+        Lifetime::UntilRevoked => String::new(),
+        Lifetime::Session => " (this session)".to_owned(),
+        Lifetime::Until(at) => format!(" (until {at} ms)"),
+        Lifetime::Once => " (once)".to_owned(),
     }
 }
 
@@ -184,7 +160,7 @@ pub fn sentences(grants: &[Grant], labels: &dyn Labels) -> String {
             format!(
                 "{}{}: {}.",
                 describe_node(&grant.node, labels),
-                LifetimeKey(&grant.lifetime).suffix(),
+                lifetime_suffix(grant.lifetime),
                 grant_clauses(grant)
             )
         })

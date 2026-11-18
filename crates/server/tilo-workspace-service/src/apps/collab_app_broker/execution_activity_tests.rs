@@ -436,7 +436,7 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
     assert_eq!(draft.fields[0].value.line(), "Buy milk");
     assert!(draft.fields[0].editable, "{draft:?}");
     answer
-        .send(crate::apps::app_actions::AppActionConsent::Once.into())
+        .send(tilo_action_policy::Lifetime::Once.into())
         .unwrap();
     let approved = approval.await.expect("answered").expect("approved");
     assert_eq!(
@@ -512,7 +512,7 @@ async fn an_agents_ask_edited_on_the_sheet_runs_exactly_the_edited_arguments() {
     let (_question, answer) = asked.recv().await.expect("the person is asked");
     answer
         .send(crate::apps::app_actions::AppActionAnswer {
-            consent: crate::apps::app_actions::AppActionConsent::Once,
+            lifetime: Some(tilo_action_policy::Lifetime::Once),
             edits: vec![
                 tilo_actions::DraftEdit {
                     path: vec!["text".into()],
@@ -561,7 +561,7 @@ async fn arguments_changed_after_the_person_allowed_them_are_refused() {
         let (_question, answer) = asked.recv().await.expect("the person is asked");
         answer
             .send(crate::apps::app_actions::AppActionAnswer {
-                consent: crate::apps::app_actions::AppActionConsent::Once,
+                lifetime: Some(tilo_action_policy::Lifetime::Once),
                 edits: vec![tilo_actions::DraftEdit {
                     path: vec!["text".into()],
                     text: "Buy oat milk".into(),
@@ -594,7 +594,7 @@ async fn an_edit_the_draft_does_not_offer_confirms_nothing() {
     let (_question, answer) = asked.recv().await.expect("the person is asked");
     answer
         .send(crate::apps::app_actions::AppActionAnswer {
-            consent: crate::apps::app_actions::AppActionConsent::Once,
+            lifetime: Some(tilo_action_policy::Lifetime::Once),
             edits: vec![tilo_actions::DraftEdit {
                 path: vec!["owner".into()],
                 text: "mallory".into(),

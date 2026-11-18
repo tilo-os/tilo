@@ -214,6 +214,17 @@ pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A workspace document as its founding leaves it: the two route maps the
+    /// receipts sit beside exist before anyone writes one.
+    fn founded() -> AutoCommit {
+        use automerge::transaction::Transactable as _;
+        let mut doc = AutoCommit::new();
+        for key in [crate::coverage::FIELD_V2, FIELD_V2] {
+            doc.put_object(automerge::ROOT, key, automerge::ObjType::Map)
+                .unwrap();
+        }
+        doc
+    }
     fn receipt(generation: u64) -> DurableReceipt {
         DurableReceipt::new(
             Coverage {
@@ -235,7 +246,7 @@ mod tests {
 
         phase malformed_cross_route_and_regressing_receipts_are_rejected;
         {
-            let mut before = AutoCommit::new();
+            let mut before = founded();
             put(
                 &mut before,
                 BTreeMap::from([(route_key("app", "record"), receipt(7))]),
@@ -266,7 +277,7 @@ mod tests {
 
         phase receipt_metadata_is_pinned_governance;
         {
-            let before = AutoCommit::new();
+            let before = founded();
             let mut after = before.clone();
             put(
                 &mut after,
@@ -281,7 +292,7 @@ mod tests {
 
         phase v2_routes_store_compact_values_and_rebuild_exact_rows;
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = founded();
             let coverage = compact_coverage(1);
             crate::coverage::put_all_with_receipts(&mut doc, vec![coverage.clone()], |rows| {
                 Ok(rows
@@ -310,7 +321,7 @@ mod tests {
 
         phase coverage_change_pins_a_current_receipt_to_its_own_coverage;
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = founded();
             let first = compact_coverage(1);
             crate::coverage::put_all_with_receipts(&mut doc, vec![first.clone()], |rows| {
                 Ok(rows
@@ -340,7 +351,7 @@ mod tests {
             let key = route_key("app", "record");
             let coverage = compact_coverage(1);
             let receipt = DurableReceipt::new(coverage.clone(), 5).unwrap();
-            let mut doc = AutoCommit::new();
+            let mut doc = founded();
             crate::coverage::put_all_with_receipts(&mut doc, vec![coverage.clone()], |rows| {
                 Ok(rows
                     .iter()

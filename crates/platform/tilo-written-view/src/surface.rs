@@ -145,7 +145,7 @@ impl Surface {
             host.runtime()
                 .set_reading(&record, "{}")
                 .map_err(|error| format!("{}: {error}", app.title))?;
-            workspace.read(&app.meta.app, None);
+            workspace.read(&app.id, None);
         }
         instance.open_with(&resource(&target), &wrapper.view);
         if instance.detail_target().is_none() {
@@ -165,8 +165,17 @@ impl Surface {
         Ok(surface)
     }
 
-    fn app(&self, id: &str) -> Option<Rc<App>> {
-        self.apps.iter().find(|app| app.meta.app == id).cloned()
+    /// The app the view's package names `package`.
+    fn app(&self, package: &str) -> Option<Rc<App>> {
+        self.apps
+            .iter()
+            .find(|app| app.meta.app == package)
+            .cloned()
+    }
+
+    /// The app whose own id is `id`: the one a reading was asked of.
+    fn kept_by(&self, id: &str) -> Option<Rc<App>> {
+        self.apps.iter().find(|app| app.id == id).cloned()
     }
 
     /// Let the window, the instance and the workspace answer each other until none has more to
@@ -200,7 +209,7 @@ impl Surface {
         };
         let mut moved = false;
         for (id, read) in self.workspace.take_read() {
-            let Some(app) = self.app(&id) else {
+            let Some(app) = self.kept_by(&id) else {
                 continue;
             };
             let Some(root) = &app.root else {
@@ -345,12 +354,8 @@ impl Surface {
         let Some((resource, arguments)) = sent(&declared, invocation) else {
             return;
         };
-        self.workspace.invoke(
-            &declared.meta.app,
-            &resource,
-            declared.verb(action),
-            arguments,
-        );
+        self.workspace
+            .invoke(&declared.id, &resource, declared.verb(action), arguments);
     }
 }
 

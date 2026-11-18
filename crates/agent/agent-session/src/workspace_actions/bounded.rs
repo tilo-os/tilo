@@ -967,8 +967,8 @@ impl Worker {
     /// Save what an action changed for `who`: every field of every change
     /// checked against their access read now, so that a member removed or
     /// narrowed since their replica opened writes nothing, and only then
-    /// applied here and handed to the session: the action is done once the
-    /// host holds it ([`Worker::saving`]).
+    /// handed to the session and, once it took them, applied here: the action
+    /// is done once the host holds it ([`Worker::saving`]).
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -1015,6 +1015,11 @@ impl Worker {
         super::timing_done("bounded.check", checking);
         let committing = super::timing_start();
         for (changed, mutation) in taken {
+            // Handed to the session first: a change it was not handed is in no copy this
+            // service writes through, or the next change made there would build on one no
+            // device ever sends and wait for it for good.
+            self.commit(workspace_id, &changed, &mutation)
+                .map_err(|reason| super::commit_failed(reason, true))?;
             if let Some(app) = self.app_at(holder) {
                 let merged = if &changed == holder {
                     app.apply(&mutation)
@@ -1027,8 +1032,6 @@ impl Worker {
                     tracing::warn!(%error, "workspace actions: a change made for someone did not merge here");
                 }
             }
-            self.commit(workspace_id, &changed, &mutation)
-                .map_err(|reason| super::commit_failed(reason, true))?;
         }
         super::timing_done("bounded.commit", committing);
         Ok(())

@@ -174,8 +174,11 @@ fn seat_view(
     {
         stack = stack.tertiary(state);
     }
-    let avatar =
-        ui::widget::Avatar::person(name, player.to_owned()).with_hue(player_hue(people, player));
+    let avatar = ui::widget::Avatar::of(ui::component::Person {
+        name,
+        hue: player_hue(people, player),
+        ..ui::component::Person::named(player)
+    });
     let mut body = ui::column![
         ui::row![avatar, stack]
             .with_rhythm(Rhythm::Sibling)

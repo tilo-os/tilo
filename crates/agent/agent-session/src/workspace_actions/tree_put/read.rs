@@ -59,6 +59,20 @@ fn read_by(path: &str) -> &'static str {
     }
 }
 
+/// The page of `text` that starts at its character `from`: its characters, where it starts,
+/// where the page after it does, and how many characters the text has.
+fn page(text: &str, from: usize) -> (String, usize, Option<usize>, usize) {
+    let total = text.chars().count();
+    let from = from.min(total);
+    let to = from.saturating_add(PAGE_CHARS).min(total);
+    let part = text
+        .chars()
+        .skip(from)
+        .take(to.saturating_sub(from))
+        .collect();
+    (part, from, (to < total).then_some(to), total)
+}
+
 /// What `list` answers: the entries of the folder `folder` names (the workspace's own when it
 /// names none), by name, each with its path, whether it is a folder, a file's size and when
 /// it last changed; or, with `trash`, what the trash holds, each with the id that brings it
@@ -170,23 +184,68 @@ impl Worker {
         let file = tree.file_at(named)?;
         let text = String::from_utf8(self.bytes_at(workspace_id, &file)?)
             .map_err(|_| format!("{:?} is not text: {}", file.path, read_by(&file.path)))?;
-        let total = text.chars().count();
-        let from = from.min(total);
-        let to = from.saturating_add(PAGE_CHARS).min(total);
-        let part: String = text
-            .chars()
-            .skip(from)
-            .take(to.saturating_sub(from))
-            .collect();
+        let (part, from, next, total) = page(&text, from);
         Ok(json!({
             "file": file.path,
             "id": file.id,
             "text": part,
             "from": from,
-            "next": (to < total).then_some(to),
+            "next": next,
             "total": total,
             "size": file.size,
             "changed": file.changed,
+        }))
+    }
+
+    /// What `read-text` answers for content the workspace keeps, named by its address
+    /// (`content`, a `tilo.content:<hash>` reference, as a message that carries a file names
+    /// it): what it says, a page of characters at a time, as a file of the folder is read.
+    fn text_of_content(
+        &self,
+        workspace_id: WorkspaceId,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, String> {
+        if arguments.contains_key("file") {
+            return Err("`file` or `content` names what is read, not both".to_owned());
+        }
+        let address = arguments
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        let hash = tilo_actions::content_hash(address).ok_or_else(|| {
+            format!("`content` is a `tilo.content:<hash>` address, and {address:?} is none")
+        })?;
+        let from = place(arguments, "from")?.unwrap_or(0);
+        let store = self
+            .workspace_content(workspace_id)
+            .ok_or("this workspace keeps no files where its tree is kept")?;
+        let most = MOST_TEXT_BYTES.saturating_add(1);
+        let (size, bytes) = if let Ok((size, bytes)) = store.read_range(hash, 0, most) {
+            (size, bytes)
+        } else {
+            // Sealed content keeps its length in its seal: it is read whole.
+            let bytes = store
+                .read(hash)
+                .ok_or_else(|| format!("this workspace keeps no {address}"))?;
+            (u64::try_from(bytes.len()).unwrap_or(u64::MAX), bytes)
+        };
+        if size > MOST_TEXT_BYTES {
+            return Err(format!(
+                "{address} is {size} bytes, and a text read takes at most {MOST_TEXT_BYTES}: \
+                 the app that opens it reads it"
+            ));
+        }
+        let text = String::from_utf8(bytes)
+            .map_err(|_| format!("{address} is not text: the app that opens it reads it"))?;
+        let (part, from, next, total) = page(&text, from);
+        Ok(json!({
+            "content": address,
+            "text": part,
+            "from": from,
+            "next": next,
+            "total": total,
+            "size": size,
         }))
     }
 
@@ -221,6 +280,29 @@ impl Worker {
             return Err(refused(
                 "a path in the workspace names no device: a device's own disk is read by Files \
                  on that device",
+            ));
+        }
+        // Content the workspace keeps is read by its address, with no look at the tree: by
+        // whoever may also fetch the workspace's content by its address, never by more.
+        if request.target.address.action == fs_protocol::tree::READ_TEXT
+            && arguments.contains_key("content")
+        {
+            if !self.may_across(
+                workspace_id,
+                caller,
+                ui::permissions::policy::ActionKind::Read,
+            ) {
+                return Err(Outcome::Rejected(ActionCallError::NotPermitted));
+            }
+            let value = self
+                .text_of_content(workspace_id, &arguments)
+                .map_err(refused)?;
+            return Ok((
+                ActionOutput {
+                    value: Some(value),
+                    resources: Vec::new(),
+                },
+                None,
             ));
         }
         let (mut tree, _) = self.tree_in_workspace(workspace_id, named)?;

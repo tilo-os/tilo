@@ -159,11 +159,20 @@ impl Provenance {
     pub fn row(&self, id: &str) -> Element {
         let (red, green, blue) = ui_core::presence::identity_rgb(self.hue);
         let colour = Color::from_rgb8(red, green, blue);
-        let chip = match &self.actor {
-            Some(actor) => actor.chip(),
-            None => Chip::new(self.name.clone()).with_face(self.name.clone(), colour),
-        }
-        .with_id(format!("{id}-author"));
+        let who = self.actor.as_ref().map_or_else(
+            || {
+                Actor {
+                    member: None,
+                    name: self.name.clone(),
+                    hue: self.hue,
+                }
+                .person()
+            },
+            Actor::person,
+        );
+        let chip = Chip::new(self.name.clone())
+            .with_id(format!("{id}-author"))
+            .with_face(who, colour);
         let mut row = Row::new()
             .no_wrap()
             .with_rhythm(Rhythm::Related)

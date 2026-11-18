@@ -374,7 +374,7 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
                 "nothing runs while the person decides"
             );
             answer
-                .send(crate::apps::app_actions::AppActionConsent::Once.into())
+                .send(tilo_action_policy::Lifetime::Once.into())
                 .unwrap();
             let answered = asking.await;
             ran(notes, &confirmed, &answered);
@@ -549,7 +549,6 @@ impl crate::apps::services::WorkspaceGrants for TreeGrants {
         &self,
         _request: &crate::apps::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
-        _answer: crate::apps::app_actions::AppActionConsent,
     ) -> crate::apps::services::GrantRecording {
         let id = self.0.write().workspaces.first_mut().unwrap().grant(grant);
         Box::pin(std::future::ready(Ok(id.as_str().to_owned())))
@@ -578,11 +577,12 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
                 |_| Ok(()),
             )));
             // The app declares that it takes other apps' actions.
-            services.app_action_access =
-                Some(Arc::new(|_: &str| crate::apps::app_actions::AppActionAccess {
+            services.app_action_access = Some(Arc::new(|_: &str| {
+                crate::apps::app_actions::AppActionAccess {
                     query: false,
                     invoke: true,
-                }));
+                }
+            }));
             let rig = Rig::with_services(&env, services).await;
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
@@ -616,7 +616,7 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
                 "nothing runs while the person decides"
             );
             answer
-                .send(crate::apps::app_actions::AppActionConsent::Once.into())
+                .send(tilo_action_policy::Lifetime::Once.into())
                 .unwrap();
             let answered = asking.await;
             assert!(admitted(&answered), "{answered:?}");
@@ -635,7 +635,7 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
             };
             assert!(question.handle.starts_with("app-action:"), "{question:?}");
             answer
-                .send(crate::apps::app_actions::AppActionConsent::Always.into())
+                .send(tilo_action_policy::Lifetime::UntilRevoked.into())
                 .unwrap();
             assert!(admitted(&asking.await));
             notes.try_recv().expect("Notes makes the page");
@@ -664,7 +664,7 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
             }
             for (_, answer) in asked {
                 answer
-                    .send(crate::apps::app_actions::AppActionConsent::Once.into())
+                    .send(tilo_action_policy::Lifetime::Once.into())
                     .unwrap();
             }
             assert!(admitted(&clear.await));

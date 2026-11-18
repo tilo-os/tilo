@@ -294,7 +294,9 @@ impl AccountRoot {
         };
         let mut credentials = accounts::AccountCredentials::open_in(root)?;
         let token = credentials.get(id).and_then(|secret| secret.token);
-        credentials.put(
+        // Typed just now: bound to the servers its account names where it
+        // is first joined.
+        credentials.put_anew(
             id,
             &accounts::Secret {
                 password: password.to_owned(),

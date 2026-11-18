@@ -360,7 +360,8 @@ impl<'a> ChipFace<'a> {
 pub(crate) struct PillPaint<'a> {
     pub rect: Rect,
     pub label: &'a str,
-    pub face: &'a str,
+    /// Who a [`ChipLead::Face`] shows; without one, the label names them.
+    pub face: Option<&'a crate::component::Person>,
     pub lead: ChipLead,
     pub style: ChipStyle,
     pub selected: bool,
@@ -385,7 +386,7 @@ impl<'a> PillPaint<'a> {
         Self {
             rect,
             label,
-            face: "",
+            face: None,
             lead: ChipLead::None,
             style,
             selected: false,
@@ -534,14 +535,12 @@ pub(crate) fn paint_pill(
             let side = metrics.face();
             let face = Rect::from_center_size(Point::new(x + side / 2.0, cy), (side, side));
             let mut ctx = crate::paint::PaintCtx::new(scene, transform, text_renderer, theme);
-            let name = if pill.face.is_empty() {
-                pill.label
-            } else {
-                pill.face
-            };
-            crate::widget::avatar::AvatarFace::new(name, name)
-                .presence(colour)
-                .paint(&mut ctx, face);
+            match pill.face {
+                Some(who) => crate::widget::avatar::AvatarFace::of(who),
+                None => crate::widget::avatar::AvatarFace::new(pill.label, pill.label),
+            }
+            .presence(colour)
+            .paint(&mut ctx, face);
             x += side + metrics.gap;
         }
         ChipLead::Glyph(icon) => {
@@ -626,7 +625,7 @@ pub use component::ChipProps;
 
 pub struct Chip {
     label: String,
-    face: String,
+    face: Option<crate::component::Person>,
     selectable: bool,
     selected: bool,
     /// How chosen the chip shows: it eases between the looks when a person picks it.
@@ -695,7 +694,7 @@ impl Chip {
             tooltip: None,
             accessible_name: None,
             label,
-            face: String::new(),
+            face: None,
             selectable: false,
             selected: false,
             chosen: None,
@@ -723,8 +722,8 @@ impl Chip {
     }
 
     #[must_use]
-    pub fn with_face(mut self, name: impl Into<String>, colour: Color) -> Self {
-        self.face = name.into();
+    pub fn with_face(mut self, who: crate::component::Person, colour: Color) -> Self {
+        self.face = Some(who);
         self.lead = ChipLead::Face(colour);
         self
     }
@@ -1232,7 +1231,7 @@ impl Widget for Chip {
         };
         paint_pill(
             &PillPaint {
-                face: &self.face,
+                face: self.face.as_ref(),
                 lead: self.lead,
                 selected: chosen,
                 selecting,

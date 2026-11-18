@@ -4,6 +4,29 @@ use tilo_desktop::activity::{ActivitySnapshot, WorkspaceActivityPane};
 use tilo_desktop_model::projection::WORKSPACE_ID_KEY;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 
+/// The desktop of `workspace` alone, whose document is `doc`.
+fn desktop(workspace: Workspace, doc: AutoCommit) -> ActivitySnapshot {
+    ActivitySnapshot::new(
+        Layout {
+            active: workspace.id(),
+            workspaces: vec![workspace],
+            ..Default::default()
+        },
+        doc,
+    )
+    .unwrap()
+}
+
+/// The desktop of workspace "Design", whose document holds nothing yet.
+fn design() -> ActivitySnapshot {
+    let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
+        .unwrap();
+    doc.commit();
+    desktop(workspace, doc)
+}
+
 tilo_test_env::scenario! {
     fn workspace_activity_reads_the_admitted_workspace_document;
 
@@ -19,15 +42,7 @@ tilo_test_env::scenario! {
         doc.commit();
         doc.put(ROOT, "name", "Design review").unwrap();
         doc.commit();
-        let mut tree = ActivitySnapshot::new(
-            Layout {
-                active: workspace.id(),
-                workspaces: vec![workspace],
-                ..Default::default()
-            },
-            doc,
-        )
-        .unwrap();
+        let mut tree = desktop(workspace, doc);
         let before = tree.doc.get_heads();
         let mut pane = WorkspaceActivityPane::new();
         pane.begin_view(tree.active);
@@ -110,15 +125,7 @@ tilo_test_env::scenario! {
         stamp(&mut doc, 3);
         doc.delete(&groups, "0001000000000004").unwrap();
         stamp(&mut doc, 4);
-        let mut tree = ActivitySnapshot::new(
-            Layout {
-                active: workspace.id(),
-                workspaces: vec![workspace],
-                ..Default::default()
-            },
-            doc,
-        )
-        .unwrap();
+        let mut tree = desktop(workspace, doc);
 
         let mut pane = WorkspaceActivityPane::new();
         pane.refresh(&mut tree);
@@ -158,36 +165,23 @@ tilo_test_env::scenario! {
     {
         use tilo_desktop::activity::*;
         use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
-        let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
-            .unwrap();
-        doc.commit();
-        let mut tree = ActivitySnapshot::new(
-            Layout {
-                active: workspace.id(),
-                workspaces: vec![workspace],
-                ..Default::default()
-            },
-            doc,
-        )
-        .unwrap();
-        let mut record = AutoCommit::new();
-        record.put(ROOT, "text", "shared causal hash").unwrap();
-        record.commit();
+        let mut tree = design();
+        let mut resource = AutoCommit::new();
+        resource.put(ROOT, "text", "shared causal hash").unwrap();
+        resource.commit();
         let checkout = DocumentCheckout::new(DocumentId::for_tab(1), ResourceType::new("test"));
         let inputs = vec![
             DetachedRecordHistory {
                 app: "app-a".into(),
                 checkout: checkout.clone(),
                 tree_chunks: Vec::new(),
-                document: Some(record.clone()),
+                document: Some(resource.clone()),
             },
             DetachedRecordHistory {
                 app: "app-b".into(),
                 checkout: checkout.clone(),
                 tree_chunks: Vec::new(),
-                document: Some(record),
+                document: Some(resource),
             },
             DetachedRecordHistory {
                 app: "missing".into(),
@@ -243,50 +237,37 @@ tilo_test_env::scenario! {
         use tilo_actions::{ActionContext, ChangeKind};
         use tilo_desktop::activity::*;
         use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
-        let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
-            .unwrap();
-        doc.commit();
-        let mut tree = ActivitySnapshot::new(
-            Layout {
-                active: workspace.id(),
-                workspaces: vec![workspace],
-                ..Default::default()
-            },
-            doc,
-        )
-        .unwrap();
+        let mut tree = design();
         let posted = ActionContext::for_resource("chat.channel:c", "chat.channel", "general")
             .with_app("so.tilo.chat", "Chat")
             .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
-                tilo_actions::ActionKey::new("so.tilo.chat", "chat.channel", "post-message"),
+                tilo_actions::ActionKey::new("so.tilo.chat", "chat.conversation", "post-message"),
                 [],
             )));
-        let commit = |record: &mut AutoCommit, context: &ActionContext, at: i64| {
-            record.commit_with(
+        let commit = |resource: &mut AutoCommit, context: &ActionContext, at: i64| {
+            resource.commit_with(
                 CommitOptions::default()
                     .with_time(at)
                     .with_message(context.change_message().unwrap()),
             );
         };
         let ada = ActorId::random();
-        let mut record = AutoCommit::new().with_actor(ada.clone());
-        record.put(ROOT, "message", "hello").unwrap();
-        commit(&mut record, &posted, 1_800_000_000);
-        record.put(ROOT, "read", 1).unwrap();
+        let mut resource = AutoCommit::new().with_actor(ada.clone());
+        resource.put(ROOT, "message", "hello").unwrap();
+        commit(&mut resource, &posted, 1_800_000_000);
+        resource.put(ROOT, "read", 1).unwrap();
         let marker = ActionContext::for_resource("chat.channel:c", "chat.channel", "general")
             .with_change(ChangeKind::Housekeeping);
-        commit(&mut record, &marker, 1_800_000_001);
-        record.put(ROOT, "preview", "fetched").unwrap();
+        commit(&mut resource, &marker, 1_800_000_001);
+        resource.put(ROOT, "preview", "fetched").unwrap();
         commit(
-            &mut record,
+            &mut resource,
             &posted.clone().with_change(ChangeKind::External),
             1_800_000_001,
         );
-        record.set_actor(ActorId::random());
-        record.put(ROOT, "message", "hi").unwrap();
-        commit(&mut record, &posted, 1_800_000_002);
+        resource.set_actor(ActorId::random());
+        resource.put(ROOT, "message", "hi").unwrap();
+        commit(&mut resource, &posted, 1_800_000_002);
 
         let mut pane = WorkspaceActivityPane::new();
         pane.authors_mut().register(
@@ -300,7 +281,7 @@ tilo_test_env::scenario! {
                 app: "so.tilo.chat".into(),
                 checkout: DocumentCheckout::new(DocumentId::for_tab(1), ResourceType::new("chat")),
                 tree_chunks: Vec::new(),
-                document: Some(record),
+                document: Some(resource),
             }],
         );
         let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
@@ -327,28 +308,15 @@ tilo_test_env::scenario! {
     {
         use tilo_desktop::activity::*;
         use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
-        let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
-        let mut doc = AutoCommit::new();
-        doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
-            .unwrap();
-        doc.commit();
-        let mut tree = ActivitySnapshot::new(
-            Layout {
-                active: workspace.id(),
-                workspaces: vec![workspace],
-                ..Default::default()
-            },
-            doc,
-        )
-        .unwrap();
-        let mut record = AutoCommit::new();
-        record.put(ROOT, "value", "settled").unwrap();
-        record.commit();
+        let mut tree = design();
+        let mut resource = AutoCommit::new();
+        resource.put(ROOT, "value", "settled").unwrap();
+        resource.commit();
         let input = DetachedRecordHistory {
             app: "app".into(),
             checkout: DocumentCheckout::new(DocumentId::for_tab(1), ResourceType::new("test")),
             tree_chunks: Vec::new(),
-            document: Some(record),
+            document: Some(resource),
         };
         let mut pane = WorkspaceActivityPane::new();
         pane.refresh(&mut tree);
@@ -365,7 +333,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             pane.entries(),
             settled,
-            "a record it could not read keeps the rows it read"
+            "a resource it could not read keeps the rows it read"
         );
         let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
         assert_eq!(feed.entries.len(), settled.len());
@@ -375,6 +343,104 @@ tilo_test_env::scenario! {
             0,
             "detached rows disappear and the workspace's first write is not a change"
         );
+    }
+
+    phase workspace_activity_reads_one_windows_resources;
+    // A window's own history: Notes' text edits in the chain of pages it keeps beside its resource,
+    // narrowed to one note when asked. Listing another app's change, another chain's, or naming a
+    // person or lens of the workspace beyond them must fail this regression.
+    {
+        use automerge::{ActorId, transaction::CommitOptions};
+        use tilo_actions::{ActionContext, ActionKey, Described, Did};
+        use tilo_desktop::activity::*;
+        use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+        let mut tree = design();
+        let did = |app: &str, kind: &str, action: &str, item: &str| {
+            ActionContext::for_resource(kind, kind, kind)
+                .with_app(app, app)
+                .with_described(
+                    Described::new(Did::verb(ActionKey::new(app, kind, action), [])).on(item, item),
+                )
+        };
+        let resource = |actor: &ActorId, changes: &[(&str, ActionContext)]| {
+            let mut resource = AutoCommit::new().with_actor(actor.clone());
+            for (at, (text, context)) in (1_800_000_000..).zip(changes) {
+                resource.put(ROOT, "text", *text).unwrap();
+                resource.commit_with(
+                    CommitOptions::default()
+                        .with_time(at)
+                        .with_message(context.change_message().unwrap()),
+                );
+            }
+            resource
+        };
+        let (ada, bo) = (ActorId::random(), ActorId::random());
+        let edit = |note: &str| did("so.tilo.notes", "notes.page", "edit-text", note);
+        let pages = DocumentId::derived("pages", &DocumentId::workspace_default());
+        let part = resource(&ada, &[("draft", edit("note-a")), ("plan", edit("note-b"))]);
+        let elsewhere = resource(&ada, &[("other", edit("note-a"))]);
+        let chat = resource(
+            &bo,
+            &[("hi", did("so.tilo.chat", "chat.conversation", "post-message", "general"))],
+        );
+        let mut pane = WorkspaceActivityPane::new();
+        pane.authors_mut().register(
+            &ada.to_hex_string(),
+            ui::widget::HistoryAuthor::new("Ada", 120.0, "ada"),
+        );
+        pane.authors_mut().register(
+            &bo.to_hex_string(),
+            ui::widget::HistoryAuthor::new("Bo", 200.0, "bo"),
+        );
+        pane.refresh(&mut tree);
+        pane.refresh_detached_records(
+            &mut tree,
+            vec![
+                DetachedRecordHistory::new(
+                    "so.tilo.notes",
+                    DocumentCheckout::new(pages.part(0), ResourceType::new("notes.page")),
+                    Some(part),
+                ),
+                DetachedRecordHistory::new(
+                    "so.tilo.notes",
+                    DocumentCheckout::new(
+                        DocumentId::derived("pages", &DocumentId::for_tab(4)).part(0),
+                        ResourceType::new("notes.page"),
+                    ),
+                    Some(elsewhere),
+                ),
+                DetachedRecordHistory::new(
+                    "so.tilo.chat",
+                    DocumentCheckout::new(pages.part(0), ResourceType::new("chat.conversation")),
+                    Some(chat),
+                ),
+            ],
+        );
+        assert_eq!(pane.serve_feed(&wire::FeedQuery::default(), &tree).total, 4);
+        let window = |item: Option<&str>| wire::FeedQuery {
+            resources: Some(wire::WindowResources {
+                app: "so.tilo.notes".into(),
+                resources: vec![
+                    DocumentId::workspace_default().as_str().into(),
+                    pages.as_str().into(),
+                ],
+                item: item.map(Into::into),
+            }),
+            ..wire::FeedQuery::default()
+        };
+        let feed = pane.serve_feed(&window(None), &tree);
+        assert_eq!(feed.total, 2, "the two edits in the window's chain: {:?}", feed.entries);
+        assert!(
+            feed.entries.iter().all(|entry| entry.author.name == "Ada"),
+            "no change of Chat's, though it keeps a resource by the same id"
+        );
+        assert_eq!(feed.people, ["Ada"], "only who changed the window's resources");
+        assert!(feed.lenses.is_empty(), "no lens onto the rest of the workspace");
+        let note = pane.serve_feed(&window(Some("note-b")), &tree);
+        assert_eq!(note.total, 1, "one note's history is its own edits");
+        let all = pane.serve_feed(&wire::FeedQuery::default(), &tree);
+        assert_eq!(all.total, 4, "the window's read leaves the workspace's as it was");
+        assert_eq!(all.people.len(), 2);
     }
 
     phase workspace_activity_replay_starts_where_the_workspace_does;
@@ -433,15 +499,7 @@ tilo_test_env::scenario! {
             .unwrap();
             stamp(&mut doc, at);
         }
-        let mut tree = ActivitySnapshot::new(
-            Layout {
-                active: workspace.id(),
-                workspaces: vec![workspace],
-                ..Default::default()
-            },
-            doc,
-        )
-        .unwrap();
+        let mut tree = desktop(workspace, doc);
         let mut pane = WorkspaceActivityPane::new();
         pane.begin_view(tree.active);
         pane.refresh(&mut tree);

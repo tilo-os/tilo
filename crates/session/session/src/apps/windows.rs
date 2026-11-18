@@ -40,18 +40,22 @@ impl Apps {
         let Some(launcher) = self.launcher() else {
             return Err("no tilo-launcher is installed".to_owned());
         };
+        let mut args = vec![
+            "windows-program".to_owned(),
+            "--app-id".to_owned(),
+            launch.app_id.clone(),
+            "--name".to_owned(),
+            launch.title.clone(),
+        ];
+        if launch.x11 {
+            args.push("--x11".to_owned());
+        }
         let planned = Planned {
             app: launch.app_id.clone(),
             title: launch.title.clone(),
             kind: Kind::Program,
             program: launcher,
-            args: vec![
-                "windows-program".to_owned(),
-                "--app-id".to_owned(),
-                launch.app_id.clone(),
-                "--name".to_owned(),
-                launch.title.clone(),
-            ],
+            args,
             env: desktop_entry::launch::inherited_environment(),
             window_identities: vec![launch.app_id.clone()],
         };

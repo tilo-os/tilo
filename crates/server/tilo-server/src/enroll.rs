@@ -731,7 +731,10 @@ fn checked_personal_projection(
             serde_json::json!({
                 "id": identity_id,
                 "display_name": "My Tilo identity",
-                "resource_path": resource_path,
+                // The registry the runtime reads names an identity's file
+                // `record_path`, and refuses a field it does not know: one
+                // written another way holds identities it cannot start from.
+                "record_path": resource_path,
                 "user_public_key": user
             }),
         );
@@ -1660,6 +1663,25 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                         home_peer_output.context("home-peer output is required")?,
                         home_peer_toml.as_bytes(),
                     )?;
+                    // The person's earlier servers, which take this one in
+                    // among them when it starts.
+                    let earlier = tilo_server::checked_home_peers(
+                        payload
+                            .home_peers_json
+                            .as_deref()
+                            .context("approving device omitted the person's servers")?,
+                    )
+                    .context("the approval's servers are not a registry this build accepts")?;
+                    if earlier
+                        .iter()
+                        .any(|entry| entry.user_public_key != hex::encode(token.user_public_key))
+                    {
+                        bail!("approval named another person's servers");
+                    }
+                    tilo_server::write_home_peers(
+                        &tilo_server::home_peer_registry_path(identity_root),
+                        &earlier,
+                    )?;
                 }
                 // Preparing a personal enrollment only touches the private
                 // staging area. In particular, an existing device's global
@@ -2301,7 +2323,12 @@ fn approval_projection(
                 home_peer_toml: Some(toml::to_string_pretty(&home_peer)?),
                 public_identity_json: None,
                 fleet_json: None,
-                home_peers_json: None,
+                // The person's servers so far: the first one makes their
+                // admin workspace, a later one asks an earlier one for it.
+                home_peers_json: Some(bounded_home_peer_registry(
+                    options.identity_root,
+                    identity.user_public_key,
+                )?),
             })
         }
         EnrollmentKind::PersonalDevice => {

@@ -14,9 +14,10 @@ use crate::i18n::{t, t_args};
 use tilo_action_policy::{Grantee, Refusal};
 use tilo_sort::CompactSort as _;
 
-use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, Expiry, Scope};
+use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, Scope};
 use collab_types::role::Role as CapRole;
 use collab_types::{Member, MemberId};
+use tilo_action_policy::Lifetime;
 use tilo_desktop_model::{UserId, Workspace};
 
 pub mod agent_access;
@@ -271,72 +272,23 @@ pub fn node_phrase(node: &tilo_action_policy::TreePath, apps: &dyn AppDirectory)
     tilo_action_policy::describe_node(&below_workspace, &Named(apps))
 }
 
-pub fn expiry_label(expiry: Expiry) -> String {
-    t(match expiry {
-        Expiry::AfterUse => "workspace-settings-expiry-once",
-        Expiry::EndOfSession => "workspace-settings-expiry-session",
-        Expiry::AtUnix(_) => "workspace-settings-expiry-until",
-        Expiry::Never => "workspace-settings-expiry-always",
-    })
-}
-
-/// Who granted a capability, as a user-facing phrase, or `None` for a capability with no recorded
-/// grantor. People and agents are named as the People pane names them; the viewer is "you".
-pub fn granted_by_label(cap: &CapOverride, ws: &Workspace, local_user: &str) -> Option<String> {
-    cap.granted_by.as_ref().map(|who| match who {
-        MemberId::Person(id) if id == local_user => t("workspace-settings-granted-by-you"),
-        MemberId::Agent(id) if id == local_user => t("workspace-settings-granted-by-you"),
-        MemberId::Person(_) => t_args(
-            "workspace-settings-granted-by-person",
-            &[("id", member_name_or_short_id(ws, who).into())],
-        ),
-        MemberId::Agent(_) => t_args(
-            "workspace-settings-granted-by-agent",
-            &[("id", member_name_or_short_id(ws, who).into())],
-        ),
-        MemberId::Bot(_) => t_args(
-            "workspace-settings-granted-by-bot",
-            &[("id", member_name_or_short_id(ws, who).into())],
-        ),
-    })
+/// Who gave a grant or capability, as a user-facing phrase. People and agents are named as the
+/// People pane names them; the viewer is "you".
+fn given_by_label(who: &MemberId, ws: &Workspace, local_user: &str) -> String {
+    if who.person_id() == Some(local_user) || who.agent_id() == Some(local_user) {
+        return t("workspace-settings-granted-by-you");
+    }
+    let key = match who {
+        MemberId::Person(_) => "workspace-settings-granted-by-person",
+        MemberId::Agent(_) => "workspace-settings-granted-by-agent",
+        MemberId::Bot(_) => "workspace-settings-granted-by-bot",
+    };
+    t_args(key, &[("id", member_name_or_short_id(ws, who).into())])
 }
 
 /// How long a grant lives, as the composer's lifetimes name it.
-pub fn lifetime_label(lifetime: &tilo_action_policy::Lifetime) -> String {
-    use tilo_action_policy::Lifetime;
-    t(match lifetime {
-        Lifetime::Once => "workspace-settings-expiry-once",
-        Lifetime::Session(_) => "workspace-settings-expiry-session",
-        Lifetime::Until(_) => "workspace-settings-expiry-until",
-        Lifetime::UntilRevoked => "workspace-settings-expiry-always",
-    })
-}
-
-/// Who gave a grant, as a user-facing phrase; the viewer is "you".
-pub fn grant_given_by_label(
-    grant: &tilo_action_policy::Grant,
-    ws: &Workspace,
-    local_user: &str,
-) -> Option<String> {
-    let who = &grant.granted_by;
-    if who.person_id() == Some(local_user) || who.agent_id() == Some(local_user) {
-        return Some(t("workspace-settings-granted-by-you"));
-    }
-    let tilo_action_policy::Grantee::Member(member) = who else {
-        return None;
-    };
-    if member.is_person() {
-        return Some(t_args(
-            "workspace-settings-granted-by-person",
-            &[("id", member_name_or_short_id(ws, member).into())],
-        ));
-    }
-    member.is_agent().then(|| {
-        t_args(
-            "workspace-settings-granted-by-agent",
-            &[("id", member_name_or_short_id(ws, member).into())],
-        )
-    })
+pub fn lifetime_label(lifetime: Lifetime) -> String {
+    t(&format!("workspace-settings-expiry-{}", lifetime.key()))
 }
 
 /// A subject the grant composer can target, and the subject axis the Permissions list groups by.
@@ -481,7 +433,19 @@ const FALLBACK_CHOICE: GrantChoice = GrantChoice {
 /// binds and by the filesystem alike.
 const WORKSPACE_FILES_PATH: &str = "/var/workspace";
 
-pub const EXPIRY_CHOICES: [Expiry; 3] = [Expiry::Never, Expiry::EndOfSession, Expiry::AfterUse];
+/// The lifetimes the composer offers at `now_ms`, longest first: the ones every prompt offers.
+/// Its picker has no time to pick, so it leaves out the timed one.
+#[must_use]
+pub fn offered_lifetimes(now_ms: u64) -> Vec<Lifetime> {
+    Lifetime::offered(now_ms)
+        .into_iter()
+        .rev()
+        .filter(|lifetime| !matches!(lifetime, Lifetime::Until(_)))
+        .collect()
+}
+
+/// The lifetime the composer starts on.
+pub const DEFAULT_LIFETIME: &str = "session";
 
 /// The in-flight grant the Permissions tab's composer is composing. Holds indices rather than
 /// resolved values so a subject leaving the workspace can't leave a dangling reference —
@@ -490,7 +454,7 @@ pub const EXPIRY_CHOICES: [Expiry; 3] = [Expiry::Never, Expiry::EndOfSession, Ex
 pub struct GrantDraft {
     pub subject_index: usize,
     pub choice_index: usize,
-    pub expiry: Expiry,
+    pub lifetime: Lifetime,
 }
 
 impl Default for GrantDraft {
@@ -498,7 +462,7 @@ impl Default for GrantDraft {
         Self {
             subject_index: 0,
             choice_index: 0,
-            expiry: Expiry::EndOfSession,
+            lifetime: Lifetime::Session,
         }
     }
 }
@@ -521,9 +485,9 @@ impl GrantDraft {
     }
 }
 
-/// What a subject of the composer, a permission and an expiry are named by where a view asks for
-/// the grant: `member:…` , `agent:…` or `app:…` , the permission's key, and `never` , `session` or
-/// `once` .
+/// What the composer's choices are named by where a view asks for the grant: whom it is for
+/// (`member:…` , `agent:…` or `app:…` ), the permission's key, and the lifetime's
+/// [`Lifetime::key`].
 #[must_use]
 pub fn grant_subject_key(entry: &GrantSubject) -> Option<String> {
     let kind = match entry.kind {
@@ -535,16 +499,6 @@ pub fn grant_subject_key(entry: &GrantSubject) -> Option<String> {
     Some(format!("{kind}:{}", entry.id))
 }
 
-/// The expiry's key, as [`GrantComposer`] names it.
-#[must_use]
-pub fn expiry_key(expiry: Expiry) -> &'static str {
-    match expiry {
-        Expiry::Never => "never",
-        Expiry::EndOfSession | Expiry::AtUnix(_) => "session",
-        Expiry::AfterUse => "once",
-    }
-}
-
 /// The composer's permissions as (key, label), in picker order.
 #[must_use]
 pub fn grant_choices() -> Vec<(&'static str, String)> {
@@ -554,12 +508,12 @@ pub fn grant_choices() -> Vec<(&'static str, String)> {
         .collect()
 }
 
-/// The composer's expiries as (key, label), in picker order.
+/// The composer's lifetimes at `now_ms` as (key, label), in picker order.
 #[must_use]
-pub fn expiry_choices() -> Vec<(&'static str, String)> {
-    EXPIRY_CHOICES
-        .iter()
-        .map(|expiry| (expiry_key(*expiry), expiry_label(*expiry)))
+pub fn lifetime_choices(now_ms: u64) -> Vec<(&'static str, String)> {
+    offered_lifetimes(now_ms)
+        .into_iter()
+        .map(|lifetime| (lifetime.key(), lifetime_label(lifetime)))
         .collect()
 }
 
@@ -571,7 +525,7 @@ pub fn draft_for(
     ws: &Workspace,
     subject: &str,
     permission: &str,
-    expiry: &str,
+    lifetime: &str,
 ) -> Option<GrantDraft> {
     let subject_index = grant_subjects(ws)
         .iter()
@@ -579,15 +533,13 @@ pub fn draft_for(
     let choice_index = GRANT_CHOICES
         .iter()
         .position(|choice| choice.key == permission)?;
-    let expiry = EXPIRY_CHOICES
-        .iter()
-        .copied()
-        .find(|candidate| expiry_key(*candidate) == expiry)
-        .unwrap_or(Expiry::EndOfSession);
+    let lifetime = offered_lifetimes(tilo_clock::unix_now_ms())
+        .into_iter()
+        .find(|candidate| candidate.key() == lifetime)?;
     Some(GrantDraft {
         subject_index,
         choice_index,
-        expiry,
+        lifetime,
     })
 }
 
@@ -653,7 +605,7 @@ pub fn draft_capability(ws: &Workspace, person: &str, draft: &GrantDraft) -> Opt
         GrantTarget::WorkspaceFiles => Scope::FsPath(WORKSPACE_FILES_PATH.to_string()),
     };
     let (grantee, app) = subject_entry.to_parts(person)?;
-    let cap = CapOverride::grant(grantee, scope, choice.access).expiring(draft.expiry);
+    let cap = CapOverride::grant(grantee, scope, choice.access).lasting(draft.lifetime);
     Some(match app {
         Some(app) => cap.through(app),
         None => cap,
@@ -994,13 +946,18 @@ pub fn listed_permissions(
             let (allows, expiry, granted_by) = match entry {
                 Listed::Sandbox(cap) => (
                     capability_allows(cap, apps),
-                    expiry_label(cap.expiry),
-                    granted_by_label(cap, ws, local_user),
+                    lifetime_label(cap.lifetime),
+                    cap.granted_by
+                        .as_ref()
+                        .map(|who| given_by_label(who, ws, local_user)),
                 ),
                 Listed::Grant(grant) => (
                     grant_allows(grant, apps),
-                    lifetime_label(&grant.lifetime),
-                    grant_given_by_label(grant, ws, local_user),
+                    lifetime_label(grant.lifetime),
+                    match &grant.granted_by {
+                        Grantee::Member(who) => Some(given_by_label(who, ws, local_user)),
+                        Grantee::Role(_) => None,
+                    },
                 ),
             };
             ListedPermission {
@@ -1468,7 +1425,7 @@ mod permissions_tests {
                 Access::Write,
             )
             .through("firefox")
-            .expiring(Expiry::EndOfSession),
+            .lasting(Lifetime::Until(u64::MAX)),
         );
         ws
     }
@@ -1615,12 +1572,12 @@ mod permissions_tests {
                     Access::Write,
                 )
                 .through("terminal")
-                .expiring(Expiry::EndOfSession),
+                .lasting(Lifetime::Until(u64::MAX)),
             )
             .expect("owner grants");
             let row = &listed(&ws)[0];
             assert_eq!(row.allows, "Edit workspace files");
-            assert_eq!(row.expiry, "Session");
+            assert_eq!(row.expiry, "Until");
             assert_eq!(
                 row.granted_by.as_deref(),
                 Some("granted by owner-user"),
@@ -1693,6 +1650,24 @@ mod permissions_tests {
     }
 
     #[test]
+    fn the_composer_offers_the_durations_every_prompt_offers() {
+        let keys: Vec<_> = lifetime_choices(0)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(keys, ["always", "session", "once"]);
+        assert!(keys.contains(&DEFAULT_LIFETIME));
+        let ws = ws_with_grants();
+        let permission = GRANT_CHOICES[0].key;
+        let draft = draft_for(&ws, "app:firefox", permission, "always").expect("a draft");
+        assert_eq!(draft.lifetime, Lifetime::UntilRevoked);
+        assert!(
+            draft_for(&ws, "app:firefox", permission, "forever").is_none(),
+            "a lifetime the composer does not offer composes nothing"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -1725,7 +1700,7 @@ mod permissions_tests {
             let mut draft = GrantDraft {
                 subject_index: firefox,
                 choice_index: 0,
-                expiry: Expiry::Never,
+                lifetime: Lifetime::UntilRevoked,
             };
             while draft.choice().label() != "Microphone" {
                 draft.cycle_choice();
@@ -1760,7 +1735,7 @@ mod permissions_tests {
             let mut draft = GrantDraft {
                 subject_index: firefox,
                 choice_index: 0,
-                expiry: Expiry::AfterUse,
+                lifetime: Lifetime::Until(5_000),
             };
             while draft.choice().label() != "Microphone" {
                 draft.cycle_choice();
@@ -1773,11 +1748,7 @@ mod permissions_tests {
                 .iter()
                 .find(|c| &c.id == id)
                 .expect("stored capability");
-            assert_eq!(cap.expiry, Expiry::AfterUse);
-            assert!(
-                !cap.persists_across_restart(),
-                "an after-use grant must not be written down as permanent"
-            );
+            assert_eq!(cap.lifetime, Lifetime::Until(5_000));
         }
 
         {
@@ -1791,7 +1762,7 @@ mod permissions_tests {
             let mut draft = GrantDraft {
                 subject_index: firefox,
                 choice_index: 0,
-                expiry: Expiry::AfterUse,
+                lifetime: Lifetime::Until(5_000),
             };
             while draft.choice().label() != "Camera" {
                 draft.cycle_choice();
@@ -1808,9 +1779,9 @@ mod permissions_tests {
                 "the re-grant merges rather than duplicating"
             );
             assert_eq!(
-                camera[0].expiry,
-                Expiry::Never,
-                "the existing permanent grant is not demoted to once-only"
+                camera[0].lifetime,
+                Lifetime::UntilRevoked,
+                "the existing permanent grant is not demoted to a timed one"
             );
             let row = listed(&ws)
                 .into_iter()
@@ -1831,7 +1802,7 @@ mod permissions_tests {
             let draft = GrantDraft {
                 subject_index: firefox,
                 choice_index: 0,
-                expiry: Expiry::Never,
+                lifetime: Lifetime::UntilRevoked,
             };
             let before = ws.sandbox.len();
             assert!(
@@ -1851,7 +1822,7 @@ mod permissions_tests {
                 let draft = GrantDraft {
                     subject_index: firefox,
                     choice_index: i,
-                    expiry: Expiry::Never,
+                    lifetime: Lifetime::UntilRevoked,
                 };
                 let mut probe = ws.clone();
                 let cap = draft_capability(&ws, OWNER, &draft).expect("every choice resolves");
@@ -1932,7 +1903,7 @@ mod permissions_tests {
             }
 
             let mut ws = ws_with_grants();
-            let draft = draft_for(&ws, "app:firefox", "microphone", "never").expect("a draft");
+            let draft = draft_for(&ws, "app:firefox", "microphone", "always").expect("a draft");
             let mut ws2 = ws.clone();
             apply_grant_draft(&mut ws2, &OWNER.to_string(), &draft).expect("owner grants");
             ws = ws2;
@@ -1946,7 +1917,7 @@ mod permissions_tests {
         phase a_grant_set_reads_back_as_the_grants_the_workspace_holds;
         {
             let mut ws = ws_with_grants();
-            let draft = draft_for(&ws, "app:firefox", "microphone", "never").expect("a draft");
+            let draft = draft_for(&ws, "app:firefox", "microphone", "always").expect("a draft");
             let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft).expect("owner grants");
             assert_eq!(edit.sandbox_granted.len(), 1);
             let rows = listed(&ws);

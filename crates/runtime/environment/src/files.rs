@@ -206,7 +206,14 @@ pub fn ungranted(path: &Path) -> String {
 #[must_use]
 pub fn permits(grants: &[CapOverride], path: &Path, verb: Access, now: Option<u64>) -> bool {
     let resource = ResourceRef::FsPath(normalize(path).to_string_lossy().into_owned());
-    decide_app(RUNTIME_APP_ID, &resource, verb, grants, now) == CapDecision::Allow
+    // `now` in seconds; a lifetime ends in milliseconds.
+    decide_app(
+        RUNTIME_APP_ID,
+        &resource,
+        verb,
+        grants,
+        now.map(|now| now.saturating_mul(1000)),
+    ) == CapDecision::Allow
 }
 
 /// Whether `path` itself or the directory it would be written into is

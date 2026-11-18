@@ -220,7 +220,6 @@ tilo_test_env::scenario! {
                 name: "Claude Code".into(),
                 identity: "g1".into(),
                 colour: ui::presence::identity_rgb(PresenceHue::Orange),
-                is_agent: true,
             })),
             "the row wears the agent's own face, in its client's hue"
         );
@@ -288,7 +287,6 @@ tilo_test_env::scenario! {
                 name: "Cursor".into(),
                 identity: "g2".into(),
                 colour: ui::presence::identity_rgb(hue),
-                is_agent: true,
             }))
         );
     }

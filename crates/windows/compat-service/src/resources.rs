@@ -6,27 +6,32 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use launcher::egress_proxy::{EgressPolicy, EgressProxy, RELAY_PORT};
 use launcher::sandbox::EgressProxyBind;
 
+use launcher::audio_graph::{AudioGraph, AudioGraphError};
+
 use crate::{
-    AudioBinding, AudioProtocol, AudioProxyError, AudioProxyLease, LaunchLease,
-    LaunchResourceBroker, NetworkShape, ResourceError, ResourceRequest,
+    AudioBinding, AudioProtocol, LaunchLease, LaunchResourceBroker, NetworkShape, ResourceError,
+    ResourceRequest,
 };
 
 const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
 const SANDBOX_PROXY: &str = "/run/tilo/network/proxy.sock";
 
-type StartAudioProxy = fn(PathBuf, u32, bool) -> Result<AudioProxyLease, AudioProxyError>;
+type PrepareAudioGraph = fn(PathBuf, u32, bool) -> Result<AudioGraph, AudioGraphError>;
 
 /// Concrete Tilo adapter for resources that already have a secure broker.
 /// Host-filtered networking reuses the launcher's net-proxy implementation.
 /// Each capsule receives a private `PipeWire` graph, never the session audio
 /// socket. The graph has a playback tunnel on every launch and materializes a
-/// microphone source only when the canonical Tilo device grant says so.
+/// microphone source only when the canonical Tilo device grant says so. The
+/// broker prepares the graph; the launch starts it right before its sandbox,
+/// so the graph lives exactly as long as the program
+/// ([`launcher::audio_graph`]).
 pub struct SystemResourceBroker {
     next: AtomicU64,
     proxies: Mutex<BTreeMap<String, EgressProxy>>,
-    audio: Mutex<BTreeMap<String, AudioProxyLease>>,
+    audio: Mutex<BTreeMap<String, AudioGraph>>,
     uid: u32,
-    start_audio_proxy: StartAudioProxy,
+    prepare_audio_graph: PrepareAudioGraph,
 }
 
 impl SystemResourceBroker {
@@ -46,24 +51,66 @@ impl SystemResourceBroker {
             proxies: Mutex::new(BTreeMap::new()),
             audio: Mutex::new(BTreeMap::new()),
             uid,
-            start_audio_proxy: AudioProxyLease::start,
+            prepare_audio_graph: AudioGraph::prepare,
         }
     }
 
     #[cfg(test)]
-    fn for_uid_with_audio_proxy(uid: u32, start_audio_proxy: StartAudioProxy) -> Self {
+    fn for_uid_with_audio_graph(uid: u32, prepare_audio_graph: PrepareAudioGraph) -> Self {
         Self {
             next: AtomicU64::new(1),
             proxies: Mutex::new(BTreeMap::new()),
             audio: Mutex::new(BTreeMap::new()),
             uid,
-            start_audio_proxy,
+            prepare_audio_graph,
         }
     }
 
     fn lease_id(&self) -> String {
         let sequence = self.next.fetch_add(1, Ordering::Relaxed);
         format!("{}-{sequence}", std::process::id())
+    }
+
+    /// A lease and its audio graph, prepared under a name no other lease has: a program kept
+    /// open while the desktop restarted holds the lease a desktop before this one named.
+    fn prepare(&self, microphone: bool) -> Result<(String, AudioGraph), AudioGraphError> {
+        loop {
+            let id = self.lease_id();
+            match (self.prepare_audio_graph)(
+                PathBuf::from(LEASE_ROOT).join(&id),
+                self.uid,
+                microphone,
+            ) {
+                Ok(graph) => return Ok((id, graph)),
+                Err(AudioGraphError::Taken(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Remove the leases of this session's programs that ended while another desktop served
+    /// them: their graph's daemons ended with them, and nobody else gives them back.
+    fn remove_ended(&self) {
+        let Ok(held) = self.audio.lock() else {
+            return;
+        };
+        let Ok(leases) = std::fs::read_dir(LEASE_ROOT) else {
+            return;
+        };
+        for lease in leases.flatten() {
+            let ours = std::os::unix::fs::MetadataExt::uid(&match lease.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            }) == self.uid;
+            let name = lease.file_name();
+            if !ours || held.contains_key(&*name.to_string_lossy()) {
+                continue;
+            }
+            let graph = AudioGraph::at(lease.path());
+            if graph.ended() {
+                graph.remove();
+            }
+        }
     }
 }
 
@@ -75,26 +122,27 @@ impl Default for SystemResourceBroker {
 
 impl LaunchResourceBroker for SystemResourceBroker {
     fn materialize(&self, request: ResourceRequest<'_>) -> Result<LaunchLease, ResourceError> {
-        let id = self.lease_id();
+        self.remove_ended();
         let microphone = request
             .capabilities
             .devices
             .contains(&collab_types::caps::DeviceCap::Microphone);
-        let audio_proxy =
-            (self.start_audio_proxy)(PathBuf::from(LEASE_ROOT).join(&id), self.uid, microphone)
-                .map_err(|error| ResourceError::Refused(format!("audio proxy: {error}")))?;
+        let (id, graph) = self
+            .prepare(microphone)
+            .map_err(|error| ResourceError::Refused(format!("audio proxy: {error}")))?;
         let audio = vec![
             AudioBinding {
                 protocol: AudioProtocol::PipeWire,
-                host_socket: audio_proxy.pipewire_socket(),
+                host_socket: graph.pipewire_socket(),
                 input_enabled: microphone,
             },
             AudioBinding {
                 protocol: AudioProtocol::Pulse,
-                host_socket: audio_proxy.pulse_socket(),
+                host_socket: graph.pulse_socket(),
                 input_enabled: microphone,
             },
         ];
+        let audio_graph = Some(graph.root().to_path_buf());
         let network = NetworkShape::from_capabilities(request.capabilities);
         let egress_proxy = if network == NetworkShape::Filtered {
             let host_socket = PathBuf::from(LEASE_ROOT).join(&id).join("net.sock");
@@ -105,7 +153,10 @@ impl LaunchResourceBroker for SystemResourceBroker {
                 ),
             ) {
                 Ok(proxy) => proxy,
-                Err(error) => return Err(ResourceError::Refused(error.to_string())),
+                Err(error) => {
+                    graph.remove();
+                    return Err(ResourceError::Refused(error.to_string()));
+                }
             };
             self.proxies
                 .lock()
@@ -122,10 +173,11 @@ impl LaunchResourceBroker for SystemResourceBroker {
         self.audio
             .lock()
             .map_err(|_| ResourceError::Unavailable)?
-            .insert(id.clone(), audio_proxy);
+            .insert(id.clone(), graph);
         Ok(LaunchLease {
             id,
             audio,
+            audio_graph,
             egress_proxy,
         })
     }
@@ -134,8 +186,13 @@ impl LaunchResourceBroker for SystemResourceBroker {
         if let Ok(mut proxies) = self.proxies.lock() {
             proxies.remove(lease_id);
         }
-        if let Ok(mut audio) = self.audio.lock() {
-            audio.remove(lease_id);
+        if let Some(graph) = self
+            .audio
+            .lock()
+            .ok()
+            .and_then(|mut audio| audio.remove(lease_id))
+        {
+            graph.remove();
         }
     }
 }
@@ -147,19 +204,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn audio_proxy_start_failure_is_fail_closed() {
+    fn audio_graph_failure_is_fail_closed() {
         fn unavailable_proxy(
             root: PathBuf,
             _uid: u32,
             _microphone: bool,
-        ) -> Result<AudioProxyLease, AudioProxyError> {
-            Err(AudioProxyError::UnsafeLeasePath(root))
+        ) -> Result<AudioGraph, AudioGraphError> {
+            Err(AudioGraphError::UnsafePath(root))
         }
 
         // Model an unavailable private PipeWire runtime explicitly. The
         // broker must refuse the launch instead of substituting a session
         // socket, independent of which audio packages the test host has.
-        let broker = SystemResourceBroker::for_uid_with_audio_proxy(99_999, unavailable_proxy);
+        let broker = SystemResourceBroker::for_uid_with_audio_graph(99_999, unavailable_proxy);
         let caps = CapabilityPlan::empty();
         let result = broker.materialize(ResourceRequest {
             app_id: "so.tilo.windows.test",

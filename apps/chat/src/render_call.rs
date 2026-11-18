@@ -380,7 +380,7 @@ impl ChatApp {
     /// colour as a ring, and their speaking ring while the call hears them.
     pub(crate) fn paint_call_face(&self, ctx: &mut PaintCtx<'_>, rect: Rect, user: &MemberId) {
         let name = self.user_name(user);
-        ui::widget::AvatarFace::new(&name, user.id())
+        ui::widget::AvatarFace::member(&name, user)
             .presence(self.identity_colour(user))
             .presence_ring()
             .speaking(self.speaking.level(user.id(), ui::motion::frame_now()))

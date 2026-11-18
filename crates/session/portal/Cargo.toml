@@ -8,6 +8,9 @@ description = "The session's xdg-desktop-portal backend: file chooser, screensho
 
 [dependencies]
 tilo-actions = { path = "../../collab/actions" }
+# How long an answer stands: the lifetime every permission prompt offers.
+tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-service = { path = "../service" }
 # Portal notifications are the session's notifications daemon's.
 tilo-notifications-service = { path = "../notifications-service" }

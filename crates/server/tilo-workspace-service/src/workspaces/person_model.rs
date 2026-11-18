@@ -127,6 +127,16 @@ pub enum ModelRefusal {
     /// The provider was asked and gave no answer: its own failure, the
     /// deadline, or the call cancelled.
     Provider(ModelError),
+    /// The provider was asked and turned the person's key away, or the
+    /// key's account: the key is wrong, may not do what was asked, or its
+    /// account has no credit left. Only the person mends that, so the words
+    /// name the provider and say what helps.
+    KeyRefused {
+        /// The provider, as the person named it.
+        provider: String,
+        /// The provider's failure, under its own kind.
+        error: ModelError,
+    },
 }
 
 impl ModelRefusal {
@@ -142,7 +152,21 @@ impl ModelRefusal {
             Self::WorkspaceRefuses { .. } => "workspace-refuses",
             Self::DayLimitReached { .. } => "day-limit",
             Self::SettingsUnreadable => "settings-unreadable",
-            Self::Provider(_) => "provider",
+            Self::Provider(_) | Self::KeyRefused { .. } => "provider",
+        }
+    }
+
+    /// A provider's failure as the refusal: under the provider's name where
+    /// it is of the person's key or of the key's account.
+    fn of_provider(provider: &str, error: ModelError) -> Self {
+        match error.kind {
+            ErrorKind::Authentication
+            | ErrorKind::PermissionDenied
+            | ErrorKind::CreditsExhausted => Self::KeyRefused {
+                provider: provider.to_owned(),
+                error,
+            },
+            _ => Self::Provider(error),
         }
     }
 
@@ -194,6 +218,14 @@ impl ModelRefusal {
                 "model-day-limit"
             }
             Self::SettingsUnreadable => "model-settings-unreadable",
+            Self::KeyRefused { provider, error } => {
+                args.set("provider", provider.as_str());
+                match error.kind {
+                    ErrorKind::PermissionDenied => "model-key-not-allowed",
+                    ErrorKind::CreditsExhausted => "model-key-no-credit",
+                    _ => "model-key-refused",
+                }
+            }
             // A provider's failure is already a sentence safe to show: it
             // never carries a credential or the provider's own text.
             Self::Provider(error) => return error.message.clone(),
@@ -213,6 +245,8 @@ impl ModelRefusal {
             | Self::DayLimitReached { .. } => ErrorKind::PermissionDenied,
             Self::CannotTake { .. } => ErrorKind::InvalidRequest,
             Self::SettingsUnreadable => ErrorKind::Unavailable,
+            // The provider's own kind, with the words that name it.
+            Self::KeyRefused { error, .. } => error.kind,
             Self::Provider(error) => return error.clone(),
         };
         ModelError {
@@ -614,7 +648,7 @@ impl PersonModel {
         )
         .await
         .map_err(|_| ModelRefusal::Provider(ModelError::new(ErrorKind::TimedOut)))?
-        .map_err(ModelRefusal::Provider)?;
+        .map_err(|error| ModelRefusal::of_provider(resolved.profile.display_label(), error))?;
         // Counted on every day the call spends; the answer says the first.
         let mut spent_today_micros = None;
         for spender in &self.spenders {

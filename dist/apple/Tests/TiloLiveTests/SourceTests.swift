@@ -223,6 +223,20 @@ final class TiloSourceTests: XCTestCase {
             case 'tilo.events pause': case 'tilo.events resume':
               window.events.find(event => event.id === argument.event).on = target.address.action === 'resume';
               return done({events: window.events});
+            // The person's alone: one permission of an event is taken back, and the event is answered.
+            case 'tilo.events withdraw-permission': {
+              const one = window.events.find(event => event.id === argument.event);
+              if (!one) throw Object.assign(new Error('you keep no such event here'), {code: 'refused'});
+              (window.eventCalls ??= []).push('withdraw-permission ' + argument.event + ' ' + argument.rule.action);
+              one.permits = one.permits.filter(rule => rule.action !== argument.rule.action);
+              return done(one);
+            }
+            // An event is removed for good, and the events that remain are answered.
+            case 'tilo.events remove':
+              if (!window.events.some(event => event.id === argument.event)) throw Object.assign(new Error('you keep no such event here'), {code: 'refused'});
+              (window.eventCalls ??= []).push('remove ' + argument.event);
+              window.events = window.events.filter(event => event.id !== argument.event);
+              return done({events: window.events});
             default: throw Object.assign(new Error('No such action is offered'), {code: 'unknown_action'});
           }
         },
@@ -626,7 +640,7 @@ final class TiloSourceTests: XCTestCase {
         try await start()
         try await enter()
         let refused: [(String, () async throws -> Void)] = [
-            ("Tasks cannot be reached from this app yet", { try await self.source.addTask("Renew the passport") }),
+            ("You have no assistant in this workspace yet", { try await self.source.addTask("Renew the passport") }),
             ("Tilo cannot pause an assistant yet", { try await self.source.setAssistantOn(false) }),
             ("No password manager is connected to Tilo yet", { try await self.source.fetchSecret(for: "k1") }),
             ("A file cannot be fetched into this app yet", { _ = try await self.source.file(of: "f1") }),
@@ -1216,6 +1230,46 @@ final class TiloSourceTests: XCTestCase {
         // The model that answers is one of those her server listed.
         try await source.choose("anthropic/m-2", for: .request)
         try await until("nothing more stands in the way") { self.setups.last == .ready }
+    }
+
+    func testAPersonComesBackToAProviderTheyLinkedAndItsNewKeyTakesTheOldOnesPlaceOnTheirServer() async throws {
+        try await start(.assistant)
+        // A person whose server keeps one provider with its key, and whose main chat answers on a model of it.
+        try await enter(device: true, """
+            window.byKind = true; window.unlinked = true; window.agents = [kept('assistant', {name: 'Assistant'})];
+            window.added = [{id: 'p-7', name: 'OpenRouter', protocol: 'openrouter', endpoint: 'https://openrouter.example',
+              configured: true, models: [{id: 'm-1', label: 'Model one'}], defaultModel: 'm-1'}];
+            window.assignments = [{kind: 'request', provider: 'p-7', model: 'm-1'}]
+            """)
+        try await until("nothing stands in the way of an answer") { self.setups.last == .ready }
+        // The step they come back to offers the provider they linked, said to be linked, and the
+        // rest their server links by name. The one they linked is not offered a second time.
+        let offered = try await source.providers()
+        XCTAssertEqual(offered, [ProviderChoice(id: "p-7", name: "OpenRouter", isLinked: true), ProviderChoice(id: "anthropic", name: "Anthropic"),
+                                 ProviderChoice(id: "gemini", name: "Google Gemini"), ProviderChoice(id: "openai", name: "OpenAI")])
+        let said = setups.count
+        // Another made-up key, typed as into the protected field, for the provider that is linked.
+        let typed = "sk-made-up-second-key-typed-into-the-protected-field"
+        let models = try await source.link("p-7", key: Secret(typed))
+        XCTAssertEqual(models, [ModelChoice(id: "p-7/m-1", name: "Model one", provider: "OpenRouter"),
+                                ModelChoice(id: "p-7/m-2", name: "Model two", provider: "OpenRouter")])
+        // The provider keeps its place on their server: it is not added again, only its key is set.
+        let asked = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('tilo.models ') && !what.endsWith(' list')))")
+        XCTAssertEqual(asked, #"["tilo.models set-key","tilo.models refresh-models"]"#)
+        let keys = try await page("return JSON.stringify(window.keys)")
+        XCTAssertEqual(keys, "[\"\(typed)\"]")
+        // The model they chose stands, and nothing came to stand in the way of an answer.
+        let assigned = try await page("return JSON.stringify(window.assignments)")
+        XCTAssertEqual(assigned, #"[{"kind":"request","provider":"p-7","model":"m-1"}]"#)
+        XCTAssertEqual(setups.dropFirst(said).filter { $0 != .ready }, [])
+        XCTAssertEqual(setups.last, .ready)
+        // The key stands nowhere else.
+        let leaked = try await page("return String(JSON.stringify([window.messages, window.heard, window.asks]).includes(typed)) + ' ' + String(document.documentElement.outerHTML.includes(typed))",
+                                    ["typed": typed])
+        XCTAssertEqual(leaked, "false false")
+        XCTAssertFalse(String(describing: setups).contains(typed))
+        XCTAssertFalse(String(describing: changes).contains(typed))
+        XCTAssertFalse(String(describing: defaults.dictionaryRepresentation()).contains(typed))
     }
 
     func testWhatThePageAsksBeforePairingIsWhereTheAppStandsAndOnlyThePersonsAnswerPressesIt() async throws {

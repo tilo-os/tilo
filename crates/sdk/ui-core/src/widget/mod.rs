@@ -2250,7 +2250,7 @@ pub use editable_label::{EditOutcome, EditableLabel, EditableLabelProps};
 pub mod autocomplete;
 pub use autocomplete::{
     Autocomplete, AutocompleteOutcome, AutocompleteProps, CheckColumn, Suggester, Suggestion,
-    SuggestionList, SuggestionPerson, SuggestionProps,
+    SuggestionList, SuggestionProps,
 };
 pub mod mention_picker;
 pub use mention_picker::{MentionCandidate, MentionQuery};

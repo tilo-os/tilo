@@ -1243,31 +1243,20 @@ impl Reconciler {
     /// would do is the action's own proposal view when it declares one, and otherwise the words it
     /// would say, each value as its type shows it (a day as the day fact).
     fn suggestion(&mut self, node: &UiNode) -> Element {
-        let (who, hue) = match prop(node, "author") {
-            Some(Value::Actor(who)) => {
-                (who.name.clone(), ui::tokens::PresenceHue::of_actor(&who.id))
-            }
-            Some(other) => {
-                let shown = display(other);
-                let hue = ui::tokens::PresenceHue::of_identity(&shown);
-                (shown, hue)
-            }
-            None => (String::new(), ui::tokens::PresenceHue::of_identity("")),
+        let author = match prop(node, "author") {
+            Some(Value::Actor(who)) => ui::component::Person::new(who.id.clone(), who.name.clone()),
+            other => ui::component::Person::named(other.map(display).unwrap_or_default()),
         };
         let says = crate::i18n::word(
             "tilolang-suggestion-says",
-            &[("name".to_owned(), who.clone())],
+            &[("name".to_owned(), author.name.clone())],
             "{name} suggests:",
         );
         let mut sentence = Row::row()
             .gap(Rhythm::Tight)
             .wrap()
             .with_id(format!("{}~says", node.key))
-            .push(Box::new(
-                Avatar::person(who, String::new())
-                    .with_hue(hue)
-                    .size(AvatarSize::Small),
-            ))
+            .push(Box::new(Avatar::of(author).size(AvatarSize::Small)))
             .push_part(self.fixed_text(&format!("{}~by", node.key), &says, TextRole::Body));
         let choices = Row::row()
             .wrap()

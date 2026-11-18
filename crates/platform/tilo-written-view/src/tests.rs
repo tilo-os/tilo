@@ -465,3 +465,81 @@ fn a_chart_of_a_resource_the_person_may_not_read_draws_none_of_it() {
     );
     assert!(surface.words("ui.BarChart", "categories").is_empty());
 }
+
+const WRITER: &str = "so.tilo.word-processor";
+
+/// A view over the word processor, the last part of whose id is two words: a view writes it
+/// with `_`, since no name in a view holds `-`.
+const POEM: &str = "view poem() {\n    text(word_processor.document.body.text)\n}";
+const ADDS: &str = "view adds() {\n    button(\"Add a line\", on: word_processor.append_paragraph(word_processor.document, \"More\"))\n}";
+
+/// The word processor's document of the workspace with the body `lines`, in the form the
+/// view's runtime reads a rich text from: its paragraphs in their order, under `rich`.
+fn written(lines: &[&str]) -> Json {
+    let blocks: Vec<Json> = lines
+        .iter()
+        .enumerate()
+        .map(|(at, line)| {
+            json!({
+                "id": format!("b{at}"),
+                "kind": "paragraph",
+                "text": line,
+                "marks": [],
+                "attrs": {},
+                "children": [],
+            })
+        })
+        .collect();
+    json!({ "body": { "rich": blocks } })
+}
+
+#[test]
+fn a_view_reads_an_app_whose_id_holds_a_hyphen_by_the_name_a_view_can_write() {
+    let workspace = TestWorkspace::default();
+    workspace.write(WRITER, written(&["The tide comes in on quiet feet"]));
+    let (mut surface, state) = shown_reading(POEM, ada(), &["word_processor"], &workspace);
+    assert!(
+        surface.nodes("error").is_empty(),
+        "the view names the word processor: {:?}",
+        texts(&surface)
+    );
+    assert_eq!(
+        workspace.0.borrow().asked.first().map(String::as_str),
+        Some(WRITER),
+        "what the app keeps is asked of it under the app's own id"
+    );
+    assert_eq!(texts(&surface), ["The tide comes in on quiet feet"]);
+
+    // A line is written in the word processor: the view shows both, in their order.
+    workspace.write(
+        WRITER,
+        written(&[
+            "The tide comes in on quiet feet",
+            "and leaves again before the light",
+        ]),
+    );
+    surface.turn();
+    assert_eq!(
+        texts(&surface),
+        ["The tide comes in on quiet feet\nand leaves again before the light"]
+    );
+    assert!(state.refused().is_empty());
+}
+
+#[test]
+fn what_such_a_view_asks_is_sent_to_the_app_under_its_own_id() {
+    let workspace = TestWorkspace::default();
+    let (mut surface, state) = shown_reading(ADDS, bo(), &["word_processor"], &workspace);
+    let buttons = surface.nodes("ui.Button");
+    assert_eq!(buttons.len(), 1, "the view shows its control");
+    surface.press(&buttons[0].0);
+    assert!(state.suggestions().is_empty(), "Bo's own view acts");
+    let invoked = workspace.invoked();
+    assert_eq!(invoked.len(), 1);
+    let (app, resource, verb, arguments) = &invoked[0];
+    assert_eq!(
+        (app.as_str(), resource.as_str(), verb.as_str()),
+        (WRITER, "word-processor.document", "append-paragraph")
+    );
+    assert_eq!(arguments.get("text"), Some(&json!("More")));
+}

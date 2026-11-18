@@ -310,7 +310,7 @@ public enum EngineScript {
       // The chain the workspace's tracker keeps its issues in (Tasks' `tasks.issues`), as every
       // device of the workspace names it, and what is asked of it for the app.
       const issues = 'chain:derived:issues@derived:default@tab:0000000000000000';
-      const issueActions = new Set(['read']);
+      const issueActions = new Set(['read', 'create']);
       const holds = given => {
         if (typeof given !== 'string' || !pass || given.length !== pass.length) return false;
         let differs = 0;
@@ -336,6 +336,8 @@ public enum EngineScript {
         JSON.stringify({error: {code: 'unknown_action', reason: `no action addressed by (${provider}, ${action})`}});
       const noDevice = () =>
         JSON.stringify({error: {code: 'unavailable', reason: 'This page hands a native app no way to its person\'s own providers'}});
+      // The steps of putting one file into the workspace this page is in (`put` below).
+      const putSteps = new Set(['offered', 'begin', 'append', 'finish']);
 
       Object.defineProperty(globalThis, '__tiloLive', {value: Object.freeze({
         seen,
@@ -371,6 +373,56 @@ public enum EngineScript {
             return JSON.stringify({ok: {id: own?.id ?? null, name: own?.name ?? null, origin: own?.origin ?? null}});
           } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
+        // Which of the documents the app follows changed in the workspace, as the entry of this
+        // device says it (its `changed`): their names and where to ask on from,
+        // never what one of them holds. The page holds the ask, ten seconds at most.
+        async followed(given, of, after, waitMs) {
+          if (!holds(given)) return unknown('tilo.device', 'changed');
+          if (!device) return noDevice();
+          if (typeof device.changed !== 'function') return unknown('tilo.device', 'changed');
+          try {
+            const told = await device.changed({of, after: typeof after === 'string' && after ? after : null, waitMs: Number(waitMs) || 0});
+            const named = (Array.isArray(told?.changed) ? told.changed : []).slice(0, 256)
+              .filter(one => typeof one?.app === 'string' && typeof one?.document === 'string')
+              .map(one => ({app: one.app, document: one.document}));
+            return JSON.stringify({ok: {changed: named, cursor: typeof told?.cursor === 'string' ? told.cursor : ''}});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
+        // One of the person's files goes into the workspace this page is in, a piece at a
+        // time, through what the page hands a native app for it (`put`): `begin` with the
+        // file's size, `append` with a piece as base64 text at the offset the piece before it
+        // ended, `finish` for what the workspace keeps the file under. `offered` asks nothing
+        // of anyone: it says whether this page hands such a way at all. Only the app's own
+        // code reaches this, with the engine's pass. What is answered is the page's answer to
+        // the step and nothing of a piece; nothing of one is posted to the engine or kept.
+        async put(given, step, of) {
+          if (!holds(given) || !putSteps.has(step)) return unknown('tilo.content', 'put');
+          if (!device) return noDevice();
+          const put = device.put;
+          if (!put || ![put.begin, put.append, put.finish].every(one => typeof one === 'function')) return unknown('tilo.content', 'put');
+          try {
+            if (step === 'offered') return JSON.stringify({ok: true});
+            if (step === 'begin') return JSON.stringify({ok: {upload: (await put.begin(of?.size))?.upload ?? null}});
+            if (step === 'append') return JSON.stringify({ok: {written: (await put.append(of?.upload, of?.offset, of?.piece))?.written ?? null}});
+            return JSON.stringify({ok: {content: (await put.finish(of?.upload))?.content ?? null}});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
+        // A file a message carries is fetched by a link: an address on this page's own site
+        // that serves the content for a short time, which the page hands a native app for it
+        // (`link`). With nothing named it asks nothing of anyone: it says whether this page
+        // hands such a way at all. Only the app's own code reaches this, with the engine's
+        // pass. The link is the answer and nothing else here: it is posted to nobody, kept
+        // nowhere and said to no log.
+        async link(given, of) {
+          if (!holds(given)) return unknown('tilo.content', 'link');
+          if (!device) return noDevice();
+          if (typeof device.link !== 'function') return unknown('tilo.content', 'link');
+          if (of === null || of === undefined) return JSON.stringify({ok: true});
+          try {
+            const link = await device.link(String(of.content ?? ''), String(of.name ?? ''));
+            return JSON.stringify({ok: {path: String(link?.path ?? ''), expiresInSecs: Number(link?.expiresInSecs) || 0}});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
         // The person's answer to what the page asks before it pairs, handed on as a press of
         // the page's own button. Only the app's own code reaches this, with the engine's
         // pass, and the app calls it only from its person's press.
@@ -398,7 +450,8 @@ public enum EngineScript {
         },
         // The tasks of the person's assistant are issues of the workspace's tracker, which this
         // page does not hold: it shows Chat. They are asked of the workspace's server as the
-        // person on this device: the read of the tracker's issues, and nothing else of Tasks.
+        // person on this device: the read of the tracker's issues and the action that files one,
+        // and nothing else of Tasks.
         async tasks(given, action, argument) {
           if (!holds(given) || !issueActions.has(action)) return unknown('tasks.issues', action);
           if (!device) return noDevice();

@@ -54,8 +54,7 @@ pub struct AppActionConsentRequest {
     /// Where a confirmation may also be allowed from now on, by the name the
     /// person knows it by: the most specific place the invocation runs in,
     /// such as the issue an agent works on. Confirming, the person may then
-    /// answer [`AppActionConsent::Always`] for it, which grants the action
-    /// there.
+    /// allow it until revoked, which grants the action there.
     pub scope: Option<String>,
     /// The invocation as the person reviews it, field by field, where they
     /// confirm exact arguments: what is admitted is what these render.
@@ -151,36 +150,6 @@ impl ModerationConsentPreview {
     }
 }
 
-/// The person's answer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AppActionConsent {
-    /// This one call.
-    Once,
-    /// Until this session ends.
-    Session,
-    /// In this workspace until revoked.
-    Always,
-    Deny,
-}
-
-impl AppActionConsent {
-    /// Whether the app may make this call.
-    #[must_use]
-    pub const fn grants(self) -> bool {
-        !matches!(self, Self::Deny)
-    }
-
-    /// How long the answer is kept: `once`, `session` or `until revoked`.
-    #[must_use]
-    pub const fn lifetime(self) -> &'static str {
-        match self {
-            Self::Once => "once",
-            Self::Session => "session",
-            Self::Always | Self::Deny => "until revoked",
-        }
-    }
-}
-
 /// What the person answered on the sheet: their choice, and the fields of
 /// the request's [`draft`](AppActionConsentRequest::draft) they changed
 /// before allowing it.
@@ -191,26 +160,27 @@ impl AppActionConsent {
 /// carries none.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppActionAnswer {
-    pub consent: AppActionConsent,
+    /// How long the person allowed it; `None` when they declined.
+    pub lifetime: Option<tilo_action_policy::Lifetime>,
     pub edits: Vec<tilo_actions::DraftEdit>,
 }
 
 impl AppActionAnswer {
-    /// `consent`, changing nothing.
+    /// Allowed for `lifetime` (declined for `None`), changing nothing.
     #[must_use]
-    pub const fn unedited(consent: AppActionConsent) -> Self {
+    pub const fn unedited(lifetime: Option<tilo_action_policy::Lifetime>) -> Self {
         Self {
-            consent,
+            lifetime,
             edits: Vec::new(),
         }
     }
 
     /// The person declined; nothing they typed is kept.
-    pub const DENY: Self = Self::unedited(AppActionConsent::Deny);
+    pub const DENY: Self = Self::unedited(None);
 
     #[must_use]
-    pub fn allowed(&self) -> bool {
-        self.consent != AppActionConsent::Deny
+    pub const fn allowed(&self) -> bool {
+        self.lifetime.is_some()
     }
 
     /// The person's edits where they allowed it; none where they declined.
@@ -220,9 +190,9 @@ impl AppActionAnswer {
     }
 }
 
-impl From<AppActionConsent> for AppActionAnswer {
-    fn from(consent: AppActionConsent) -> Self {
-        Self::unedited(consent)
+impl From<tilo_action_policy::Lifetime> for AppActionAnswer {
+    fn from(lifetime: tilo_action_policy::Lifetime) -> Self {
+        Self::unedited(Some(lifetime))
     }
 }
 
@@ -364,9 +334,9 @@ mod tests {
 
     #[test]
     fn only_a_denial_withholds_the_call() {
-        assert!(AppActionConsent::Once.grants());
-        assert!(AppActionConsent::Session.grants());
-        assert!(AppActionConsent::Always.grants());
-        assert!(!AppActionConsent::Deny.grants());
+        for lifetime in tilo_action_policy::Lifetime::offered(0) {
+            assert!(AppActionAnswer::from(lifetime).allowed());
+        }
+        assert!(!AppActionAnswer::DENY.allowed());
     }
 }

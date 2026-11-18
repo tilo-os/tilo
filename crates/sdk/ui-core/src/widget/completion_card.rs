@@ -90,9 +90,7 @@ pub(crate) fn paint(
         y + (head + mark) / 2.0,
     );
     if let Some(person) = &candidate.person {
-        let colour = tokens.colors.presence.hue(person.hue);
-        crate::widget::AvatarFace::new(&candidate.name, person.identity.id())
-            .presence(colour)
+        crate::widget::AvatarFace::of(person)
             .paint(&mut PaintCtx::new(scene, transform, text, theme), mark_rect);
         x += mark + f64::from(tokens.spacing.s3);
     } else if let Some(icon) = candidate.icon {

@@ -721,6 +721,18 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             runtime_identity::resolve_active_identity(identity_dir.path()).is_some(),
             "the finished join selects its identity"
         );
+        // What the runtime starts the identity from is the registry this
+        // wrote, read by the code that reads it: a field it does not know
+        // keeps the member it holds from starting at all.
+        let registry = tilo_identity::registry::IdentityRegistryStore::at(identity_dir.path())
+            .load()
+            .expect("the registry this join wrote is one the runtime reads");
+        let (id, _) = registry
+            .identities
+            .iter()
+            .next()
+            .expect("the join registered the identity it selected");
+        assert_eq!(*id, hex::encode(root.verifying_key().to_bytes()));
     }
     // Phase `personal_projection_loads_without_root_signing_material`.
     {

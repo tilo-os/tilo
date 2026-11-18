@@ -935,6 +935,73 @@ fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(dst.display().to_string());
 }
 
+/// Where a sandbox given an X11 display finds the display's cookie.
+pub const X11_AUTHORITY_MOUNT: &str = "/tmp/.X11-authority";
+
+/// Give the sandbox Bubblewrap's `args` set up the X11 display `display` (`:N`), whose cookie is
+/// the file `authority`: its socket and its cookie bound read-only into the sandbox's private
+/// `/tmp`, `DISPLAY` and `XAUTHORITY` naming them, and the Landlock rules that let the program
+/// reach both.
+///
+/// The display is known only once the program's keeper picked it, after the arguments were
+/// planned; nothing else of the sandbox changes, and nothing else of the session is reachable.
+///
+/// # Errors
+/// `display` is not a local display `:N`, `authority` is not an absolute path, or `args` are not
+/// a sandbox with a private `/tmp` behind the Landlock shim.
+pub fn give_x11_display(
+    args: &mut Vec<std::ffi::OsString>,
+    display: &str,
+    authority: &Path,
+) -> Result<(), String> {
+    let number: u32 = display
+        .strip_prefix(':')
+        .and_then(|number| number.parse().ok())
+        .ok_or_else(|| format!("{display:?} is not a local X11 display"))?;
+    if !authority.is_absolute() {
+        return Err(format!(
+            "the cookie {} is not an absolute path",
+            authority.display()
+        ));
+    }
+    let socket = format!("/tmp/.X11-unix/X{number}");
+    // Where the mounts go: right after the private /tmp; and the rules: right after the shim.
+    let tmp = args
+        .windows(2)
+        .position(|pair| matches!(pair, [flag, path] if flag == "--tmpfs" && path == "/tmp"))
+        .and_then(|at| at.checked_add(2))
+        .ok_or("the sandbox has no private /tmp to bind the display's socket in")?;
+    let shim = args
+        .iter()
+        .position(|arg| arg == crate::landlock_shim::SANDBOX_EXEC_SUBCOMMAND)
+        .filter(|shim| *shim >= tmp)
+        .and_then(|at| at.checked_add(1))
+        .ok_or("the sandbox has no Landlock shim")?;
+    let rules: [std::ffi::OsString; 4] = [
+        "--ro".into(),
+        X11_AUTHORITY_MOUNT.into(),
+        "--rw".into(),
+        socket.clone().into(),
+    ];
+    args.splice(shim..shim, rules);
+    let mounts: [std::ffi::OsString; 12] = [
+        "--ro-bind".into(),
+        socket.clone().into(),
+        socket.into(),
+        "--ro-bind".into(),
+        authority.into(),
+        X11_AUTHORITY_MOUNT.into(),
+        "--setenv".into(),
+        "DISPLAY".into(),
+        format!(":{number}").into(),
+        "--setenv".into(),
+        "XAUTHORITY".into(),
+        X11_AUTHORITY_MOUNT.into(),
+    ];
+    args.splice(tmp..tmp, mounts);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2130,7 +2197,7 @@ mod tests {
     // Capability enforcement: assert on the production argv itself — a path missing from it is a path
     // the app cannot reach, whatever the UI says.
 
-    use collab_types::caps::{Access, CapOverride, Expiry, Scope};
+    use collab_types::caps::{Access, CapOverride, Scope};
     use tilo_action_policy::Grantee;
 
     /// Deterministic stand-in for the host's device nodes, so a camera assertion doesn't depend on the
@@ -2502,7 +2569,7 @@ mod tests {
                 let _env = tilo_test_env::lock();
                 let caps = vec![
                     fs_grant("so.tilo.books", "/var/workspace/books", Access::Write)
-                        .expiring(Expiry::AtUnix(500)),
+                        .lasting(tilo_action_policy::Lifetime::Until(500_000)),
                 ];
                 let expired = argv_with_caps("so.tilo.books", &caps, 1_000);
                 assert!(

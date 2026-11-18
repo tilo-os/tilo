@@ -4,7 +4,7 @@
 use std::ops::Range;
 
 use crate::icons::Icon;
-use crate::widget::autocomplete::{RowRole, Suggestion, SuggestionPerson};
+use crate::widget::autocomplete::{RowRole, Suggestion};
 
 pub const MAX_ROWS: usize = 50;
 
@@ -18,7 +18,7 @@ pub struct Candidate {
     pub aside: Option<String>,
     pub label: Option<String>,
     pub icon: Option<Icon>,
-    pub person: Option<SuggestionPerson>,
+    pub person: Option<crate::component::Person>,
     pub command: Option<Command>,
 }
 
@@ -75,7 +75,7 @@ impl Candidate {
     }
 
     #[must_use]
-    pub fn with_person(mut self, person: SuggestionPerson) -> Self {
+    pub fn with_person(mut self, person: crate::component::Person) -> Self {
         self.person = Some(person);
         self
     }

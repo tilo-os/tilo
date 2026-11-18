@@ -333,8 +333,7 @@ impl SessionOwner {
                         &mut doc,
                         &hex::encode(self.key.verifying_key().to_bytes()),
                         std::slice::from_ref(&receipt),
-                    )
-                    .map_err(|e| e.to_string())?,
+                    )?,
                 }
                 doc.commit();
                 let changes = doc

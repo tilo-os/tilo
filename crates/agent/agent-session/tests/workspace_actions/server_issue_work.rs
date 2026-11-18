@@ -777,3 +777,70 @@ async fn an_issues_turn_read_before_its_answer_is_not_begun_again() {
         .nothing_owed(&agents, until + DAY_MS, "answered once")
         .await;
 }
+
+/// A workspace nobody opened Tasks in keeps no tracker, and its server offers nothing of Tasks:
+/// from a device that shows no Tasks a person could give their agent no issue. A server that
+/// keeps an agent at work for the workspace founds the tracker at its look, as a member's first
+/// window of Tasks does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_with_an_agent_founds_the_tracker_of_a_workspace_nobody_opened_tasks_in() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (served, actions) =
+        serving_with_actions(&root, &server, state.path(), crate::common::catalogue).await;
+    let workspaces = served.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&served, &browser, &server, &workspace).await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    make_agent(&page, &workspaces, &workspace, &person, None).await;
+    // The person gives the agent an issue through the server's action service, as a device of
+    // theirs that shows no Tasks does.
+    let give = || async {
+        let catalogue = crate::common::catalogue();
+        let route = DocumentRoute {
+            app_id: TASKS.into(),
+            cluster_id: workspace.clone(),
+            document: tilo_server::workspace_bots::workspace_resource(&catalogue, TASKS),
+        };
+        let person = tilo_actions::remote::Caller::authenticated(
+            root.verifying_key().to_bytes(),
+            browser.cert.device_public_key,
+        )
+        .in_workspace(&workspace);
+        let arguments = json!({"title": "Plan the launch", "assignee": format!("agent:{SCOUT}")});
+        invoke_named(
+            &ActionService::new(actions.clone(), WorkspaceId::parse(&workspace).unwrap()),
+            &person,
+            &route,
+            &ui::resource::chain_resource_id(&tasks::part::chain()),
+            "create",
+            arguments.as_object().unwrap().clone(),
+        )
+        .await
+    };
+    // Nobody opened Tasks here: until the server looked, nothing of Tasks is offered.
+    let refused = give().await;
+    assert!(refused.is_err(), "nothing keeps a tracker yet: {refused:?}");
+
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = ServerAgents::new(workspaces.clone(), actions.clone(), Some(slow(asked)));
+    let owed = agents.turns_at(&workspace, now_ms()).await.unwrap();
+    assert!(owed.is_empty(), "no issue is given yet: {owed:?}");
+
+    // The look founded the tracker: the same ask is taken now, and the issue owes its agent a turn.
+    give()
+        .await
+        .expect("the person gives their agent an issue where nobody opened Tasks");
+    let owed = agents.turns_at(&workspace, now_ms()).await.unwrap();
+    assert_eq!(owed.len(), 1, "the issue owes its agent a turn: {owed:?}");
+    assert!(
+        matches!(
+            owed[0].ask,
+            tilo_server::workspace_agents::Ask::Issue { .. }
+        ),
+        "{:?}",
+        owed[0].ask
+    );
+}

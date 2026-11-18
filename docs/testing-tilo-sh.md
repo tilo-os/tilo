@@ -219,8 +219,13 @@ the workspace's own VM as its tenant rather than as its Browser user.
 beside the page's own (`check.sh --flow signin|visa|entry|passkey`).
 `t test tilo-sh-local-vm` runs the check with the VM host, from the images that
 host runs. The report in the work directory holds the bring-up time, the visa
-run's duration and each visitor's entry time, so a run says where its time
-went.
+run's duration and each visitor's entry time, so it says where the time went.
+
+`t test tilo-sh-answers-a-program` brings a stack up from `tilo-sh-programs`'
+build with a stub site and sends the API server one small tilolang program with
+the key of the stack's own person (`stack.sh owner --here`). The answer must be
+`ok`, which it is only where `tilolang-process` lies beside `tilo-api`: the API
+server starts a task's programs in it (`os/containers/tilo-sh/test-program.sh`).
 
 `TILO_SH_SEED=1 stack.sh check`, or `stack.sh up --seed` followed by
 `integration/person.mjs`, times a fresh visitor against a Lounge filled by

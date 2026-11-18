@@ -131,15 +131,17 @@ impl Workspaces {
     ) -> Result<(), String> {
         let root = self.person_settings_root(person);
         let id = accounts::AccountId::from(address.to_owned());
-        let mut account = accounts::Account::new(id.clone(), accounts::email::TYPE_ID);
+        let mut account = accounts::Account::new(id, accounts::email::TYPE_ID);
         // Where its servers are is not kept: the stand-in is every server.
         account.config = serde_json::json!({"email": address, "username": address});
         let mut store = accounts::AccountStore::load_in(&root);
-        store.upsert(account);
+        store.upsert(account.clone());
         store.save_in(&root).map_err(|error| format!("{error:?}"))?;
         let mut vault =
             accounts::AccountCredentials::open_in(&root).map_err(|error| format!("{error:?}"))?;
-        vault.put(&id, &accounts::Secret::password("kept-for-a-test"));
+        // Added by its person with its password: bound to the servers it
+        // names, as an added account is.
+        vault.put_for(&account, &accounts::Secret::password("kept-for-a-test"));
         vault.try_save().map_err(|error| format!("{error:?}"))?;
         if let Some((workspace, agent)) = named {
             let naming = tilo_actions::remote::person_accounts::AssistantAccess {
@@ -314,9 +316,12 @@ impl Workspaces {
     ) -> Result<Value, ActionCallError> {
         let root = self.person_settings_root(&person);
         let named = accounts_of_assistant(&root, agent);
+        // An account it is named for, whose sign-in says the servers it was
+        // typed for: an agent's call binds none.
         let may = |account: &str| {
             if named.contains(account) {
-                Ok(())
+                bound_for_an_agent(&root, account)
+                    .map_err(|reason| ActionCallError::Refused { reason })
             } else {
                 Err(ActionCallError::UnknownAction)
             }
@@ -469,6 +474,14 @@ impl Workspaces {
         // The person's request came through a workspace, or it was not
         // theirs: an agent they name is named in that one.
         let here = workspace_id.map(|id| id.to_string()).unwrap_or_default();
+        // The person asks the keeper of their accounts to sign in: a sign-in
+        // kept with no servers on it is bound to the servers its account
+        // names now.
+        if signs_in(request.target.address.action.as_str())
+            && let Err(reason) = bind_kept_first(&root)
+        {
+            return Err(ActionCallError::Refused { reason });
+        }
         match request.target.address.action.as_str() {
             person_accounts::LIST => answer(&mail_accounts(&root)),
             person_accounts::ADD_MAIL => {
@@ -656,7 +669,7 @@ fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
                 outgoing_host: field(account, "smtp_host"),
                 outgoing_port: port(account, "smtp_port", 465),
                 has_secret: vault
-                    .get(&account.id)
+                    .get_for(account)
                     .is_some_and(|secret| !secret.password.is_empty()),
             })
             .collect(),
@@ -744,7 +757,7 @@ pub(super) async fn add_mail_with(
             .await
             .map_err(|_| "the mail server check did not finish".to_string())??;
         let mut vault = credentials(root)?;
-        vault.put(&account.id, &accounts::Secret::password(adding.password));
+        vault.put_for(&account, &accounts::Secret::password(adding.password));
         vault.try_save()?;
     }
     let mut store = accounts::AccountStore::load_in(root);
@@ -894,11 +907,53 @@ fn account_with_secret(
         .filter(|account| account.type_id.as_str() == accounts::email::TYPE_ID)
         .cloned()
         .ok_or_else(|| "That account is not kept here".to_owned())?;
+    // Its sign-in was typed for the servers it named then, and is joined to
+    // it only while it names those.
     let vault = credentials(root)?;
     let secret = vault
-        .get(&account.id)
+        .get_for(&account)
         .ok_or_else(|| "That account has no sign-in yet".to_owned())?;
     Ok((account, secret))
+}
+
+/// Whether `action`, asked by a person themselves, signs in to one of their
+/// mail accounts.
+fn signs_in(action: &str) -> bool {
+    matches!(
+        action,
+        person_accounts::FETCH
+            | person_accounts::READ
+            | person_accounts::SEARCH
+            | person_accounts::SEND
+            | person_accounts::SAVE_DRAFT
+            | person_accounts::MARK
+    )
+}
+
+/// Bind each mail sign-in kept under `root` with no servers on it to the
+/// servers its account names now. Asked by the keeper of the accounts when
+/// it signs in: for the person themselves, and for this server's own
+/// watching of their inboxes. Never on a call an agent makes under its own
+/// name ([`bound_for_an_agent`]).
+pub(super) fn bind_kept_first(root: &Path) -> Result<(), String> {
+    let store = accounts::AccountStore::load_in(root);
+    credentials(root)?
+        .bind_first(store.list(&accounts::AccountTypeId::from(accounts::email::TYPE_ID)))
+}
+
+/// Whether the sign-in kept for `account` says the servers it was typed
+/// for, so that an agent's call may use it: a call an agent makes under its
+/// own name binds none.
+fn bound_for_an_agent(root: &Path, account: &str) -> Result<(), String> {
+    let vault = credentials(root)?;
+    let id = accounts::AccountId::from(account.to_owned());
+    if vault.get(&id).is_some() && vault.typed_for(&id).is_none() {
+        return Err(
+            "That account's sign-in is not bound to its server yet: it is bound when its person reads their mail themselves"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 /// Where a begun message waits between its pieces and its send: one
@@ -2331,6 +2386,68 @@ mod mail_session_tests {
             .expect("the account is kept");
         let config = accounts::email::AccountConfig::from_value(account.config.clone()).unwrap();
         assert!(config.import_pending);
+    }
+
+    /// A sign-in is typed for the servers its account names then. One kept
+    /// with no servers on it is bound when the keeper of the account asks
+    /// for it, never on a call an agent makes under its own name; and once
+    /// bound it is joined to no account that names another server.
+    #[test]
+    fn a_sign_in_is_bound_by_its_keeper_and_joined_at_no_other_server() {
+        const ADA: &str = "ada@example.test";
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let id = accounts::AccountId::from(ADA);
+        let names = |incoming: &str| {
+            let mut settings = accounts::email::AccountConfig {
+                email: ADA.into(),
+                ..Default::default()
+            };
+            // An address it does not know names imap. and smtp. of its domain.
+            settings.autofill_from_email();
+            let mut settings = settings.to_value().unwrap();
+            for value in settings.as_object_mut().unwrap().values_mut() {
+                if value.as_str() == Some("imap.example.test") {
+                    *value = incoming.into();
+                }
+            }
+            let mut account = accounts::Account::new(id.clone(), accounts::email::TYPE_ID);
+            account.config = settings;
+            let mut store = accounts::AccountStore::new();
+            store.upsert(account);
+            store.save_in(root).unwrap();
+        };
+        // Kept as before the vault remembered: with no servers on it.
+        names("imap.example.test");
+        let mut vault = credentials(root).unwrap();
+        vault.put(&id, &accounts::Secret::password("kept-for-a-test"));
+        vault.try_save().unwrap();
+
+        // An agent's call binds nothing and is refused in words.
+        let refused = bound_for_an_agent(root, ADA).unwrap_err();
+        assert!(refused.contains("not bound"), "{refused}");
+        assert_eq!(credentials(root).unwrap().typed_for(&id), None);
+
+        // The keeper asks: it is bound to the servers the account names now.
+        bind_kept_first(root).unwrap();
+        bound_for_an_agent(root, ADA).unwrap();
+        let bound = credentials(root).unwrap().typed_for(&id).unwrap();
+        assert!(
+            bound.servers.contains("imap://imap.example.test:993"),
+            "{bound:?}"
+        );
+        assert!(account_with_secret(root, ADA).is_ok());
+
+        // The account comes to name another server: the sign-in does not
+        // follow it there, whoever asks.
+        names("imap.elsewhere.example");
+        bind_kept_first(root).unwrap();
+        assert_eq!(
+            account_with_secret(root, ADA).unwrap_err(),
+            "That account has no sign-in yet"
+        );
+        names("imap.example.test");
+        assert!(account_with_secret(root, ADA).is_ok());
     }
 
     fn walk(dir: &Path) -> Vec<PathBuf> {

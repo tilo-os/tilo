@@ -619,8 +619,8 @@ impl InputCapture {
     ) -> Reply {
         answer(async {
             let requested = option::<u32>(&options, "capabilities").unwrap_or(0) & capability::ALL;
-            let persist_mode = option::<u32>(&options, "persist_mode").unwrap_or(0);
-            ensure(requested != 0 && persist_mode <= 2 && self.captures().available())?;
+            let kept = crate::screencast::kept_for(&options);
+            ensure(requested != 0 && kept.is_some() && self.captures().available())?;
             let auth = self
                 .portal
                 .authenticate(&header, handle.as_str(), &app_id, Some(&parent_window))
@@ -666,7 +666,7 @@ impl InputCapture {
             insert(&mut results, "capabilities", Value::U32(requested));
             insert(&mut results, "clipboard_enabled", Value::Bool(clipboard));
             // The access decision is what is remembered; no restore data.
-            if persist_mode != 0 {
+            if kept != Some(tilo_action_policy::Lifetime::Once) {
                 insert(&mut results, "persist_mode", Value::U32(0));
             }
             Ok(results)

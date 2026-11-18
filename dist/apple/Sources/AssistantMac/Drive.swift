@@ -3,6 +3,7 @@ import AppKit
 import AssistantCore
 import AssistantTilo
 import AssistantUI
+import CryptoKit
 import Foundation
 import Observation
 import ShellCore
@@ -24,16 +25,27 @@ import WebKit
 ///   {"do": "add-device"}   {"do": "stop-pairing"}    as the two buttons under what Tilo asks before it pairs
 ///   {"do": "make-assistant"}                         as Try again does where the assistant could not be made
 ///   {"do": "choose", "model": "…"}                    as the main chat's choice of a model
-///   {"do": "send", "text": "…"}                      as the message field sends
+///   {"do": "send", "text": "…", "files": ["…"]}       as the message field sends, with the files picked under it
 ///   {"do": "answer", "question": "…", "choice": "…"}  as a question's button answers
 ///   {"do": "keep", "request": "…", "file": "…"}       as the protected field keeps what was typed
 ///   {"do": "link", "preset": "…", "file": "…"}       as the provider step's protected field links a provider;
 ///                                                    with "model" the provider's default model is set as well
+///   {"do": "another-key", "provider": "…"}            as "Use another key for NAME" under the assistant view's Model
+///                                                    line: the provider step stands in the main chat again, and
+///                                                    "link" with that provider as its preset types the new key
+///   {"do": "link-another"}   {"do": "not-now"}        as "Link another provider" there, and as Not now under the step
+///   {"do": "reply-way"}                               as the press under the newest reply whose model gave no answer
+///                                                    for the key's sake: the same step stands in the main chat
 ///   {"do": "event", "name": "…", "when": "…", "instruction": "…"}   something that comes at a time
+///   {"do": "task", "title": "…"}                      as the plus of the Tasks panel gives the assistant a task
+///   {"do": "open", "file": "…"}                       as a press on a file's tag: the file is fetched and shown to nobody
 ///   {"do": "stop"}                                    stop the answer that is being written
 ///   {"do": "saw", "item": "…"}                        as opening a piece from its notification does
 ///   {"do": "press", "item": "…", "offer": "…"}        as a press on a button under a piece's notice
 ///   {"do": "models"}   {"do": "state"}   {"do": "quit"}
+/// Of each reply that grew it says, once its writing has ended, when it drew the first change
+/// of its words and when the last, in milliseconds, and how many it drew ("grew"): what a
+/// person at the window would have seen, counted where no window is.
 /// It prints no link, no code and no secret, and ends when its standard input ends. With
 /// --forget it removes the store, and with it the device's key, and what it kept beside it.
 @MainActor
@@ -46,6 +58,9 @@ final class AssistantDrive {
     private let began = Date()
     private var said: [String: String] = [:]
     private var pieces: [Item.ID: String] = [:]
+    /// What was drawn of each reply while it grew, and when the person last sent.
+    private var growth = ReplyGrowth()
+    private var sent: Date?
 
     private init(source: TiloSource, codeFile: String?) {
         self.source = source
@@ -208,11 +223,56 @@ final class AssistantDrive {
             pieces[item.id] = line.text
             AssistantDrive.say([known ? "changed" : "piece": line, "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
         }
+        // What was drawn of each reply while it grew, counted each time the model holds something
+        // new, as the window's views are drawn again then. Said once the answer's writing has
+        // ended, and again where a reply changed after that.
+        growth.drew(conversation, at: Date())
+        if !conversation.isAnswering {
+            for (id, seen) in growth.seen.sorted(by: { $0.value.first < $1.value.first }) {
+                var line: [String: JSON] = ["id": .string(id.value), "drew": .number(Double(seen.drew)),
+                                            "letters": .number(Double(seen.letters)),
+                                            "firstMs": .number((seen.first.timeIntervalSince1970 * 1000).rounded()),
+                                            "lastMs": .number((seen.last.timeIntervalSince1970 * 1000).rounded())]
+                if let sent, sent <= seen.first {
+                    line["firstAfterSendMs"] = .number((seen.first.timeIntervalSince(sent) * 1000).rounded())
+                    line["lastAfterSendMs"] = .number((seen.last.timeIntervalSince(sent) * 1000).rounded())
+                }
+                let text = JSON.object(line).text
+                guard said["grew-\(id.value)"] != text else { continue }
+                said["grew-\(id.value)"] = text
+                AssistantDrive.say(["grew": .object(line)])
+            }
+        }
         if let problem = model.problem { once("problem", .string(problem)) } else { said["problem"] = nil }
         once("beside", ["subAgents": .number(Double(model.subAgents.count)), "tasks": .number(Double(model.tasks.count)),
                         "automations": .number(Double(model.automations.count)), "models": .number(Double(model.models.count)),
                         "model": model.supervision.model.map(JSON.string) ?? .null,
                         "logins": .number(Double(model.supervision.logins.count))])
+        // What the assistant view's Model line offers under the models, and whether the provider
+        // step stands in the main chat again.
+        once("ways", .array(model.keyWays.map { way -> JSON in
+            switch way {
+            case .anotherKey(let provider): return ["way": "another-key", "provider": .string(provider.id.value), "says": .string(way.words)]
+            case .anotherProvider: return ["way": "link-another", "says": .string(way.words)]
+            }
+        }))
+        if let step = model.keyStep {
+            once("keyStep", ["is": "shown", "picked": .string(step.picked.value),
+                             "providers": .array(step.providers.map { ["id": .string($0.id.value), "linked": .bool($0.isLinked)] })])
+        } else {
+            once("keyStep", ["is": "away"])
+        }
+        // The Tasks panel's list: each task by its name, where it is listed and the line under it.
+        once("tasks", .array(model.tasks.map { task in
+            ["title": .string(task.title), "state": .string(String(describing: task.state)),
+             "note": task.note.map(JSON.string) ?? .null]
+        }))
+        // What the main chat offers under its newest reply, where that reply's model gave no answer.
+        if let offered = model.replyWay(in: .main) {
+            once("replyWay", ["item": .string(offered.item.value), "says": .string(offered.way.words)])
+        } else {
+            once("replyWay", .null)
+        }
         once("comes", .array(model.automations.map { coming in
             ["title": .string(coming.title), "when": .string(coming.summary), "on": .bool(coming.isOn),
              "next": coming.next.map { .number($0.timeIntervalSince1970) } ?? .null]
@@ -233,6 +293,18 @@ final class AssistantDrive {
             }
             line["text"] = .string(message.text)
             line["live"] = .number(Double(message.live.count))
+            // The files a message carries, as their tags say them: by name and size.
+            if !message.attachments.isEmpty {
+                line["files"] = .array(message.attachments.map { file in
+                    ["id": .string(file.id.value), "name": .string(file.name), "bytes": file.bytes.map { .number(Double($0)) } ?? .null]
+                })
+            }
+            // The typed cause their server says with a reply that got no answer; never its words.
+            switch message.keyFault {
+            case .key(let provider, _)?: line["fault"] = ["is": "key", "provider": .string(provider.value)]
+            case .noProvider?: line["fault"] = ["is": "no-provider"]
+            case nil: break
+            }
         case .question(let question):
             line["kind"] = "question"
             line["text"] = .string(question.text)
@@ -262,6 +334,13 @@ final class AssistantDrive {
         case .event(let card):
             line["kind"] = "event"
             line["text"] = .string(card.text)
+            // What the card says and offers, as its view draws it.
+            line["title"] = .string(card.automation.title)
+            line["state"] = .string(card.settled == .undone ? AssistantWords.eventRemoved.said : Wording().state(card.automation))
+            line["tags"] = .array(Wording().cardTags(card.automation).map(JSON.string))
+            line["choices"] = .array(card.choices.map { .string($0.id.value) })
+            line["shown"] = card.shown.map(JSON.string) ?? .null
+            line["settled"] = card.settled.map { JSON.string($0 == .undone ? "undone" : "asksEachTime") } ?? .null
         }
         return .object(line)
     }
@@ -282,10 +361,23 @@ final class AssistantDrive {
             AssistantDrive.say(["asked": "pair"])
         case "send":
             guard let typed = step["text"]?.string else { AssistantDrive.say(["error": "send takes text"]); return }
-            // As the message field does: the words stand in the draft, and Send takes them.
-            model.drafts[.main] = Draft(text: typed)
+            // As the message field does: the words stand in the draft with the files picked
+            // under it, and Send takes them.
+            let files = (step["files"]?.array ?? []).compactMap(\.string).map { Draft.File(url: URL(fileURLWithPath: $0)) }
+            model.drafts[.main] = Draft(text: typed, files: files)
+            sent = Date()
             model.send(in: .main)
             AssistantDrive.say(["asked": "send", "ms": .number((Date().timeIntervalSince1970 * 1000).rounded())])
+        case "open":
+            // As a press on a file's tag. What lies on this device then is said by its name,
+            // its length and a sum over its bytes: never the link, and nothing is shown.
+            guard let file = step["file"]?.string else { AssistantDrive.say(["error": "open takes file"]); return }
+            if let fetched = await model.file(of: .init(file)), let bytes = try? Data(contentsOf: fetched) {
+                AssistantDrive.say(["opened": ["name": .string(fetched.lastPathComponent), "bytes": .number(Double(bytes.count)),
+                                               "sha256": .string(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())]])
+            } else {
+                AssistantDrive.say(["opened": false, "why": .string(model.problem ?? "")])
+            }
         case "answer":
             guard let question = step["question"]?.string, let choice = step["choice"]?.string else {
                 AssistantDrive.say(["error": "answer takes question and choice"])
@@ -336,6 +428,17 @@ final class AssistantDrive {
             } catch {
                 AssistantDrive.say(["setUp": false, "why": "unreachable"])
             }
+        case "task":
+            // As the plus of the Tasks panel: what was typed is given to the assistant as a task.
+            guard let title = step["title"]?.string else { AssistantDrive.say(["error": "task takes title"]); return }
+            do {
+                try await source.addTask(title)
+                AssistantDrive.say(["taskAdded": true])
+            } catch SourceProblem.refused(let why) {
+                AssistantDrive.say(["taskAdded": false, "why": .string(why)])
+            } catch {
+                AssistantDrive.say(["taskAdded": false, "why": "unreachable"])
+            }
         case "add-device", "stop-pairing":
             // The person's own press under what Tilo asked: whoever drives this program is its person.
             model.answerPairing(goOn: what == "add-device")
@@ -347,6 +450,27 @@ final class AssistantDrive {
             guard let chosen = step["model"]?.string else { AssistantDrive.say(["error": "choose takes model"]); return }
             model.choose(.init(chosen))
             AssistantDrive.say(["asked": "choose"])
+        case "another-key":
+            // As the Model line's "Use another key for NAME": one of the ways the model offers there.
+            guard let provider = step["provider"]?.string else { AssistantDrive.say(["error": "another-key takes provider"]); return }
+            let offered = model.keyWays.first { way in
+                if case .anotherKey(let linked) = way { linked.id.value == provider } else { false }
+            }
+            guard let way = offered else { AssistantDrive.say(["error": "no other key is offered for this provider"]); return }
+            model.take(way)
+            AssistantDrive.say(["asked": "another-key"])
+        case "link-another":
+            guard model.keyWays.contains(.anotherProvider) else { AssistantDrive.say(["error": "no other provider is offered"]); return }
+            model.take(.anotherProvider)
+            AssistantDrive.say(["asked": "link-another"])
+        case "not-now":
+            model.putAwayKeyStep()
+            AssistantDrive.say(["asked": "not-now"])
+        case "reply-way":
+            // As the one press under the newest reply whose model gave no answer for the key's sake.
+            guard let offered = model.replyWay(in: .main) else { AssistantDrive.say(["error": "nothing is offered under the newest reply"]); return }
+            model.take(offered)
+            AssistantDrive.say(["asked": "reply-way"])
         case "stop":
             model.stopAnswering(in: .main)
             AssistantDrive.say(["asked": "stop"])

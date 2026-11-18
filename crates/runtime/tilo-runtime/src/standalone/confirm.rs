@@ -2,7 +2,7 @@
 //! them: the runtime's native prompt, answered for that one action.
 
 use tilo_workspace_service::apps::app_actions::{
-    AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
+    AppActionAnswer, AppActionConsentPrompter, AppActionConsentRequest,
 };
 use tokio::sync::oneshot;
 
@@ -58,11 +58,9 @@ impl AppActionConsentPrompter for ConfirmationPrompt {
                     });
                 // The native prompt shows the draft read-only: an answer here
                 // changes nothing in it.
-                let _ = answer.send(AppActionAnswer::unedited(if allowed {
-                    AppActionConsent::Once
-                } else {
-                    AppActionConsent::Deny
-                }));
+                let _ = answer.send(AppActionAnswer::unedited(
+                    allowed.then_some(tilo_action_policy::Lifetime::Once),
+                ));
             })
             .ok()?;
         Some(answered)

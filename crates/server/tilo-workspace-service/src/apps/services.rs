@@ -780,7 +780,7 @@ pub trait WorkspaceGrants: Send + Sync {
         false
     }
     /// Record `grant` in `request.workspace` as given by `request.person`, and
-    /// note `answer` in the workspace's history. Resolves to the recorded
+    /// note it in the workspace's history. Resolves to the recorded
     /// grant's id once the grant is in force here, so the call it was given for
     /// is admitted with it in place. Otherwise it resolves to why nothing was
     /// granted, worded for the person.
@@ -788,7 +788,6 @@ pub trait WorkspaceGrants: Send + Sync {
         &self,
         request: &crate::apps::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
-        answer: crate::apps::app_actions::AppActionConsent,
     ) -> GrantRecording;
     /// Remove the grant `grant` from `workspace`: a grant given once, now that
     /// its call was decided.

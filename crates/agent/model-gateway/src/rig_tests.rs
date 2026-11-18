@@ -155,6 +155,7 @@ async fn anthropic_streams_deltas_completed_calls_and_usage_through_rig() {
         failure: Arc::default(),
         status: Arc::default(),
         unary_body: Arc::default(),
+        signs: Arc::default(),
         profile_headers: Vec::new(),
     };
     let mut timing = PlanTiming::start();
@@ -273,6 +274,7 @@ async fn rig_wires_reach_custom_endpoints_without_changing_gateway_policy() {
             failure: Arc::default(),
             status: Arc::default(),
             unary_body: Arc::default(),
+            signs: Arc::default(),
             profile_headers: Vec::new(),
         };
         let response = execute(

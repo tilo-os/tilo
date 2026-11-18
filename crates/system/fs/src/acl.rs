@@ -54,7 +54,7 @@ struct CapBinding {
     /// restrictions, grantees and expiries stay intact.
     caps: Vec<CapOverride>,
     /// The instant capability expiry is evaluated at. `None` reads the system clock every check, so
-    /// an [`collab_types::Expiry::AtUnix`] expires mid-mount; `Some(t)` pins every check for tests.
+    /// a [`tilo_action_policy::Lifetime::Until`] expires mid-mount; `Some(t)` pins every check for tests.
     /// Distinct from `decide_capability`'s `now: None`, which skips expiry and would make every
     /// expired capability immortal.
     fixed_now: Option<u64>,
@@ -89,7 +89,8 @@ impl CapBinding {
             &ResourceRef::FsPath(path.to_string()),
             required,
             &self.caps,
-            Some(self.now()),
+            // The mount's clock is in seconds; a lifetime ends in milliseconds.
+            Some(self.now().saturating_mul(1000)),
         ) == CapDecision::Allow
     }
 
@@ -588,7 +589,7 @@ mod tests {
                 Scope::FsPath("/var/workspace/team/documents".into()),
                 CapAccess::Read,
             )
-            .with_expiry(20);
+            .lasting(tilo_action_policy::Lifetime::Until(20_000));
             let acl =
                 WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&grant), &[], Some(10));
             assert!(!acl.permits(&ALICE, "/", Access::Read));
@@ -804,7 +805,7 @@ mod tests {
                 }
             }
             {
-                use collab_types::{Access as CapAccess, Effect, Expiry, Scope};
+                use collab_types::{Access as CapAccess, Effect, Scope};
 
                 let cap = CapOverride::new(
                     alice(),
@@ -812,7 +813,7 @@ mod tests {
                     Effect::Grant,
                     CapAccess::Read,
                 )
-                .expiring(Expiry::AtUnix(500));
+                .lasting(tilo_action_policy::Lifetime::Until(500_000));
 
                 let live =
                     WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&cap), &[], Some(499));

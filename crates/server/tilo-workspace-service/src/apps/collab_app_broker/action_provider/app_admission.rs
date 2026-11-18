@@ -1,6 +1,6 @@
 //! What an app may reach the API with as the person using it, besides what it owns: the
-//! view lookup that mints a link to its own record, the reference actions that show another
-//! resource, and the shell's invitation into the workspace it shows. None of them grants
+//! view lookup that mints a link to its own resource, the history of its own resources, the reference
+//! actions that show another resource, and the shell's invitation into the workspace it shows. None of them grants
 //! anything, so the person's own part decides them, where invoking another app's action is
 //! decided for the app.
 //!
@@ -63,6 +63,22 @@ pub(super) fn connect_request(request: &tilo_actions::remote::InvokeRequest) -> 
     request.target.provider == tilo_actions::remote::SESSION_ACTIONS_PROVIDER
         && request.target.address.resource == session_actions::INVITE_RESOURCE
         && (action == session_actions::SHOW_CONNECT || action == session_actions::SHOW_PAIR_DEVICE)
+}
+
+/// Whether `request` reads the workspace's history of `app_id`'s own resources alone: what the
+/// app's own History lists, as the person using it reads it there. Any other read of the
+/// workspace's activity, another app's resources among it, is decided for the app.
+pub(super) fn own_history_request(
+    app_id: &str,
+    request: &tilo_actions::remote::InvokeRequest,
+) -> bool {
+    use tilo_actions::remote::{InvokeArgument, workspace_activity as wire};
+    let InvokeArgument::Json(arguments) = &request.argument else {
+        return false;
+    };
+    request.target == wire::target(wire::FEED)
+        && serde_json::from_value::<wire::FeedQuery>(serde_json::Value::Object(arguments.clone()))
+            .is_ok_and(|query| query.reads_only_resources_of(app_id))
 }
 
 #[cfg(test)]
@@ -342,6 +358,97 @@ mod invitation_request_tests {
             assert_eq!(
                 *shell.started.lock().unwrap(),
                 [session_actions::ISSUE_INVITATION]
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod own_history_request_tests {
+    use crate::apps::collab_app_broker::AppBrokerState;
+    use crate::apps::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use tilo_actions::remote::{
+        Caller, InvokeArgument, InvokeRequest, RemoteActionMessage, workspace_activity as wire,
+    };
+
+    fn feed(query: &wire::FeedQuery) -> RemoteActionMessage {
+        read(wire::FEED, wire::argument(query))
+    }
+
+    fn read(action: &str, argument: InvokeArgument) -> RemoteActionMessage {
+        RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: wire::target(action),
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        })
+    }
+
+    fn of(app: &str) -> wire::FeedQuery {
+        wire::FeedQuery {
+            resources: Some(wire::WindowResources {
+                app: app.into(),
+                resources: vec!["@tilo:package-primary".into()],
+                item: None,
+            }),
+            ..wire::FeedQuery::default()
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn an_app_reads_the_history_of_its_own_resources_alone;
+
+        phase an_app_reads_its_own_resources_as_its_person_and_another_apps_not;
+        // Notes reads what changed in its own resources as the person using it, without declaring
+        // `[actions] invoke`. Another app asking for Notes' resources, Notes asking for the whole
+        // workspace's history or every workspace's, is decided for the app itself, which holds no
+        // grant: refused.
+        {
+            let owner = hex::encode([7; 32]);
+            let mut workspace = Workspace::new(WorkspaceId::from_u128(97), "Notes");
+            workspace.set_owner(owner.clone());
+            let person = &Caller::local_person(owner).in_workspace(workspace.id().to_string());
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+            let (state, _bridge) = AppBrokerState::test_state(
+                Some(tree.shared().authority()),
+                crate::apps::services::ProcessServices::default(),
+            );
+            assert_eq!(
+                state
+                    .app_api(person, "so.tilo.notes", &feed(&of("so.tilo.notes")))
+                    .map(|caller| caller.acting().clone())
+                    .ok(),
+                Some(person.acting().clone())
+            );
+            assert!(
+                state.app_api(person, "so.tilo.chat", &feed(&of("so.tilo.notes"))).is_err(),
+                "Chat reads none of Notes' history"
+            );
+            assert!(
+                state
+                    .app_api(person, "so.tilo.notes", &feed(&wire::FeedQuery::default()))
+                    .is_err(),
+                "the workspace's whole history is Activity's"
+            );
+            let everywhere = wire::FeedQuery {
+                scope: wire::Scope::AllWorkspaces,
+                ..of("so.tilo.notes")
+            };
+            assert!(
+                state.app_api(person, "so.tilo.notes", &feed(&everywhere)).is_err(),
+                "an app's resources elsewhere are not the workspace it works in"
+            );
+            assert!(
+                state
+                    .app_api(person, "so.tilo.notes", &read(wire::SUMMARY, InvokeArgument::None))
+                    .is_err(),
+                "what is new in the workspace is Activity's"
             );
         }
     }

@@ -46,7 +46,7 @@ pub(crate) fn list(tree: &Layout, person: &str, device: Option<[u8; 32]>) -> FsA
     let mut capabilities = Vec::new();
     for workspace in &tree.workspaces {
         for capability in workspace.sandbox.iter().filter(|capability| {
-            capability.persists_across_restart() && matches!(capability.scope, Scope::FsPath(_))
+            capability.is_durable() && matches!(capability.scope, Scope::FsPath(_))
         }) {
             push_with_device(&mut capabilities, capability, acting.as_ref(), device);
         }
@@ -362,7 +362,7 @@ fn write_and_publish(inner: &Inner, bytes: &[u8]) -> Result<(), String> {
 )]
 mod tests {
     use super::*;
-    use collab_types::caps::{Access, CapOverride, Effect, Expiry};
+    use collab_types::caps::{Access, CapOverride, Effect};
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
     use tilo_desktop_model::Workspace;
@@ -497,7 +497,7 @@ mod tests {
                 Access::Read,
             )
             .through("so.tilo.notes")
-            .expiring(Expiry::EndOfSession);
+            .lasting(tilo_action_policy::Lifetime::Session);
             let device_only = CapOverride::grant(
                 Grantee::person(PERSON),
                 Scope::Device(collab_types::caps::DeviceCap::Camera),

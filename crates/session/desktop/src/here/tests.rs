@@ -1319,7 +1319,7 @@ tilo_test_env::scenario! {
             .expect("the agent is on the member list");
         assert!(!agent.id.is_person(), "an agent's row is software's");
         let rows = crate::people::roster_rows(&tree, "me-root");
-        assert!(rows[0].is_agent, "the agent's face is software's");
+        assert!(rows[0].is_agent(), "the agent's face is software's");
     }
 }
 

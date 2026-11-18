@@ -1388,3 +1388,7 @@ mod skills;
 /// What a look read before a turn ended, once that turn has ended.
 #[path = "hosted_turn_ends.rs"]
 mod turn_ends;
+
+/// A reply grows while its model writes it.
+#[path = "hosted_reply_grows.rs"]
+mod reply_grows;

@@ -18,10 +18,10 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tilo_action_policy::Lifetime;
 use tilo_service::{Question, Questions};
 use tilo_workspace_service::apps::app_actions::{
-    AGENT_SESSION_ASK, AppActionAnswer, AppActionConsent, AppActionConsentPrompter,
-    AppActionConsentRequest,
+    AGENT_SESSION_ASK, AppActionAnswer, AppActionConsentPrompter, AppActionConsentRequest,
 };
 
 use crate::agent_sessions::AgentSessions;
@@ -31,10 +31,6 @@ pub(crate) const KIND: &str = "session.step-question";
 
 /// What a question whether an app may take another app's action is named by.
 const APP_ACTION: &str = "app-action:";
-
-/// The sheet's choices, as the answer names them.
-pub(crate) const ALLOW_ONCE: usize = 0;
-pub(crate) const ALLOW_AGENT: usize = 1;
 
 /// An agent session's or an app's question, as the sheet shows it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -96,7 +92,7 @@ impl Sheet {
             "MCP server: the person's setting lets agents from their other devices act without \
              asking here, so it allowed this step"
         );
-        Some(AppActionAnswer::unedited(AppActionConsent::Once))
+        Some(AppActionAnswer::unedited(Some(Lifetime::Once)))
     }
 }
 
@@ -131,13 +127,11 @@ impl AppActionConsentPrompter for Sheet {
                 }
             };
             // Deny, Escape, or a sheet closed without an answer: nothing is allowed.
-            let consent = match chosen.and_then(|chosen| chosen.choice) {
-                Some(ALLOW_ONCE) => AppActionConsent::Once,
-                Some(ALLOW_AGENT) => AppActionConsent::Always,
-                _ => AppActionConsent::Deny,
-            };
+            let allowed = chosen
+                .and_then(|chosen| chosen.choice)
+                .and_then(|choice| Lifetime::chosen(choice, tilo_clock::unix_now_ms()));
             if let Some(answer) = answer.take() {
-                let _ = answer.send(AppActionAnswer::unedited(consent));
+                let _ = answer.send(AppActionAnswer::unedited(allowed));
             }
         });
         Some(answered)
@@ -247,21 +241,22 @@ mod tests {
     /// The person's choice on the sheet is the answer; Deny (the sheet declined) refuses it.
     #[tokio::test]
     async fn the_sheet_answers_as_the_person_chose() {
-        let once = answered(Some(ALLOW_ONCE), Some("Claude Code #1")).await;
+        let once = answered(Some(Lifetime::Once.choice()), Some("Claude Code #1")).await;
         assert_eq!(
-            once.map(|answer| answer.consent),
-            Some(AppActionConsent::Once)
+            once.map(|answer| answer.lifetime),
+            Some(Some(Lifetime::Once))
         );
-        let always = answered(Some(ALLOW_AGENT), Some("Claude Code #1")).await;
+        let always = answered(
+            Some(Lifetime::UntilRevoked.choice()),
+            Some("Claude Code #1"),
+        )
+        .await;
         assert_eq!(
-            always.map(|answer| answer.consent),
-            Some(AppActionConsent::Always)
+            always.map(|answer| answer.lifetime),
+            Some(Some(Lifetime::UntilRevoked))
         );
         let denied = answered(None, None).await;
-        assert_eq!(
-            denied.map(|answer| answer.consent),
-            Some(AppActionConsent::Deny)
-        );
+        assert_eq!(denied.map(|answer| answer.lifetime), Some(None));
     }
 
     /// Two sessions of `agent`: one from another of the person's devices, one of a program of
@@ -306,8 +301,8 @@ mod tests {
         let answer = on.ask(asked_by(&remote)).expect("answered");
         assert!(questions.pending().is_empty(), "no sheet goes up");
         assert_eq!(
-            answer.await.ok().map(|answer| answer.consent),
-            Some(AppActionConsent::Once),
+            answer.await.ok().map(|answer| answer.lifetime),
+            Some(Some(Lifetime::Once)),
             "allowed once, in the person's place"
         );
 
@@ -389,21 +384,20 @@ mod tests {
             assert_eq!(shown.agent, "so.tilo.lang.today");
             assert_eq!(shown.target.as_deref(), Some("so.tilo.lang.tasks"));
             assert_eq!(shown.may_allow_agent, always, "{handle}");
-            let choice = if always { ALLOW_AGENT } else { ALLOW_ONCE };
+            let expected = if always {
+                Lifetime::UntilRevoked
+            } else {
+                Lifetime::Once
+            };
             assert!(questions.answer(
                 &pending[0].handle,
                 tilo_service::Answer {
-                    choice: Some(choice),
+                    choice: Some(expected.choice()),
                     ..tilo_service::Answer::default()
                 },
             ));
-            let consent = answer.await.expect("answered").consent;
-            let expected = if always {
-                AppActionConsent::Always
-            } else {
-                AppActionConsent::Once
-            };
-            assert_eq!(consent, expected, "{handle}");
+            let allowed = answer.await.expect("answered").lifetime;
+            assert_eq!(allowed, Some(expected), "{handle}");
         }
     }
 }

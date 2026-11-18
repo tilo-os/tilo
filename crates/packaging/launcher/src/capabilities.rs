@@ -519,7 +519,14 @@ fn allows(
     caps: &[CapOverride],
     now: Option<u64>,
 ) -> bool {
-    decide_app(app, resource, verb, caps, now) == CapDecision::Allow
+    // The launcher's clock is in seconds; a lifetime ends in milliseconds.
+    decide_app(
+        app,
+        resource,
+        verb,
+        caps,
+        now.map(|now| now.saturating_mul(1000)),
+    ) == CapDecision::Allow
 }
 
 /// A path we are willing to bind: absolute, and not the root itself (binding `/` over the sandbox root
@@ -641,7 +648,6 @@ pub fn load_capability_file(path: &Path) -> LaunchGrants {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::caps::Expiry;
     use tilo_action_policy::Grantee;
 
     /// Deterministic stand-in for the host's device nodes, so an argv assertion doesn't depend on
@@ -755,7 +761,7 @@ mod tests {
             {
                 let caps = vec![
                     fs_grant("so.tilo.books", "/var/workspace/books", Access::Write)
-                        .expiring(Expiry::AtUnix(500)),
+                        .lasting(tilo_action_policy::Lifetime::Until(500_000)),
                 ];
                 let plan =
                     CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);

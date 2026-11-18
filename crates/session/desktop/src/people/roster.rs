@@ -134,7 +134,6 @@ fn row_of(
     labels: &ui::presence::MemberLabels,
 ) -> RosterRow {
     let is_agent = !member.id.is_person();
-    let is_bot = matches!(member.id, MemberId::Bot(_));
     let (red, green, blue) = identity_rgb(member.colour);
     let label = if is_agent {
         member.name.clone()
@@ -146,8 +145,7 @@ fn row_of(
         initial: roster_initial(&label),
         label,
         color: Color::from_rgb8(red, green, blue),
-        is_agent,
-        is_bot,
+        member: member.id.clone(),
         role: member.role.map(crate::workspace_settings::role_label),
         // A person's row says which record they are looking at. A piece of software's does not:
         // the window it works in is named under its row, beside what it is doing there.
@@ -231,7 +229,7 @@ fn tab_title_in(workspace: &Workspace, tab_id: u64) -> Option<String> {
 /// what they are doing.
 pub(super) fn spoken_details(row: &RosterRow) -> String {
     let mut details = Vec::new();
-    if row.is_agent {
+    if row.is_agent() {
         details.push(t("a11y-shell-people-agent"));
     }
     if let Some(activity) = &row.activity {

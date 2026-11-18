@@ -148,6 +148,10 @@ struct Probe {
     dir: PathBuf,
     tell_display: bool,
     planned: Arc<Mutex<Option<PathBuf>>>,
+    /// Where each launch's private audio graph is prepared, when the program has sound: the
+    /// sandbox then starts as the compatibility service starts one with sound, after its graph
+    /// ([`audio_step`]).
+    sound: Option<PathBuf>,
 }
 
 /// What the probe finds at the descriptor it is handed.
@@ -166,13 +170,20 @@ impl SandboxExecutor for Probe {
         if self.tell_display {
             args.push(format!("WAYLAND_DISPLAY={}", display.display()));
         }
+        let mut step = "windows_compat::probe_program";
+        if let Some(sound) = &self.sound {
+            let graph = sound.join(fs::read_dir(sound).map_or(0, Iterator::count).to_string());
+            fs::create_dir_all(graph.join("audio/pulse"))?;
+            args.push(format!("{AUDIO_GRAPH}={}", graph.display()));
+            step = "windows_compat::audio_step";
+        }
         args.extend([
             std::env::current_exe()
                 .expect("this test binary")
                 .to_string_lossy()
                 .into_owned(),
             "--exact".to_owned(),
-            "windows_compat::probe_program".to_owned(),
+            step.to_owned(),
             "--nocapture".to_owned(),
         ]);
         let memfd = rustix::fs::memfd_create("probe", rustix::fs::MemfdFlags::CLOEXEC)
@@ -190,6 +201,80 @@ impl SandboxExecutor for Probe {
 
 /// What makes this test binary the stand-in for a Windows program: the directory it reports in.
 const PROBE_DIR: &str = "TILO_TEST_WINDOWS_PROBE";
+/// The directory of the private audio graph a program with sound starts after ([`audio_step`]).
+const AUDIO_GRAPH: &str = "TILO_TEST_WINDOWS_AUDIO_GRAPH";
+
+/// Not a test: the launcher's `windows-audio` as a sandbox with sound starts behind it, through
+/// the same call, with [`audio_daemon`] for both daemons: it starts the graph, then becomes the
+/// program.
+#[test]
+fn audio_step() {
+    let Ok(graph) = std::env::var(AUDIO_GRAPH) else {
+        return;
+    };
+    let exe = std::env::current_exe().expect("this test binary");
+    let daemon = PathBuf::from(&graph).join("daemon");
+    fs::write(
+        &daemon,
+        format!(
+            "#!/bin/sh\nexec '{}' --exact windows_compat::audio_daemon --nocapture\n",
+            exe.display()
+        ),
+    )
+    .expect("the stand-in daemon");
+    fs::set_permissions(
+        &daemon,
+        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .expect("the stand-in daemon is executable");
+    let daemons = launcher::audio_graph::Daemons {
+        pipewire: daemon.clone(),
+        pulse: daemon,
+    };
+    let program = [
+        exe.into_os_string(),
+        "--exact".into(),
+        "windows_compat::probe_program".into(),
+        "--nocapture".into(),
+    ];
+    // The keeper started this process to die with it, but this test is on a thread of the test
+    // harness's, which a new thread never inherits that from: the launcher's own step is on its
+    // main thread, so the program it becomes keeps it.
+    // SAFETY: prctl with integer arguments only.
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) },
+        0,
+        "the program dies with its keeper"
+    );
+    let Err(error) = launcher::audio_graph::exec_with(graph.into(), &daemons, &program);
+    panic!("the program did not start: {error}");
+}
+
+/// Not a test: `PipeWire` or its Pulse server, as a graph starts them: it listens where the real
+/// one would and adds its pid to the graph's `audio/daemons`, until it is ended.
+#[test]
+fn audio_daemon() {
+    let Some(runtime) = std::env::var_os("PIPEWIRE_RUNTIME_DIR").map(PathBuf::from) else {
+        return;
+    };
+    let socket = if std::env::var_os("PIPEWIRE_DAEMON").is_some() {
+        runtime.join("pipewire-0")
+    } else {
+        PathBuf::from(std::env::var_os("PULSE_RUNTIME_PATH").expect("the Pulse directory"))
+            .join("native")
+    };
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the daemon's socket");
+    let mut daemons = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(runtime.join("daemons"))
+        .expect("the daemons");
+    std::io::Write::write_all(&mut daemons, format!("{}\n", std::process::id()).as_bytes())
+        .expect("the daemon written down");
+    for client in listener.incoming() {
+        drop(client);
+    }
+}
 
 /// Not a test: a Windows program, as the stand-in for Bubblewrap starts it. It writes what it
 /// finds at the descriptor Bubblewrap reads its filter from to `handed`, its pid to `started`, and
@@ -217,6 +302,9 @@ fn probe_program() {
         .expect("the starts");
     std::io::Write::write_all(&mut started, format!("{}\n", std::process::id()).as_bytes())
         .expect("the start recorded");
+    if std::env::var_os("DISPLAY").is_some() {
+        x11_probe(&dir);
+    }
     let socket = std::env::var("WAYLAND_DISPLAY").expect("a display");
     let mut window = crate::common::window::Client::on(Path::new(&socket), PROGRAM_WINDOW, "Probe");
     loop {
@@ -229,11 +317,85 @@ fn probe_program() {
     }
 }
 
+/// The probe as a program that shows through X11, as Proton's Wine does: it writes the display
+/// its keeper served it to `display`, maps a window of [`PROGRAM_WINDOW`]'s class on it, and holds
+/// that one connection until a code appears in `exit`, then exits with it. A connection lost (the
+/// X server went away with a desktop) ends it with 99.
+#[expect(
+    clippy::exit,
+    reason = "a Windows program ends with its own status, which the test reads"
+)]
+fn x11_probe(dir: &Path) -> ! {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{
+        AtomEnum, ConnectionExt as _, CreateWindowAux, PropMode, WindowClass,
+    };
+    use x11rb::wrapper::ConnectionExt as _;
+
+    let display = std::env::var("DISPLAY").expect("an X11 display");
+    fs::write(dir.join("display"), &display).expect("the display written");
+    let (x11, screen) = x11rb::rust_connection::RustConnection::connect(None)
+        .expect("the program reaches its X11 display with the cookie it was handed");
+    let root = x11.setup().roots[screen].root;
+    let window = x11.generate_id().expect("an id");
+    x11.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        window,
+        root,
+        0,
+        0,
+        200,
+        150,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        x11rb::COPY_FROM_PARENT,
+        &CreateWindowAux::new().background_pixel(0x0000_00ff),
+    )
+    .expect("a window");
+    x11.change_property8(
+        PropMode::REPLACE,
+        window,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        format!("probe\0{PROGRAM_WINDOW}\0").as_bytes(),
+    )
+    .expect("its class");
+    x11.map_window(window).expect("mapped");
+    x11.flush().expect("sent");
+    loop {
+        if x11
+            .get_input_focus()
+            .ok()
+            .and_then(|asked| asked.reply().ok())
+            .is_none()
+        {
+            std::process::exit(99);
+        }
+        if let Ok(code) = fs::read_to_string(dir.join("exit")) {
+            let _ = fs::remove_file(dir.join("exit"));
+            std::process::exit(code.trim().parse().expect("an exit code"));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// The catalogue routing `probe.exe` to Wine, and a capsule holding it, set up under the login's
 /// data directory; the manager's entry for it.
 fn set_up_probe(data: &Path) -> (Catalogue, String) {
+    set_up_probe_on(
+        data,
+        r#"{"layer": "wine", "runner": {"family": "wine", "version": "system"}}"#,
+    )
+}
+
+/// The catalogue routing `probe.exe` to the runtime `runtime` names (its layer and runner, and
+/// any Proton recipe), and a capsule holding it; the manager's entry for it.
+fn set_up_probe_on(data: &Path, runtime: &str) -> (Catalogue, String) {
+    let mut recipe: Value = serde_json::from_str(runtime).expect("a runtime");
+    recipe["settings"] = json!({});
+    recipe["security_profile"] = json!("windows-app");
     let catalogue = Catalogue::from_json(
-        r#"{
+        &json!({
           "schema_version": 1,
           "records": [{
             "id": "probe",
@@ -241,14 +403,10 @@ fn set_up_probe(data: &Path) -> (Catalogue, String) {
             "provenance": "built_in",
             "signed": true,
             "matches": [{"executable": "probe.exe"}],
-            "recipe": {
-              "layer": "wine",
-              "runner": {"family": "wine", "version": "system"},
-              "settings": {},
-              "security_profile": "windows-app"
-            }
+            "recipe": recipe
           }]
-        }"#,
+        })
+        .to_string(),
     )
     .expect("a catalogue");
     let query = ApplicationQuery::executable("probe.exe");
@@ -308,6 +466,7 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
                     dir,
                     tell_display: true,
                     planned,
+                    sound: None,
                 },
                 LazyVmDelegate::new(|| Err("no appliance is set up here".to_owned())),
             )
@@ -474,6 +633,8 @@ struct KeptRig {
     probe: PathBuf,
     keeper: PathBuf,
     root: PathBuf,
+    /// Where the programs' private audio graphs are, when they have sound.
+    sound: Option<PathBuf>,
 }
 
 /// One desktop, until it ends.
@@ -525,8 +686,13 @@ impl KeptDesktop {
 
 impl KeptRig {
     fn new() -> Self {
+        Self::on(r#"{"layer": "wine", "runner": {"family": "wine", "version": "system"}}"#)
+    }
+
+    /// A rig whose program is routed to the runtime `runtime` names ([`set_up_probe_on`]).
+    fn on(runtime: &str) -> Self {
         let mut home = tilo_test_env::TestHome::new().expect("a home");
-        let (catalogue, entry) = set_up_probe(home.data());
+        let (catalogue, entry) = set_up_probe_on(home.data(), runtime);
         let state = crate::common::device_in(&mut home);
         let probe = home.home().join("probe");
         fs::create_dir_all(&probe).unwrap();
@@ -545,13 +711,48 @@ impl KeptRig {
             probe,
             keeper,
             root,
+            sound: None,
         }
+    }
+
+    /// A rig whose programs have sound: each starts after a private audio graph of its own.
+    fn with_sound() -> Self {
+        let mut rig = Self::new();
+        let sound = rig.home.runtime().join("sound");
+        fs::create_dir_all(&sound).unwrap();
+        rig.sound = Some(sound);
+        rig
+    }
+
+    /// The daemons of the newest program's audio graph, once both are there.
+    fn daemons(&self, desktop: &mut KeptDesktop) -> [u32; 2] {
+        let sound = self.sound.as_ref().expect("a rig with sound");
+        let newest = fs::read_dir(sound)
+            .map_or(0, Iterator::count)
+            .saturating_sub(1);
+        let daemons = sound.join(newest.to_string()).join("audio/daemons");
+        crate::common::wait_for(&mut desktop.session, "the audio daemons", |_| {
+            let pids: Vec<u32> = fs::read_to_string(&daemons)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| line.parse().ok())
+                .collect();
+            <[u32; 2]>::try_from(pids).ok()
+        })
+    }
+
+    /// Wait until each of `daemons` ended.
+    fn ended(desktop: &mut KeptDesktop, daemons: [u32; 2], why: &str) {
+        crate::common::wait_for(&mut desktop.session, why, |_| {
+            daemons.iter().all(|pid| !alive(*pid)).then_some(())
+        });
     }
 
     /// A desktop, taking up what the keepers hold `following` an in-place restart.
     fn start(&self, following: bool) -> KeptDesktop {
         let catalogue = self.catalogue.clone();
         let dir = self.probe.clone();
+        let sound = self.sound.clone();
         let assembly = Assembly::with(move |mut side| {
             // The manager is this test binary, not the stand-in launcher the programs start
             // through.
@@ -565,6 +766,7 @@ impl KeptRig {
                     dir,
                     tell_display: false,
                     planned: Arc::default(),
+                    sound,
                 },
                 LazyVmDelegate::new(|| Err("no appliance is set up here".to_owned())),
             )
@@ -737,4 +939,138 @@ fn a_windows_program_stays_open_through_an_in_place_restart() {
         tilo_app_launch::kept::testing::described(&rig.root).is_empty(),
         "no keeper is left"
     );
+}
+
+/// The parent of process `pid`.
+fn parent(pid: u32) -> Option<u32> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+/// A program's private audio graph lives exactly as long as the program: its daemons are the
+/// sandbox's own children (so in its launch's group), stay through an in-place restart, and end
+/// when the program is quit (one a later desktop took back), ends, or the person logs out.
+#[test]
+fn a_windows_programs_sound_lives_as_long_as_the_program() {
+    let rig = KeptRig::with_sound();
+    let mut first = rig.start(false);
+    let answers = first.manage(&rig, "first", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    first.shown();
+    let [pid] = rig.starts()[..] else {
+        panic!("one start: {:?}", rig.starts());
+    };
+    let daemons = rig.daemons(&mut first);
+    for daemon in daemons {
+        assert_eq!(
+            parent(daemon),
+            Some(pid),
+            "the audio daemons are the program's sandbox's children"
+        );
+    }
+    assert_eq!(
+        fs::read(rig.probe.join("handed")).unwrap(),
+        HANDED_DOWN,
+        "the sandbox still gets what it is handed"
+    );
+
+    first.end(tilo_app_launch::Teardown::InPlaceRestart);
+    assert!(
+        daemons.iter().all(|daemon| alive(*daemon)),
+        "the sound outlives the desktop that started the program"
+    );
+    let mut second = rig.start(true);
+    second.shown();
+    assert!(daemons.iter().all(|daemon| alive(*daemon)));
+    let answers = second.manage(&rig, "second", &["stop"]);
+    assert_eq!(answers[0]["result"], "stopped", "{answers:?}");
+    KeptRig::ended(
+        &mut second,
+        daemons,
+        "quitting a program taken back ends its sound",
+    );
+
+    let answers = second.manage(&rig, "third", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    second.shown();
+    let daemons = rig.daemons(&mut second);
+    rig.exit(0);
+    KeptRig::ended(
+        &mut second,
+        daemons,
+        "a program that ends takes its sound along",
+    );
+
+    let answers = second.manage(&rig, "fourth", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    second.shown();
+    let daemons = rig.daemons(&mut second);
+    let pid = *rig.starts().last().unwrap();
+    second.end(tilo_app_launch::Teardown::Logout);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while daemons.iter().any(|daemon| alive(*daemon)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a logout leaves the sound playing (the program alive: {})",
+            alive(pid)
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Whether the X server a keeper serves an X11 display with is installed here.
+fn x_servers() -> Result<(), String> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for program in ["xwayland-satellite", "Xwayland"] {
+        if !std::env::split_paths(&path).any(|dir| dir.join(program).is_file()) {
+            return Err(format!("{program} is not on PATH"));
+        }
+    }
+    Ok(())
+}
+
+/// A Proton program shows through X11 (the pinned Proton has no Wayland driver): its launch asks
+/// its keeper for an X11 display, the program's window on it reaches the desktop, and program, X
+/// server and connection stay through an in-place restart.
+#[test]
+fn a_proton_program_shows_through_its_keepers_x11_display_and_stays_open() {
+    tilo_test_env::require_capability!(XServer, x_servers(), "the keeper's X server");
+    let rig = KeptRig::on(
+        r#"{"layer": "proton", "runner": {"family": "umu-proton", "version": "UMU-Proton-10.0-4"},
+            "proton_recipe": "umu-probe"}"#,
+    );
+    let mut first = rig.start(false);
+    let answers = first.manage(&rig, "first", &["launch"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
+    assert!(
+        tilo_app_launch::kept::testing::launcher_handed(&rig.home.home().join("tilo-launcher"))
+            .contains(&"--x11".to_owned()),
+        "the launch asks its keeper for an X11 display"
+    );
+    first.shown();
+    let [pid] = rig.starts()[..] else {
+        panic!("one start: {:?}", rig.starts());
+    };
+    assert!(
+        fs::read_to_string(rig.probe.join("display")).is_ok_and(|display| display.starts_with(':')),
+        "the program was served an X11 display"
+    );
+
+    first.end(tilo_app_launch::Teardown::InPlaceRestart);
+    let mut second = rig.start(true);
+    second.shown();
+    assert_eq!(rig.starts(), [pid], "the same program, not a new one");
+    assert!(alive(pid), "on the same X11 connection");
+    let answers = second.manage(&rig, "second", &["list", "stop", "ended"]);
+    assert_eq!(
+        answers[0]["applications"][0]["running"], true,
+        "{answers:?}"
+    );
+    assert_eq!(answers[2]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
+    second.end(tilo_app_launch::Teardown::Logout);
 }

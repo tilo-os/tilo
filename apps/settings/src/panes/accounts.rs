@@ -2869,12 +2869,18 @@ impl AccountsPane {
         Ok(stored)
     }
 
+    /// The credential a save of `account` uses: the one typed, or the kept
+    /// one where none was. A kept credential was typed for the servers the
+    /// account named then (`kept` is the account as it stands before this
+    /// save), and is used for no account that names another: its person
+    /// types the one for that server.
     fn prepare_secret(
-        vault: &accounts::SecretVault,
-        id: &accounts::AccountId,
+        vault: &mut accounts::SecretVault,
+        kept: Option<&accounts::Account>,
+        account: &accounts::Account,
         password: &str,
     ) -> Result<accounts::Secret, String> {
-        let mut secret = vault.get(id).unwrap_or_default();
+        let mut secret = vault.get(&account.id).unwrap_or_default();
         if password.trim().is_empty() {
             // An unreadable vault is not one without this account's credential.
             if let Some(error) = vault.recovery_error() {
@@ -2882,6 +2888,15 @@ impl AccountsPane {
             }
             if secret.is_empty() {
                 return Err("this account has no saved credential; enter one".into());
+            }
+            if let Some(kept) = kept {
+                vault.bind_first(kept);
+            }
+            if vault.typed_elsewhere(account) {
+                return Err(
+                    "this account's saved credential was entered for another server; enter the one for this server"
+                        .into(),
+                );
             }
         } else {
             // An edit may add/replace a password on an OAuth-capable account;
@@ -2896,10 +2911,13 @@ impl AccountsPane {
             Ok(stored) => stored,
             Err(error) => return settle(self, Err(error)),
         };
-        let id = stored.id.clone();
+        let kept = self.account_root.store().get(&stored.id).cloned();
+        let account = stored.clone();
         let password = draft.password.clone();
         Step::vault(
-            move |vault| Self::prepare_secret(&vault.open(), &id, &password),
+            move |vault| {
+                Self::prepare_secret(&mut vault.open(), kept.as_ref(), &account, &password)
+            },
             move |pane, secret| {
                 let secret = match secret {
                     Ok(secret) => secret,
@@ -2986,11 +3004,13 @@ impl AccountsPane {
         let (stored, secrets): (Vec<_>, Vec<_>) = accounts
             .into_iter()
             .map(|(account, secret)| {
-                let id = account.id.clone();
-                (account, secret.map(|secret| (id, secret)))
+                let entered = secret.map(|secret| (account.clone(), secret));
+                (account, entered)
             })
             .unzip();
-        let secrets: Vec<(accounts::AccountId, accounts::Secret)> =
+        // Each credential with the account it was entered for: the vault
+        // keeps the servers that account names beside it.
+        let secrets: Vec<(accounts::Account, accounts::Secret)> =
             secrets.into_iter().flatten().collect();
         // Persist credential storage first. If metadata then fails, the only
         // residue is an unreachable encrypted vault entry, never an account
@@ -3003,10 +3023,10 @@ impl AccountsPane {
                 let mut vault = vault.open();
                 let previous: Vec<_> = secrets
                     .iter()
-                    .map(|(id, secret)| {
-                        let previous = vault.get(id);
-                        vault.put(id, secret);
-                        (id.clone(), previous)
+                    .map(|(account, secret)| {
+                        let previous = vault.get(&account.id);
+                        vault.put_for(account, secret);
+                        (account.id.clone(), previous)
                     })
                     .collect();
                 vault.try_save().map(|()| previous)
@@ -3355,12 +3375,15 @@ impl AccountsPane {
             let id = account.id.clone();
             let typed = draft.password.clone();
             let original_account = self.account_root.store().get(&id).cloned();
+            let kept = original_account.clone();
+            let asked = account.clone();
             self.run_in_queue(move |_| {
                 Step::vault(
                     move |vault| {
-                        let vault = vault.open();
+                        let mut vault = vault.open();
                         let original = vault.get(&id);
-                        Self::prepare_secret(&vault, &id, &typed).map(|secret| (secret, original))
+                        Self::prepare_secret(&mut vault, kept.as_ref(), &asked, &typed)
+                            .map(|secret| (secret, original))
                     },
                     move |pane, secret| {
                         if round == pane.form_round {

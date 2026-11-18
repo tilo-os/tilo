@@ -1278,7 +1278,8 @@ struct ProviderFailure {
     outcome_unknown: bool,
     /// The provider provably did no work for this request: no connection to
     /// it could be made, or it refused the request as rate-limited (HTTP
-    /// 429, not for exhausted quota) or overloaded (HTTP 529). The one
+    /// 429, not for exhausted quota), overloaded (HTTP 529) or unavailable
+    /// for now (HTTP 503, not when it says it is switched off). The one
     /// ground on which a Plan is sent again.
     unprocessed: bool,
     /// The provider's HTTP status, when one was received.
@@ -2155,6 +2156,34 @@ struct StreamAssembly {
     reasoning_bytes: u64,
 }
 
+/// When a provider first showed that a request had reached it. A call's
+/// `first_byte` is the first event its decoder understood, and a provider
+/// that holds its answer back sends that last: these are the signs that come
+/// before it, so a call that waited on a silent provider and one that waited
+/// on a working one read differently. Moments only; nothing a provider sent
+/// is kept.
+#[derive(Default)]
+struct Signs {
+    /// When the response's headers came. A request the gateway sent again
+    /// names the headers of its last ask.
+    headers: Mutex<Option<Instant>>,
+    /// When the first bytes of the response's body came, whatever they
+    /// were: a piece of the answer, a keep-alive comment, a ping.
+    first_event: std::sync::OnceLock<Instant>,
+}
+
+impl Signs {
+    /// The response's headers came now.
+    fn headers_came(&self) {
+        *self.headers.lock_recover() = Some(Instant::now());
+    }
+
+    /// Bytes of the response's body came now.
+    fn event_came(&self) {
+        self.first_event.get_or_init(Instant::now);
+    }
+}
+
 /// Timing for one Plan, logged as one content-free line on stderr.
 struct PlanTiming {
     started: Instant,
@@ -2184,6 +2213,10 @@ struct PlanTiming {
     reasoning_bytes: u64,
     last_stream: Option<Duration>,
     last_reasoning: Option<Duration>,
+    /// When the provider's headers and its first bytes came, noted by the
+    /// transport that carries the call. A Plan that is not streamed hands
+    /// its transport no timing, so its line names neither.
+    signs: Arc<Signs>,
 }
 
 impl PlanTiming {
@@ -2248,6 +2281,7 @@ impl PlanTiming {
             reasoning_bytes: 0,
             last_stream: None,
             last_reasoning: None,
+            signs: Arc::default(),
         }
     }
 
@@ -2336,13 +2370,15 @@ impl PlanTiming {
             value.map_or_else(|| "-".to_string(), |value| value.as_millis().to_string())
         };
         let count = |value: Option<u64>| value.map_or_else(|| "-".to_string(), |v| v.to_string());
+        let since = |at: Option<Instant>| at.map(|at| at.saturating_duration_since(self.started));
         let trace = call.trace.map_or_else(
             || "-".to_string(),
             |trace| format!("{:016x}/{}", trace.id, trace.turn),
         );
         eprintln!(
             "tilo-model-gateway: timing plan trace={trace} profile={} model={} stream={} status={} \
-             start_unix_ms={} first_byte_ms={} first_reasoning_ms={} first_token_ms={} first_tool_call_ms={} \
+             start_unix_ms={} headers_ms={} first_event_ms={} first_byte_ms={} first_reasoning_ms={} \
+             first_token_ms={} first_tool_call_ms={} \
              plan_call_ms={} done_ms={} prompt_tokens={} completion_tokens={} \
              reasoning_tokens={} cached_tokens={} cache_write_tokens={} cost_micros={} tool_calls={} output_allowance={} \
              source_context={} runtime_context={} timeout_ms={} {} outcome={}{}",
@@ -2352,6 +2388,8 @@ impl PlanTiming {
             self.status
                 .map_or_else(|| "-".to_string(), |status| status.to_string()),
             self.start_unix_ms,
+            ms(since(*self.signs.headers.lock_recover())),
+            ms(since(self.signs.first_event.get().copied())),
             ms(self.first_byte),
             ms(self.first_reasoning),
             ms(self.first_token),

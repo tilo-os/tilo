@@ -2793,6 +2793,38 @@ impl WasmPeer {
             .map_err(|error| js_error(&error))
     }
 
+    /// Resolves `true` once the workspace's server says a write landed in the workspace's documents
+    /// ([`tilo_actions::remote::ActionProvider::changed`], a request the server holds for ten seconds
+    /// at most), and `false` once `until` settles first or the server cannot tell. The wait is let
+    /// go of when this resolves, so a server that never answers costs this page nothing: the
+    /// session forgets a wait nobody reads any more.
+    ///
+    /// It says that something was written and never what: what changed is read from the server's
+    /// feed of changes, which answers each caller with what it may read.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace and a page with no session with a server.
+    #[wasm_bindgen(js_name = writeLanded)]
+    pub async fn write_landed(&self, workspace: &str, until: Promise) -> Result<bool, JsError> {
+        use std::future::Future as _;
+        use std::pin::Pin;
+        use std::task::Poll;
+        let number = workspace_id(workspace)?;
+        let api = crate::peer_sync::actions_of(self.id, number)
+            .ok_or_else(|| js_error("this page holds no session with a server"))?;
+        let mut landed = api.wait_for_change(tilo_actions::remote::WatchScope::Records);
+        let mut over = JsFuture::from(until);
+        Ok(std::future::poll_fn(move |context| {
+            // A wait the server refused, or one its session could not carry, wakes nobody.
+            if let Poll::Ready(woken) = Pin::new(&mut landed).poll(context) {
+                return Poll::Ready(woken.is_some());
+            }
+            Pin::new(&mut over).poll(context).map(|_| false)
+        })
+        .await)
+    }
+
     /// Have this page's device in the person's own workspace on the host, asked on the session it
     /// holds there: made the first time, under an id the host chooses, answered again after, another
     /// for each `name` ([`Device::enter_own_workspace`]). This very device
@@ -2829,7 +2861,7 @@ impl WasmPeer {
         serde_json::to_string(&listing).map_err(|error| js_error(error).into())
     }
 
-    /// Whether the page holds the workspace's record `record` of `app`: open in
+    /// Whether the page holds the workspace's document `record` of `app`: open in
     /// a mount, or received from the workspace and stored for whoever opens it.
     #[wasm_bindgen(js_name = hasRecord)]
     pub fn has_record(&self, app: &str, record: &str) -> bool {

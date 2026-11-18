@@ -1,19 +1,20 @@
 //! Whether an app may use a capability the person decides on: record the
 //! screen, take a screenshot without asking, use the camera.
 //!
-//! The person answers the question once per request, for this session, or
-//! for good. Answers for good are kept on this device only, never in a
-//! workspace: the screen, the input, the camera and the microphone of a
+//! The person answers with one of the durations every prompt offers
+//! ([`Lifetime::offered`]). Answers that outlast the session are kept on this
+//! device only, never in a workspace: the screen, the input, the camera and the microphone of a
 //! device are its person's to give. A grant some member of a shared
 //! workspace recorded for an app never answers for them.
 //! An app that asks the same thing again while its first question waits
 //! gets no second sheet; the repeat is declined.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use tilo_action_policy::Lifetime;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Answer, Question, Questions};
 
@@ -23,12 +24,17 @@ use crate::reply::Ended;
 /// The kind of the question an access decision asks.
 pub const ACCESS_QUESTION: &str = "portal.access";
 
-/// An answer allowing it for this request only.
-pub const ALLOW_ONCE: usize = 0;
-/// An answer allowing it until the session ends.
-pub const ALLOW_SESSION: usize = 1;
-/// An answer allowing it for good, as Remember does.
-pub const ALLOW_ALWAYS: usize = 2;
+/// How long `answer` allows it: the offered duration it chose, until taken back when the person
+/// ticked Remember, and this once when it chose none.
+fn lifetime_of(answer: &Answer) -> Lifetime {
+    if answer.remember {
+        return Lifetime::UntilRevoked;
+    }
+    answer
+        .choice
+        .and_then(|choice| Lifetime::chosen(choice, tilo_clock::unix_now_ms()))
+        .unwrap_or(Lifetime::Once)
+}
 
 /// What the sheet shows for an access question.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +44,7 @@ pub struct AccessQuestion {
     pub capability: String,
     /// What the app says it wants it for, as it said it, when it said.
     pub reason: Option<String>,
-    /// Whether the person may allow it for good.
+    /// Whether the person may allow it beyond this session.
     pub may_remember: bool,
     /// The app's own title, subtitle and body for a generic access
     /// dialog (`org.freedesktop.impl.portal.Access`), shown as the app's
@@ -56,12 +62,13 @@ pub struct AccessText {
 
 #[derive(Default, Serialize, Deserialize)]
 struct ConsentFile {
-    always: BTreeSet<String>,
+    kept: BTreeMap<String, Lifetime>,
 }
 
 #[derive(Default)]
 struct State {
-    always: BTreeSet<String>,
+    /// The answers that outlast the session, with how long each stands.
+    kept: BTreeMap<String, Lifetime>,
     session: HashSet<String>,
     asking: HashSet<String>,
 }
@@ -83,16 +90,14 @@ impl Consents {
     /// `questions`.
     #[must_use]
     pub fn new(questions: Questions, path: Option<PathBuf>) -> Self {
-        let always = path
+        let kept = path
             .as_deref()
-            .map(|path| {
-                tilo_files::native::atomic::json::load_or_default::<ConsentFile>(path).always
-            })
+            .map(|path| tilo_files::native::atomic::json::load_or_default::<ConsentFile>(path).kept)
             .unwrap_or_default();
         Self {
             questions,
             state: Arc::new(Mutex::new(State {
-                always,
+                kept,
                 ..State::default()
             })),
             path: path.map(Arc::new),
@@ -121,42 +126,49 @@ impl Consents {
     #[must_use]
     pub fn allowed(&self, caller: &PortalCaller, capability: &str) -> bool {
         let key = key(&caller.app_id, capability);
+        let now = Some(tilo_clock::unix_now_ms());
         let state = self.state.lock_recover();
-        state.always.contains(&key) || state.session.contains(&key)
+        state.session.contains(&key)
+            || state
+                .kept
+                .get(&key)
+                .is_some_and(|lifetime| lifetime.is_live_at(now))
     }
 
-    /// The apps allowed `capability` for good, as `(app, capability)`.
+    /// The apps allowed `capability` beyond this session, as `(app, capability)`.
     #[must_use]
     pub fn remembered(&self) -> Vec<(String, String)> {
+        let now = Some(tilo_clock::unix_now_ms());
         self.state
             .lock_recover()
-            .always
+            .kept
             .iter()
-            .filter_map(|key| key.split_once('\u{1f}'))
+            .filter(|(_, lifetime)| lifetime.is_live_at(now))
+            .filter_map(|(key, _)| key.split_once('\u{1f}'))
             .map(|(app, capability)| (app.to_owned(), capability.to_owned()))
             .collect()
     }
 
-    /// Forget what `app_id` was allowed of `capability`, for good and for
-    /// this session; `false` when it was allowed nothing.
+    /// Forget what `app_id` was allowed of `capability`, kept and for this
+    /// session; `false` when it was allowed nothing.
     pub fn forget(&self, app_id: &str, capability: &str) -> bool {
         let key = key(app_id, capability);
         let mut state = self.state.lock_recover();
         let session = state.session.remove(&key);
-        let removed = state.always.remove(&key);
+        let removed = state.kept.remove(&key).is_some();
         let forgotten = session || removed;
-        let always = removed.then(|| state.always.clone());
+        let kept = removed.then(|| state.kept.clone());
         drop(state);
-        if let Some(always) = always {
-            self.persist(always);
+        if let Some(kept) = kept {
+            self.persist(kept);
         }
         forgotten
     }
 
-    fn persist(&self, always: BTreeSet<String>) {
+    fn persist(&self, kept: BTreeMap<String, Lifetime>) {
         if let Some(path) = &self.path
             && let Err(error) =
-                tilo_files::native::atomic::json::write_private(path, &ConsentFile { always })
+                tilo_files::native::atomic::json::write_private(path, &ConsentFile { kept })
         {
             tracing::warn!(%error, "portal consents not kept");
         }
@@ -196,15 +208,20 @@ impl Consents {
     }
 
     fn keep(&self, key: &str, answer: &Answer, may_remember: bool) {
-        let always = may_remember && (answer.remember || answer.choice == Some(ALLOW_ALWAYS));
+        let lifetime = lifetime_of(answer);
         let mut state = self.state.lock_recover();
-        if always {
-            state.always.insert(key.to_owned());
-            let kept = state.always.clone();
-            drop(state);
-            self.persist(kept);
-        } else if answer.choice == Some(ALLOW_SESSION) {
-            state.session.insert(key.to_owned());
+        match lifetime {
+            Lifetime::Once => {}
+            Lifetime::Session => {
+                state.session.insert(key.to_owned());
+            }
+            _ if !may_remember => {}
+            _ => {
+                state.kept.insert(key.to_owned(), lifetime);
+                let kept = state.kept.clone();
+                drop(state);
+                self.persist(kept);
+            }
         }
     }
 }
@@ -270,14 +287,14 @@ mod tests {
     async fn once_asks_again_session_and_always_do_not() {
         let consents = Consents::new(Questions::new(), None);
         let once = Answer {
-            choice: Some(ALLOW_ONCE),
+            choice: Some(0),
             ..Answer::default()
         };
         assert!(answered(&consents, "a", Some(once)).await);
         assert!(!consents.allowed(&caller(), "screencast"));
 
         let session = Answer {
-            choice: Some(ALLOW_SESSION),
+            choice: Some(1),
             ..Answer::default()
         };
         assert!(answered(&consents, "b", Some(session)).await);
@@ -288,6 +305,37 @@ mod tests {
         );
         assert!(consents.forget("org.example.Recorder", "screencast"));
         assert!(!consents.allowed(&caller(), "screencast"));
+    }
+
+    #[tokio::test]
+    async fn a_timed_answer_is_kept_until_its_time() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("consents.json");
+        let consents = Consents::new(Questions::new(), Some(path.clone()));
+        let hour = Answer {
+            choice: Some(2),
+            ..Answer::default()
+        };
+        let before = tilo_clock::unix_now_ms();
+        assert!(answered(&consents, "a", Some(hour)).await);
+        let again = Consents::new(Questions::new(), Some(path));
+        assert!(again.allowed(&caller(), "screencast"));
+        let kept = again
+            .state
+            .lock_recover()
+            .kept
+            .values()
+            .copied()
+            .collect::<Vec<_>>();
+        let [Lifetime::Until(at)] = kept[..] else {
+            panic!("an hour's answer is kept with its end: {kept:?}");
+        };
+        assert!(at >= before + tilo_action_policy::OFFERED_SPAN_MS);
+        let later = at + 1;
+        assert!(
+            !tilo_clock::with_wall_ms(later, || again.allowed(&caller(), "screencast")),
+            "past its time it asks again"
+        );
     }
 
     #[tokio::test]

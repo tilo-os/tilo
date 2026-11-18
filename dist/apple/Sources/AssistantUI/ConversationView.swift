@@ -1,4 +1,5 @@
 import AssistantCore
+import QuickLook
 import SwiftUI
 
 /// A conversation: its pieces from the oldest at the top to the newest at the foot, where the
@@ -27,6 +28,8 @@ public struct ConversationView: View {
         let since = chat == .main ? model.sinceLeft : nil
         let sinceFirst = since.flatMap { conversation.first(since: $0.left) }
         let sinceRow = sinceFirst.flatMap { first in rows.first { $0.item == first }?.id }
+        // Under the newest reply whose model gave no answer for the key's sake: the way back to the key.
+        let way = model.replyWay(in: chat)
         GeometryReader { space in
             ScrollViewReader { reader in
                 ScrollView {
@@ -39,7 +42,8 @@ public struct ConversationView: View {
                         if let agent = liveAgent, let thing = agent.live { LiveThingPlace(thing: thing) }
                         ForEach(rows) { row in
                             if let since, row.id == sinceRow { SinceLeftCard(since: since) }
-                            RowView(row: row, chat: chat, picturedSecret: picturedSecret).id(row.id)
+                            RowView(row: row, chat: chat, picturedSecret: picturedSecret, way: way?.item == row.item ? way : nil)
+                                .id(row.id)
                         }
                         if let since, sinceRow == nil, conversation.isLoaded { SinceLeftCard(since: since) }
                         // Her message stands and no turn has taken it up for a while: one quiet line
@@ -59,7 +63,7 @@ public struct ConversationView: View {
                             Text(problem).font(.small125).foregroundStyle(Token.you).frame(maxWidth: .infinity)
                         }
                       }
-                      Color.clear.frame(height: 14).id("end")
+                      Color.clear.frame(height: Measure.columnFoot).id("end")
                     }
                     .frame(maxWidth: Measure.column)
                     .padding(.horizontal, Measure.columnGutter)
@@ -67,6 +71,10 @@ public struct ConversationView: View {
                     .frame(minHeight: space.size.height, alignment: .bottom)
                 }
                 .defaultScrollAnchor(.bottom)
+                // What scrolls out under the bar above or the field below leaves softly: no piece is
+                // cut flat there, its round corners made square.
+                .overlay(alignment: .top) { EdgeFade(edge: .top) }
+                .overlay(alignment: .bottom) { EdgeFade(edge: .bottom) }
                 .onChange(of: rows.last?.id) {
                     withAnimation(.easeOut(duration: 0.2)) { reader.scrollTo("end", anchor: .bottom) }
                 }
@@ -109,6 +117,8 @@ private struct RowView: View {
     let row: Conversation.Row
     let chat: Chat
     let picturedSecret: String
+    /// The way back to the key that stands under this piece, where one does.
+    var way: AssistantModel.ReplyWay?
     @Environment(AssistantModel.self) private var model
 
     var body: some View {
@@ -123,6 +133,7 @@ private struct RowView: View {
         case .piece(let item, let marked):
             if marked { ImportantMark() }
             PieceView(item: item, picturedSecret: picturedSecret)
+            if let way { ReplyWayButton(offered: way) }
         }
     }
 }
@@ -207,7 +218,8 @@ private struct SaidByPerson: ViewModifier {
 private struct MessageView: View {
     let message: Message
     @Environment(AssistantModel.self) private var model
-    @Environment(\.openURL) private var openURL
+    /// The file a press on its tag fetched, shown by the system's own viewer.
+    @State private var shown: URL?
 
     var body: some View {
         if !message.text.isEmpty {
@@ -231,7 +243,7 @@ private struct MessageView: View {
                 ForEach(message.attachments) { attachment in
                     Button {
                         Task {
-                            if let file = await model.file(of: attachment.id) { openURL(file) }
+                            if let file = await model.file(of: attachment.id) { shown = file }
                         }
                     } label: {
                         Tag(words: attachment.words())
@@ -241,6 +253,8 @@ private struct MessageView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: message.author == .person ? .trailing : .leading)
+            // Quick Look on the Mac, the system's viewer on the phone: a file is looked at there.
+            .quickLookPreview($shown)
         }
         ForEach(message.live) { LiveThingPlace(thing: $0) }
     }

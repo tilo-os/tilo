@@ -14,10 +14,8 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use collab_types::caps::Expiry;
-use tilo_portal::consent::{
-    ACCESS_QUESTION, ALLOW_ALWAYS, ALLOW_ONCE, ALLOW_SESSION, AccessQuestion,
-};
+use tilo_action_policy::Lifetime;
+use tilo_portal::consent::{ACCESS_QUESTION, AccessQuestion};
 use tilo_service::{Answer, Asked, Question};
 use ui::floating_surface::FloatingSurfaceHostMessage;
 
@@ -114,13 +112,13 @@ impl HostShellAsks {
             };
             // The question is answered: the app hears of it through the supervisor, which records
             // the allow before anything opens.
-            let expiry = lifetime(chosen);
+            let lifetime = lifetime(chosen);
             let app = waiting.app;
             let reply = waiting.reply;
-            match (expiry, services) {
-                (Some(expiry), Some(services)) => {
+            match (lifetime, services) {
+                (Some(lifetime), Some(services)) => {
                     services.runtime().spawn(async move {
-                        let allowed = tokio::task::spawn_blocking(move || record(expiry))
+                        let allowed = tokio::task::spawn_blocking(move || record(lifetime))
                             .await
                             .unwrap_or(false);
                         answer(&reply, &app, allowed);
@@ -133,14 +131,9 @@ impl HostShellAsks {
     }
 }
 
-/// The lifetime the person chose, in the runtime's vocabulary; `None` for a refusal.
-fn lifetime(answer: Option<Answer>) -> Option<Expiry> {
-    match answer?.choice {
-        Some(ALLOW_ONCE) => Some(Expiry::AfterUse),
-        Some(ALLOW_SESSION) => Some(Expiry::EndOfSession),
-        Some(ALLOW_ALWAYS) => Some(Expiry::Never),
-        _ => None,
-    }
+/// The lifetime the person chose; `None` for a refusal.
+fn lifetime(answer: Option<Answer>) -> Option<Lifetime> {
+    Lifetime::chosen(answer?.choice?, tilo_clock::unix_now_ms())
 }
 
 /// A waker that does nothing: the questions are looked at again on the next pass, so nothing waits
@@ -177,13 +170,13 @@ fn answer(reply: &Arc<Mutex<UnixStream>>, app: &str, allowed: bool) {
     }
 }
 
-/// Hand `expiry` to the supervisor, which records it where the device's own shell reads it. Returns
-/// whether it did.
-fn record(expiry: Expiry) -> bool {
+/// Hand `lifetime` to the supervisor, which records it where the device's own shell reads it.
+/// Returns whether it did.
+fn record(lifetime: Lifetime) -> bool {
     // The runtime's socket: a service of the login, outside every app sandbox, which is what lets
     // it take the allow this session gives it.
     let socket = launcher::services::socket_for(launcher::services::USH_SERVICE);
-    ask_supervisor(&socket, expiry, SUPERVISOR_ANSWER).unwrap_or_else(|error| {
+    ask_supervisor(&socket, lifetime, SUPERVISOR_ANSWER).unwrap_or_else(|error| {
         tracing::warn!(%error, "the allow for the device's own shell could not be recorded");
         false
     })
@@ -193,14 +186,14 @@ fn record(expiry: Expiry) -> bool {
 /// reply.
 fn ask_supervisor(
     socket: &std::path::Path,
-    expiry: Expiry,
+    lifetime: Lifetime,
     patience: Duration,
 ) -> std::io::Result<bool> {
     let stream = tilo_files::native::socket::connect(socket)?;
     stream.set_read_timeout(Some(patience))?;
     let mut line = serde_json::to_vec(&serde_json::json!({
         "op": "allow-host",
-        "expiry": expiry,
+        "expiry": lifetime,
     }))
     .map_err(std::io::Error::other)?;
     line.push(b'\n');
@@ -242,18 +235,10 @@ mod tests {
 
     #[test]
     fn the_persons_choices_are_the_shared_lifetimes() {
-        assert_eq!(
-            lifetime(Some(chosen(Some(ALLOW_ONCE)))),
-            Some(Expiry::AfterUse)
-        );
-        assert_eq!(
-            lifetime(Some(chosen(Some(ALLOW_SESSION)))),
-            Some(Expiry::EndOfSession)
-        );
-        assert_eq!(
-            lifetime(Some(chosen(Some(ALLOW_ALWAYS)))),
-            Some(Expiry::Never)
-        );
+        for offered in Lifetime::offered(tilo_clock::unix_now_ms()) {
+            let chosen = lifetime(Some(chosen(Some(offered.choice()))));
+            assert_eq!(chosen.map(Lifetime::key), Some(offered.key()));
+        }
         assert_eq!(lifetime(Some(chosen(None))), None, "a refusal");
         assert_eq!(
             lifetime(Some(chosen(Some(9)))),
@@ -307,12 +292,16 @@ mod tests {
         let socket = dir.path().join("ush.sock");
         let asked = supervisor_at(&socket, r#"{"result":"allowed"}"#);
         assert!(
-            ask_supervisor(&socket, Expiry::AfterUse, Duration::from_secs(10)).unwrap(),
+            ask_supervisor(&socket, Lifetime::Once, Duration::from_secs(10)).unwrap(),
             "the supervisor records the allow"
         );
+        // How long the allow lasts, as the runtime reads it.
+        let asked = serde_json::from_str::<serde_json::Value>(&asked.recv().unwrap()).unwrap();
+        assert_eq!(asked["expiry"], "once", "{asked}");
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&asked.recv().unwrap()).unwrap(),
-            serde_json::json!({"op": "allow-host", "expiry": "AfterUse"})
+            asked.as_object().map(serde_json::Map::len),
+            Some(2),
+            "{asked}"
         );
     }
 
@@ -322,13 +311,13 @@ mod tests {
         let socket = dir.path().join("ush.sock");
         let _asked = supervisor_at(&socket, r#"{"result":"denied","reason":"not the shell"}"#);
         assert!(
-            !ask_supervisor(&socket, Expiry::Never, Duration::from_secs(10)).unwrap(),
+            !ask_supervisor(&socket, Lifetime::UntilRevoked, Duration::from_secs(10)).unwrap(),
             "a refusal is not an allow"
         );
         assert!(
             ask_supervisor(
                 &dir.path().join("absent.sock"),
-                Expiry::Never,
+                Lifetime::UntilRevoked,
                 Duration::from_secs(1)
             )
             .is_err(),

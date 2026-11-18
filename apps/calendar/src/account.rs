@@ -167,7 +167,7 @@ impl CalendarAccount {
         if config.display_name.is_empty() {
             config.display_name.clone_from(&stored.display_name);
         }
-        if let Some(secret) = vault.and_then(|vault| vault.get(&stored.id)) {
+        if let Some(secret) = vault.and_then(|vault| vault.get_for(stored)) {
             #[cfg(feature = "live")]
             {
                 config.password = tilo_dav::oauth::calendar_password(&secret);
@@ -337,8 +337,8 @@ impl AccountStore {
             if acct.config.password.is_empty() {
                 vault.remove(&id);
             } else {
-                vault.put(
-                    &id,
+                vault.put_for(
+                    &acct.to_stored(),
                     &accounts::Secret::password(acct.config.password.clone()),
                 );
             }
@@ -643,6 +643,49 @@ mod tests {
             assert!(read.accounts[0].read_only && read.accounts[0].calendars[0].read_only);
             std::fs::remove_dir_all(&root).ok();
         }
+    }
+
+    /// A password is typed for the server its account names then. However
+    /// the account comes to name another server, the password is joined to
+    /// it no more: the next sync would send it there.
+    #[test]
+    fn a_password_typed_for_one_server_is_not_joined_to_an_account_that_names_another() {
+        let root = temp_root();
+        let mut typed = cfg("Work", "me@example.test");
+        typed.server_url = "https://caldav.example/dav/me/".into();
+        typed.password = "typed-for-caldav-example".into();
+        let mut store = AccountStore::new();
+        store.upsert(CalendarAccount::new(typed));
+        store.persist_in(&root).unwrap();
+        let joined = |address: &str| {
+            let mut shared = SharedStore::load_in(&root);
+            let mut account = shared.all()[0].clone();
+            account.config["server_url"] = address.into();
+            shared.upsert(account);
+            let vault = AccountCredentials::open_in(&root).unwrap();
+            AccountStore::from_store(&shared, &vault).accounts[0]
+                .config
+                .password
+                .clone()
+        };
+        assert_eq!(
+            joined("https://caldav.example/calendars/"),
+            "typed-for-caldav-example",
+            "another path on its server is still its server"
+        );
+        for elsewhere in [
+            "https://dav.elsewhere.example/dav/me/",
+            "https://caldav.example:8443/dav/me/",
+            "http://caldav.example/dav/me/",
+        ] {
+            assert_eq!(
+                joined(elsewhere),
+                "",
+                "the password typed for https://caldav.example was joined to an account at \
+                 {elsewhere}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn cfg(name: &str, user: &str) -> CalDavConfig {

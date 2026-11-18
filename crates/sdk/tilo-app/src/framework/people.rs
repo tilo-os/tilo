@@ -23,7 +23,7 @@ use ui_core::presence::PresenceCtx;
 use ui_core::tokens::PresenceHue;
 use ui_core::widget::arrange::Stack as Arranged;
 use ui_core::widget::mention_picker::{MentionCandidate, merged_roster};
-use ui_core::widget::{Button, ButtonRole, Chip, ChipLead, Element, Tone};
+use ui_core::widget::{Button, ButtonRole, Chip, Element, Tone};
 
 use super::ViewCx;
 use tilo_resource::MemberId;
@@ -93,19 +93,26 @@ impl Actor {
         self.member.as_ref().is_some_and(MemberId::is_agent)
     }
 
-    /// The chip a view shows `self` as: a person's round face, or an agent's own mark, and the
-    /// name they go by. What they are is said by the face, never joined into the name.
+    /// The chip a view shows `self` as: their face, as every face is drawn, beside the name
+    /// they go by.
     #[must_use]
     pub fn chip(&self) -> Chip {
         let (red, green, blue) = ui_core::presence::identity_rgb(self.hue);
-        let colour = Color::from_rgb8(red, green, blue);
-        let chip = Chip::new(self.name.clone());
-        if self.agent() {
-            chip.with_lead(ChipLead::Agent(colour))
-                // The mark says agent to the eye; a reader hears it in words.
-                .with_accessible_name(ui_core::history_source::agent_spoken_label(&self.name))
-        } else {
-            chip.with_face(self.name.clone(), colour)
+        Chip::new(self.name.clone()).with_face(self.person(), Color::from_rgb8(red, green, blue))
+    }
+
+    /// Them as a face shows them ([`ui_core::widget::AvatarFace::of`]); someone outside the
+    /// workspace as a person by their name.
+    #[must_use]
+    pub fn person(&self) -> ui_core::component::Person {
+        let member = self
+            .member
+            .clone()
+            .unwrap_or_else(|| MemberId::person(self.name.clone()));
+        ui_core::component::Person {
+            identity: tilo_actions::Actor::Member(member),
+            name: self.name.clone(),
+            hue: self.hue,
         }
     }
 }
@@ -350,7 +357,6 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     &nobody,
                     None,
                     None,
-                    false,
                     held_action.clone(),
                 ));
                 for member in &members {
@@ -366,8 +372,11 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                         &format!("{id}-{kind}-{}", member.id.id()),
                         &member.name,
                         Some(value),
-                        Some((&member.name, member.id.id(), member.hue)),
-                        member.id.is_agent(),
+                        Some(ui_core::component::Person {
+                            identity: tilo_actions::Actor::Member(member.id.clone()),
+                            name: member.name.clone(),
+                            hue: member.hue,
+                        }),
                         held_action.clone(),
                     ));
                 }
@@ -376,7 +385,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                         who.name.clone(),
                         who.agent(),
                         Button::new(id, &who.name)
-                            .with_avatar(&who.name, who.identity(), who.hue)
+                            .with_avatar(who.person())
                             .showing_choice(),
                     ),
                     None => (
@@ -409,13 +418,16 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         id: &str,
         label: &str,
         value: Option<String>,
-        face: Option<(&str, &str, PresenceHue)>,
-        agent: bool,
+        face: Option<ui_core::component::Person>,
         action: B,
     ) -> Element {
+        let agent = face
+            .as_ref()
+            .and_then(|who| who.identity.member_id())
+            .is_some_and(MemberId::is_agent);
         let mut button = Button::new(id, label).role(ButtonRole::Plain);
         button = match face {
-            Some((name, identity, hue)) => button.with_avatar(name, identity, hue),
+            Some(who) => button.with_avatar(who),
             None => button.with_icon(Icon::User).with_placeholder(),
         };
         if agent {

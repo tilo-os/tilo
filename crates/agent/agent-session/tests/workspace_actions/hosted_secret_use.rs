@@ -105,7 +105,7 @@ pub(super) struct Hosted {
     /// The person's own device: on only where the test says so.
     pub(super) page: Browser,
     pub(super) root: SigningKey,
-    browser: crate::support::Device,
+    pub(super) browser: crate::support::Device,
     pub(super) agents: HostAgents,
     /// The person's model, scripted, and everything it was sent.
     pub(super) model: Arc<ScriptedProvider>,

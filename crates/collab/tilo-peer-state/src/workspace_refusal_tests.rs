@@ -142,3 +142,45 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// Two devices of one person, each filing its first verdict without seeing the
+/// other's, keep both after a merge: the verdicts sit in rows of the map the
+/// workspace is founded with, not in a map the first of them made.
+#[test]
+fn two_devices_first_verdicts_both_survive_a_merge() {
+    let (mut left, a_key, b_key, _, now) = seeded();
+    let a_cert = certificate(&left, &a_key);
+    let b_cert = certificate(&left, &b_key);
+    let mut right = left.clone();
+    let mut theirs = left.clone();
+    // One write of each device, each refused by the other device.
+    let from_b = write(&mut theirs, &b_key, now, "first");
+    let from_a = write(&mut theirs, &a_key, now, "second");
+    left.workspace_mut()
+        .refuse_write(&a_cert, &from_b, "no permission", &a_key, now)
+        .unwrap();
+    right
+        .workspace_mut()
+        .refuse_write(&b_cert, &from_a, "no permission", &b_key, now)
+        .unwrap();
+    // What each device holds, merged into the other's as a sync would.
+    let heads = left.workspace_heads().unwrap();
+    let changes = right.workspace_changes_since(&heads);
+    let workspace = left.workspace_id().to_owned();
+    left.receive_from(
+        crate::TransportOrigin::ServerDelta(b_cert.device_public_key),
+        crate::NeighbourMsg::SyncResp { changes, workspace },
+        now,
+    )
+    .unwrap();
+    let held = left.workspace().write_refusals();
+    assert_eq!(held.len(), 2, "both devices' first verdicts keep: {held:?}");
+    assert!(
+        held.iter()
+            .any(|verdict| verdict.by == a_cert.device_public_key)
+    );
+    assert!(
+        held.iter()
+            .any(|verdict| verdict.by == b_cert.device_public_key)
+    );
+}

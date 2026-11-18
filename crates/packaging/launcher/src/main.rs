@@ -208,6 +208,28 @@ enum Cmd {
     /// program stays open while the desktop restarts in place.
     #[command(name = "windows-program", hide = true)]
     WindowsProgram(WindowsProgramArgs),
+    /// Start a Windows program's sandbox on the X11 display its keeper serves (`DISPLAY`,
+    /// `XAUTHORITY`): the keeper picks the display only as it starts, after the sandbox was
+    /// planned, so `windows-program --x11` has the keeper start this, which adds the display to
+    /// the sandbox and becomes it.
+    #[command(name = "windows-x11-sandbox", hide = true)]
+    WindowsX11Sandbox {
+        /// The sandbox's command line.
+        #[arg(last = true, required = true)]
+        command: Vec<std::ffi::OsString>,
+    },
+    /// Start the private audio graph the compatibility service prepared for a Windows program,
+    /// then become the program's sandbox: the graph's daemons end with the sandbox's process, so
+    /// they live exactly as long as the program, in its launch's group (`launcher::audio_graph`).
+    #[command(name = "windows-audio", hide = true)]
+    WindowsAudio {
+        /// The directory the graph was prepared in.
+        #[arg(long)]
+        graph: PathBuf,
+        /// The sandbox's command line.
+        #[arg(last = true, required = true)]
+        command: Vec<std::ffi::OsString>,
+    },
     /// Build or retire the pre-built read-only system view every sandbox mounts
     /// (`launcher::sandbox_view`).
     #[command(subcommand)]
@@ -358,7 +380,22 @@ fn windows_program(args: &WindowsProgramArgs) -> ExitCode {
         dir: args.keep_in.clone(),
         launch: args.keep_as.clone(),
     };
-    match launcher::host::start_kept(&args.app_id, &args.name, &args.command, args.x11, &keep) {
+    let mut command = args.command.clone();
+    if args.x11 {
+        let Ok(launcher) = std::env::current_exe() else {
+            eprintln!("tilo-launcher: this launcher's own program is not known");
+            return ExitCode::FAILURE;
+        };
+        command.splice(
+            0..0,
+            [
+                launcher.into_os_string(),
+                "windows-x11-sandbox".into(),
+                "--".into(),
+            ],
+        );
+    }
+    match launcher::host::start_kept(&args.app_id, &args.name, &command, args.x11, &keep) {
         Ok(status) => {
             if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
                 launcher::host::end_by(signal);
@@ -370,6 +407,32 @@ fn windows_program(args: &WindowsProgramArgs) -> ExitCode {
             exit_code(e.to_exit_code())
         }
     }
+}
+
+/// Become the sandbox `command` with the keeper's X11 display added to it.
+fn windows_x11_sandbox(mut command: Vec<std::ffi::OsString>) -> ExitCode {
+    use std::os::unix::process::CommandExt as _;
+    let (Some(display), Some(authority)) =
+        (std::env::var_os("DISPLAY"), std::env::var_os("XAUTHORITY"))
+    else {
+        eprintln!("tilo-launcher: the keeper serves this program no X11 display");
+        return ExitCode::FAILURE;
+    };
+    if let Err(error) = launcher::sandbox::give_x11_display(
+        &mut command,
+        &display.to_string_lossy(),
+        Path::new(&authority),
+    ) {
+        eprintln!("tilo-launcher: {error}");
+        return ExitCode::FAILURE;
+    }
+    let Some((program, args)) = command.split_first() else {
+        return ExitCode::FAILURE;
+    };
+    // The descriptors the sandbox is handed stay open across the exec, as they did into this.
+    let error = std::process::Command::new(program).args(args).exec();
+    eprintln!("tilo-launcher: {}: {error}", program.to_string_lossy());
+    ExitCode::FAILURE
 }
 
 /// Fold an `i32` exit code (from [`std::process::ExitStatus::code`] or
@@ -469,6 +532,16 @@ fn dispatch_command(
         ),
         Cmd::MachineApp(args) => machine_app(args),
         Cmd::WindowsProgram(args) => windows_program(&args),
+        Cmd::WindowsX11Sandbox { command } => windows_x11_sandbox(command),
+        Cmd::WindowsAudio { graph, command } => {
+            let Err(error) = launcher::audio_graph::exec_with(
+                graph,
+                &launcher::audio_graph::Daemons::installed(),
+                &command,
+            );
+            eprintln!("tilo-launcher: {error}");
+            ExitCode::FAILURE
+        }
         Cmd::SandboxView(command) => sandbox_view(command),
         Cmd::Apps { json } => list_apps(json),
         Cmd::RuntimeResident { user: true, .. } => runtime_resident_user(),

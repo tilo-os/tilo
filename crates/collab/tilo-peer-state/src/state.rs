@@ -503,7 +503,7 @@ pub(crate) use governed_rows::{WorkspaceDelegation, WorkspaceDelegationPermissio
 pub(crate) use invitation_receipts::StoredReceipt;
 
 /// The map at `key` of a governed workspace document.
-fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String> {
+pub(crate) fn governed_map(doc: &AutoCommit, key: &str) -> Result<automerge::ObjId, String> {
     doc.get(ROOT, key)
         .map_err(err)?
         .map(|(_, id)| id)
@@ -537,6 +537,10 @@ mod durable_tests;
 #[cfg(test)]
 #[path = "state/governance_cache_tests.rs"]
 mod governance_cache_tests;
+
+#[cfg(test)]
+#[path = "state/founded_rows_tests.rs"]
+mod founded_rows_tests;
 mod governed_rows;
 #[cfg(test)]
 #[path = "state/held_queue_tests.rs"]

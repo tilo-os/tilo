@@ -1063,7 +1063,40 @@ impl CertificationProtocol {
     ///
     /// The conversation did not decode, or its stream failed.
     pub(crate) async fn serve(&self, connection: &Link) -> Result<(), AcceptError> {
-        let (send, mut recv) = connection.accept_bi().await.map_err(|error| io(&error))?;
+        let (send, recv) = connection.accept_bi().await.map_err(|error| io(&error))?;
+        self.converse(connection, send, recv).await
+    }
+
+    /// Serve every conversation `connection` carries, each on a stream of its
+    /// own, until it closes: what a device that keeps its session with the
+    /// certification asks on
+    /// ([`tilo_server_protocol::web::LINK_CERTIFY_KEPT`]). Each conversation
+    /// says who asks by its own signatures, as the one conversation of a
+    /// connection does; the session a device keeps says nothing of that.
+    /// What still waits when the session closes is answered nothing.
+    #[cfg(feature = "web")]
+    pub(crate) async fn serve_every(&self, connection: &Link) {
+        let mut conversations = tokio::task::JoinSet::new();
+        while let Ok((send, recv)) = connection.accept_bi().await {
+            // Those that ended are let go of as the next one arrives.
+            while conversations.try_join_next().is_some() {}
+            let (certification, connection) = (self.clone(), connection.clone());
+            conversations.spawn(async move {
+                if let Err(error) = certification.converse(&connection, send, recv).await {
+                    tracing::debug!(%error, "a certification conversation on a kept session ended");
+                }
+            });
+        }
+    }
+
+    /// The conversation a device opened on `send` and `recv`, streams of
+    /// `connection`.
+    async fn converse(
+        &self,
+        connection: &Link,
+        send: LinkSend,
+        mut recv: tilo_server_client::link::LinkRecv,
+    ) -> Result<(), AcceptError> {
         let open: CertifyOpen =
             postcard::from_bytes(&read_frame(&mut recv, MAX_CERTIFY_FRAME_BYTES).await?)
                 .map_err(|error| io(&error))?;

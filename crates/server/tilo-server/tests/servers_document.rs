@@ -224,3 +224,115 @@ async fn a_retired_server_lets_go_of_everything() {
         "it holds nothing: {still_there:?}"
     );
 }
+
+/// A person with no desktop enrols three servers one after another: the first
+/// makes their admin workspace, each later one is taken in by one that holds
+/// it, and all three then hold the one workspace. What is set at one of them
+/// is applied at the others.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
+    let alice = TestUser::fresh("Alice");
+    let devices =
+        ["first", "second", "third"].map(|label| alice.enrol(label, DeviceCapabilities::member()));
+    let mut hosts = Vec::new();
+    for device in &devices {
+        hosts.push(serve_on(&alice, device, WorkSetting::own_person()).await);
+    }
+    let policy = tempfile::tempdir().unwrap();
+    let _following = hosts
+        .iter()
+        .enumerate()
+        .map(|(at, hosted)| {
+            applied::follow(
+                hosted.host.workspaces(),
+                policy.path().join(format!("{at}.request")),
+            )
+        })
+        .collect::<Vec<_>>();
+    let admin = admin_workspace_id(&alice.user_pk);
+    let [first, second, third] = [&hosts[0], &hosts[1], &hosts[2]];
+
+    servers::found(first.host.workspaces(), &first.host.node_addr())
+        .await
+        .unwrap();
+    // The second asks the first, the third the second: any server holding the
+    // workspace takes a later one in.
+    for (asked, asking, device) in [(first, second, &devices[1]), (second, third, &devices[2])] {
+        servers::admit(
+            asked.host.workspaces(),
+            &device.cert,
+            &asking.host.node_addr(),
+        )
+        .await
+        .unwrap();
+        tilo_test_env::within("the later server to hold the admin workspace", async {
+            while !servers::holds_admin(asking.host.workspaces()).await {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+    }
+    tilo_test_env::within(
+        "every server to name all three holders and read the one document",
+        async {
+            loop {
+                let mut named = Vec::new();
+                let mut named_servers = Vec::new();
+                for hosted in &hosts {
+                    named.push(
+                        hosted
+                            .host
+                            .workspaces()
+                            .hosts(&admin)
+                            .await
+                            .map_or(0, |hosts| hosts.len()),
+                    );
+                    named_servers.push(
+                        servers::read(hosted.host.workspaces())
+                            .await
+                            .map_or(0, |servers| servers.servers.len()),
+                    );
+                }
+                if named == [3, 3, 3] && named_servers == [3, 3, 3] {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+    let stranger = TestUser::fresh("Mallory").enrol("theirs", DeviceCapabilities::member());
+    assert!(
+        servers::admit(
+            first.host.workspaces(),
+            &stranger.cert,
+            &third.host.node_addr(),
+        )
+        .await
+        .is_err(),
+        "another person's server is not taken in"
+    );
+
+    // Set at the third, applied at the first.
+    servers::apply(
+        third.host.workspaces(),
+        Servers::SET_APPETITE.with((entry(&devices[0]), 500, true, 2)),
+    )
+    .await
+    .unwrap();
+    tilo_test_env::within("the first server to offer what the third set", async {
+        while first.host.workspaces().offer() != Offer::of(500, true, 2) {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert_eq!(
+        servers::read(second.host.workspaces())
+            .await
+            .unwrap()
+            .servers
+            .len(),
+        3,
+        "one document names every server"
+    );
+}

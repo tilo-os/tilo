@@ -324,19 +324,21 @@ impl TopBarChrome {
     /// its client's hue as a rounded square and a person a circle.
     fn face_of(&self, i: usize, theme: &Theme) -> ui::presence::Face<'_> {
         let look = self.face_looks.get(i).copied();
+        let name = self.face_names.get(i).map_or("", String::as_str);
+        let colour = self
+            .face_colors
+            .get(i)
+            .copied()
+            .unwrap_or(theme.tokens.colors.intent.you);
+        let face = match self.face_members.get(i) {
+            Some(member) => ui::presence::Face::member(name, member, colour),
+            None => ui::presence::Face::new(name, "", colour),
+        };
         ui::presence::Face {
-            name: self.face_names.get(i).map_or("", String::as_str),
-            identity: self.face_ids.get(i).map_or("", String::as_str),
-            colour: self
-                .face_colors
-                .get(i)
-                .copied()
-                .unwrap_or(theme.tokens.colors.intent.you),
-            // Software is never drawn as a person: the shared agent mark in the same ring.
-            is_agent: self.face_agents.get(i).copied().unwrap_or(false),
             dimmed: look.is_some_and(|look| look.dimmed),
             in_call: look.and_then(|look| look.call),
             scale: look.map_or(1.0, |look| look.scale),
+            ..face
         }
     }
 

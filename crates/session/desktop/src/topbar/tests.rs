@@ -2427,7 +2427,13 @@ tilo_test_env::scenario! {
         ]);
         let mut bar = TopBarChrome::from_tree(&tree);
         bar.sync_from_tree(&tree);
-        assert_eq!(bar.face_agents, vec![true, false]);
+        assert_eq!(
+            bar.face_members,
+            vec![
+                collab_types::MemberId::agent("scribe"),
+                collab_types::MemberId::person("ada")
+            ]
+        );
         // Each face is named for a reader, an agent as one.
         paint(&mut bar);
         let node = bar.accessibility().expect("topbar semantics");
@@ -2503,7 +2509,8 @@ tilo_test_env::scenario! {
             };
             let mut bar = TopBarChrome::from_tree(&tree);
             bar.sync_from_tree(&tree);
-            (bar.face_agents.clone(), bar.face_colors.clone())
+            let agents: Vec<bool> = bar.face_members.iter().map(collab_types::MemberId::is_agent).collect();
+            (agents, bar.face_colors.clone())
         };
         let (agents, announced) = faces(Some(ui::tokens::PresenceHue::Violet));
         assert_eq!(agents, vec![true]);

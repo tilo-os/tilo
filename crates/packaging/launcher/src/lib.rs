@@ -6,6 +6,8 @@
 pub mod app_cgroup;
 pub mod appdir;
 #[cfg(target_os = "linux")]
+pub mod audio_graph;
+#[cfg(target_os = "linux")]
 mod browser_projection;
 pub mod capabilities;
 pub mod capture;

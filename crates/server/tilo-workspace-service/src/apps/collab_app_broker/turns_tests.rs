@@ -357,7 +357,7 @@ async fn a_turns_question_is_asked_under_its_session() {
             let answered = async {
                 let shown = shell.shown(1).await;
                 assert_eq!(shown.agent_session.as_deref(), Some(SESSION), "{shown:?}");
-                shell.answer(crate::apps::app_actions::AppActionConsent::Once);
+                shell.answer(Some(tilo_action_policy::Lifetime::Once));
             };
             let (confirmed, ()) = tokio::join!(asking, answered);
             let RemoteActionMessage::ConfirmResponse {
@@ -473,7 +473,7 @@ async fn a_question_answered_after_the_deadline_still_continues_its_turn() {
                     f.native.failed.lock().unwrap().is_empty(),
                     "the turn did not fail while the person decided"
                 );
-                shell.answer(crate::apps::app_actions::AppActionConsent::Once);
+                shell.answer(Some(tilo_action_policy::Lifetime::Once));
             };
             let (confirmed, ()) = tokio::join!(asking, answered);
             let RemoteActionMessage::ConfirmResponse {
@@ -544,7 +544,7 @@ async fn a_turn_waiting_on_a_person_still_ends_when_it_is_cancelled() {
                     !still_going(&f, invocation),
                     "a cancelled turn ends while the person decides"
                 );
-                shell.answer(crate::apps::app_actions::AppActionConsent::Once);
+                shell.answer(Some(tilo_action_policy::Lifetime::Once));
             };
             let (confirmed, ()) = tokio::join!(asking, cancelled);
             assert!(

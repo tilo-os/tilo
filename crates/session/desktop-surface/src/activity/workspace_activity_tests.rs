@@ -105,8 +105,6 @@ mod workspace_activity {
             pane.begin_view(tree.active);
             pane.refresh(&mut tree);
             pane.refresh_records(&mut tree, &records);
-            pane.period = Period::AllTime;
-            pane.reinstall_filter();
             assert!(pane.replay_frames.len() >= 2);
             let tab_counts: Vec<usize> = pane
                 .replay_frames
@@ -126,10 +124,6 @@ mod workspace_activity {
             );
             pane.view = ActivityView::Replay;
             assert_eq!(pane.serve_replay().frames.len(), pane.replay_frames.len());
-            pane.author = Some("absent".into());
-            pane.reinstall_filter();
-            pane.author = None;
-            pane.reinstall_filter();
             let mut presence = PresenceCtx::empty();
             let ada = MemberId::person("ada");
             presence.names.insert(ada.clone(), "Ada".into());

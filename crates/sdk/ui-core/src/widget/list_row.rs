@@ -938,6 +938,7 @@ enum Leading {
 struct FactAvatar {
     name: String,
     identity: String,
+    who: Option<crate::component::Person>,
     image: Option<ImageData>,
     square: bool,
     glyph: Option<Icon>,
@@ -967,7 +968,11 @@ impl AuthorCell {
 
 impl FactAvatar {
     fn face(&self) -> AvatarFace<'_> {
-        let face = AvatarFace::new(&self.name, &self.identity).image(self.image.as_ref());
+        let face = match &self.who {
+            Some(who) => AvatarFace::of(who),
+            None => AvatarFace::new(&self.name, &self.identity),
+        }
+        .image(self.image.as_ref());
         let face = if self.square { face.square() } else { face };
         match self.glyph {
             Some(glyph) => face.glyph(glyph),

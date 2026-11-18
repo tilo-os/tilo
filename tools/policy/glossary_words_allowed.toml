@@ -148,6 +148,7 @@ reason = "An iCalendar or WhatsApp group participant."
 words = ["participant"]
 paths = [
     "apps/calendar/src/ics.rs",
+    "apps/calendar/src/ics/tests.rs",
     "apps/calendar/src/model.rs",
     "apps/calendar/src/app.rs",
     "crates/system/messaging-protocol/src/supervisor/whatsapp/*",
@@ -377,6 +378,11 @@ words = ["run"]
 paths = ["t.toml"]
 
 [[allow]]
+reason = "The system's directory /run/user/<uid>, where the session's Pulse server listens: the private audio graph of a Windows program tunnels to it."
+words = ["run"]
+paths = ["crates/packaging/launcher/src/audio_graph.rs"]
+
+[[allow]]
 reason = "The cargo nextest command the wrapper starts, and nextest's own `run` subcommand."
 words = ["run"]
 paths = ["tools/tests/test_nextest_policy.py"]
@@ -564,3 +570,15 @@ reason = "t's own check field, the command a check starts: the name t's config g
 words = ["run"]
 identifiers = ["run"]
 paths = ["t.toml"]
+
+[[allow]]
+reason = "The key the runtime's identity registry holds an identity's file under, in the JSON a join writes there: a wire name the runtime reads back, not Tilo's word."
+words = ["record"]
+identifiers = ["record_path"]
+paths = ["crates/server/tilo-server/src/enroll.rs"]
+
+[[allow]]
+reason = "The crate that keeps a session's identity registry, by its name, in the test that reads the registry a join writes with the code that reads it."
+words = ["host"]
+identifiers = ["tilo_identity"]
+paths = ["crates/server/tilo-server/src/enroll_tests.rs"]

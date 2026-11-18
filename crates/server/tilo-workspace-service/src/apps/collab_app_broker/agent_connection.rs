@@ -30,7 +30,7 @@ use tilo_peer_state::join::agent_cert::AgentCert;
 use super::action_provider::ConnectionActionProvider;
 use super::published_invocation::InvocationCaller;
 use super::{AppBrokerState, CrdtRoute};
-use crate::apps::app_actions::{AGENT_SESSION_ASK, AppActionConsent, AppActionConsentPrompter};
+use crate::apps::app_actions::{AGENT_SESSION_ASK, AppActionConsentPrompter};
 
 /// How often a waiting question looks whether its session still goes.
 const STILL_GOES_EVERY: Duration = Duration::from_millis(500);
@@ -227,8 +227,10 @@ impl AgentConnection {
         let answer = self.answer_to(answer, &label).await?;
         asking.answered = true;
         if matches!(
-            answer.consent,
-            AppActionConsent::Session | AppActionConsent::Always
+            answer.lifetime,
+            Some(
+                tilo_action_policy::Lifetime::Session | tilo_action_policy::Lifetime::UntilRevoked
+            )
         ) && let (Some(grant), Some(sessions)) = (
             question.answer.clone(),
             state.services.agent_sessions.as_ref(),

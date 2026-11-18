@@ -221,16 +221,8 @@ fn field(
                     .iter()
                     .chain(me)
                     .find(|person| person.identity == *identity)
-                    .map_or(identity.id(), |person| person.name.as_str()),
-                identity.id(),
-                people
-                    .iter()
-                    .chain(me)
-                    .find(|person| person.identity == *identity)
-                    .map_or_else(
-                        || crate::tokens::PresenceHue::of_actor(identity),
-                        |person| person.hue,
-                    ),
+                    .cloned()
+                    .unwrap_or_else(|| Person::new(identity.clone(), identity.id())),
             )
             .showing_choice(),
         None => Button::new(id, &label)
@@ -339,7 +331,7 @@ fn entry(id: &str, label: &str, who: &Person, picked: Option<Person>, chosen: &P
     let on_pick = Rc::clone(chosen);
     Button::new(id, label)
         .role(ButtonRole::Plain)
-        .with_avatar(&who.name, who.identity.id(), who.hue)
+        .with_avatar(who.clone())
         .on_view(move || on_pick.set(Some(picked.clone())))
 }
 

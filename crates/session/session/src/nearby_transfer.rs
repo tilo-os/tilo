@@ -2320,7 +2320,7 @@ mod transfers_between_devices {
                 collab_types::caps::Access::Write,
             )
             .through(FILES_APP_ID)
-            .expiring(collab_types::caps::Expiry::EndOfSession),
+            .lasting(tilo_action_policy::Lifetime::Session),
         );
         Session {
             tree: Layout {

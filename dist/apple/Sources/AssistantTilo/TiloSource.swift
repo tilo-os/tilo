@@ -35,6 +35,9 @@ public final class TiloSource: AssistantSource {
     public let engine: TiloEngine
     /// Where live things stand. The app puts `engineRoom` into its root view.
     public let stage: LiveStage
+    /// The one place that follows what the parts of the window show (`ChangeFollower`): a part
+    /// says what it shows and how it reads it again, and reads again at the page's word.
+    public private(set) lazy var follows = ChangeFollower(engine: engine)
 
     private let mainChat: MainChat
     private let defaults: UserDefaults
@@ -224,6 +227,10 @@ public final class TiloSource: AssistantSource {
                 }
             },
         ]
+        // The Tasks panel reads again when the page says that something Tasks keeps in the
+        // workspace changed. Its other moments stay: they are what it reads at where a page
+        // tells nothing this way.
+        follows.follow(Followed(app: "so.tilo.tasks")) { [weak self] in await self?.readTasks() }
         // A device that was paired before comes back as itself.
         if let route = defaults.string(forKey: TiloSource.routeKey) { try? engine.open(route: route) }
     }
@@ -1343,7 +1350,27 @@ public final class TiloSource: AssistantSource {
             author = .assistant
         }
         return Item(id: id, at: message.at,
-                    .message(Message(author, message.text, attachments: TiloFiles.attachments(of: message), live: live)))
+                    .message(Message(author, message.text, attachments: TiloFiles.attachments(of: message), live: live,
+                                     keyFault: author == .assistant ? TiloSource.keyFault(of: fields["work"]) : nil)))
+    }
+
+    /// Why a reply's model gave no answer, where another key or another provider mends it: read
+    /// from the typed cause their server keeps with the reply's work (`failure_cause`: the kind
+    /// as the provider configuration names it, and the provider by the id and the name their
+    /// server gives it). Never from the reply's words, and nil where their server says no cause.
+    static func keyFault(of work: JSON?) -> Message.KeyFault? {
+        guard let cause = work?["failure_cause"], !cause.isNull, let kind = variant(cause["kind"]) else { return nil }
+        switch kind {
+        case "no_provider":
+            return .noProvider
+        case "authentication", "permission_denied", "credits_exhausted":
+            // A key's fault is some provider's: without one named there is nothing to type a key for.
+            guard let id = cause["provider"]?["id"]?.string, !id.isEmpty else { return nil }
+            let name = cause["provider"]?["name"]?.string ?? ""
+            return .key(.init(id), name: name.isEmpty ? id : name)
+        default:
+            return nil
+        }
     }
 
     /// What a question's kind keeps with it: JSON, as text or already read.
@@ -1358,7 +1385,6 @@ public final class TiloSource: AssistantSource {
     }
 
     public func send(_ draft: Draft, to chat: Chat) async throws {
-        guard draft.files.isEmpty else { throw SourceProblem.refused("A file cannot be sent from this app yet") }
         let to: ChatRecipient
         switch chat {
         case .main:
@@ -1368,7 +1394,13 @@ public final class TiloSource: AssistantSource {
             guard let id = feeds[chat]?.conversation else { throw SourceProblem.refused("This sub-agent has no conversation yet") }
             to = ChatRecipient(.conversation, id: id, name: agent.value)
         }
-        try await taken { _ = try await self.engine.chatSend(draft.text, to: to) }
+        try await taken {
+            // The picked files go into the person's workspace first, a piece at a time. One
+            // message then carries the words and names each file. A file that did not go in
+            // whole sends nothing.
+            let carried = try await TiloFiles.carried(draft.files, through: self.engine)
+            _ = try await self.engine.chatSend(draft.text, to: to, carrying: carried)
+        }
     }
 
     /// Stop the agent that is at work in a conversation, as the person: Chat's own
@@ -1391,6 +1423,8 @@ public final class TiloSource: AssistantSource {
     }
 
     public func answer(_ question: Question.ID, with choice: Choice.ID) async throws {
+        // An event's card is answered on the event itself, at the person's server.
+        if let event = EventCards.event(of: question) { return try await answer(event: event, with: choice) }
         try await answer(question.value, choice.value, detail: nil)
     }
 
@@ -1547,8 +1581,15 @@ public final class TiloSource: AssistantSource {
         if let failure { throw failure }
     }
 
+    /// How a file's link is fetched to this device: the system's own download. A check hands
+    /// in one of its own making.
+    var download: TiloFiles.Download = TiloFiles.download
+
     public func file(of attachment: Attachment.ID) async throws -> URL {
-        throw SourceProblem.refused("A file cannot be fetched into this app yet")
+        var fetched: URL?
+        try await taken { fetched = try await TiloFiles.fetch(attachment, through: self.engine, by: self.download) }
+        guard let fetched else { throw SourceProblem.unreachable }
+        return fetched
     }
 
     // MARK: Sub-agents
@@ -1623,8 +1664,20 @@ public final class TiloSource: AssistantSource {
         } while tasksWanted
     }
 
+    /// Give the assistant a task: an issue of the workspace's tracker, filed by the person and
+    /// given to their assistant through Tasks' own action. Their server starts the work.
     public func addTask(_ title: String) async throws {
-        throw SourceProblem.refused("Tasks cannot be reached from this app yet")
+        let wanted = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !wanted.isEmpty else { return }
+        guard let assistant else { throw noAssistant }
+        do {
+            try await engine.giveIssue(wanted, to: assistant)
+        } catch TiloEngine.Problem.refused(let code, let reason) {
+            // A server that keeps no tracker says so in words a person reads.
+            if TiloSource.offersNone(code) { throw SourceProblem.refused("Tilo keeps no tasks for your assistant in this workspace yet") }
+            throw SourceProblem.refused(reason.isEmpty ? code : reason)
+        }
+        await readTasks()
     }
 
     public nonisolated func automations() -> AsyncStream<[Automation]> { automationList.stream() }
@@ -1658,6 +1711,44 @@ public final class TiloSource: AssistantSource {
         feed.held = now
         feeds[.main] = feed
         for listener in feed.listeners.values { listener.yield(.all(now)) }
+    }
+
+    /// Carry out what the person pressed on an event's card, as the person, on the event at
+    /// their server. The card changes by what the server answered, never by the press alone.
+    private func answer(event: Automation.ID, with choice: Choice.ID) async throws {
+        // Whatever was carried out before something failed is said too.
+        defer {
+            automationList.set(cards.automations)
+            sayCards()
+        }
+        let named: [String: JSON] = ["event": .string(event.value)]
+        switch choice.value {
+        case EventCards.show:
+            // Read fresh: what is shown is what the event keeps now.
+            var listed: [JSON]?
+            try await taken { listed = try await self.engine.ask(.events, "list", of: "events")["events"]?.array }
+            if let listed { cards.take(listed) }
+            guard cards.show(event) else { throw SourceProblem.refused("This event is gone") }
+        case EventCards.ask:
+            // Every permission to act without asking is taken back: its work asks each time.
+            guard let permits = cards.permits(of: event) else { throw SourceProblem.refused("This event is gone") }
+            try await taken {
+                for rule in permits {
+                    let view = try await self.engine.ask(.events, "withdraw-permission", of: "events",
+                                                         named.merging(["rule": rule]) { _, new in new })
+                    self.cards.take(event: view)
+                }
+            }
+            cards.asked(event)
+        case EventCards.undo:
+            // Removed for good at the server, which answers the events that remain.
+            var remain: JSON = .null
+            try await taken { remain = try await self.engine.ask(.events, "remove", of: "events", named) }
+            cards.undid(event)
+            if let listed = remain["events"]?.array { cards.take(listed) }
+        default:
+            throw SourceProblem.refused("This is not one of the answers")
+        }
     }
 
     /// Set up something that comes at a time or when something else happens, as the person:
@@ -1730,12 +1821,25 @@ public final class TiloSource: AssistantSource {
     private static func setup(of linked: ModelProviders, choices: [ModelChoice]) -> Setup {
         if let answers = linked.model(for: WorkKind.request.rawValue), answers.provider.hasKey { return .ready }
         if !choices.isEmpty { return .needsModel(choices) }
-        // A provider the person added already stands first, under the name their server gives it.
-        var linkable = linked.providers.map { ProviderChoice(id: .init($0.id), name: $0.name) }
+        return .needsProvider(linkable(beside: linked))
+    }
+
+    /// The providers a key can be typed for. A provider the person added already stands first,
+    /// under the name their server gives it and said to be linked where it has its key; the
+    /// rest of the catalogue follows.
+    private static func linkable(beside linked: ModelProviders) -> [ProviderChoice] {
+        var linkable = linked.providers.map { ProviderChoice(id: .init($0.id), name: $0.name, isLinked: $0.hasKey) }
         for (id, name) in catalogue where !linkable.contains(where: { $0.id.value == id || $0.name == name }) {
             linkable.append(ProviderChoice(id: .init(id), name: name))
         }
-        return .needsProvider(linkable)
+        return linkable
+    }
+
+    /// What the provider step offers a person who comes back to it for another key or another provider.
+    public func providers() async throws -> [ProviderChoice] {
+        var read: [ProviderChoice] = []
+        try await taken { read = TiloSource.linkable(beside: try await self.engine.modelProviders()) }
+        return read
     }
 
     public func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {
@@ -2039,6 +2143,14 @@ extension TiloSource {
         guard let live = TiloLive.LiveThing(id: thing.id.value, title: thing.title, reference: thing.reference) else {
             return AnyView(EmptyView())
         }
-        return AnyView(TiloLiveView(live, on: stage, size: size))
+        return AnyView(TiloLiveView(live, on: stage, size: size, says: TiloSource.said))
+    }
+
+    /// What a live thing's place says where its thing is not shown, in the app's own sentences.
+    static func said(_ trouble: LiveStage.Trouble) -> String {
+        switch trouble {
+        case .notOffered: AssistantWords.viewNotOffered.said
+        case .notShown: AssistantWords.liveNotShown.said
+        }
     }
 }

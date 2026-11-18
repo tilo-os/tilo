@@ -250,7 +250,7 @@ mod tests {
 
         phase a_device_grant_never_substitutes_for_files_authorization;
         {
-            use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
+            use collab_types::{Access, CapOverride, Effect, Scope};
             use tilo_action_policy::Grantee;
             let person = [41; 32];
             let mut grant = CapOverride {
@@ -260,7 +260,7 @@ mod tests {
                 scope: Scope::Device(collab_types::caps::DeviceCap::Camera),
                 access: Access::Write,
                 effect: Effect::Grant,
-                expiry: Expiry::Never,
+                lifetime: tilo_action_policy::Lifetime::UntilRevoked,
                 granted_by: None,
             };
             assert!(require_files_access(person, std::slice::from_ref(&grant)).is_err());
@@ -272,7 +272,7 @@ mod tests {
 
         phase normal_files_scope_authorizes_namespace_without_host_root_grant;
         {
-            use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
+            use collab_types::{Access, CapOverride, Effect, Scope};
             use tilo_action_policy::Grantee;
             let person = [41; 32];
             let read = CapOverride::grant(
@@ -302,10 +302,10 @@ mod tests {
             write.scope = Scope::FsPath("/var/workspace-other".into());
             assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
             write.scope = Scope::FsPath("/var/workspace".into());
-            write.expiry = Expiry::AtUnix(1);
+            write.lifetime = tilo_action_policy::Lifetime::Until(1);
             assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
             let mut restricted = policy;
-            write.expiry = Expiry::Never;
+            write.lifetime = tilo_action_policy::Lifetime::UntilRevoked;
             write.scope = Scope::FsPath("/var".into());
             write.effect = Effect::Restrict;
             write.access = Access::Read;
@@ -315,7 +315,7 @@ mod tests {
 
         phase certified_saved_workspace_check_requires_exact_signed_files_access;
         {
-            use collab_types::{Access, CapOverride, Effect, Expiry, Scope};
+            use collab_types::{Access, CapOverride, Effect, Scope};
             use tilo_action_policy::Grantee;
             use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
             let temp = tempfile::tempdir().unwrap();
@@ -345,7 +345,7 @@ mod tests {
                 scope: Scope::FsPath("/var/workspace".into()),
                 access: Access::Write,
                 effect: Effect::Grant,
-                expiry: Expiry::Never,
+                lifetime: tilo_action_policy::Lifetime::UntilRevoked,
                 granted_by: None,
             };
             let workspace = fs::Ticket::workspace_id_for_topic(device.verifying_key().to_bytes());

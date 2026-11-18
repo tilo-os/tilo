@@ -46,7 +46,9 @@ mod readiness;
 mod readmit;
 mod shortcut_run;
 mod workspace_nodes;
-use app_admission::{connect_request, invitation_request, own_view_lookup, reference_request};
+use app_admission::{
+    connect_request, invitation_request, own_history_request, own_view_lookup, reference_request,
+};
 use directory::bridge_error;
 
 /// The longest a waiter on a running invocation sleeps without a signalled
@@ -694,6 +696,7 @@ impl AppBrokerState {
             }
             RemoteActionMessage::Invoke(request) => {
                 if self.app_owns(person, app_id, request)
+                    || own_history_request(app_id, request)
                     || reference_request(request)
                     || invitation_request(request)
                     || connect_request(request)

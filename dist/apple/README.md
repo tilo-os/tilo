@@ -339,6 +339,25 @@ lists are offered, and the one chosen answers and works in the main chat. The se
 no list of the providers it links by name yet, so the four names its `add-preset` knows are
 written in `TiloSource`.
 
+**The way back to the key.** Once a provider has its key the step is gone from the main chat,
+and the assistant view's Model line leads back to it: under the models its menu offers "Use
+another key for NAME" for each linked provider and "Link another provider" where one is left
+(`AssistantModel.keyWays`, from `AssistantSource.providers()`). Either shows the same step in
+the main chat again with that provider picked (`AssistantModel.keyStep`); the app grows no
+second field for a key. A key typed for a linked provider takes the place of the one their
+server keeps (`set-key`; the provider is not added again), the model step follows, and the
+model the person chose stands. Not now puts the step away.
+
+**The way back from the failure itself.** A reply whose model gave no answer carries why, where
+the person's server says so with the reply's work (`failure_cause`: the kind, and the provider by
+the id and the name their server gives it). Where the cause is the key, the key's account or a
+missing provider (`authentication`, `permission_denied`, `credits_exhausted`, `no_provider`),
+the main chat offers one press under the newest such reply: "Use another key for NAME", or "Link
+another provider" (`AssistantModel.replyWay(in:)`). It shows the same step, with what their
+server lists at that moment. The app reads the typed cause and never the reply's words: a
+server that says no cause gets no press. Once a key was typed for that provider nothing is
+offered under that reply again.
+
 **What Tilo asks before it pairs.** Tilo's page asks "Add this device?" before it asks
 anyone to let the device in, and says whose devices it would join and which server adds it.
 The engine tells the app the page's own sentences and its own words for the two ways on
@@ -366,7 +385,9 @@ Chat's messages as they arrive, sends through Chat's own send, and shows a docum
 window that is never put on a screen, with real key presses. A store it keeps holds a device
 key that only the very program that made it reads again. `AssistantMac --drive` is Tilo
 Assistant with no window (`Drive.swift`): the same source and the same model its window's
-views read and call, driven the same way. Both end when whoever drives them is gone.
+views read and call, driven the same way. Of each reply that grew it says when it drew the
+first change of its words, when the last and how many (`grew`): with no window, it counts
+what a person would have seen. Both end when whoever drives them is gone.
 
 ## Tilo Assistant
 
@@ -401,14 +422,41 @@ shows nothing.
 typed, and every character stays: Markdown's own signs are out of sight, except in the words
 the person is writing in (`Markdown.marks`, `Markdown.hidden`, `FieldStyle`). Return sends and
 Shift Return makes a line; on an iPhone's glass keyboard Return makes a line and the arrow
-sends. Attachments and dictation stand under the field, and dictation is the shell's.
+sends. On the Mac, Up in an empty field brings back the last message the person sent in the
+conversation, Up again the one before and Down the next, until they type, move the caret or
+press Escape (`Stepping`): the messages are the conversation's own, and the app keeps no list
+of them. While an input method is putting a letter together the field takes no key for itself.
+Attachments and dictation stand under the field, and dictation is the shell's.
 
 **A file in a message** is shown with the name and the size Chat gives. In Tilo a file that a
 message carries is content its workspace keeps and the message names (Chat's `attachments`):
 `ChatMessage.files` reads them, `TiloFiles` hands them to the views, and a file's tag says its
-name and its size (`Attachment.words`). The app keeps nothing of a file. Tilo's page hands a
-native app no way to a file's content yet, so pressing a file and sending one each say so in a
-sentence: nothing is read from a picked file, and nothing is fetched.
+name and its size (`Attachment.words`). The app keeps nothing of a file.
+
+**A file opens** by a link. A press on a file's tag reads its message again and asks Tilo's
+page for a link to the content (`TiloEngine.contentLink`, the page's `link`: an address on the
+app's own site, good for a short time; one that leads anywhere else is not followed). The
+system downloads it straight into a file under the app's temporary folder, named by the last
+part of the file's name alone, and the system's own viewer shows it: Quick Look on the Mac,
+the same on the iPhone (`quickLookPreview`). A file is looked at there and nothing in it is
+started. The link is in no log and in nothing the app keeps; every press asks for a new one,
+and what was opened more than an hour ago is removed at the next press. The page of a site
+whose code is older hands no link: the app says "A file cannot be fetched into this app yet".
+`FileOpeningTests` checks this with a download of its own making, not with Tilo's own page,
+its server or the viewer on a screen.
+
+**A file is sent** through Tilo's page. The plus under the message field, or a file dropped on
+it, puts a file under the draft. Send puts each file into the person's workspace a piece at a
+time (`TiloEngine.putBegin`, `putAppend`, `putFinish` ask the page's `put`: 384 KiB a piece,
+read from the file as it goes, never whole in the app or in the page) and then sends ONE
+message with the words, which names every file as Chat does (`send` with `attached`: the name,
+what the workspace keeps the content under, the size). The page refuses a file larger than a
+message may carry by its size alone, before any of it crosses, and the app then says how large
+the file is and how large one may be. A file that is empty, cannot be read or did not go in
+whole sends nothing, and the draft stays in the field. The page of a site whose code is older
+hands no such way: the app says "A file cannot be sent from this app yet" and touches nothing
+of the file. `FileSendingTests` checks this against a page that speaks as Tilo's does, not
+against Tilo's own page and server.
 
 **A secret** is typed into the system's protected field. What is typed lives in that one view
 until Save hands it to `AssistantSource.keep`, and the field is emptied before the call. It is

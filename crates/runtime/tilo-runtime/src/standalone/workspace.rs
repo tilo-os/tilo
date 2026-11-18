@@ -203,10 +203,9 @@ impl WorkspaceGrants for ProfileGrants {
         &self,
         request: &tilo_workspace_service::apps::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
-        answer: tilo_workspace_service::apps::app_actions::AppActionConsent,
     ) -> tilo_workspace_service::apps::services::GrantRecording {
         let recorded = self
-            .record_here(request, grant, answer)
+            .record_here(request, grant)
             .ok_or_else(|| "this workspace could not record the grant".to_owned());
         Box::pin(std::future::ready(recorded))
     }
@@ -225,7 +224,6 @@ impl ProfileGrants {
         &self,
         request: &tilo_workspace_service::apps::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
-        answer: tilo_workspace_service::apps::app_actions::AppActionConsent,
     ) -> Option<String> {
         if !self.workspace.governs() {
             return None;
@@ -235,7 +233,7 @@ impl ProfileGrants {
             &self.apps.display_name(&request.app_id),
             &self.apps.display_name(&request.target_app),
             &request.action_label,
-            answer.lifetime(),
+            grant.lifetime.key(),
         );
         let now = tilo_clock::unix_now();
         self.workspace.update(|tree| {

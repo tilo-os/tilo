@@ -73,7 +73,7 @@ impl Account {
         let mut config = payload.config;
         config.import_pending |= stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
         if !config.import_pending
-            && let Some(secret) = vault.and_then(|vault| vault.get(&stored.id))
+            && let Some(secret) = vault.and_then(|vault| vault.get_for(stored))
         {
             config.password = secret.password;
         }
@@ -206,8 +206,8 @@ impl AccountStore {
                     vault.remove(&id);
                 }
             } else {
-                vault.put(
-                    &id,
+                vault.put_for(
+                    &acct.to_stored(),
                     &accounts::Secret::password(acct.config.password.clone()),
                 );
             }
@@ -267,8 +267,8 @@ impl AccountStore {
                     vault.remove(&id);
                 }
             } else {
-                vault.put(
-                    &id,
+                vault.put_for(
+                    &acct.to_stored(),
                     &accounts::Secret::password(acct.config.password.clone()),
                 );
             }
@@ -586,6 +586,60 @@ mod tests {
             );
             std::fs::remove_dir_all(&root).ok();
         }
+    }
+
+    /// A password is typed for the servers its account names then. However
+    /// the account comes to name another server, the password is joined to
+    /// it no more: the next sign-in would send it there.
+    #[test]
+    fn a_password_typed_for_one_server_is_not_joined_to_an_account_that_names_another() {
+        let root = temp_root();
+        let mut typed = cfg("me@example.test", "Me");
+        typed.password = "typed-for-imap-example".into();
+        let mut store = AccountStore::new();
+        store.upsert(Account::new(typed));
+        store.persist_in(&root).unwrap();
+        // The password joined to the account as it is kept, with the one
+        // setting that says `was` saying `now`.
+        let joined = |was: serde_json::Value, now: serde_json::Value| {
+            let mut shared = SharedStore::load_in(&root);
+            let mut account = shared.all()[0].clone();
+            let says: Vec<&mut serde_json::Value> = account
+                .config
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .filter(|value| **value == was)
+                .collect();
+            assert_eq!(says.len(), 1, "one setting says {was}");
+            for value in says {
+                *value = now.clone();
+            }
+            shared.upsert(account);
+            let vault = AccountCredentials::open_in(&root).unwrap();
+            AccountStore::from_store(&shared, &vault).accounts[0]
+                .config
+                .password
+                .clone()
+        };
+        assert_eq!(
+            joined("Me".into(), "Another name".into()),
+            "typed-for-imap-example",
+            "what says nothing of where it signs in changes nothing"
+        );
+        for (was, now) in [
+            ("imap.example".into(), "imap.elsewhere.example".into()),
+            ("smtp.example".into(), "smtp.elsewhere.example".into()),
+            (serde_json::json!(993), serde_json::json!(1993)),
+        ] {
+            assert_eq!(
+                joined(was, now),
+                "",
+                "the password typed for imap.example:993 and smtp.example:465 was joined to \
+                 an account that names another server"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn temp_root() -> std::path::PathBuf {

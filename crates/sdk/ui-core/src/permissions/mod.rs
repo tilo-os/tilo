@@ -54,7 +54,7 @@ impl PartialEq for OnceSpender {
 impl Eq for OnceSpender {}
 
 pub use collab_types::caps::{
-    Access, CapDecision, CapOverride, Effect, Expiry, ResourceRef, Scope, decide_capability,
+    Access, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_capability,
 };
 pub use collab_types::role::Role;
 pub use tilo_action_policy as policy;
@@ -539,15 +539,13 @@ impl PermissionContext {
     pub(crate) fn next_change_in(&self) -> Option<std::time::Duration> {
         let sampler = self.policy_time.as_ref()?;
         let now = (sampler.0)().ok()?;
+        let ends = |lifetime: policy::Lifetime| match lifetime {
+            // Live while the clock's milliseconds are before it.
+            policy::Lifetime::Until(at) => Some(at.div_ceil(1000)).filter(|at| *at > now),
+            _ => None,
+        };
         let after = |grants: &mut dyn Iterator<Item = &policy::Grant>| {
-            grants
-                .filter_map(|grant| match grant.lifetime {
-                    // Live while the clock's milliseconds are before it.
-                    policy::Lifetime::Until(at) => Some(at.div_ceil(1000)),
-                    _ => None,
-                })
-                .filter(|at| *at > now)
-                .min()
+            grants.filter_map(|grant| ends(grant.lifetime)).min()
         };
         let access_ends = |access: &MemberAccess| {
             after(&mut access.policy.grants.iter().chain(access.granted.iter()))
@@ -560,10 +558,7 @@ impl PermissionContext {
         let sandbox = self
             .sandbox
             .iter()
-            .filter_map(|cap| match cap.expiry {
-                Expiry::AtUnix(at) if at > now => Some(at),
-                _ => None,
-            })
+            .filter_map(|cap| ends(cap.lifetime))
             .min();
         [access_ends(&self.access), authority, sandbox]
             .into_iter()
@@ -598,7 +593,11 @@ impl PermissionContext {
             .iter()
             .chain(self.access.granted.iter())
             .map(|grant| grant.is_live(&cx))
-            .chain(self.sandbox.iter().map(|cap| cap.expiry.is_live_at(now)))
+            .chain(
+                self.sandbox
+                    .iter()
+                    .map(|cap| cap.is_live_at(now.map(|now| now.saturating_mul(1000)))),
+            )
             .collect();
         Ok(DirectoryPermissionObservation {
             user: self.user.clone(),
@@ -760,6 +759,8 @@ impl PermissionContext {
                     Ok(now) => now,
                     Err(error) => return Some(Denial::Unavailable(error)),
                 };
+                // The context's clock is in seconds; a lifetime ends in milliseconds.
+                let now = now.map(|now| now.saturating_mul(1000));
                 match decide_capability(&self.acting, resource, *access, &self.sandbox, now) {
                     CapDecision::Allow => None,
                     denied => Some(Denial::Sandbox(denied)),
@@ -1620,7 +1621,7 @@ mod tests {
                     Scope::FsPath("/var/workspace/shared".into()),
                     Access::Write,
                 )
-                .with_expiry(1_000);
+                .lasting(policy::Lifetime::Until(1_000_000));
                 let scope = PermissionScope::path("/var/workspace/shared/notes.md", Access::Write);
                 let context =
                     || PermissionContext::member(&crate::permissions::MemberId::person("u_guest"), Role::Viewer).granting(cap.clone());

@@ -998,6 +998,49 @@ async function connect({
       return {invocation: id, ...(update ? stateOf(update) : {state: 'unknown'})};
     }
 
+    /**
+     * Which of the workspace's documents changed after `after`, a cursor an earlier answer gave:
+     * `{changed: [{app, document}], cursor}`, each document once, from the server's own feed of its
+     * documents' changes (`ChangesRequest`), which answers this person with what they may read.
+     * Only the names leave this function: what a change says (its sentence, who made it, what
+     * it was given) is read by nobody here. With no cursor nothing that happened yet is news:
+     * the answer names nothing and gives the cursor to read on from.
+     */
+    async function changes(after = null) {
+      correlation += 1;
+      const answer = await ask({ChangesRequest: {correlation, ...(typeof after === 'string' && after ? {after} : {})}});
+      const result = answer.ChangesResponse?.result;
+      if (!result?.Ok) {
+        if (!result?.Err) throw new ActionsError('unavailable', 'the server did not answer');
+        throw failure(result.Err);
+      }
+      const named = new Map();
+      for (const change of result.Ok.changes ?? []) {
+        const {app, record: document} = change ?? {};
+        if (typeof app !== 'string' || typeof document !== 'string') continue;
+        named.set(`${app}\n${document}`, {app, document});
+      }
+      return {changed: [...named.values()], cursor: String(result.Ok.cursor ?? '')};
+    }
+
+    /**
+     * Wait for the server's word that a write landed in the workspace's documents, `withinMs` at
+     * most: `{woke, release}`. `woke` resolves `true` at that word and `false` once the time
+     * is over, never sooner: a server that cannot tell, or never answers, costs the whole wait
+     * and nothing else. `release()` ends the wait now. The word says that something was
+     * written, never what or by whom.
+     */
+    function landed(withinMs) {
+      let over;
+      const until = new Promise(resolve => { over = resolve; });
+      const timer = setTimeout(over, Math.max(0, Number(withinMs) || 0));
+      // The session's own wait ends with `until`; one that never settles is not waited for.
+      const heard = Promise.resolve().then(() => peer.writeLanded(workspace, until)).then(said => said === true, () => false);
+      const woke = Promise.race([heard, until.then(() => false)])
+        .then(async said => { if (!said) await until; return said; });
+      return {woke, release() { clearTimeout(timer); over(); }};
+    }
+
     async function status(id) {
       const held = entries.get(id);
       if (!held) throw new ActionsError('unknown_invocation', 'no such invocation in this page');
@@ -1025,6 +1068,8 @@ async function connect({
       invoke,
       once,
       observe,
+      changes,
+      landed,
       status,
       cancel,
       dispose() { entries.clear(); },

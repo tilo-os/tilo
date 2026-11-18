@@ -1,3 +1,4 @@
+use crate::component::Person;
 use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
@@ -61,8 +62,8 @@ pub struct Button {
     /// an extension's toolbar action shows. The glyph in `icon` stays the fallback and the layout
     /// key.
     image: Option<vello::peniko::ImageData>,
-    faces: Vec<(String, String)>,
-    avatar: Option<(String, String, crate::tokens::PresenceHue)>,
+    faces: Vec<Person>,
+    avatar: Option<Person>,
     placeholder: bool,
     content_tone: Option<Tone>,
     transport: Option<(crate::widget::TransportControl, f64)>,
@@ -373,17 +374,14 @@ impl Button {
     /// as the group and as tall as its face, its label the name a reader hears, no text on it at
     /// any width; a press opens the roster.
     #[must_use]
-    pub fn with_faces(mut self, faces: impl IntoIterator<Item = String>) -> Self {
-        self.faces = faces.into_iter().map(|name| (name.clone(), name)).collect();
-        self.layout_dirty = true;
-        self.dirty = true;
-        self
+    pub fn with_faces(self, faces: impl IntoIterator<Item = String>) -> Self {
+        self.with_faces_of(faces.into_iter().map(Person::named))
     }
 
-    /// Show who is here as their faces, each named and identified: the face is picked and coloured
-    /// by the identity, the name is what a reader hears.
+    /// Show who is here as their faces: each member's own ([`crate::widget::AvatarFace::of`]),
+    /// named for a reader.
     #[must_use]
-    pub fn with_faces_of(mut self, faces: impl IntoIterator<Item = (String, String)>) -> Self {
+    pub fn with_faces_of(mut self, faces: impl IntoIterator<Item = Person>) -> Self {
         self.faces = faces.into_iter().collect();
         self.layout_dirty = true;
         self.dirty = true;
@@ -395,13 +393,8 @@ impl Button {
     /// ([`PresenceCtx::hue_for`](crate::presence::PresenceCtx::hue_for)): the one they chose, never one
     /// derived here.
     #[must_use]
-    pub fn with_avatar(
-        mut self,
-        name: impl Into<String>,
-        identity: impl Into<String>,
-        hue: crate::tokens::PresenceHue,
-    ) -> Self {
-        self.avatar = Some((name.into(), identity.into(), hue));
+    pub fn with_avatar(mut self, who: Person) -> Self {
+        self.avatar = Some(who);
         self.layout_dirty = true;
         self.dirty = true;
         self
@@ -479,7 +472,7 @@ impl Button {
     #[cfg(test)]
     pub(crate) fn people_shown(&self) -> (Option<&str>, bool) {
         (
-            self.avatar.as_ref().map(|(name, _, _)| name.as_str()),
+            self.avatar.as_ref().map(|who| who.name.as_str()),
             !self.faces.is_empty(),
         )
     }
@@ -1215,8 +1208,8 @@ struct FaceContent<'a> {
     icon: Option<crate::icons::Icon>,
     /// Painted instead of `icon` on an icon-only face.
     image: Option<&'a vello::peniko::ImageData>,
-    faces: &'a [(String, String)],
-    avatar: Option<(&'a str, &'a str, crate::tokens::PresenceHue)>,
+    faces: &'a [Person],
+    avatar: Option<&'a Person>,
     placeholder: bool,
     /// What the content marks means: its colour, where the face's own ink would stand.
     tone: Option<Tone>,
@@ -1284,10 +1277,7 @@ impl FaceContent<'_> {
             .faces
             .iter()
             .take(shown)
-            .map(|(name, identity)| {
-                let hue = crate::tokens::colors::PresenceHue::of_identity(identity);
-                crate::presence::Face::new(name, identity, palette.hue(hue))
-            })
+            .map(|who| crate::presence::Face::of(who, palette.hue(who.hue)))
             .collect();
         let width = stack.width_of(faces.len(), more);
         stack.paint(
@@ -1360,7 +1350,7 @@ impl FaceContent<'_> {
                 );
                 return;
             }
-            if let Some((name, identity, hue)) = self.avatar {
+            if let Some(who) = self.avatar {
                 // One person's avatar alone (their own menu on a bar) at an avatar's own size.
                 let side = rect
                     .height()
@@ -1371,9 +1361,7 @@ impl FaceContent<'_> {
                     rect.center().x + side / 2.0,
                     rect.center().y + side / 2.0,
                 );
-                crate::widget::AvatarFace::new(name, identity)
-                    .hue(hue)
-                    .paint(ctx, face);
+                crate::widget::AvatarFace::of(who).paint(ctx, face);
                 return;
             }
             if let Some(image) = self.image {
@@ -1430,12 +1418,10 @@ impl FaceContent<'_> {
                     ink,
                 );
             }
-            if let Some((name, identity, hue)) = self.avatar {
+            if let Some(who) = self.avatar {
                 let iy = rect.center().y - icon_px / 2.0;
                 let face = Rect::new(leading, iy, leading + icon_px, iy + icon_px);
-                crate::widget::AvatarFace::new(name, identity)
-                    .hue(hue)
-                    .paint(ctx, face);
+                crate::widget::AvatarFace::of(who).paint(ctx, face);
             }
             if !self.faces.is_empty() {
                 self.draw_faces(ctx, leading, rect.center().y, rect.height());
@@ -1478,12 +1464,10 @@ impl FaceContent<'_> {
                 ink,
             );
         }
-        if let Some((name, identity, hue)) = self.avatar {
+        if let Some(who) = self.avatar {
             let iy = rect.center().y - icon_px / 2.0;
             let face = Rect::new(start_x, iy, start_x + icon_px, iy + icon_px);
-            crate::widget::AvatarFace::new(name, identity)
-                .hue(hue)
-                .paint(ctx, face);
+            crate::widget::AvatarFace::of(who).paint(ctx, face);
         }
         if !self.faces.is_empty() {
             self.draw_faces(ctx, start_x, rect.center().y, rect.height());
@@ -2019,10 +2003,7 @@ impl Button {
                 icon: self.icon,
                 image: self.image.as_ref(),
                 faces: self.shown_faces(),
-                avatar: self
-                    .avatar
-                    .as_ref()
-                    .map(|(name, identity, hue)| (name.as_str(), identity.as_str(), *hue)),
+                avatar: self.avatar.as_ref(),
                 placeholder: self.placeholder,
                 tone: self.content_tone,
                 badge: self.badge.as_deref(),
@@ -2050,7 +2031,7 @@ impl Button {
 
     /// The faces the button shows: one while a row short of width has it compact — the one who
     /// changed it newest, which the group names last — and the group itself otherwise.
-    fn shown_faces(&self) -> &[(String, String)] {
+    fn shown_faces(&self) -> &[Person] {
         if self.compact_presentation.is_some() {
             self.faces.last().map_or(&[], std::slice::from_ref)
         } else {
@@ -2085,10 +2066,7 @@ impl Button {
                 icon: self.icon,
                 image: None,
                 faces: self.shown_faces(),
-                avatar: self
-                    .avatar
-                    .as_ref()
-                    .map(|(name, identity, hue)| (name.as_str(), identity.as_str(), *hue)),
+                avatar: self.avatar.as_ref(),
                 placeholder: self.placeholder,
                 tone: None,
                 badge: None,

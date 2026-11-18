@@ -1043,7 +1043,7 @@ mod locus_tests {
             &bindings,
             &[],
             viewport,
-            "native-primary",
+            ("native-primary", &|_| None),
             crate::time::now(),
         );
         let marker = markers.first().expect("the agent's mark is painted");
@@ -1502,7 +1502,7 @@ mod locus_tests {
                 &bindings,
                 &[],
                 viewport,
-                "native-primary",
+                ("native-primary", &|_| None),
                 now,
             );
             assert!(
@@ -1537,7 +1537,7 @@ mod locus_tests {
             &bindings,
             &[],
             viewport,
-            "native-primary",
+            ("native-primary", &|_| None),
             at,
         );
         assert!(retired.is_empty());

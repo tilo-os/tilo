@@ -72,7 +72,7 @@ pub fn session_answers<'g>(
         .filter(move |grant| grant.id.as_str().starts_with(&prefix))
 }
 
-pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, Role};
+pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, OFFERED_SPAN_MS, Role};
 pub use kind::{ActionKind, KindSet};
 pub use member::{
     Acting, Actor, AgentSessionId, AutomationId, DIRECT_CONVERSATION_PREFIX, MemberId, ResourceId,

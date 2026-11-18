@@ -3,7 +3,10 @@
 //! Every app ships its published surface (`app_fleet::surface`). Read as a package for readings
 //! ([`catalogue::published_document`]) it gives a view the app's types, its actions, and the record
 //! the app keeps for the workspace as a root (`tasks.tracker`). A view names an app by the last
-//! part of its id, as every written view does.
+//! part of its id, as every written view does, with `_` where the id has `-`, which no name in a
+//! view holds (`word_processor` for `so.tilo.word-processor`): the package the view reads the app
+//! as is named so throughout, and the app's own id ([`App::id`]) is kept for what is asked of the
+//! workspace.
 //!
 //! An app answers a record read with its record as it is stored: a collection as its items by id,
 //! each under its place in the order. A view reads a list of records. [`App::reading`] turns the
@@ -18,10 +21,13 @@ use tilolang_tilo::tilolang::PackageMeta;
 
 /// One app a view may name.
 pub(crate) struct App {
+    /// The app's own id: what the app keeps is asked of it, and its actions are sent to it.
+    pub(crate) id: String,
+    /// The package a view reads the app as, named as a view can write it ([`written`]).
     pub(crate) meta: PackageMeta,
     /// What people call it.
     pub(crate) title: String,
-    /// What a view names it by: the last part of its id.
+    /// What a view names it by: the last part of its id, as a view can write it.
     pub(crate) alias: String,
     /// What stands for the app's code where the policy decides one of its actions.
     pub(crate) module: ModuleHash,
@@ -50,7 +56,8 @@ struct Verb {
 impl App {
     /// The app `id` that people call `title`, from its surface file.
     pub(crate) fn of(id: &str, title: &str, surface: &str) -> Result<Self, String> {
-        let meta = catalogue::published_document(id, title, surface)?;
+        let named = written(id);
+        let meta = catalogue::published_document(&named, title, surface)?;
         let verbs = catalogue::parse_surfaces(surface)?
             .into_iter()
             .flat_map(|surface| surface.verbs)
@@ -68,8 +75,9 @@ impl App {
             })
         });
         Ok(Self {
+            id: id.to_owned(),
             title: title.to_owned(),
-            alias: id.rsplit('.').next().unwrap_or(id).to_owned(),
+            alias: named.rsplit('.').next().unwrap_or(&named).to_owned(),
             module: ModuleHash::of_bytes(&meta.to_json_bytes()),
             root,
             verbs,
@@ -125,6 +133,12 @@ impl App {
             None => record.clone(),
         }
     }
+}
+
+/// The app id `id` as a view can write its parts: a name in a view holds letters, digits and `_`,
+/// so an id's `-` is written `_`, as a verb's is where a view calls it.
+fn written(id: &str) -> String {
+    id.replace('-', "_")
 }
 
 /// A verb's id read as words: `delete-area` is "Delete area".

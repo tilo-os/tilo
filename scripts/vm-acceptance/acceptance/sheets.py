@@ -23,9 +23,9 @@ from .vm import VmError, wait_until
 
 # The sheet that asks, as the person sees it.
 SHEET = "so.tilo.portal-sheet"
-# The sheet's choices, as the session numbers them (session questions.rs `admitted`, and
-# tilo_portal::consent for an app's access question).
-ALLOW_ONCE, ALLOW_SESSION, ALLOW_ALWAYS = 0, 1, 2
+# The sheet's choices, as the session numbers them: their place in the durations every prompt
+# offers (tilo_action_policy `Lifetime::offered`).
+ALLOW_ONCE, ALLOW_SESSION, ALLOW_ALWAYS = 0, 1, 3
 CHOICE_LABELS = {ALLOW_ONCE: "Allow once", ALLOW_SESSION: "Allow for this session",
                  ALLOW_ALWAYS: "Always allow"}
 # What the sheet's controls are called, in any question it asks.

@@ -244,6 +244,7 @@ pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), 
 #[cfg(test)]
 mod batch_tests {
     use super::*;
+    use automerge::transaction::Transactable as _;
 
     #[test]
     fn duplicate_batch_routes_leave_governance_unchanged() {
@@ -257,7 +258,11 @@ mod batch_tests {
             sequence: 1,
             watermarks: BTreeMap::new(),
         };
+        // A workspace document as its founding leaves it: the coverage map
+        // exists before any route is written.
         let mut doc = AutoCommit::new();
+        doc.put_object(automerge::ROOT, FIELD_V2, automerge::ObjType::Map)
+            .unwrap();
         put(&mut doc, coverage.clone()).unwrap();
         let heads = doc.get_heads();
         let rows = entries(&doc).unwrap();

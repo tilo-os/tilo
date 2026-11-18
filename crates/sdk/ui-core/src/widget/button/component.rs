@@ -182,7 +182,7 @@ impl Described for Button {
                 .faces
                 .iter()
                 .zip(&self.faces)
-                .all(|(name, (shown, _))| name == shown)
+                .all(|(name, shown)| *name == shown.name)
             && props.icon == self.icon
             && role == self.role
             && size == self.control_size

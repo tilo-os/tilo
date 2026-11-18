@@ -51,7 +51,7 @@ impl PeerWorkspace<'_> {
         }
     }
     /// The anchor of `device`'s archived effect receipts, in its person's
-    /// slice of the workspace.
+    /// row of the workspace.
     pub fn workspace_effect_history_root(
         self,
         device: &tilo_user_identity::DeviceCert,
@@ -71,16 +71,9 @@ impl PeerWorkspace<'_> {
         else {
             return Ok(None);
         };
-        let Some((Value::Object(_), slice)) = doc
-            .get(&history, hex::encode(device.user_public_key))
-            .map_err(|e| e.to_string())?
-        else {
-            return Ok(None);
-        };
-        match doc
-            .get(&slice, hex::encode(device.device_public_key))
-            .map_err(|e| e.to_string())?
-        {
+        let key =
+            super::device_rows::person_row_key(&device.user_public_key, &device.device_public_key);
+        match doc.get(&history, key.as_str()).map_err(|e| e.to_string())? {
             None => Ok(None),
             Some((Value::Scalar(value), _)) => match value.as_ref() {
                 ScalarValue::Bytes(bytes) => bytes
@@ -133,8 +126,7 @@ impl PeerWorkspaceMut<'_> {
             &mut candidate,
             &person,
             std::slice::from_ref(receipt),
-        )
-        .map_err(|error| error.to_string())?;
+        )?;
         if !tilo_desktop_model::projection::workspace_effect_receipts_of(&candidate)
             .contains(receipt)
         {
@@ -177,44 +169,27 @@ impl PeerWorkspaceMut<'_> {
         Ok(Some(candidate))
     }
 
-    /// Anchor `caller`'s archived effect receipts at `root`, in its
-    /// person's slice of the workspace, as the device's own change.
+    /// Anchor `caller`'s archived effect receipts at `root`, in its person's
+    /// row of the workspace, as the device's own change.
     pub fn set_workspace_effect_history_root(
-        self,
+        mut self,
         caller: &tilo_user_identity::DeviceCert,
         root: [u8; 32],
         now: SystemTime,
     ) -> Result<(), String> {
-        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        use automerge::ScalarValue;
         use tilo_desktop_model::projection::WORKSPACE_EFFECT_HISTORY_KEY;
-        let mut candidate = self
-            .own_effect_candidate(caller, now)?
-            .ok_or("effect workspace is absent")?;
-        let object =
-            |doc: &mut automerge::AutoCommit, parent: &automerge::ObjId, key: &str| match doc
-                .get(parent, key)
-                .map_err(|e| e.to_string())?
-            {
-                Some((Value::Object(ObjType::Map), id)) => Ok(id),
-                _ => doc
-                    .put_object(parent, key, ObjType::Map)
-                    .map_err(|e| e.to_string()),
-            };
-        let history = object(&mut candidate, &ROOT, WORKSPACE_EFFECT_HISTORY_KEY)?;
-        let slice = object(
-            &mut candidate,
-            &history,
-            &hex::encode(caller.user_public_key),
+        if self.own_effect_candidate(caller, now)?.is_none() {
+            return Err("effect workspace is absent".into());
+        }
+        let key =
+            super::device_rows::person_row_key(&caller.user_public_key, &caller.device_public_key);
+        let _ = self.set_row(
+            WORKSPACE_EFFECT_HISTORY_KEY,
+            &key,
+            &caller.device_public_key,
+            Some(ScalarValue::Bytes(root.to_vec())),
         )?;
-        candidate
-            .put(
-                &slice,
-                hex::encode(caller.device_public_key),
-                ScalarValue::Bytes(root.to_vec()),
-            )
-            .map_err(|e| e.to_string())?;
-        candidate.commit();
-        self.peer.core.workspace_doc = Some(candidate.into());
         Ok(())
     }
 }

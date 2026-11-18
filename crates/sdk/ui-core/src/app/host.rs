@@ -530,7 +530,13 @@ fn draw_presence_layer(
                 &bindings,
                 &text_loci,
                 window_rect,
-                app.window.app_id.as_deref().unwrap_or("native-primary"),
+                (
+                    app.window.app_id.as_deref().unwrap_or("native-primary"),
+                    &|id| {
+                        crate::widget::find_resource(app.root_widget.as_ref(), &app.state.doc, id)
+                            .map(|resource| resource.label)
+                    },
+                ),
                 now,
             );
             // Outlines, labels, markers and the activity rail share no

@@ -2,15 +2,18 @@
 //! it is opened: what the page opens is never founded before the host answered
 //! it holds none of it, and opens with the workspace's content once it comes.
 
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
+use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
+use tilo_automerge::ApplyIncoming as _;
 use ui::application::{AppComponent, ProcessContext, ProcessContextInputs, RestoreInput};
 use ui::application_view::SavedInstanceView;
-use ui::automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
+use ui::automerge::{AutoCommit, ChangeHash, ROOT, ReadDoc as _, transaction::Transactable as _};
 use ui::launch::LaunchError;
 use ui::permissions::MemberId;
-use ui::resource::{ResourceOwners, ResourceType};
+use ui::resource::{DocumentSync, ResourceOwners, ResourceType};
 use ui::widget::IconDescriptor;
 
 use super::*;
@@ -99,8 +102,13 @@ fn arrives(memory: &MemoryStore, store: &ResourceStore, id: &DocumentId, bytes: 
 
 /// What the record holds under `body`.
 fn body(store: &ResourceStore, id: &DocumentId) -> Option<String> {
+    text_at(store, id, "body")
+}
+
+/// The text `id` holds under `name` in `store`.
+fn text_at(store: &ResourceStore, id: &DocumentId, name: &str) -> Option<String> {
     let doc = store.read(id, AutoCommit::clone)?;
-    match doc.get(&ROOT, "body").ok().flatten()?.0 {
+    match doc.get(&ROOT, name).ok().flatten()?.0 {
         ui::automerge::Value::Scalar(scalar) => match scalar.into_owned() {
             ui::automerge::ScalarValue::Str(text) => Some(text.to_string()),
             _ => None,
@@ -504,5 +512,280 @@ tilo_test_env::scenario! {
             said.contains("the factory ran"),
             "the launch refused the window's own view: {said}"
         );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_second_mount_of_an_app_in_a_page_reads_what_the_first_holds_of_the_workspace;
+
+    phase a_part_of_the_workspaces_chain_opens_in_both_and_a_windows_own_document_in_one;
+    // The page's own window of an app and a mount of the same app beside it (a message's view
+    // in Chat) each read the page's storage through a store of their own. A part of the chain
+    // kept beside the workspace's own document is the workspace's: both hold it. A document of
+    // one window keeps its one owner.
+    {
+        let definition = definition(true);
+        let memory = Rc::new(MemoryStore::queued());
+        let mount = || {
+            let mut owners = ResourceOwners::with_store(
+                Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>
+            );
+            let stores = Rc::new(RefCell::new(Vec::new()));
+            store(&mut owners, &definition, WORKSPACE, true, &stores).unwrap()
+        };
+        let kept = |want: &DocumentCheckout, body: &str| {
+            let key = StorageKey::document(PACKAGE, WORKSPACE, want.id.storage_key());
+            memory
+                .write(&key, WriteOp::Replace(written_elsewhere(want, body)), None)
+                .unwrap();
+        };
+        let chain = DocumentId::derived("messages", &DocumentId::workspace_default());
+        let part = DocumentCheckout::new(chain.part(0), ResourceType::new("probe.part"));
+        kept(&part, "the first message");
+        let own = default_resource(&definition);
+        kept(&own, "one window's");
+
+        let first = mount();
+        first
+            .try_open_resource(&part)
+            .expect("the page's own window holds the part");
+        first
+            .try_open_resource(&own)
+            .expect("and its own document");
+
+        let beside = mount();
+        assert_eq!(beside.held_parts(&chain), vec![0], "the part is in the page");
+        beside
+            .try_open_resource(&part)
+            .expect("a mount beside reads the part the page's own window holds");
+        assert_eq!(
+            body(&beside, &part.id).as_deref(),
+            Some("the first message")
+        );
+        assert!(
+            beside.try_open_resource(&own).is_err(),
+            "a document of one window keeps its one owner"
+        );
+        // So does a part of a chain of a document that is not the workspace's own.
+        let theirs = DocumentCheckout::new(own.id.part(0), ResourceType::new("probe.part"));
+        kept(&theirs, "one window's first part");
+        first
+            .try_open_resource(&theirs)
+            .expect("its window holds it");
+        assert!(
+            beside.try_open_resource(&theirs).is_err(),
+            "a part of one window's chain keeps its one owner"
+        );
+        // And the store of another workspace over the same storage has nothing of this
+        // workspace's part: it neither lists nor opens it.
+        let elsewhere = {
+            let mut owners = ResourceOwners::with_store(
+                Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>
+            );
+            let stores = Rc::new(RefCell::new(Vec::new()));
+            store(&mut owners, &definition, "workspace-b", true, &stores).unwrap()
+        };
+        assert!(
+            elsewhere.held_parts(&chain).is_empty(),
+            "another workspace's store holds none of it"
+        );
+        assert!(
+            elsewhere.try_open_resource(&part).is_err(),
+            "and does not open it"
+        );
+    }
+
+    phase both_mounts_write_the_part_and_no_write_is_made_twice_or_lost;
+    // Two mounts that hold the part are two writers of it, as two devices of the workspace are.
+    // Each writes under an actor of its own, so a write is one change with one name. The page's
+    // replication takes what each made to the page's peer and merges what the peer then holds
+    // into every mount that holds the part: a change a mount holds already merges to nothing, and
+    // nothing a mount was handed goes out again. Both append to the page's one stored part, which
+    // whoever opens it afterwards reads with both writes, each once.
+    {
+        const WINDOW: &str = "written in the page's own window";
+        const BESIDE: &str = "written in the mount beside";
+        let definition = definition(true);
+        let memory = Rc::new(MemoryStore::queued());
+        let mount = || {
+            let mut owners = ResourceOwners::with_store(
+                Rc::clone(&memory) as Rc<dyn durable_store::DurableStore>
+            );
+            let stores = Rc::new(RefCell::new(Vec::new()));
+            store(&mut owners, &definition, WORKSPACE, true, &stores).unwrap()
+        };
+        let chain = DocumentId::derived("messages", &DocumentId::workspace_default());
+        let part = DocumentCheckout::new(chain.part(0), ResourceType::new("probe.part"));
+        let delivered = written_elsewhere(&part, "the first message");
+        let key = StorageKey::document(PACKAGE, WORKSPACE, part.id.storage_key());
+        memory
+            .write(&key, WriteOp::Replace(delivered.clone()), None)
+            .unwrap();
+        // The page's peer holds the part as the workspace delivered it.
+        let mut peer = AutoCommit::load(&delivered).unwrap();
+        let names = |doc: &mut AutoCommit| -> BTreeSet<ChangeHash> {
+            doc.get_changes(&[])
+                .iter()
+                .map(ui::automerge::Change::hash)
+                .collect()
+        };
+        let at_first = names(&mut peer);
+        let held = |store: &ResourceStore| {
+            store
+                .with(&part.id, |doc| names(doc))
+                .expect("the part is open")
+        };
+
+        let first = mount();
+        first
+            .try_open_resource(&part)
+            .expect("the page's own window holds the part");
+        let beside = mount();
+        beside
+            .try_open_resource(&part)
+            .expect("and so does the mount beside it");
+        // As the page's replication keeps them: the mount that opened the part first has it as
+        // the workspace delivered it, the second sends it whole once.
+        let mut of_first = DocumentSync::delivered(peer.get_heads());
+        let mut of_beside = DocumentSync::new();
+
+        let write = |store: &ResourceStore, name: &str, text: &str| {
+            store
+                .with(&part.id, |doc| {
+                    let _ = doc.put(&ROOT, name, text);
+                    doc.commit();
+                })
+                .expect("the part is open");
+        };
+        write(&first, "window", WINDOW);
+        write(&beside, "beside", BESIDE);
+        let actor = |store: &ResourceStore| {
+            store
+                .read(&part.id, |doc| doc.get_actor().clone())
+                .expect("the part is open")
+        };
+        assert_ne!(
+            actor(&first),
+            actor(&beside),
+            "each mount writes under an actor of its own"
+        );
+
+        // Each offers what it wrote to the page's one stored part before either heard of the
+        // other's write: the two appends stand side by side, and a mount made now reads both.
+        first.tick().unwrap();
+        beside.tick().unwrap();
+        {
+            let reader = mount();
+            reader
+                .try_open_resource(&part)
+                .expect("a mount made now opens the stored part");
+            assert_eq!(text_at(&reader, &part.id, "window").as_deref(), Some(WINDOW));
+            assert_eq!(text_at(&reader, &part.id, "beside").as_deref(), Some(BESIDE));
+            assert_eq!(
+                held(&reader).difference(&at_first).count(),
+                2,
+                "the stored part holds each write once before the mounts heard of each other"
+            );
+        }
+
+        // One turn of the page's replication. What each mount made goes to the page's peer,
+        let publish = |sync: &mut DocumentSync, store: &ResourceStore, peer: &mut AutoCommit| {
+            let Some(out) = sync.take_outbound(store, &part.id).unwrap() else {
+                return 0;
+            };
+            let before = names(peer);
+            match &out.mutation {
+                DocumentMutation::Snapshot(bytes) => {
+                    peer.merge_incoming(&mut AutoCommit::load(bytes).unwrap())
+                        .unwrap();
+                }
+                DocumentMutation::Incremental(bytes) => {
+                    peer.load_incoming(bytes).unwrap();
+                }
+            }
+            sync.advance(out.heads);
+            names(peer).difference(&before).count()
+        };
+        // and what the peer then holds lands in every mount that holds the part.
+        let land = |sync: &mut DocumentSync, store: &ResourceStore, peer: &mut AutoCommit| {
+            let whole = peer.save();
+            sync.merge_delivered(
+                store,
+                &part,
+                DocumentMutation::Snapshot(whole),
+                peer.get_heads(),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            publish(&mut of_first, &first, &mut peer),
+            1,
+            "the window's write reaches the peer as one change"
+        );
+        assert_eq!(
+            publish(&mut of_beside, &beside, &mut peer),
+            1,
+            "and the mount's as one more, though the mount sent the part whole"
+        );
+        assert!(
+            land(&mut of_first, &first, &mut peer),
+            "the mount's write reaches the window"
+        );
+        assert!(
+            land(&mut of_beside, &beside, &mut peer),
+            "and the window's write the mount"
+        );
+        let both = names(&mut peer);
+        assert_eq!(
+            both.difference(&at_first).count(),
+            2,
+            "the peer holds the two writes and nothing more"
+        );
+        for (who, store) in [("the window", &first), ("the mount beside", &beside)] {
+            assert_eq!(
+                text_at(store, &part.id, "window").as_deref(),
+                Some(WINDOW),
+                "{who}"
+            );
+            assert_eq!(
+                text_at(store, &part.id, "beside").as_deref(),
+                Some(BESIDE),
+                "{who}"
+            );
+            assert_eq!(held(store), both, "{who} holds each write once");
+        }
+        // Nothing a mount was handed goes out again, and what lands once more changes nothing.
+        assert_eq!(
+            publish(&mut of_first, &first, &mut peer),
+            0,
+            "the window sends nothing back"
+        );
+        assert_eq!(
+            publish(&mut of_beside, &beside, &mut peer),
+            0,
+            "nor does the mount"
+        );
+        assert!(
+            !land(&mut of_first, &first, &mut peer),
+            "what lands again changes nothing in the window"
+        );
+        assert!(
+            !land(&mut of_beside, &beside, &mut peer),
+            "nor in the mount"
+        );
+        assert_eq!(held(&first), both);
+        assert_eq!(held(&beside), both);
+
+        // Each has since stored what the other made as well, so the stored part holds every
+        // write more than once as bytes: a mount made afterwards reads the two, each once.
+        first.tick().unwrap();
+        beside.tick().unwrap();
+        let later = mount();
+        later
+            .try_open_resource(&part)
+            .expect("a mount made afterwards opens the stored part");
+        assert_eq!(text_at(&later, &part.id, "window").as_deref(), Some(WINDOW));
+        assert_eq!(text_at(&later, &part.id, "beside").as_deref(), Some(BESIDE));
+        assert_eq!(held(&later), both, "the stored part holds each write once");
     }
 }

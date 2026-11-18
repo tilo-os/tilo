@@ -617,7 +617,7 @@ fn sandbox(
         may(governance::GRANT)?;
         let capability: collab_types::caps::CapOverride = serde_json::from_slice(bytes)
             .map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;
-        if !capability.persists_across_restart() {
+        if !capability.is_durable() {
             return Err(MembershipRefusal::Refused(format!(
                 "sandbox capability {id} ends with a session or a single use"
             )));

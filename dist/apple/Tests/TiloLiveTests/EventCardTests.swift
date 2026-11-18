@@ -161,6 +161,147 @@ final class EventCardTests: XCTestCase {
         try await until("and the list is empty") { self.listed.isEmpty }
     }
 
+    /// The card of an event, wherever it stands among the pieces held.
+    private func card(of event: String) -> EventCard? {
+        for item in held where item.id.value.hasSuffix("#event:" + event) {
+            if case .event(let card) = item.content { return card }
+        }
+        return nil
+    }
+
+    /// What was asked of her server that changes an event, in order.
+    private func calls() async throws -> String {
+        try await page("return JSON.stringify(window.eventCalls ?? [])")
+    }
+
+    func testShowTheAnswerShowsWhatTheEventKeepsReadFreshAndCallsNothingThatChangesIt() async throws {
+        try await start()
+        try await enter("""
+            wrote('m1', 'Answer every supplier that we buy in spring', 1794900100);
+            answer('m2', 'Done. I answer in your words and tell you afterwards.', 1794900101, 1794900110);
+            window.events = [
+              {id: 'e-1', name: 'When a supplier writes', sort: 'event', when: 'when something new is in "tilo.accounts.mail"',
+               onlyIf: 'The sender is a supplier', instruction: 'Answer that we are not buying before spring, then tell me', on: true,
+               permits: [{effect: 'allow', action: 'so.tilo.mail#send'}], setUpAtMs: 1794900105000,
+               note: {instruction: '', style: 'Short and warm', guidance: '', rejected: [], kept: null,
+                      accepted: ['Thank you, we will come back to you.', 'Thanks for writing. We are not buying before spring.']}},
+              {id: 'e-2', name: 'Every ten new mails', sort: 'event', when: 'when something new is in "tilo.accounts.mail"', every: 10,
+               instruction: 'One summary', on: true, permits: [], setUpAtMs: 1794900106000,
+               note: {instruction: '', style: '', guidance: '', accepted: [], rejected: [], kept: null}}]
+            """)
+        try await until("both cards stand under the answer") { self.names == ["m1", "m2", "m2#event:e-1", "m2#event:e-2"] }
+        let first = try XCTUnwrap(card(of: "e-1"))
+        // What may be pressed is what the event allows: one that may act alone can be told to ask each time.
+        XCTAssertEqual(first.choices.map(\.title), ["Show the answer", "Ask me each time", "Undo"])
+        XCTAssertEqual(card(of: "e-2")?.choices.map(\.title), ["Show the answer", "Undo"])
+        XCTAssertNil(first.shown)
+        // The assistant changed how the event writes since the app last asked: what is shown is read fresh.
+        try await inPage("window.events[0].note.style = 'Two sentences at most'")
+        let asked = await eventsAsked()
+        try await source.answer(first.question, with: "show")
+        try await until("what the event keeps is shown") { self.card(of: "e-1")?.shown != nil }
+        XCTAssertEqual(card(of: "e-1")?.shown, """
+            **What it is told to do**
+
+            Answer that we are not buying before spring, then tell me
+
+            **How it writes**
+
+            Two sentences at most
+
+            **An answer you accepted**
+
+            Thanks for writing. We are not buying before spring.
+            """)
+        XCTAssertEqual(card(of: "e-1")?.choices.map(\.title), ["Ask me each time", "Undo"])
+        // An event that keeps nothing for its answers says so.
+        try await source.answer(EventCards.question(of: "e-2"), with: "show")
+        try await until("the second says what it keeps") { self.card(of: "e-2")?.shown != nil }
+        XCTAssertEqual(card(of: "e-2")?.shown, """
+            **What it is told to do**
+
+            One summary
+
+            It keeps no answer of its own yet. It writes one each time from what it is told.
+            """)
+        // Showing asked her server for the list each time and called nothing that changes an event.
+        let after = await eventsAsked()
+        XCTAssertEqual(after, asked + 2)
+        let called = try await calls()
+        XCTAssertEqual(called, "[]")
+    }
+
+    func testAskMeEachTimeTakesBackEveryPermissionAndUndoRemovesTheEventAndSaysSo() async throws {
+        try await start()
+        try await enter("""
+            wrote('m1', 'Answer every supplier that we buy in spring', 1794900100);
+            answer('m2', 'Done.', 1794900101, 1794900110);
+            window.events = [{id: 'e-1', name: 'When a supplier writes', sort: 'event', when: 'when something new is in "tilo.accounts.mail"',
+              instruction: 'Answer, then tell me', on: true, setUpAtMs: 1794900105000,
+              permits: [{effect: 'allow', action: 'so.tilo.mail#send'}, {effect: 'allow', action: 'so.tilo.mail#reply'}]}]
+            """)
+        try await until("the card stands under the answer") { self.card(of: "e-1") != nil }
+        let question = EventCards.question(of: "e-1")
+        XCTAssertEqual(card(of: "e-1")?.automation.actsAlone, true)
+        try await source.answer(question, with: "ask")
+        try await until("the card says it asks each time") { self.card(of: "e-1")?.settled == .asksEachTime }
+        // Each permission was taken back at her server by its own rule, and nothing else was called.
+        var called = try await calls()
+        XCTAssertEqual(called, #"["withdraw-permission e-1 so.tilo.mail#send","withdraw-permission e-1 so.tilo.mail#reply"]"#)
+        XCTAssertEqual(card(of: "e-1")?.automation.actsAlone, false)
+        XCTAssertEqual(card(of: "e-1")?.choices.map(\.title), ["Show the answer", "Undo"])
+        try await until("the Tasks panel says the same") { self.listed.first?.actsAlone == false }
+        // Undo removes the event at her server; the card stays and says so, with nothing left to press.
+        try await source.answer(question, with: "undo")
+        try await until("the card says it is undone") { self.card(of: "e-1")?.settled == .undone }
+        called = try await calls()
+        XCTAssertTrue(called.hasSuffix(#","remove e-1"]"#), called)
+        XCTAssertEqual(card(of: "e-1")?.choices, [])
+        XCTAssertEqual(names, ["m1", "m2", "m2#event:e-1"])
+        try await until("the Tasks panel lists it no more") { self.listed.isEmpty }
+        let kept = try await page("return String(window.events.length)")
+        XCTAssertEqual(kept, "0")
+        // What is no answer of a card is refused, and nothing is called for it.
+        do {
+            try await source.answer(question, with: "nonsense")
+            XCTFail("something that is no answer was taken")
+        } catch let problem as SourceProblem {
+            XCTAssertEqual(problem, .refused("This is not one of the answers"))
+        }
+        let last = try await calls()
+        XCTAssertEqual(last, called)
+    }
+
+    func testAnEventsTagSaysWhatItsNoteKeepsAndNeverANumberItsServerDoesNotKeep() async throws {
+        try await start()
+        try await enter("""
+            wrote('m1', 'Answer every supplier in my words', 1794900100);
+            answer('m2', 'Done. I keep how you write with it.', 1794900101, 1794900110);
+            const note = more => ({instruction: '', style: '', guidance: '', accepted: [], rejected: [], kept: null, ...more});
+            const event = (id, more) => ({id, name: id, sort: 'event', when: 'when something new is in "tilo.accounts.mail"',
+              instruction: 'Answer', on: true, permits: [], setUpAtMs: 1794800000000, ...more});
+            window.events = [
+              event('e-style', {setUpAtMs: 1794900105000, onlyIf: 'The sender is a supplier',
+                note: note({style: 'Short and warm', accepted: ['One.', 'Two.', 'Three.'], rejected: ['No.']})}),
+              event('e-style-alone', {note: note({style: 'Short and warm'})}),
+              event('e-one', {note: note({accepted: ['One.']})}),
+              event('e-cares', {note: note({guidance: 'Never promise a date'})}),
+              event('e-saw', {note: note({kept: {last: 'uid 41'}})}),
+              event('e-nothing', {note: note({})}),
+              event('e-no-note', {})]
+            """)
+        try await until("her events are listed") { self.listed.count == 7 }
+        XCTAssertEqual(listed.map(\.note), ["your style, from 3 answers you accepted", "your style", "1 answer you accepted",
+                                            "what you care about", "what it saw last", nil, nil])
+        // The tag in the Tasks panel and on the card, in the app's own words around the note's.
+        let wording = Wording()
+        XCTAssertEqual(wording.tags(listed[0]), ["The sender is a supplier", "Note: your style, from 3 answers you accepted"])
+        XCTAssertEqual(wording.tags(listed[5]), [])
+        try await until("the card stands under the answer") { self.names == ["m1", "m2", "m2#event:e-style"] }
+        guard case .event(let card) = held[2].content else { return XCTFail("no card") }
+        XCTAssertEqual(wording.cardTags(card.automation), ["The sender is a supplier", "Your style, from 3 answers you accepted"])
+    }
+
     func testAnAnswerLeftOpenEndsWhereTheNextBeganAndTwoEventsOfOneAnswerEachHaveTheirCard() throws {
         var cards = EventCards()
         func answer(_ name: String, from: Int, to: Int?) throws -> Item {

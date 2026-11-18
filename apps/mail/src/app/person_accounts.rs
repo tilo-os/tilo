@@ -120,7 +120,7 @@ impl MailApp {
         let mut adopted = if self.ownership.is_some() {
             AccountStore::without_secrets(&person.store())
         } else if let Some(root) = root {
-            let vault = match accounts::AccountCredentials::open_in(&root) {
+            let mut vault = match accounts::AccountCredentials::open_in(&root) {
                 Ok(vault) => vault,
                 Err(error) => {
                     tracing::error!(%error, "mail account credentials could not be opened");
@@ -128,7 +128,17 @@ impl MailApp {
                     return;
                 }
             };
-            AccountStore::from_store(&person.store(), &vault)
+            // Mail keeps mail accounts and asks for their secrets to sign
+            // in: one kept with no servers on it is bound to the servers
+            // its account names now, and joined to no other from then on.
+            let store = person.store();
+            let kept = store.list(&accounts::AccountTypeId::from(crate::account::TYPE_ID));
+            if let Err(error) = vault.bind_first(kept) {
+                tracing::error!(%error, "mail account credentials could not be bound to their servers");
+                *seen = None;
+                return;
+            }
+            AccountStore::from_store(&store, &vault)
         } else {
             // In a session the secrets are the session's to release, and no
             // sandbox here opens the person's vault: an account shows

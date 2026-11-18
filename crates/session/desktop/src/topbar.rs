@@ -169,7 +169,7 @@ struct CacheFingerprint {
     strip_name: Option<String>,
     face_initials: Vec<char>,
     face_names: Vec<String>,
-    face_agents: Vec<bool>,
+    face_members: Vec<tilo_action_policy::MemberId>,
     face_overflow: usize,
     /// How many of the people present the bar stood faces for: a narrower bar folds more of them
     /// into the count badge, which repaints the bar.
@@ -369,8 +369,8 @@ pub struct TopBarChrome {
     /// Same index as `face_initials` . The workspace's colour for each, else
     /// [`ui::presence::member_color`].
     face_colors: Vec<Color>,
-    /// Same index as `face_initials` : drawn with the agent mark.
-    face_agents: Vec<bool>,
+    /// Same index as `face_initials` : who each face is, which picks how it is drawn.
+    face_members: Vec<tilo_action_policy::MemberId>,
     /// Same index as `face_initials` : the roster id presence knows them by (idle, in a
     /// call, a wave's bounce).
     face_ids: Vec<String>,
@@ -552,7 +552,7 @@ impl TopBarChrome {
             face_initials: Vec::new(),
             face_names: Vec::new(),
             face_colors: Vec::new(),
-            face_agents: Vec::new(),
+            face_members: Vec::new(),
             face_ids: Vec::new(),
             face_presence: Vec::new(),
             face_looks: Vec::new(),
@@ -640,7 +640,7 @@ impl TopBarChrome {
             strip_name: self.strip_name().map(str::to_owned),
             face_initials: self.face_initials.clone(),
             face_names: self.face_names.clone(),
-            face_agents: self.face_agents.clone(),
+            face_members: self.face_members.clone(),
             face_overflow: self.face_overflow,
             faces_shown: self.faces_shown,
             latest: self.latest_active,
@@ -1047,7 +1047,7 @@ impl TopBarChrome {
         self.face_initials.clear();
         self.face_names.clear();
         self.face_colors.clear();
-        self.face_agents.clear();
+        self.face_members.clear();
         self.face_ids.clear();
         self.face_presence.clear();
         // Everyone here, the one this person follows first: the bar stands as many faces as it has
@@ -1078,7 +1078,7 @@ impl TopBarChrome {
             self.face_names.push(member.name.clone());
             let (r, g, b) = collab_types::presence::identity_rgb(member.colour);
             self.face_colors.push(Color::from_rgb8(r, g, b));
-            self.face_agents.push(!member.id.is_person());
+            self.face_members.push(member.id.clone());
             self.face_ids.push(present.device.clone());
             self.face_presence
                 .push(Some((present.availability, present.call.is_some())));

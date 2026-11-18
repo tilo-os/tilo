@@ -54,8 +54,8 @@ use tilo_agent_session::{ModelChoice, record_provider};
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_model_gateway::host_backend::protocol::{
-    Content, Message, ModelError, ModelRequest, ModelResponse, Role, ToolChoice, ToolDefinition,
-    ToolResult,
+    Content, Message, ModelError, ModelRequest, ModelResponse, Role, StreamEvent, ToolChoice,
+    ToolDefinition, ToolResult,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::Resource as _;
@@ -74,6 +74,7 @@ mod across;
 mod answers;
 mod asks;
 mod calendars;
+mod carried;
 mod coding;
 mod going;
 mod issue_work;
@@ -85,6 +86,7 @@ mod summary;
 mod team;
 mod turn_provider;
 mod vault_uses;
+mod written;
 
 // What a turn reaches of the services its person connected.
 mod connections;
@@ -866,8 +868,9 @@ impl HostAgents {
                 }
             }
         }
-        self.carry(workspace, asks.sub).await;
-        current
+        // A note is handed on as its person's own words are: with what this look read.
+        let carried = self.carry(workspace, asks.sub, reading).await;
+        current && carried
     }
 
     /// Look at `workspace` once a turn ended on `past`: its place is free, so what waited for
@@ -914,17 +917,49 @@ impl HostAgents {
             self.workspaces.note_waiting(workspace, Vec::new());
             return Ok(Asks::default());
         }
-        let routes = self
+        let mut routes = self
             .workspaces
             .document_routes(workspace)
             .await
             .map_err(|error| error.to_string())?;
+        if !routes.iter().any(|(app, _)| app == TASKS) && self.found_tracker(workspace).await {
+            routes = self
+                .workspaces
+                .document_routes(workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         let mut asks = self.chat_asks(workspace, &agents, &routes).await?;
         asks.turns.extend(
             self.issue_turns(workspace, &agents, &routes, now_ms)
                 .await?,
         );
         Ok(asks)
+    }
+
+    /// Found the tracker of `workspace`, which keeps none: nobody opened Tasks in it yet. This
+    /// server keeps an agent at work there, and an agent is given work as an issue of the
+    /// workspace's tracker: without one its person can give it none from a device that shows no
+    /// Tasks. The server founds it as it founds any app's document a member's first window
+    /// opens: from the app's own factory in its trusted catalogue, as the workspace's governor.
+    /// Whether it stands now.
+    async fn found_tracker(&self, workspace: &str) -> bool {
+        let catalogue = tilo_agent_session::AppCatalogue::native();
+        let tracker = crate::workspace_bots::workspace_resource(&catalogue, TASKS);
+        let founded = self
+            .workspaces
+            .prepare_application(
+                workspace,
+                self.workspaces.governor(),
+                &catalogue,
+                TASKS,
+                &tracker,
+            )
+            .await;
+        if let Err(error) = &founded {
+            tracing::warn!(%workspace, %error, "the workspace's tracker could not be founded: its agents can be given no issue");
+        }
+        founded.is_ok()
     }
 
     /// What `workspace`'s conversations ask of `agents`: the turns they owe, and the turns a
@@ -970,7 +1005,7 @@ impl HostAgents {
                 let Some(message) = part.messages.get(&summons.message) else {
                     continue;
                 };
-                let (request, _) = chat::summons::request(message);
+                let request = carried::request(message);
                 // What came before it in the conversation, as every turn is told it: the
                 // same on a host as on the device that would answer it.
                 // What was learned about the person on their devices is their own record,
@@ -1228,8 +1263,9 @@ impl HostAgents {
     }
 
     /// Whether a host that stopped left `turn` begun: its reply shows a step taken, and no turn
-    /// of this host is on it, since this one only begins now.
-    async fn left_begun(&self, workspace: &str, turn: &Turn) -> bool {
+    /// of this host is on it, since this one only begins now. Words that turn's model wrote
+    /// into the reply stay there, and `reply` goes on below them ([`written`]).
+    async fn left_begun(&self, workspace: &str, turn: &Turn, reply: &Reply) -> bool {
         let Ask::Message {
             part,
             message,
@@ -1242,7 +1278,10 @@ impl HostAgents {
             .read::<chat::parts::ChatPart>(workspace, CHAT, part)
             .await
         {
-            Ok(Some(held)) => chat::summons::left_begun(&held, message, &turn.agent.id.0, *attempt),
+            Ok(Some(held)) => {
+                reply.written.goes_on_from(&held);
+                chat::summons::left_begun(&held, message, &turn.agent.id.0, *attempt)
+            }
             _ => false,
         }
     }
@@ -1303,7 +1342,7 @@ impl HostAgents {
         let began = turn.ask.clone();
         let turn = skills::told_turn(&self.workspaces, workspace, turn).await;
         let reply = scope.reply(&turn);
-        if self.left_begun(workspace, &turn).await {
+        if self.left_begun(workspace, &turn, &reply).await {
             // Its steps may have changed things already, and nothing says which: starting over
             // would do them twice. It ends here, and asking again is the person's to do.
             let left = Outcome::Failed(LEFT_BEGUN.to_owned());
@@ -1643,16 +1682,27 @@ impl PlanTurns for KeeperTurns {
     fn turn(
         &mut self,
         request: &ModelRequest,
+        key: &str,
+        deadline: Instant,
+        retry: bool,
+    ) -> Result<ModelResponse, ModelError> {
+        self.turn_streaming(request, key, deadline, retry, &mut |_| {})
+    }
+
+    fn turn_streaming(
+        &mut self,
+        request: &ModelRequest,
         _: &str,
         deadline: Instant,
         _: bool,
+        written: &mut (dyn FnMut(StreamEvent) + Send),
     ) -> Result<ModelResponse, ModelError> {
         self.model
             .answer_blocking(
                 request,
                 deadline,
                 &|| self.stop.load(Ordering::Relaxed),
-                &mut |_| {},
+                written,
             )
             .map(|answer| answer.response)
             .map_err(|refused| refused.model_error())
@@ -1717,6 +1767,7 @@ impl TurnScope {
             caller,
             workspace: self.workspace.clone(),
             ask: turn.ask.clone(),
+            written: written::Written::of(turn),
         }
     }
 }
@@ -1728,13 +1779,18 @@ struct Reply {
     caller: Caller,
     workspace: String,
     ask: Ask,
+    /// How far the reply has grown while its model wrote it.
+    written: written::Written,
 }
 
 impl Reply {
-    /// Tell the person the turn is taken, where their ask shows it.
+    /// Tell the person the turn is taken, where their ask shows it. The reply is there from
+    /// then on, and takes what the turn's model writes while it writes ([`written`]).
     async fn taken(&self) {
-        if let Ask::Message { .. } = &self.ask {
-            self.work(json!({"state": "taken"}), None).await;
+        if let Ask::Message { .. } = &self.ask
+            && self.work(json!({"state": "taken"}), None).await
+        {
+            self.written.open();
         }
     }
 
@@ -1746,9 +1802,12 @@ impl Reply {
     }
 
     /// Leave this ask for what its person wrote next: its reply says the answer follows below.
+    /// A reply that holds what its model wrote keeps that, and ends there.
     async fn went_on(&self) {
-        self.work(json!({"state": "provider_complete"}), Some(WENT_ON))
-            .await;
+        if !self.grown_ends(&Outcome::Answered(String::new())).await {
+            self.work(json!({"state": "provider_complete"}), Some(WENT_ON))
+                .await;
+        }
     }
 
     /// Give the person the turn's answer.
@@ -1761,7 +1820,17 @@ impl Reply {
                     Outcome::Failed(words) => ("provider_failed", words.as_str()),
                     Outcome::Cancelled => ("provider_cancelled", ""),
                 };
-                self.work(json!({"state": state}), Some(words)).await;
+                if self.grown_ends(outcome).await {
+                    return Ok(());
+                }
+                // A reply that grew and then lost a piece takes no more words into its text:
+                // the turn's words are kept with its work, so none of them is gone.
+                let work = if self.written.lacks_words() {
+                    json!({"state": state, "detail": words})
+                } else {
+                    json!({"state": state})
+                };
+                self.work(work, Some(words)).await;
                 Ok(())
             }
             Ask::Issue { record, issue, .. } => {
@@ -1867,9 +1936,10 @@ impl Reply {
     }
 
     /// Record `work` on the reply to the message, with `say` as its words when it has none yet.
-    async fn work(&self, work: Value, say: Option<&str>) {
+    /// Whether Chat took it.
+    async fn work(&self, work: Value, say: Option<&str>) -> bool {
         let Ask::Message { part, message, .. } = &self.ask else {
-            return;
+            return false;
         };
         let route = DocumentRoute {
             app_id: CHAT.to_owned(),
@@ -1883,7 +1953,7 @@ impl Reply {
             arguments.insert("say".into(), json!(say));
         }
         let resource = format!("{}/messages/{message}", chat::parts::ChatPart::KIND);
-        if let Err(error) = invoke_named(
+        match invoke_named(
             &self.provider,
             &self.caller,
             &route,
@@ -1893,7 +1963,11 @@ impl Reply {
         )
         .await
         {
-            tracing::warn!(workspace = %self.workspace, %message, %error, "a host agent's reply did not take its work");
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(workspace = %self.workspace, %message, %error, "a host agent's reply did not take its work");
+                false
+            }
         }
     }
 }
@@ -2194,7 +2268,7 @@ async fn work(
             tool_choice: ToolChoice::Auto,
             max_output_tokens: ANSWER_TOKENS,
         };
-        let response = match ask_model(&turns, request, format!("{key}:{round}")).await {
+        let response = match ask_model(&turns, request, format!("{key}:{round}"), reply).await {
             Ok(response) => response,
             Err(_) if going.stopped() => return (Outcome::Cancelled, cost),
             Err(why) => return (Outcome::Failed(why), cost),
@@ -2278,20 +2352,31 @@ async fn go_on(
 }
 
 /// Ask the turn's model once, on a thread of its own: its answer, or why none came, in words
-/// its person reads.
+/// its person reads. What the model writes while it answers goes into `reply` as it comes
+/// ([`written`]).
 async fn ask_model(
     turns: &Arc<Mutex<Box<dyn PlanTurns>>>,
     request: ModelRequest,
     key: String,
+    reply: &Reply,
 ) -> Result<ModelResponse, String> {
-    let carrier = Arc::clone(turns);
-    let answer = tokio::task::spawn_blocking(move || {
-        carrier
-            .lock_recover()
-            .turn(&request, &key, later(TURN_TIME), false)
-    })
-    .await;
-    match answer {
+    let writes = Arc::new(written::Writes::default());
+    let (carrier, wrote) = (Arc::clone(turns), Arc::clone(&writes));
+    let asked = tokio::task::spawn_blocking(move || {
+        carrier.lock_recover().turn_streaming(
+            &request,
+            &key,
+            later(TURN_TIME),
+            false,
+            &mut |event| match event {
+                StreamEvent::TextDelta { text } => wrote.push(&text),
+                // The call broke off and may be asked again: what comes then stands below.
+                StreamEvent::Failed { .. } => wrote.broke_off(),
+                _ => {}
+            },
+        )
+    });
+    match written::follow(reply, asked, &writes, words_of).await {
         Ok(Ok(response)) => Ok(response),
         Ok(Err(error)) => Err(format!("My model did not answer: {}", error.message)),
         Err(error) => Err(error.to_string()),

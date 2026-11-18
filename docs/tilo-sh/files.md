@@ -103,6 +103,7 @@ The workspace's folder is on no one computer. So Files' verbs take a path in the
 | Bring them back to where they were | `files#restore` with `entries` |
 | See what a folder holds | `files#list` with `folder`; `trash: true` for what the trash holds |
 | Read what a file says | `files#read-text` with `file`, its path |
+| Read what a file a message carries says | `files#read-text` with `content`, its `tilo.content:` address |
 | Write a file | `files#write-file` with `folder`, `name`, and its `text` or its `content` |
 
 A path starts at the workspace's folder, with no leading `/` and no `..`, and `""` is that folder

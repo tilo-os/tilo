@@ -80,6 +80,12 @@ pub enum HomePeerManagementRequest {
         /// Root-signed permanent revocation targeting this host certificate.
         revocation: tilo_user_identity::RevocationEntry,
     },
+    /// Take the asking server, a later server of the same person, in among
+    /// their servers: it is entered in their admin workspace and handed it.
+    AdmitServer {
+        /// Where the asking server is dialled.
+        endpoint: iroh_base::EndpointAddr,
+    },
 }
 
 /// Authenticated result returned by a home peer.

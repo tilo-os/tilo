@@ -264,8 +264,9 @@ fn account_secret(root: &Path, app: &str, command: Command) -> Result<Reply, Str
         }
         Command::ReleaseAccountSecret { account } => {
             let store = read_store(root).map_err(|_| accounts::secret_release::REFUSED)?;
-            let credentials = accounts::AccountCredentials::open_in(root)?;
-            let password = accounts::secret_release::release(&store, &credentials, app, &account)?;
+            let mut credentials = accounts::AccountCredentials::open_in(root)?;
+            let password =
+                accounts::secret_release::release_bound(&store, &mut credentials, app, &account)?;
             tracing::info!(%account, app, "account credentials: released an account's secret to the app that keeps its type");
             Ok(Reply::AccountSecret { account, password })
         }
@@ -568,5 +569,128 @@ mod tests {
             panic!("Expected list after revocation");
         };
         assert!(sessions.is_empty());
+    }
+
+    /// A secret is sealed for the servers its account names. Once the
+    /// account names another one, by whoever's change, the app that keeps
+    /// its kind is released nothing: it would sign in there with it.
+    #[test]
+    fn a_secret_released_for_one_server_is_not_released_once_its_account_names_another() {
+        const ME: &str = "me@example.test";
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let names = |incoming: &str| {
+            let mut settings = accounts::email::AccountConfig {
+                email: ME.into(),
+                ..Default::default()
+            };
+            // An address it does not know names imap. and smtp. of its domain.
+            settings.autofill_from_email();
+            let mut settings = settings.to_value().unwrap();
+            let named: Vec<&mut serde_json::Value> = settings
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .filter(|value| value.as_str() == Some("imap.example.test"))
+                .collect();
+            assert_eq!(named.len(), 1, "the settings name one incoming server");
+            for value in named {
+                *value = incoming.into();
+            }
+            let mut mail = accounts::Account::new(AccountId::from(ME), "email");
+            mail.config = settings;
+            let mut store = AccountStore::new();
+            store.upsert(mail);
+            store.save_in(root.path()).unwrap();
+        };
+        let release = || {
+            account_secret(
+                root.path(),
+                "so.tilo.mail",
+                Command::ReleaseAccountSecret { account: ME.into() },
+            )
+        };
+        names("imap.example.test");
+        account_secret(
+            root.path(),
+            "so.tilo.settings",
+            Command::StoreAccountSecret {
+                account: ME.into(),
+                password: zeroize::Zeroizing::new("typed-for-imap-example".into()),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            release(),
+            Ok(Reply::AccountSecret { password, .. }) if password.as_str() == "typed-for-imap-example"
+        ));
+        names("imap.elsewhere.example");
+        assert!(
+            release().is_err(),
+            "the secret sealed for imap.example.test was released for an account at \
+             imap.elsewhere.example"
+        );
+        names("imap.example.test");
+        assert!(release().is_ok(), "at its own server it is released again");
+    }
+
+    /// A secret with no servers on it is bound when the app that keeps its
+    /// account's kind asks for it, to the servers the account names then.
+    /// Whoever else asks is released nothing and binds nothing.
+    #[test]
+    fn a_secret_is_bound_only_when_the_keeper_of_its_accounts_kind_asks_for_it() {
+        const ME: &str = "me@example.test";
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let names = |incoming: &str| {
+            let mut settings = accounts::email::AccountConfig {
+                email: ME.into(),
+                ..Default::default()
+            };
+            settings.autofill_from_email();
+            let mut settings = settings.to_value().unwrap();
+            for value in settings.as_object_mut().unwrap().values_mut() {
+                if value.as_str() == Some("imap.example.test") {
+                    *value = incoming.into();
+                }
+            }
+            let mut mail = accounts::Account::new(AccountId::from(ME), "email");
+            mail.config = settings;
+            let mut store = AccountStore::new();
+            store.upsert(mail);
+            store.save_in(root.path()).unwrap();
+        };
+        let release = |app: &str| {
+            account_secret(
+                root.path(),
+                app,
+                Command::ReleaseAccountSecret { account: ME.into() },
+            )
+        };
+        names("imap.example.test");
+        account_secret(
+            root.path(),
+            "so.tilo.settings",
+            Command::StoreAccountSecret {
+                account: ME.into(),
+                password: zeroize::Zeroizing::new("typed-with-no-word".into()),
+            },
+        )
+        .unwrap();
+        for other in ["so.tilo.settings", "so.tilo.calendar", "so.tilo.agent"] {
+            assert!(release(other).is_err(), "{other} is released nothing");
+        }
+        // Had one of them bound it, it would be bound to imap.example.test
+        // and Mail's first asking at another server refused.
+        names("imap.elsewhere.example");
+        assert!(
+            release("so.tilo.mail").is_ok(),
+            "nobody but its keeper bound it"
+        );
+        names("imap.example.test");
+        assert!(
+            release("so.tilo.mail").is_err(),
+            "its keeper's first asking bound it to imap.elsewhere.example"
+        );
     }
 }

@@ -12,10 +12,14 @@
 //! what its entry says; nothing about it lives in a file of its own.
 //!
 //! The workspace's id follows from the person's root ([`admin_workspace_id`]),
-//! so each of their servers finds the same one without being told. A server
-//! that does not hold it yet makes it ([`ensure_admin_workspace`]), and a
-//! server enrolled into the person's identity enters itself on its first start
-//! ([`enroll`]).
+//! so each of their servers finds the same one without being told. It is
+//! made once, by the person's first server ([`found`]): a server enrolled when
+//! the device approving it knew of no earlier server of the person. Every
+//! later server knows the earlier ones from its enrollment and asks one of
+//! them to take it in ([`admit`]), which enters it in the document; the holders
+//! then hand it the workspace as they hand a server any workspace its entry
+//! names. A desktop never makes it. Once it holds the workspace, a server
+//! keeps its own entry's address current ([`enroll`]).
 //!
 //! A device of the person that holds a workspace attaches the servers its
 //! document names as holders, and only those: one action on the document
@@ -334,23 +338,42 @@ pub fn admin_workspace_id(person: &[u8; 32]) -> String {
         .to_string()
 }
 
-/// Make the admin workspace of this host's person where this host does not
-/// hold it yet, and answer its id.
+/// Whether this host holds its person's admin workspace: it made it, or the
+/// workspace names it among its holders, so it writes the document as its own.
+pub async fn holds_admin(workspaces: &Workspaces) -> bool {
+    let own = workspaces.serving_certificate();
+    let Some(state) = workspaces
+        .state(&admin_workspace_id(&own.user_public_key))
+        .await
+    else {
+        return false;
+    };
+    let governance = state.governance();
+    governance.founder() == Some(own.device_public_key)
+        || governance
+            .keeping_devices()
+            .iter()
+            .any(|hint| hint.host.device_public_key == own.device_public_key)
+}
+
+/// Make the admin workspace of this host's person, as their first server, and
+/// enter this host's device in it, dialled at `endpoint`. A host that holds
+/// the workspace already only enters itself.
 ///
 /// # Errors
-/// The workspace could not be listed or made.
-pub async fn ensure_admin_workspace(workspaces: &Workspaces) -> Result<String, String> {
+/// The workspace could not be made, or the entry written.
+pub async fn found(
+    workspaces: &Workspaces,
+    endpoint: &iroh_base::EndpointAddr,
+) -> Result<String, String> {
     let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
-    if !workspaces
-        .list()
-        .await
-        .iter()
-        .any(|summary| summary.workspace == admin)
-    {
+    if !holds_admin(workspaces).await {
         workspaces
             .create_workspace(ADMIN_WORKSPACE_NAME, Some(&admin))
             .await?;
     }
+    let cert = workspaces.serving_certificate().clone();
+    enter(workspaces, &cert, endpoint).await?;
     Ok(admin)
 }
 
@@ -406,19 +429,55 @@ pub async fn name(workspaces: &Workspaces, device: &[u8; 32]) -> Option<String> 
         .filter(|label| !label.is_empty())
 }
 
-/// Enter this host's device into its person's servers, named `label` and
-/// dialled at `endpoint`, making the admin workspace first where this host has
-/// none: what a server enrolled into the person's identity does on its first
-/// start, and again whenever the address it is reached at changed.
+/// Keep this host's own entry among its person's servers current: its name
+/// and `endpoint`, what a server that holds the admin workspace does on each
+/// start, as the address it is reached at may have changed.
 ///
 /// # Errors
-/// The admin workspace could not be made, or the entry written.
+/// This host holds no admin workspace, or the entry could not be written.
 pub async fn enroll(
+    workspaces: &Workspaces,
+    endpoint: &iroh_base::EndpointAddr,
+) -> Result<(), String> {
+    if !holds_admin(workspaces).await {
+        return Err("this server holds no admin workspace yet".into());
+    }
+    let cert = workspaces.serving_certificate().clone();
+    enter(workspaces, &cert, endpoint).await
+}
+
+/// Take the server `server`, dialled at `endpoint`, in among this host's
+/// person's servers, as it asks when it starts without the admin workspace:
+/// it is entered in the document, and the workspace's holders then hand it the
+/// workspace as they hand any server the workspaces its entry names
+/// ([`applied::reconcile`]). A retired server stays retired.
+///
+/// # Errors
+/// `server` is not a device of this host's person that may hold workspaces,
+/// this host holds no admin workspace, or the entry could not be written.
+pub async fn admit(
+    workspaces: &Workspaces,
+    server: &DeviceCert,
+    endpoint: &iroh_base::EndpointAddr,
+) -> Result<(), String> {
+    if server.user_public_key != workspaces.serving_certificate().user_public_key
+        || !server.capabilities.can_own_workspaces
+    {
+        return Err("only a server of this person is taken in among their servers".into());
+    }
+    if !holds_admin(workspaces).await {
+        return Err("this server holds no admin workspace yet".into());
+    }
+    enter(workspaces, server, endpoint).await
+}
+
+/// Enter the device `cert` among the person's servers at `endpoint`; an entry
+/// that says so already writes no history.
+async fn enter(
     workspaces: &Workspaces,
     cert: &DeviceCert,
     endpoint: &iroh_base::EndpointAddr,
-) -> Result<String, String> {
-    let admin = ensure_admin_workspace(workspaces).await?;
+) -> Result<(), String> {
     let endpoint = serde_json::to_string(endpoint).map_err(|error| error.to_string())?;
     if read(workspaces)
         .await?
@@ -426,17 +485,14 @@ pub async fn enroll(
         .get(&device_id(&cert.device_public_key))
         .is_some_and(|server| server.endpoint == endpoint)
     {
-        // Nothing about it changed: a start that finds its own entry as it
-        // stands writes no history.
-        return Ok(admin);
+        return Ok(());
     }
     let action = Servers::ENROLL_SERVER.with((
         hex::encode(cert.device_public_key),
         cert.device_label.clone(),
         endpoint,
     ));
-    apply(workspaces, action).await?;
-    Ok(admin)
+    apply(workspaces, action).await
 }
 
 pub mod floor;

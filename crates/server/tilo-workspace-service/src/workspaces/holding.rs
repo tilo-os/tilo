@@ -216,6 +216,25 @@ fn names_holder(peer: &StatePeer, caller: &DeviceCert) -> bool {
         .any(|hint| hint.host.device_public_key == caller.device_public_key)
 }
 
+/// That `peer`'s governance names `caller`'s device among the workspace's
+/// holders, which write it as the device it was made on does.
+///
+/// # Errors
+///
+/// It names no such holder.
+pub(super) fn require_holder(
+    peer: &StatePeer,
+    caller: &DeviceCert,
+) -> Result<(), super::CollaborationError> {
+    if names_holder(peer, caller) {
+        Ok(())
+    } else {
+        Err(super::CollaborationError::new(
+            "only a device that holds the workspace writes it",
+        ))
+    }
+}
+
 impl GovernedWorkspace {
     /// A writable copy of the workspace `request` hands over, kept under
     /// `dir`: its owner as the bootstrap names it, nothing of its own

@@ -78,6 +78,7 @@ pub use handoff::{
 pub mod vault;
 pub use vault::{Saved, Secret, SecretVault, VaultBackend};
 pub mod secrets;
+pub mod typed_for;
 pub use secrets::{
     AccessDecision, AccessRequest, BrokerError, CredentialBroker, CredentialGrant, CredentialOwner,
     CredentialProposal, CredentialScope, GeneratedPasswordPolicy, GrantLifetime, SecretId,

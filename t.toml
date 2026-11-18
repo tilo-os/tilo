@@ -6020,6 +6020,35 @@ requires = ["arch=x86_64"]
 outputs = ["/target/publish/tilo-sh-programs/**"]
 default = false
 
+# A fresh tilo.sh stack answers an agent's program: brought up from tilo-sh-programs' one build
+# with a stub site (nothing opens a page), it takes one small tilolang program at the API server's
+# POST /v1/workspaces/{workspace}/programs, sent with the key of the stack's own person, and must
+# answer `ok`. The API server starts such a program in tilolang-process, which it looks for beside
+# itself: every other check of the stack passes on a build without that program, and this one
+# fails there in the API server's own words. Named only: it and the build it needs cost nothing
+# until somebody asks for them.
+#
+# Nested, because the stack's services are sandboxed with bwrap (stack.sh), which needs namespaces
+# of its own.
+[[check]]
+name = "tilo-sh-answers-a-program"
+# No egress: the stack and the one call meet on loopback alone.
+run = "bash os/containers/tilo-sh/test-program.sh /target/tilo-sh-program"
+needs = ["tilo-sh-programs", "lounge-fonts", "tilo-sh-caddy"]
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+env = { TILO_SH_PROGRAMS = "/target/publish/tilo-sh-programs", TILO_SH_FONTS = "/target/publish/lounge/fonts", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy" }
+requires = ["arch=x86_64"]
+isolation = "nested"
+# The stack lays the server's context out itself, from the apps' history (lounge-context.sh).
+git = true
+outputs = ["/target/tilo-sh-program/answer.json", "/target/tilo-sh-program/state/logs/*.log"]
+# What a failure keeps of why: every service's log.
+evidence = ["/target/tilo-sh-program/state/logs/**"]
+timeout_secs = 900
+default = false
+
 # Production's Caddy, which serves the local stack's server and site as its tls container and web
 # entry image do: the one pinned release (os/containers/tilo-sh/caddy.env), fetched and checked
 # here, so a check's bring-up downloads nothing.

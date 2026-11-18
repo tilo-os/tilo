@@ -26,6 +26,8 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         public var setup: Setup = .ready
         /// The models a provider offers once it is linked.
         public var offered: [ModelChoice] = []
+        /// The providers a person can come back to the provider step for: linked, or to link.
+        public var providers: [ProviderChoice] = []
         /// What the person was told while they were away.
         public var sinceLeft: SinceLeft?
 
@@ -49,6 +51,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private let sinceNow: Broadcast<SinceLeft?>
     private var presses: [Press] = []
     private let offered: [ModelChoice]
+    private let providerChoices: [ProviderChoice]
     private var linked: [ModelChoice] = []
     private var keys: [ProviderChoice.ID: Secret] = [:]
     private var feeds: [Chat: Feed]
@@ -71,6 +74,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         setupNow = Broadcast(content.setup)
         sinceNow = Broadcast(content.sinceLeft)
         offered = content.offered
+        providerChoices = content.providers
         var feeds: [Chat: Feed] = [.main: Feed(content.main)]
         for agent in content.subAgents {
             feeds[.subAgent(agent.id)] = Feed(content.subAgentChats[agent.id] ?? [])
@@ -194,7 +198,9 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {
         try signedIn()
         guard !key.isEmpty else { throw SourceProblem.refused("Nothing was typed.") }
-        guard case .needsProvider(let choices) = setupNow.current, choices.contains(where: { $0.id == provider }) else {
+        var first: [ProviderChoice] = []
+        if case .needsProvider(let choices) = setupNow.current { first = choices }
+        guard (first + providerChoices).contains(where: { $0.id == provider }) else {
             throw SourceProblem.refused("This provider cannot be linked.")
         }
         let all = lock.withLock {
@@ -202,8 +208,21 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
             linked = offered
             return modelChoices + linked
         }
-        setupNow.set(offered.isEmpty ? .ready : .needsModel(offered))
+        // A person who comes back to the step keeps the model they chose: only the first
+        // link goes on to the choice of one.
+        if !first.isEmpty { setupNow.set(offered.isEmpty ? .ready : .needsModel(offered)) }
         return all
+    }
+
+    public func providers() async throws -> [ProviderChoice] {
+        try signedIn()
+        return lock.withLock {
+            providerChoices.map { choice in
+                var choice = choice
+                if keys[choice.id] != nil { choice.isLinked = true }
+                return choice
+            }
+        }
     }
 
     public func signOut() async {

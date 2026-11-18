@@ -558,7 +558,7 @@ impl Preset {
                 node: rule.node.clone(),
                 kinds: rule.kinds,
                 answer: rule.answer,
-                lifetime: lifetime.clone(),
+                lifetime: *lifetime,
                 granted_by: granted_by.clone(),
             })
             .collect()

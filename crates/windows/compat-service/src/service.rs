@@ -724,6 +724,9 @@ where
                     display_name: &program.display_name,
                     entry_id: &entry_id,
                     workspace_id: &input.workspace_id,
+                    // The pinned Proton's Wine has no Wayland driver (it ships winex11 alone), so
+                    // a Proton program given only a Wayland socket opens no window at all.
+                    x11: route.runtime.layer == Layer::Proton,
                 })
                 .transpose()
                 .map_err(PlanError::NoDisplay)?;

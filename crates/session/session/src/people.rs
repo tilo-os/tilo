@@ -821,9 +821,9 @@ impl Panel {
             .unwrap_or_default();
         // A conversation is Chat's, on the root key both people know: a guest this session knows no
         // key for, and a device without Chat, have none to open.
-        let can_message = !row.is_agent && key.is_some() && self.chat_installed();
+        let can_message = !row.is_agent() && key.is_some() && self.chat_installed();
         // Their devices are the person's, whichever of them the roster lists.
-        let devices = if row.is_agent {
+        let devices = if row.is_agent() {
             Vec::new()
         } else {
             here.devices_of(&row.id)
@@ -841,7 +841,7 @@ impl Panel {
                 status: row.status.clone(),
                 // A person's card says which record they look at; an agent's, the app it works
                 // in beside the record its line names.
-                place: if row.is_agent {
+                place: if row.is_agent() {
                     row.working_app
                         .as_deref()
                         .map(|app| self.app_called(app))
@@ -849,13 +849,13 @@ impl Panel {
                 } else {
                     row.activity.clone()
                 },
-                presence: (!row.is_agent).then_some(row.availability),
+                presence: (!row.is_agent()).then_some(row.availability),
                 following: sync.own().following.as_deref() == Some(row.id.as_str()),
                 can_follow: row.followable,
                 can_message,
                 linked,
                 agent: row
-                    .is_agent
+                    .is_agent()
                     .then(|| tilo_desktop::profile_card::AgentFacts {
                         client: ui::presence::agent_client(&row.label).to_owned(),
                     }),

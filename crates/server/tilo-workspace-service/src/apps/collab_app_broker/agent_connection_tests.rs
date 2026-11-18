@@ -452,15 +452,17 @@ impl Shell {
         panic!("the sheet never asked");
     }
 
-    /// The person answers the question up last with `consent`.
-    pub(super) fn answer(&self, consent: crate::apps::app_actions::AppActionConsent) {
+    /// The person answers the question up last: allowed for a lifetime, or declined for `None`.
+    pub(super) fn answer(&self, lifetime: Option<tilo_action_policy::Lifetime>) {
         let answer = self
             .answers
             .lock()
             .unwrap()
             .pop()
             .expect("a question is up");
-        let _ = answer.send(crate::apps::app_actions::AppActionAnswer::unedited(consent));
+        let _ = answer.send(crate::apps::app_actions::AppActionAnswer::unedited(
+            lifetime,
+        ));
     }
 }
 
@@ -527,7 +529,7 @@ async fn an_agent_sessions_question_is_asked_on_the_shell_and_allowed_once() {
             let shown = shell.shown(1).await;
             assert!(shown.confirming, "{shown:?}");
             assert_eq!(shown.scope.as_deref(), Some(NAME), "{shown:?}");
-            shell.answer(crate::apps::app_actions::AppActionConsent::Once);
+            shell.answer(Some(tilo_action_policy::Lifetime::Once));
             let confirmed = asking.await.expect("answered").unwrap();
             let mut again = append_request(71);
             confirmed.apply(&mut again);
@@ -571,7 +573,7 @@ async fn an_agent_sessions_question_the_person_denies_refuses_the_step() {
                 .unwrap();
             let asking = host.confirm(&connection(), &append_request(81));
             shell.shown(1).await;
-            shell.answer(crate::apps::app_actions::AppActionConsent::Deny);
+            shell.answer(None);
             let refused = asking.await.expect("answered").unwrap_err();
             assert!(
                 matches!(&refused, tilo_actions::remote::ActionCallError::Refused { reason }
@@ -601,7 +603,7 @@ async fn allowing_an_agent_session_covers_its_next_step() {
             let caller = connection();
             let asking = host.confirm(&caller, &append_request(91));
             shell.shown(1).await;
-            shell.answer(crate::apps::app_actions::AppActionConsent::Always);
+            shell.answer(Some(tilo_action_policy::Lifetime::UntilRevoked));
             let confirmed = asking.await.expect("answered").unwrap();
             let mut again = append_request(91);
             confirmed.apply(&mut again);

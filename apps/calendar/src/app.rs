@@ -2006,7 +2006,7 @@ impl CalendarApp {
         if person.accounts.is_empty() {
             return;
         }
-        let credentials = self
+        let mut credentials = self
             .config_root
             .as_deref()
             .map(accounts::AccountCredentials::open_in)
@@ -2017,7 +2017,26 @@ impl CalendarApp {
                     })
                     .ok()
             });
-        let adopted = AccountStore::from_shared(&person.store(), credentials.as_ref());
+        // The Calendar keeps calendar accounts and asks for their secrets
+        // to sign in: one kept with no servers on it is bound to the
+        // servers its account names now, and joined to no other from then
+        // on. Where that cannot be kept, nothing is joined.
+        let store = person.store();
+        let own = store.all().iter().filter(|account| {
+            account.type_id.as_str() == crate::account::TYPE_ID
+                || account
+                    .config
+                    .get("use_calendar")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+        });
+        if let Some(kept) = &mut credentials
+            && let Err(error) = kept.bind_first(own)
+        {
+            tracing::error!(%error, "calendar account credentials could not be bound to their servers");
+            credentials = None;
+        }
+        let adopted = AccountStore::from_shared(&store, credentials.as_ref());
         if adopted != self.configured {
             self.configured = adopted;
             self.show_accounts();
