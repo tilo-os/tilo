@@ -1180,19 +1180,18 @@ impl AccountsPane {
             return cx.actions().effect(&SettingsEffect::from(effect));
         };
         let id = effect.id();
-        let resource = LiveRow::new(
+        let live = LiveRow::new(
             format!("settings.account:{account}"),
             "settings.account",
             &account,
         )
-        .effect(&SettingsEffect::from(effect))
-        .into_resource();
+        .effect(&SettingsEffect::from(effect));
         let invocation = ui::tilo_resource::ActionRef::<SettingsEffect, ()>::new(
             id,
             &[],
             SettingsEffect::kind(),
         );
-        crate::on_row::binding(&cx.dispatcher(), &resource, invocation)
+        crate::on_row::binding(&cx.dispatcher(), &live, invocation)
     }
 
     #[must_use]
@@ -2174,14 +2173,13 @@ impl AccountsPane {
     fn files_button(&self, view: &AccountView, details: &mut Vec<String>) -> Option<Button> {
         let spec = self.files_handoff(view)?;
         let label = spec.label.clone();
-        let resource = LiveRow::new(
+        let live = LiveRow::new(
             format!("settings.account:{}", view.id),
             "settings.account",
             &view.label,
         )
-        .operation(spec)
-        .into_resource();
-        let binding = ui::tilo_actions::ActionBinding::unit_for(&resource, "open-files").ok()?;
+        .operation(spec);
+        let binding = ui::tilo_actions::ActionBinding::unit_for(&live, "open-files").ok()?;
         let store = self.account_root.store();
         if let Some(account) = store.get(&view.id.clone().into()) {
             details.push(t(match accounts::cloud_types::files_mode(account) {
