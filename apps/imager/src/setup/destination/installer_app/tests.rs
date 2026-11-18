@@ -589,8 +589,8 @@ tilo_test_env::scenario! {
             let guidance = app.alongside_storage_guidance();
             assert!(guidance.contains(&crate::setup::strings::t(LINUX_ALONGSIDE_READY)));
             assert!(guidance.contains(&capacity));
-            let published = app.published();
-            let storage = published[0]
+            let storage = app.published()[0].clone().into_resource();
+            let storage = storage
                 .children
                 .iter()
                 .find(|resource| resource.id.0 == crate::setup::destination::effects::STORAGE)
@@ -1442,8 +1442,8 @@ fn the_media_step_is_one_install_button_and_review_repeats_it() {
         find_accessible(composed, &note).is_some(),
         "the rendered codec control must expose the formats source explanation"
     );
-    let resources = app.published();
-    let install = resources[0]
+    let published = app.published()[0].clone().into_resource();
+    let install = published
         .actions
         .iter()
         .find(|action| action.id == "set-media-codecs")

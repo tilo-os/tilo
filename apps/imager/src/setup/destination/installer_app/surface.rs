@@ -4,7 +4,7 @@
 use serde_json::{Map, Value};
 use ui::framework::{EffectStatus, LiveRow};
 use ui::i18n::ArgValue;
-use ui::tilo_actions::{ActionOutput, ActionSpec, ResourcePresentation, ResourceSpec};
+use ui::tilo_actions::{ActionOutput, ActionSpec, ResourcePresentation};
 use ui::tilo_resource::Effect as _;
 use zeroize::Zeroizing;
 
@@ -62,10 +62,74 @@ impl Check {
 
 struct Item {
     id: String,
-    kind: &'static str,
+    kind: ItemKind,
     label: String,
     presentation: ResourcePresentation,
     operation: Option<ActionSpec>,
+}
+
+/// What an item is, as the type its row is an item of.
+#[derive(Clone, Copy)]
+enum ItemKind {
+    Network,
+    Disk,
+    Region,
+    Storage,
+    Review,
+}
+
+impl ItemKind {
+    fn row(self, id: String, label: String) -> LiveRow {
+        match self {
+            Self::Network => LiveRow::typed::<Network>(id, label),
+            Self::Disk => LiveRow::typed::<Disk>(id, label),
+            Self::Region => LiveRow::typed::<Region>(id, label),
+            Self::Storage => LiveRow::typed::<Storage>(id, label),
+            Self::Review => LiveRow::typed::<Review>(id, label),
+        }
+    }
+}
+
+struct Network;
+impl ui::tilo_resource::words::RowType for Network {
+    const KIND: &'static str = "installer.network";
+    const LABEL: &'static str = "Network";
+}
+
+struct Disk;
+impl ui::tilo_resource::words::RowType for Disk {
+    const KIND: &'static str = "installer.disk";
+    const LABEL: &'static str = "Disk";
+}
+
+struct Region;
+impl ui::tilo_resource::words::RowType for Region {
+    const KIND: &'static str = "installer.region";
+    const LABEL: &'static str = "Install region";
+}
+
+struct Storage;
+impl ui::tilo_resource::words::RowType for Storage {
+    const KIND: &'static str = "installer.storage";
+    const LABEL: &'static str = "Storage";
+}
+
+struct Review;
+impl ui::tilo_resource::words::RowType for Review {
+    const KIND: &'static str = "installer.review";
+    const LABEL: &'static str = "Review";
+}
+
+struct Guidance;
+impl ui::tilo_resource::words::RowType for Guidance {
+    const KIND: &'static str = "installer.guidance";
+    const LABEL: &'static str = "Guidance";
+}
+
+struct Session;
+impl ui::tilo_resource::words::RowType for Session {
+    const KIND: &'static str = "installer.session";
+    const LABEL: &'static str = "Install";
 }
 
 fn guarded(spec: ActionSpec, blocked: Blocked) -> ActionSpec {
@@ -95,9 +159,8 @@ fn with_guidance(row: LiveRow, guidance: &str) -> LiveRow {
         .enumerate()
         .fold(row, |row, (index, sentence)| {
             row.row(
-                LiveRow::new(
+                LiveRow::typed::<Guidance>(
                     format!("{id}.guidance:{index}"),
-                    "installer.guidance",
                     crate::resource::CATALOG.t("imager-installer-guidance"),
                 )
                 .presentation(ResourcePresentation {
@@ -248,8 +311,10 @@ impl InstallerApp {
                     STORAGE if alongside => Some(self.alongside_storage_guidance()),
                     _ => None,
                 };
-                let row =
-                    LiveRow::new(item.id, item.kind, item.label).presentation(item.presentation);
+                let row = item
+                    .kind
+                    .row(item.id, item.label)
+                    .presentation(item.presentation);
                 let row = match item.operation {
                     Some(operation) => row.operation(operation),
                     None => row,
@@ -264,9 +329,8 @@ impl InstallerApp {
 
     pub fn published(&self) -> Vec<LiveRow> {
         let checks = self.checks();
-        let mut root = LiveRow::new(
+        let mut root = LiveRow::typed::<Session>(
             PROVIDER,
-            "installer.session",
             crate::resource::CATALOG.t("imager-installer-title"),
         )
         .presentation(ResourcePresentation {
@@ -470,7 +534,7 @@ impl InstallerApp {
             let ssid = network.ssid.clone();
             items.push(Item {
                 id: format!("installer.network:{ssid}"),
-                kind: "installer.network",
+                kind: ItemKind::Network,
                 label: ssid.clone(),
                 presentation: ResourcePresentation {
                     badge: (self.network.selected_ssid.as_deref() == Some(ssid.as_str()))
@@ -497,7 +561,7 @@ impl InstallerApp {
             };
             items.push(Item {
                 id: disk_row(&disk.name),
-                kind: "installer.disk",
+                kind: ItemKind::Disk,
                 label: disk.label(),
                 presentation: ResourcePresentation {
                     detail: Some(bounded(
@@ -525,7 +589,7 @@ impl InstallerApp {
             for (index, plan) in plans.iter().enumerate() {
                 items.push(Item {
                     id: region_row(index),
-                    kind: "installer.region",
+                    kind: ItemKind::Region,
                     label: t_args(
                         "installer-item-region",
                         &[
@@ -556,7 +620,7 @@ impl InstallerApp {
         }
         items.push(Item {
             id: STORAGE.to_owned(),
-            kind: "installer.storage",
+            kind: ItemKind::Storage,
             label: t("installer-item-storage"),
             presentation: ResourcePresentation {
                 detail: Some(if self.install_method == InstallMethod::Alongside {
@@ -658,7 +722,7 @@ impl InstallerApp {
         begin.type_mut().description = Some(description);
         Item {
             id: REVIEW.to_owned(),
-            kind: "installer.review",
+            kind: ItemKind::Review,
             label: t("installer-item-review"),
             presentation: ResourcePresentation::default(),
             operation: Some(begin),

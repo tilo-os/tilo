@@ -21,7 +21,6 @@ untyped-live-row 1 apps/git-client/src/app.rs
 untyped-live-row 3 apps/imager/src/app.rs
 untyped-live-row 5 apps/imager/src/setup/actions.rs
 untyped-live-row 1 apps/imager/src/setup/desktop_journey.rs
-untyped-live-row 1 apps/imager/src/setup/destination/installer_app/surface.rs
 untyped-live-row 3 apps/imager/src/setup/import_actions.rs
 untyped-live-row 1 apps/launcher/src/surface.rs
 untyped-live-row 1 apps/logs/src/actions.rs

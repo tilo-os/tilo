@@ -390,8 +390,8 @@ tilo_test_env::scenario! {
                 ))
                 .is_none()
             );
-            let published = app.published();
-            let storage = published[0]
+            let storage = app.published()[0].clone().into_resource();
+            let storage = storage
                 .children
                 .iter()
                 .find(|r| r.id.0 == STORAGE)
@@ -457,7 +457,11 @@ tilo_test_env::scenario! {
                 Step::Install,
             ] {
                 app.step = step;
-                let resources = app.published();
+                let resources: Vec<tilo_actions::ResourceSpec> = app
+                    .published()
+                    .into_iter()
+                    .map(ui::framework::LiveRow::into_resource)
+                    .collect();
                 let violations = tilo_actions::validate_surface(
                     &resources,
                     &tilo_actions::ActionRegistry::new(),
@@ -560,8 +564,8 @@ tilo_test_env::scenario! {
             by_row.sync(&row_doc, &automerge::ROOT);
             let reason = by_row
                 .published()
-                .iter()
-                .flat_map(|root| root.actions.iter())
+                .into_iter()
+                .flat_map(|root| root.into_resource().actions)
                 .find(|action| action.id == "reboot")
                 .map(|reboot| match &reboot.contract.availability {
                     tilo_actions::Availability::Unavailable { reason, .. } => reason.clone(),
