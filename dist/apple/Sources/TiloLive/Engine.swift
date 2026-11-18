@@ -504,6 +504,11 @@ public final class TiloEngine: NSObject {
     /// against the page's.
     static let resetSaid = "This workspace was reset since this browser last opened it."
 
+    /// What Tilo's page calls a connection to its server that is cut (web/connection-status.mjs):
+    /// its session closed or failed, or the transport under it is down or trying again. A test
+    /// holds this name against the page's.
+    static let cut = "offline"
+
     /// Whether what the page's failure screen says is that the workspace is no longer there:
     /// its cases `gone` (another server answers at the site now) and `deleted` (its owner
     /// deleted it), and the case it has only words for (`resetSaid`).
@@ -544,6 +549,7 @@ public final class TiloEngine: NSObject {
             stand(entry: said["entry"] as? String ?? "", arrival: said["arrival"] as? String ?? "",
                   code: said["code"] as? String ?? "", status: said["status"] as? String ?? "",
                   failure: said["failure"] as? String ?? "", refusal: said["refusal"] as? String ?? "",
+                  connection: said["connection"] as? String ?? "",
                   route: said["route"] as? String ?? "", mounted: said["mounted"] as? Bool ?? false,
                   ask: PairingAsk(said["ask"]))
         default:
@@ -552,13 +558,25 @@ public final class TiloEngine: NSObject {
     }
 
     private func stand(entry: String, arrival: String, code: String, status: String, failure: String, refusal: String,
-                       route: String, mounted: Bool, ask: PairingAsk?) {
+                       connection: String, route: String, mounted: Bool, ask: PairingAsk?) {
         // A server that turns an open page's session away leaves that page as it was, with a
         // card over it, and the page names the refusal on its root. What it shows is no longer
         // what its server holds, so it is no page that is in: it is loaded again, as one that
         // stopped, and the entry of the page that comes says where the device stands now.
         if !refusal.isEmpty, entry == "open", !pairs {
             if case .open = state { stopped(status.isEmpty ? "The server turned this device's session away" : status) }
+            return
+        }
+        // A page that is in and says that its connection to its server is cut goes on showing
+        // what it showed, and nothing says whether the server that answers at its address next
+        // is the one that let this device in: a site that is set up again is away for a while
+        // and comes back as another, and turns nobody's open session away. So the page is
+        // asked for again, as one that stopped: the page that comes says where the device
+        // stands, in again or in a workspace that is gone, as it says it to an app that was
+        // just started. A page that finds its server again before it is asked for is left as
+        // it is (`stopped`).
+        if connection == TiloEngine.cut, entry == "open", !pairs {
+            if case .open = state { stopped(status.isEmpty ? "The page lost its connection to the server" : status) }
             return
         }
         switch entry {

@@ -493,7 +493,10 @@ since, or the workspace was deleted. The engine reads the page's own name for th
 server's certificate, the one sentence today's page has for it (`TiloEngine.resetSaid`, which a
 test holds against `web/peer.mjs`). It then is `gone` and loads nothing again. A page whose
 server turns its open session away (`data-refusal`) still shows what it showed: the engine
-loads it again, as a page that stopped, and its entry says which of these it is. `TiloSource`
+loads it again, as a page that stopped, and its entry says which of these it is. So is a page
+that is in and says that its connection to its server is cut (`data-connection` `offline`),
+unless it finds its server again before it is asked for: a site that is set up again is away
+for a while, comes back as another and turns nobody's open session away. `TiloSource`
 puts away what the app held, as at a sign-out, asks nothing of a server that holds none of it,
 and says `Session.reset`: the way in with one sentence that says why, at every start until the
 device is paired again. What the person typed and did not send stays in its field. A refusal
