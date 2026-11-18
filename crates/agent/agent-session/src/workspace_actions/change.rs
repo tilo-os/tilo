@@ -1,6 +1,6 @@
 //! What a watch of a workspace follows, and where it is woken: every write landing in the
 //! workspace's replica answers a waiting watch, and who is in the workspace moves with its
-//! governance, which is one of its records. A caller asks for such a wait across the wire
+//! governance, which is one of its documents. A caller asks for such a wait across the wire
 //! ([`tilo_actions::remote::ActionProvider::changed`]); the device that holds the workspace holds its
 //! answer here until a change comes or the wait runs out.
 use super::{
