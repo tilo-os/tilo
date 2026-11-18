@@ -516,6 +516,15 @@ fn a_machine_asks_the_drive_it_could_not_settle_and_takes_the_answer() {
             .is_some_and(|asked| asked.reason.contains("2 drives")),
         "the question carries the reason: {entry:?}"
     );
+    // The person's devices read the waiting entry as they read any entry, and
+    // see the machine's real drives and the question it asked there.
+    {
+        use tilo_resource::Resource as _;
+        let read = Servers::read_content(&servers.state().unwrap(), servers.doc(), None).unwrap();
+        let said = read.to_string();
+        assert!(said.contains("serial-a"), "the drives are read: {said}");
+        assert!(said.contains("2 drives"), "and the question: {said}");
+    }
 
     assert!(
         servers
