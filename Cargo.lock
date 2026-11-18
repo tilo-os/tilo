@@ -3023,6 +3023,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bounded-command",
+ "containers-model",
  "runtime-dylib",
  "runtime-portal",
  "serde",
@@ -3034,6 +3035,17 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "containers-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
