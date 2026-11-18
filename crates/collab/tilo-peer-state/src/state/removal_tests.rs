@@ -352,11 +352,21 @@ tilo_test_env::scenario! {
     phase a_removal_recorded_before_cuts_were_kept_is_completed_by_the_governing_device;
     {
         let story = story(RevocationReason::Retired);
-        // The governance as a build before cuts left it: the removal, no cut.
+        // A removal recorded with no cut yet: the map is founded with the
+        // workspace, and the governing device has not written what it had
+        // taken of the device.
         let mut governor = story.governor.clone();
         {
             let doc = governor.core.workspace_doc.as_deref_mut().unwrap();
-            doc.delete(ROOT, crate::removals::FIELD_V1).unwrap();
+            let map = doc
+                .get(ROOT, crate::removals::FIELD_V1)
+                .unwrap()
+                .unwrap()
+                .1;
+            let keys: Vec<String> = doc.keys(&map).collect();
+            for key in keys {
+                doc.delete(&map, key.as_str()).unwrap();
+            }
             doc.commit();
         }
         assert!(governor.governance().lacks_removal_cuts());

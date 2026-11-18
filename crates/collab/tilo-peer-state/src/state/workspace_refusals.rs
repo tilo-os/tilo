@@ -32,7 +32,8 @@ fn map_at(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
     }
 }
 
-/// The map `key` names under `parent`, made when it is not there yet.
+/// The map `key` names under `parent`, made when it is not there yet: the row
+/// of one device, which only that device writes.
 fn map_for(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Result<ObjId, String> {
     match doc.get(parent, key).map_err(|e| e.to_string())? {
         Some((Value::Object(ObjType::Map), id)) => Ok(id),
@@ -70,32 +71,31 @@ impl PeerWorkspace<'_> {
         let Some(doc) = self.peer.core.workspace_doc.as_deref() else {
             return Vec::new();
         };
-        let Some(people) = map_at(doc, &ROOT, WORKSPACE_WRITE_REFUSALS_KEY) else {
+        let Some(rows) = map_at(doc, &ROOT, WORKSPACE_WRITE_REFUSALS_KEY) else {
             return Vec::new();
         };
         let mut held = Vec::new();
-        for person in doc.keys(&people) {
-            let Some(devices) = map_at(doc, &people, &person) else {
+        for row in doc.keys(&rows) {
+            let Some((_, device)) = super::device_rows::person_and_device(&row) else {
                 continue;
             };
-            for device in doc.keys(&devices) {
-                let Some(entries) = map_at(doc, &devices, &device) else {
+            let device = hex::encode(device);
+            let Some(entries) = map_at(doc, &rows, &row) else {
+                continue;
+            };
+            for entry in doc.keys(&entries) {
+                let Some((Value::Scalar(value), _)) = doc.get(&entries, &entry).ok().flatten()
+                else {
                     continue;
                 };
-                for entry in doc.keys(&entries) {
-                    let Some((Value::Scalar(value), _)) = doc.get(&entries, &entry).ok().flatten()
-                    else {
-                        continue;
-                    };
-                    let ScalarValue::Bytes(bytes) = value.as_ref() else {
-                        continue;
-                    };
-                    let Ok(refusal) = postcard::from_bytes::<WriteRefusal>(bytes) else {
-                        continue;
-                    };
-                    if hex::encode(refusal.by) == device && refusal.signed_by(&refusal.by) {
-                        held.push(refusal);
-                    }
+                let ScalarValue::Bytes(bytes) = value.as_ref() else {
+                    continue;
+                };
+                let Ok(refusal) = postcard::from_bytes::<WriteRefusal>(bytes) else {
+                    continue;
+                };
+                if hex::encode(refusal.by) == device && refusal.signed_by(&refusal.by) {
+                    held.push(refusal);
                 }
             }
         }
@@ -129,16 +129,11 @@ impl PeerWorkspaceMut<'_> {
             return Err("a refusal is signed by the device that made it".into());
         }
         let bytes = postcard::to_allocvec(refusal).map_err(|error| error.to_string())?;
-        let people = map_for(&mut candidate, &ROOT, WORKSPACE_WRITE_REFUSALS_KEY)?;
-        let devices = map_for(
-            &mut candidate,
-            &people,
-            &hex::encode(caller.user_public_key),
-        )?;
+        let rows = super::governed_map(&candidate, WORKSPACE_WRITE_REFUSALS_KEY)?;
         let entries = map_for(
             &mut candidate,
-            &devices,
-            &hex::encode(caller.device_public_key),
+            &rows,
+            &super::device_rows::person_row_key(&caller.user_public_key, &caller.device_public_key),
         )?;
         let entry = entry_key(&refusal.app, &refusal.record, &refusal.author);
         if held_refusal(&candidate, &entries, &entry)?.is_some_and(|held| held.seq >= refusal.seq) {
@@ -191,15 +186,12 @@ impl PeerWorkspaceMut<'_> {
             return Ok(false);
         };
         let entry = entry_key(app, record, &author);
-        let Some(people) = map_at(&candidate, &ROOT, WORKSPACE_WRITE_REFUSALS_KEY) else {
+        let Some(rows) = map_at(&candidate, &ROOT, WORKSPACE_WRITE_REFUSALS_KEY) else {
             return Ok(false);
         };
-        let Some(devices) = map_at(&candidate, &people, &hex::encode(caller.user_public_key))
-        else {
-            return Ok(false);
-        };
-        let Some(entries) = map_at(&candidate, &devices, &hex::encode(caller.device_public_key))
-        else {
+        let key =
+            super::device_rows::person_row_key(&caller.user_public_key, &caller.device_public_key);
+        let Some(entries) = map_at(&candidate, &rows, &key) else {
             return Ok(false);
         };
         let Some((Value::Scalar(value), _)) =
