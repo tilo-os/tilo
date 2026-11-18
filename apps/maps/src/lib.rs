@@ -32,11 +32,12 @@ mod hand_laid;
 mod live;
 mod map_controls;
 mod map_info_sheet;
-pub mod model;
+pub use maps_model::model;
 pub mod net;
-pub mod offline_areas;
+pub use maps_model::offline_areas;
 mod offline_panel;
 pub mod place_search;
+mod presentation;
 pub mod rank;
 pub mod resource;
 #[cfg(feature = "samples")]

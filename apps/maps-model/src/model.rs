@@ -2,9 +2,8 @@
 //! [`crate::workspace::Workspace`] beside its per-window state. The offline areas are this device's
 //! ([`crate::offline_areas`]).
 
-use crate::failure;
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Id, Identified, JsonSchema, Model};
+use tilo_resource::{self, Id, Identified, JsonSchema, Model};
 
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct LatLon {
@@ -37,37 +36,20 @@ pub enum Category {
 }
 
 impl Category {
-    pub fn icon(self) -> ui::icons::Icon {
-        use ui::icons::Icon;
-        match self {
-            Category::Landmark => Icon::Flag,
-            Category::Cafe => Icon::Coffee,
-            Category::Restaurant => Icon::Utensils,
-            Category::Bar => Icon::Beer,
-            Category::Museum => Icon::Landmark,
-            Category::Park => Icon::Trees,
-            Category::Transit => Icon::TrainFront,
-            Category::Hotel => Icon::BedDouble,
-            Category::Shop => Icon::ShoppingBag,
-            Category::Hospital => Icon::Hospital,
-            Category::Other => Icon::MapPin,
-        }
-    }
-
     pub fn label(self) -> String {
-        failure::t(match self {
-            Category::Landmark => "maps-category-landmark",
-            Category::Cafe => "maps-category-cafe",
-            Category::Restaurant => "maps-category-restaurant",
-            Category::Bar => "maps-category-bar",
-            Category::Museum => "maps-category-museum",
-            Category::Park => "maps-category-park",
-            Category::Transit => "maps-category-transit",
-            Category::Hotel => "maps-category-hotel",
-            Category::Shop => "maps-category-shop",
-            Category::Hospital => "maps-category-hospital",
-            Category::Other => "maps-category-other",
-        })
+        match self {
+            Category::Landmark => tilo_resource::word!("maps-category-landmark").read(),
+            Category::Cafe => tilo_resource::word!("maps-category-cafe").read(),
+            Category::Restaurant => tilo_resource::word!("maps-category-restaurant").read(),
+            Category::Bar => tilo_resource::word!("maps-category-bar").read(),
+            Category::Museum => tilo_resource::word!("maps-category-museum").read(),
+            Category::Park => tilo_resource::word!("maps-category-park").read(),
+            Category::Transit => tilo_resource::word!("maps-category-transit").read(),
+            Category::Hotel => tilo_resource::word!("maps-category-hotel").read(),
+            Category::Shop => tilo_resource::word!("maps-category-shop").read(),
+            Category::Hospital => tilo_resource::word!("maps-category-hospital").read(),
+            Category::Other => tilo_resource::word!("maps-category-other").read(),
+        }
     }
 
     pub fn from_osm(class: &str, kind: &str) -> Category {
@@ -149,7 +131,7 @@ impl Poi {
         let Some(kind) = self.kind.as_deref().filter(|k| !k.trim().is_empty()) else {
             return self.category.label();
         };
-        ui::format::capitalize_first(&kind.trim().replace(['_', ';'], " "))
+        capitalize_first(&kind.trim().replace(['_', ';'], " "))
     }
 }
 
@@ -174,12 +156,12 @@ impl TravelMode {
     ];
 
     pub fn label(self) -> String {
-        failure::t(match self {
-            TravelMode::Car => "maps-mode-drive",
-            TravelMode::Transit => "maps-mode-transit",
-            TravelMode::Bike => "maps-mode-bike",
-            TravelMode::Foot => "maps-mode-foot",
-        })
+        match self {
+            TravelMode::Car => tilo_resource::word!("maps-mode-drive").read(),
+            TravelMode::Transit => tilo_resource::word!("maps-mode-transit").read(),
+            TravelMode::Bike => tilo_resource::word!("maps-mode-bike").read(),
+            TravelMode::Foot => tilo_resource::word!("maps-mode-foot").read(),
+        }
     }
 
     /// The mode's stable name, as its serialized value spells it; never translated. Never
@@ -242,22 +224,6 @@ pub enum Maneuver {
 }
 
 impl Maneuver {
-    pub fn icon(self) -> ui::icons::Icon {
-        use ui::icons::Icon;
-        match self {
-            Maneuver::Depart | Maneuver::Continue | Maneuver::Merge => Icon::ArrowUp,
-            Maneuver::SlightLeft => Icon::ArrowUpLeft,
-            Maneuver::Left => Icon::CornerUpLeft,
-            Maneuver::SharpLeft => Icon::ArrowDownLeft,
-            Maneuver::SlightRight => Icon::ArrowUpRight,
-            Maneuver::Right => Icon::CornerUpRight,
-            Maneuver::SharpRight => Icon::ArrowDownRight,
-            Maneuver::Uturn => Icon::Undo2,
-            Maneuver::Roundabout => Icon::RotateCw,
-            Maneuver::Arrive => Icon::Flag,
-        }
-    }
-
     pub fn from_osrm(kind: &str, modifier: &str) -> Maneuver {
         match kind {
             "depart" => Maneuver::Depart,
@@ -316,14 +282,14 @@ pub enum TransitMode {
 
 impl TransitMode {
     pub fn label(self) -> String {
-        failure::t(match self {
-            TransitMode::Walk => "maps-transit-walk",
-            TransitMode::Bus => "maps-transit-bus",
-            TransitMode::Tram => "maps-transit-tram",
-            TransitMode::Subway => "maps-transit-subway",
-            TransitMode::Rail => "maps-transit-rail",
-            TransitMode::Ferry => "maps-transit-ferry",
-        })
+        match self {
+            TransitMode::Walk => tilo_resource::word!("maps-transit-walk").read(),
+            TransitMode::Bus => tilo_resource::word!("maps-transit-bus").read(),
+            TransitMode::Tram => tilo_resource::word!("maps-transit-tram").read(),
+            TransitMode::Subway => tilo_resource::word!("maps-transit-subway").read(),
+            TransitMode::Rail => tilo_resource::word!("maps-transit-rail").read(),
+            TransitMode::Ferry => tilo_resource::word!("maps-transit-ferry").read(),
+        }
     }
 
     pub fn from_motis(mode: &str) -> TransitMode {
@@ -417,10 +383,10 @@ impl Panel {
     pub const ALL: [Panel; 2] = [Panel::Explore, Panel::Directions];
 
     pub fn label(self) -> String {
-        failure::t(match self {
-            Panel::Explore => "maps-panel-explore",
-            Panel::Directions => "maps-panel-directions",
-        })
+        match self {
+            Panel::Explore => tilo_resource::word!("maps-panel-explore").read(),
+            Panel::Directions => tilo_resource::word!("maps-panel-directions").read(),
+        }
     }
 }
 
@@ -490,7 +456,7 @@ impl Default for MapModel {
             transit_time: TransitTime::default(),
             results: Vec::new(),
             origin: None,
-            origin_name: failure::t("maps-map-centre"),
+            origin_name: tilo_resource::word!("maps-map-centre").read(),
             dest: None,
             dest_name: String::new(),
             center: LatLon::new(48.1371, 11.5754),
@@ -530,6 +496,15 @@ impl MapModel {
         } else {
             self.places.push(p);
         }
+    }
+}
+
+/// `text` with its first character upper-cased, as a name or a kind reads.
+fn capitalize_first(text: &str) -> String {
+    let mut characters = text.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().chain(characters).collect(),
+        None => String::new(),
     }
 }
 

@@ -217,8 +217,9 @@ impl MapsApp {
             } else {
                 String::new()
             };
-            let mut face =
-                ListRowFace::new(&step.instruction).leading(RowLeading::Icon(step.maneuver.icon()));
+            let mut face = ListRowFace::new(&step.instruction).leading(RowLeading::Icon(
+                crate::presentation::maneuver_icon(step.maneuver),
+            ));
             if !meta.is_empty() {
                 face = face.meta(&meta);
             }

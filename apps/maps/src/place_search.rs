@@ -157,7 +157,7 @@ impl Spot<'_> {
         let icon = if self.saved {
             Icon::Star
         } else {
-            self.category.icon()
+            crate::presentation::category_icon(self.category)
         };
         let mut entry = SearchEntry::new(self.name, String::new())
             .field(self.category.label(), SearchWeight::Metadata)

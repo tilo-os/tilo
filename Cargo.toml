@@ -146,6 +146,7 @@ members = [
     "apps/logs-model",
     "apps/mail",
     "apps/maps",
+    "apps/maps-model",
     "apps/model-providers",
     "apps/monitor",
     "apps/music",

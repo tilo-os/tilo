@@ -9819,6 +9819,7 @@ dependencies = [
  "jiff",
  "lru 0.18.3",
  "maps",
+ "maps-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -9832,6 +9833,17 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "maps-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-resource",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
