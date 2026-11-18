@@ -21,6 +21,10 @@ tilo-dav = { path = "../../system/tilo-dav" }
 # Certificate roots and the TLS client configuration, as every other app's
 # outbound connection makes them.
 tilo-net = { path = "../tilo-net" }
+# What a mail domain says of its servers: the names it gives the domain name
+# system, and the settings document it publishes.
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "system-config"] }
+roxmltree.workspace = true
 rustls.workspace = true
 # The SMTP sign-in is spoken by hand, a line at a time, so the probe carries
 # no mail transport: only the encoding its `AUTH` exchange is written in.

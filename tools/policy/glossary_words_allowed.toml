@@ -537,3 +537,9 @@ reason = "The existing wire's name for the document a refusal names (neighbour_w
 words = ["record"]
 identifiers = ["record"]
 paths = ["crates/collab/tilo-peer-state/src/owner/refused_change_tests.rs"]
+
+[[allow]]
+reason = "The keys a mail account's settings keep its two servers' names under, as mail programs call them."
+words = ["host"]
+identifiers = ["imap_host", "smtp_host"]
+paths = ["crates/platform/account-probe/src/mail_servers.rs"]
