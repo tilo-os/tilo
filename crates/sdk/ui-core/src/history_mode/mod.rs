@@ -22,9 +22,6 @@ pub(crate) mod api;
 pub mod capability;
 pub mod coverage;
 pub(crate) mod feed;
-/// The session's side of a window's History, for a test that opens an app without one.
-#[cfg(any(test, feature = "test-support"))]
-pub use feed::tests as served_history;
 pub mod folder;
 pub mod preview;
 pub mod restore;

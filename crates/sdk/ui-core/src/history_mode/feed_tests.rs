@@ -9,20 +9,24 @@ use crate::tilo_actions::remote::{
 };
 use crate::tilo_actions::{InvocationId, InvocationUpdate};
 
-/// The workspace's history as a session serves it for a window whose resource is a test's
-/// document: each of its changes, under its own id, named as its own history names its author, and
-/// served again each time the session takes up a newer state of the document ([`Self::write`]).
-pub struct ServedHistory {
-    /// The feed as last read, under the sequence of that reading.
+/// The workspace's history as a session serves it for a window whose resources are a test's
+/// documents: each of their changes, under its own id, named as its own history names its author,
+/// newest first and a page at a time, and served again each time the session takes up a newer state
+/// of the documents ([`Self::write`]).
+pub(crate) struct ServedHistory {
+    /// Every change as last read, newest first, under the sequence of that reading.
     feed: std::sync::Mutex<(u64, wire::Feed)>,
+    /// How many of the newest changes each follower asked for ([`wire::FeedQuery::page`]).
+    pages: std::sync::Mutex<std::collections::HashMap<InvocationId, usize>>,
     /// Followers waiting for the next reading.
     waiting: std::sync::Mutex<Vec<crate::tilo_actions::remote::Completer<()>>>,
 }
 
 impl ServedHistory {
-    fn new(doc: &automerge::AutoCommit) -> Self {
+    fn new<'a>(docs: impl IntoIterator<Item = &'a automerge::AutoCommit>) -> Self {
         Self {
-            feed: std::sync::Mutex::new((1, read(doc))),
+            feed: std::sync::Mutex::new((1, read(docs))),
+            pages: std::sync::Mutex::default(),
             waiting: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -32,7 +36,7 @@ impl ServedHistory {
     pub(crate) fn write(&self, doc: &automerge::AutoCommit) {
         {
             let mut feed = self.feed.lock_recover();
-            *feed = (feed.0 + 1, read(doc));
+            *feed = (feed.0 + 1, read([doc]));
         }
         let waiting = std::mem::take(&mut *self.waiting.lock_recover());
         for waiter in waiting {
@@ -58,6 +62,14 @@ impl ActionProvider for ServedHistory {
         if request.target != wire::target(wire::FEED) {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
+        let page = match &request.argument {
+            crate::tilo_actions::remote::InvokeArgument::Json(query) => {
+                serde_json::from_value::<wire::FeedQuery>(serde_json::Value::Object(query.clone()))
+                    .map_or(wire::FEED_PAGE, |query| query.page())
+            }
+            _ => wire::FEED_PAGE,
+        };
+        self.pages.lock_recover().insert(request.invocation, page);
         Pending::ready(Ok(InvocationReceipt {
             invocation: request.invocation,
             status: ReceiptStatus::Accepted,
@@ -65,12 +77,20 @@ impl ActionProvider for ServedHistory {
     }
 
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        let page = self
+            .pages
+            .lock_recover()
+            .get(id)
+            .copied()
+            .unwrap_or(wire::FEED_PAGE);
         let (sequence, feed) = &*self.feed.lock_recover();
+        let mut paged = feed.clone();
+        paged.entries.truncate(page);
         Some(InvocationState {
             update: InvocationUpdate::Item {
                 invocation: *id,
                 sequence: *sequence,
-                value: serde_json::to_value(feed).ok()?,
+                value: serde_json::to_value(paged).ok()?,
             },
             untrusted: false,
             left_at: None,
@@ -96,8 +116,15 @@ thread_local! {
 
 /// Serve the history of `doc` to every History this test opens: each test is a process of its
 /// own, so the provider stays entered until it ends.
-pub fn serve(doc: &automerge::AutoCommit) {
-    let served = std::sync::Arc::new(ServedHistory::new(doc));
+#[cfg(test)]
+pub(crate) fn serve(doc: &automerge::AutoCommit) {
+    serve_all([doc]);
+}
+
+/// Serve the history of `docs`, the resources a window keeps, to every History this test opens,
+/// as [`serve`] serves one's.
+pub(crate) fn serve_all<'a>(docs: impl IntoIterator<Item = &'a automerge::AutoCommit>) {
+    let served = std::sync::Arc::new(ServedHistory::new(docs));
     SERVED.with(|current| *current.borrow_mut() = Some(served.clone()));
     std::mem::forget(crate::remote_actions::RemoteActions::enter(
         served,
@@ -108,14 +135,32 @@ pub fn serve(doc: &automerge::AutoCommit) {
 /// The session took up `doc` as it is now: what this thread serves ([`serve`]) answers every
 /// History that follows it again.
 #[cfg(test)]
-pub fn sync(doc: &automerge::AutoCommit) {
+pub(crate) fn sync(doc: &automerge::AutoCommit) {
     let served = SERVED.with(|current| current.borrow().clone());
     served.expect("a history is served").write(doc);
 }
 
-/// The workspace's history of `doc` as the session reads it: its changes, newest first, and the spans
-/// of them its members named.
-fn read(doc: &automerge::AutoCommit) -> wire::Feed {
+/// The workspace's history of `docs` as the session reads it: their changes, newest first, and the
+/// spans of them their members named.
+fn read<'a>(docs: impl IntoIterator<Item = &'a automerge::AutoCommit>) -> wire::Feed {
+    let mut feed = wire::Feed::default();
+    let mut several = false;
+    for (at, doc) in docs.into_iter().enumerate() {
+        let (entries, groups) = read_one(doc);
+        feed.entries.extend(entries);
+        feed.groups.extend(groups);
+        several = at > 0;
+    }
+    // One document's changes are in the order they were made; several interleave by time.
+    if several {
+        feed.entries
+            .sort_by_key(|entry| std::cmp::Reverse(entry.at_ms));
+    }
+    feed.total = feed.entries.len();
+    feed
+}
+
+fn read_one(doc: &automerge::AutoCommit) -> (Vec<wire::Entry>, Vec<wire::Group>) {
     let mut doc = doc.clone();
     let source = crate::history_source::HistorySource::new();
     let entries = source
@@ -153,12 +198,7 @@ fn read(doc: &automerge::AutoCommit) -> wire::Feed {
             named_by: named.named_by.map(|author| author.name),
         })
         .collect();
-    wire::Feed {
-        total: entries.len(),
-        entries,
-        groups,
-        ..wire::Feed::default()
-    }
+    (entries, groups)
 }
 
 #[cfg(test)]
