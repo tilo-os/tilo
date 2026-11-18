@@ -137,15 +137,16 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
         Ok(None)
     }
     /// The action `action` of `app` as the version `workspace` installs
-    /// declares it in its package's surface: what the caller is offered and
-    /// the kind it is decided by. `None` for an app or action it does not
-    /// declare.
+    /// declares it in its package's surface, with the kind of the resource
+    /// that declares it: what the caller is offered, the kind it is decided
+    /// by, and the resource the app's model routes it to. `None` for an app
+    /// or action it does not declare.
     fn packaged_action(
         &self,
         _workspace: WorkspaceId,
         _app: &str,
         _action: &str,
-    ) -> Option<tilo_actions::surface::VerbSurface> {
+    ) -> Option<(String, tilo_actions::surface::VerbSurface)> {
         None
     }
     /// Read an exact existing source using already-owned host keys. The host
@@ -297,6 +298,9 @@ pub trait AsksInConversation: Send + Sync {
 pub struct PackagedCall<'a> {
     /// The app's id, as its package and its resources name it.
     pub app: &'a str,
+    /// The kind of the resource the action is for, which the app's model
+    /// routes it by.
+    pub kind: &'a str,
     /// The resource's document id: `""` for what the app keeps per workspace.
     pub document: &'a str,
     /// The `.tapp` the workspace keeps for that app version.

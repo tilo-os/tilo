@@ -219,6 +219,7 @@ pub use entry::{
     Scalar, VerbCall,
 };
 pub use envelope::ActionEnvelope;
+pub use executor::Changes;
 pub use executor::{
     ActionTransport, CompensatingScope, Dispatched, EntryReader, HostDecision, LocalTransport,
     UNDONE_KEY, Verified, apply_local, apply_local_by, apply_local_with_context,

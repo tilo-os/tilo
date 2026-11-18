@@ -263,6 +263,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
                 &created.workspace,
                 &server_device.cert,
                 TASKS,
+                tasks_model::KIND,
                 "",
                 &package,
             )
@@ -347,6 +348,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         .unwrap()
         .ask(&tilo_model_engine::Request {
             op: tilo_model_engine::Op::Apply,
+            kind: tasks_model::KIND,
             id: "",
             home: &created.workspace,
             bytes: &before,
@@ -355,6 +357,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
             action: "create-area",
             arguments: create_area("Ship it"),
             now: i64::try_from(now_ms).unwrap(),
+            envelope: None,
         })
         .unwrap();
     let mut replayed_document = automerge::AutoCommit::load(&before).unwrap();

@@ -206,6 +206,7 @@ impl Workspaces {
                     action: "",
                     arguments: serde_json::Map::new(),
                     now: i64::try_from(now / 1_000_000).unwrap_or(i64::MAX),
+                    envelope: None,
                 })
                 .map_err(|error| CollaborationError::new(error.to_string()))?
                 .document
@@ -324,6 +325,7 @@ impl Workspaces {
                     action,
                     arguments,
                     now: now_ms,
+                    envelope: None,
                 })
                 .map_err(|error| CollaborationError::new(error.to_string()))?
         };
@@ -362,8 +364,10 @@ impl Workspaces {
 }
 
 /// The verb `action` of the app version `package` carries, when the package's
-/// signed surface declares it: what the action API offers a caller and the
-/// kind the invocation is decided by, read without the app's code.
+/// signed surface declares it, with the kind of the resource that declares
+/// it: what the action API offers a caller, the kind the invocation is
+/// decided by, and the resource the app's model routes it to, read without
+/// the app's code.
 ///
 /// # Errors
 /// Bytes that hold no package, a package that is not `app`, or one whose
@@ -372,16 +376,17 @@ pub fn packaged_action_verb(
     package: &[u8],
     app: &str,
     action: &str,
-) -> Result<tilo_actions::surface::VerbSurface, CollaborationError> {
+) -> Result<(String, tilo_actions::surface::VerbSurface), CollaborationError> {
     let bytes = package_surface(package, app)?;
     let surface = collab_types::surface::SurfaceFile::parse(&bytes)
         .map_err(|error| CollaborationError::new(format!("the package's surface: {error}")))?;
     surface
         .resources
         .iter()
-        .flat_map(|resource| resource.verbs.iter())
-        .find(|verb| verb.id == action)
-        .cloned()
+        .find_map(|resource| {
+            let verb = resource.verbs.iter().find(|verb| verb.id == action)?;
+            Some((resource.kind.clone(), verb.clone()))
+        })
         .ok_or_else(|| CollaborationError::new("the app declares no such action"))
 }
 

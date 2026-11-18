@@ -5,10 +5,17 @@
 //! the calls [`ABI`] names and exports [`EXPORT`]. This crate compiles the
 //! bytes on the engine the rest of the system executes WebAssembly on
 //! ([`tilolang_runtime::engine`]) and calls it with one JSON request: the
-//! genesis of a new resource, or one action with its arguments, naming the
-//! resource kind it is for so one module serves every resource its app
-//! declares. What comes back is the invocation the action API recorded, which
-//! a peer replays, and the Automerge changes it wrote.
+//! genesis of a new resource, one action with its arguments, or the replay of
+//! an invocation another holder recorded, naming the resource kind it is for
+//! so one module serves every resource its app declares.
+//!
+//! The device holds the document. The module reads and writes it through the
+//! device's document calls (`automerge::model_device`): every read is of the
+//! resource at its current heads, and every write lands in this side's
+//! Automerge document, so the change is this device's Automerge's, made the
+//! same way on every holder, and the module carries only the app's own code.
+//! What comes back is the invocation the action API recorded, which a peer
+//! replays through the same calls, and the changes the module's writes made.
 //!
 //! The engine links only [`ABI`]: a module importing anything else fails to
 //! link, which is how "no imports beyond the device's" is enforced rather
@@ -22,14 +29,20 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilolang_runtime::engine::{Engine, EngineLimits, Host, HostFail, Imports, Wasm};
+use automerge::AutoCommit;
+use automerge::model_device::Documents;
+use tilolang_runtime::engine::{Engine, EngineLimits, GuestAnswer, Host, HostFail, Imports, Wasm};
 use tilolang_runtime::ids::ModuleHash;
 
-/// The functions a model module imports, as `(module, name, parameters, result)`.
+/// The functions a model module imports, as `(module, name, parameters, result)`:
+/// its request and answer, and the calls on the documents the device keeps
+/// for it.
 pub const ABI: &[Imports] = &[
     ("tilo_model", "request_length", "", "i"),
     ("tilo_model", "request", "ii", "i"),
     ("tilo_model", "answer", "ii", ""),
+    ("tilo_model", "document", "ii", "i"),
+    ("tilo_model", "document_answer", "i", ""),
 ];
 
 /// The export a model module is called through.
@@ -48,6 +61,8 @@ pub enum ModelError {
     Silent,
     #[error("the model's answer: {0}")]
     Answer(String),
+    #[error("the document: {0}")]
+    Document(String),
 }
 
 /// One app version's model, compiled and ready to apply its actions.
@@ -65,6 +80,10 @@ pub enum Op {
     Initialize,
     /// Apply the request's action to the request's document.
     Apply,
+    /// Replay the request's envelope, an invocation another holder recorded,
+    /// against the request's document: at the envelope's base heads it makes
+    /// the change the holder made, which is how a receiver checks it.
+    Replay,
 }
 
 /// One request to a model.
@@ -82,8 +101,8 @@ pub struct Request<'a> {
     pub id: &'a str,
     /// The workspace the resource is minted in.
     pub home: &'a str,
-    /// The bytes of the document the action acts on; empty for
-    /// [`Op::Initialize`].
+    /// The bytes of the document the action acts on (or a replay replays
+    /// against); empty for [`Op::Initialize`].
     pub bytes: &'a [u8],
     /// The invoking member ([`tilo_action_policy::MemberId::of_actor_bytes`]:
     /// a person's key, `agent:<id>` or `bot:<id>`).
@@ -98,6 +117,9 @@ pub struct Request<'a> {
     pub arguments: serde_json::Map<String, serde_json::Value>,
     /// The origin clock, milliseconds since the Unix epoch.
     pub now: i64,
+    /// The invocation [`Op::Replay`] replays, as [`Answer::envelope`] carried
+    /// it from the holder that made it.
+    pub envelope: Option<serde_json::Value>,
 }
 
 /// What a model answered.
@@ -105,7 +127,8 @@ pub struct Request<'a> {
 pub struct Answer {
     /// The bytes of the resource's document, for [`Op::Initialize`].
     pub document: Option<Vec<u8>>,
-    /// The changes the action added, against the bytes it was given.
+    /// The changes the action (or the replay) added, against the bytes it
+    /// was given.
     pub changes: Option<Vec<u8>>,
     /// The invocation as the action API recorded it: what a peer replays.
     pub envelope: Option<serde_json::Value>,
@@ -133,12 +156,30 @@ impl Model {
     /// something the device does not answer, answers nothing, or refuses the
     /// action (in the module's words).
     pub fn ask(&self, request: &Request<'_>) -> Result<Answer, ModelError> {
+        let mut document = match request.op {
+            Op::Initialize => AutoCommit::new(),
+            Op::Apply | Op::Replay => AutoCommit::load(request.bytes)
+                .map_err(|error| ModelError::Document(error.to_string()))?,
+        };
+        let before = document.get_heads();
         let serving = Rc::new(Serving {
             request: encode(request)?,
             answer: RefCell::new(None),
+            documents: RefCell::new(Documents::new(document)),
+            document_answer: RefCell::new(Vec::new()),
         });
         let outcome = self.engine.call(&self.module, EXPORT, &[], serving.clone());
-        outcome.map_err(|error| ModelError::Call(error.to_string()))?;
+        if let Err(error) = outcome {
+            // A module that panicked wrote why before it trapped.
+            let said = serving
+                .answer
+                .borrow_mut()
+                .take()
+                .and_then(|bytes| serde_json::from_slice::<Wire>(&bytes).ok()?.error);
+            return Err(
+                said.map_or_else(|| ModelError::Call(error.to_string()), ModelError::Refused)
+            );
+        }
         let bytes = serving
             .answer
             .borrow_mut()
@@ -150,9 +191,18 @@ impl Model {
         if let Some(error) = answer.error {
             return Err(ModelError::Refused(error));
         }
+        // What the module wrote is in this side's document.
+        document = serving
+            .documents
+            .replace(Documents::new(AutoCommit::new()))
+            .into_document();
+        let (whole, changes) = match request.op {
+            Op::Initialize => (Some(document.save()), None),
+            Op::Apply | Op::Replay => (None, Some(document.save_after(&before))),
+        };
         Ok(Answer {
-            document: answer.document.as_deref().map(decode).transpose()?,
-            changes: answer.changes.as_deref().map(decode).transpose()?,
+            document: whole,
+            changes,
             envelope: answer.envelope,
         })
     }
@@ -160,21 +210,21 @@ impl Model {
 
 /// The request as the module reads it.
 fn encode(request: &Request<'_>) -> Result<Vec<u8>, ModelError> {
-    let base = base64::engine::general_purpose::STANDARD;
     let wire = serde_json::json!({
         "op": match request.op {
             Op::Initialize => "initialize",
             Op::Apply => "apply",
+            Op::Replay => "replay",
         },
         "kind": request.kind,
         "id": document_id(request.id),
         "home": request.home,
-        "document": base64::Engine::encode(&base, request.bytes),
         "member": request.member,
         "acting": request.acting,
         "action": request.action,
         "arguments": request.arguments,
         "now": request.now,
+        "envelope": request.envelope,
     });
     serde_json::to_vec(&wire).map_err(|error| ModelError::Answer(error.to_string()))
 }
@@ -193,25 +243,28 @@ pub fn document_id(id: &str) -> String {
 #[derive(Debug, serde::Deserialize)]
 struct Wire {
     #[serde(default)]
-    document: Option<String>,
-    #[serde(default)]
-    changes: Option<String>,
-    #[serde(default)]
     envelope: Option<serde_json::Value>,
     #[serde(default)]
     error: Option<String>,
 }
 
-fn decode(text: &str) -> Result<Vec<u8>, ModelError> {
-    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, text)
-        .map_err(|error| ModelError::Answer(error.to_string()))
-}
-
-/// This side of one call: the request the module reads and the answer it
-/// writes.
+/// This side of one call: the request the module reads, the answer it
+/// writes, and the documents it reads and writes through the device.
 struct Serving {
     request: Vec<u8>,
     answer: RefCell<Option<Vec<u8>>>,
+    documents: RefCell<Documents>,
+    /// The answer to the module's last document call, until it takes it.
+    document_answer: RefCell<Vec<u8>>,
+}
+
+/// The `length` bytes of the module's memory at `offset`.
+fn guest_bytes(memory: &[u8], offset: i32, length: i32) -> Result<&[u8], HostFail> {
+    let start = usize::try_from(offset).unwrap_or(usize::MAX);
+    start
+        .checked_add(usize::try_from(length).unwrap_or(usize::MAX))
+        .and_then(|end| memory.get(start..end))
+        .ok_or_else(|| HostFail::Trap("the model's call lies outside its memory".into()))
 }
 
 impl Host for Serving {
@@ -229,41 +282,43 @@ impl Host for Serving {
         name: &str,
         memory: &[u8],
         args: &[Wasm],
-    ) -> Result<tilolang_runtime::engine::GuestAnswer, HostFail> {
+    ) -> Result<GuestAnswer, HostFail> {
         if module != "tilo_model" {
             return Err(HostFail::Trap(format!(
                 "the model imports {module}::{name}"
             )));
         }
         match (name, args) {
-            ("request_length", []) => Ok(tilolang_runtime::engine::GuestAnswer::Value(Wasm::I32(
+            ("request_length", []) => Ok(GuestAnswer::Value(Wasm::I32(
                 i32::try_from(self.request.len()).unwrap_or(i32::MAX),
             ))),
+            ("document", [Wasm::I32(offset), Wasm::I32(length)]) => {
+                let call = guest_bytes(memory, *offset, *length)?;
+                let answer = self.documents.borrow_mut().answer(call);
+                let length = i32::try_from(answer.len())
+                    .map_err(|_| HostFail::Trap("the document's answer is too large".into()))?;
+                *self.document_answer.borrow_mut() = answer;
+                Ok(GuestAnswer::Value(Wasm::I32(length)))
+            }
+            ("document_answer", [Wasm::I32(offset)]) => Ok(GuestAnswer::Bytes {
+                offset: u32::try_from(*offset).unwrap_or(u32::MAX),
+                bytes: std::mem::take(&mut *self.document_answer.borrow_mut()),
+                result: None,
+            }),
             ("request", [Wasm::I32(offset), Wasm::I32(capacity)]) => {
                 let capacity = usize::try_from(*capacity).unwrap_or(0);
                 let count = capacity.min(self.request.len());
                 let bytes = self.request.get(..count).unwrap_or_default().to_vec();
-                Ok(tilolang_runtime::engine::GuestAnswer::Bytes {
+                Ok(GuestAnswer::Bytes {
                     offset: u32::try_from(*offset).unwrap_or(u32::MAX),
                     bytes,
                     result: Some(Wasm::I32(i32::try_from(count).unwrap_or(i32::MAX))),
                 })
             }
             ("answer", [Wasm::I32(offset), Wasm::I32(length)]) => {
-                let start = usize::try_from(*offset).unwrap_or(usize::MAX);
-                let end = start
-                    .checked_add(usize::try_from(*length).unwrap_or(usize::MAX))
-                    .ok_or_else(|| {
-                        HostFail::Trap("the model's answer lies outside its memory".into())
-                    })?;
-                let answer = memory
-                    .get(start..end)
-                    .ok_or_else(|| {
-                        HostFail::Trap("the model's answer lies outside its memory".into())
-                    })?
-                    .to_vec();
+                let answer = guest_bytes(memory, *offset, *length)?.to_vec();
                 *self.answer.borrow_mut() = Some(answer);
-                Ok(tilolang_runtime::engine::GuestAnswer::Nothing)
+                Ok(GuestAnswer::Nothing)
             }
             _ => Err(HostFail::Trap(format!(
                 "the model called {module}::{name} wrongly"

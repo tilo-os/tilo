@@ -897,6 +897,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
     ) -> Result<Option<serde_json::Value>, String> {
         let PackagedCall {
             app,
+            kind,
             document,
             package,
             action,
@@ -920,6 +921,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                 workspaces.governor(),
                 tilo_workspace_service::workspaces::PackagedAction {
                     app,
+                    kind,
                     document,
                     package,
                     action,
@@ -938,7 +940,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         workspace: WorkspaceId,
         app: &str,
         action: &str,
-    ) -> Option<tilo_actions::surface::VerbSurface> {
+    ) -> Option<(String, tilo_actions::surface::VerbSurface)> {
         let workspaces = self.workspaces.as_ref()?;
         let package = self
             .runtime

@@ -169,21 +169,25 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
             .any(|(_, area)| area.name.as_str() == "Ship it"),
         "the tracker holds the project the action made"
     );
-    // Another holder of the resource replays the invocation with the same
-    // module: the change it writes is the change the server published.
+    // Another holder of the resource replays the invocation the server
+    // recorded with the same module, against its own copy of the document at
+    // the invocation's base heads: the verb reads and writes that holder's
+    // document through the same document calls, and the change it writes is the
+    // change the server published.
     let model = Model::compile(&model_module("tasks")).unwrap();
     let replayed = model
         .ask(&Request {
-            op: Op::Apply,
+            op: Op::Replay,
             kind: TRACKER,
             id: "",
             home: &created.workspace,
             bytes: &base,
-            member: &hex::encode(cert.user_public_key),
+            member: "",
             acting: None,
-            action: "create-area",
-            arguments: create_area("Ship it"),
-            now: NOW_MS,
+            action: "",
+            arguments: serde_json::Map::new(),
+            now: 0,
+            envelope: Some(envelope),
         })
         .unwrap();
     let mut replayed_document = automerge::AutoCommit::load(&base).unwrap();
@@ -197,7 +201,7 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
     assert_eq!(
         replayed_document.get_heads(),
         automerge::AutoCommit::load(&after).unwrap().get_heads(),
-        "the same module replays the action to the same document"
+        "the holder's replay of the invocation makes the server's change"
     );
     server.shutdown().await;
 }
@@ -243,6 +247,7 @@ fn one_module_serves_every_resource_of_its_app() {
                 action,
                 arguments,
                 now: NOW_MS,
+                envelope: None,
             })
             .unwrap()
     };
@@ -291,6 +296,7 @@ fn one_module_serves_every_resource_of_its_app() {
         action: "",
         arguments: serde_json::Map::new(),
         now: NOW_MS,
+        envelope: None,
     });
     assert!(
         refused.is_err(),

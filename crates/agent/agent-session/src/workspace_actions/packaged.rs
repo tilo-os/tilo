@@ -48,7 +48,7 @@ impl Worker {
         let Some(link) = self.shared.link.get().cloned() else {
             return Err(unknown_action());
         };
-        let verb = link
+        let (resource_kind, verb) = link
             .packaged_action(workspace_id, &route.app_id, &target.address.action)
             .ok_or_else(unknown_action)?;
         withheld.refuses(&target.address.resource)?;
@@ -77,6 +77,7 @@ impl Worker {
                 caller,
                 PackagedCall {
                     app: &route.app_id,
+                    kind: &resource_kind,
                     document: &route.document,
                     package,
                     action: &target.address.action,

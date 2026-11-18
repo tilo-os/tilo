@@ -20,6 +20,23 @@ pub struct ListRangeItem<'a> {
 }
 
 impl ListRangeItem<'_> {
+    /// TILO(model-device): an item as the host of a model module's document
+    /// read it.
+    #[cfg(tilo_model_guest)]
+    pub(crate) fn hosted(
+        index: usize,
+        value: crate::Value<'static>,
+        conflict: bool,
+        id: ExId,
+    ) -> ListRangeItem<'static> {
+        ListRangeItem {
+            index,
+            value: ValueRef::hosted(value),
+            conflict,
+            maybe_exid: ExIdPromise::resolved(id),
+        }
+    }
+
     pub(crate) fn op_id(&self) -> OpId {
         self.maybe_exid.id
     }
@@ -252,6 +269,14 @@ impl<'a> ListDiffItem<'a> {
     }
 }
 
+#[cfg(tilo_model_guest)]
+/// TILO(model-device): the items the host of a model module's document read.
+#[derive(Clone, Default, Debug)]
+pub struct ListRange<'a> {
+    pub(crate) hosted: crate::model_device::Hosted<'a, ListRangeItem<'static>>,
+}
+
+#[cfg(not(tilo_model_guest))]
 #[derive(Clone, Default, Debug)]
 pub struct ListRange<'a> {
     iter: ListDiff<'a>,
@@ -320,6 +345,23 @@ impl<'a> Iterator for ListIter<'a> {
     }
 }
 
+#[cfg(tilo_model_guest)]
+impl<'a> ListRange<'a> {
+    pub(crate) fn new<R: RangeBounds<usize>>(
+        _: &'a OpSet,
+        _: Range<usize>,
+        _: Option<Clock>,
+        _: R,
+    ) -> Self {
+        crate::model_device::outside_device("an op set")
+    }
+
+    pub(crate) fn shift_next(&mut self, _: Range<usize>) -> Option<<Self as Iterator>::Item> {
+        crate::model_device::outside_device("an op set")
+    }
+}
+
+#[cfg(not(tilo_model_guest))]
 impl<'a> ListRange<'a> {
     pub(crate) fn new<R: RangeBounds<usize>>(
         op_set: &'a OpSet,
@@ -345,6 +387,12 @@ impl<'a> ListRange<'a> {
 impl<'a> Iterator for ListRange<'a> {
     type Item = ListRangeItem<'a>;
 
+    #[cfg(tilo_model_guest)]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.hosted.next()
+    }
+
+    #[cfg(not(tilo_model_guest))]
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let item = self.iter.next()?;

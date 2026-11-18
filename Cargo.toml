@@ -624,8 +624,9 @@ ignored = ["workspace-hack", "tilo-winit-x11"]
 [workspace.lints.rust]
 # `tilo_no_js`: a wasm32-unknown-unknown build for a host that is not a
 # JavaScript page (a sandboxed format provider), which must link no
-# wasm-bindgen glue.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tilo_no_js)"] }
+# wasm-bindgen glue. `tilo_model_guest`: an app's model module, whose
+# documents its host keeps (vendor/automerge/src/model_device).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tilo_no_js)", "cfg(tilo_model_guest)"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }

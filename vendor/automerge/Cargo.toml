@@ -199,3 +199,8 @@ features = [
     "fmt",
     "env-filter",
 ]
+
+# TILO(model-device): `tilo_model_guest` builds the crate for a model module,
+# whose documents its host keeps (src/model_device).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tilo_model_guest)"] }

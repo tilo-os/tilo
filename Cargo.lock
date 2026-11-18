@@ -20336,10 +20336,10 @@ dependencies = [
 name = "tilo-model-engine"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-automerge-fork",
  "tilolang-runtime",
  "workspace-hack",
 ]
@@ -20390,7 +20390,6 @@ dependencies = [
 name = "tilo-model-guest"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "blake3",
  "getrandom 0.4.3",
  "serde",
