@@ -56,11 +56,10 @@ const CLOSING: Duration = Duration::from_secs(3);
 /// This device in the workspace: the one session every connection shares.
 pub(crate) struct Session {
     device: Entered,
-    /// Tilo's API as this computer's key, over this one session: what this
-    /// computer's programs (`tilo workspace`, `tilo ls -w`) and its agents'
-    /// account and people calls are answered by, without a session of their
-    /// own that would cut this one off. `None` when the login's key does not
-    /// read as one, and the workspace's own calls still serve.
+    /// Tilo's API as this computer's key, over this one session: what the
+    /// agents' account and people calls are answered by, without a session
+    /// of their own that would cut this one off. `None` when the login's key
+    /// does not read as one, and the workspace's own calls still serve.
     api: Option<Arc<tilo_api::direct::Direct>>,
 }
 

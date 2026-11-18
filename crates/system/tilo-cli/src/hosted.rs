@@ -853,40 +853,7 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
         match cmd {
-            WorkspaceCmd::Ls { labels } => {
-                let query: Vec<String> = labels
-                    .iter()
-                    .map(|(name, value)| {
-                        let encode = |text: &str| {
-                            percent_encoding::utf8_percent_encode(
-                                text,
-                                percent_encoding::NON_ALPHANUMERIC,
-                            )
-                            .to_string()
-                        };
-                        format!("label%5B{}%5D={}", encode(name), encode(value))
-                    })
-                    .collect();
-                let path = if query.is_empty() {
-                    "/v1/workspaces".to_owned()
-                } else {
-                    format!("/v1/workspaces?{}", query.join("&"))
-                };
-                let listed = client.get(&path).await?;
-                let rows = listed
-                    .get("workspaces")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .map(workspace_line)
-                    .collect::<Vec<_>>();
-                let said = if rows.is_empty() {
-                    "no workspaces".to_owned()
-                } else {
-                    rows.join("\n")
-                };
-                Ok(show(reach.json, &listed, &said))
-            }
+            WorkspaceCmd::Ls { labels } => list_workspaces(&client, reach.json, &labels).await,
             WorkspaceCmd::Create { name, labels } => {
                 let labels: serde_json::Map<String, Value> = labels
                     .into_iter()
@@ -956,6 +923,44 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
             }
         }
     })
+}
+
+/// `tilo workspace ls [--label NAME=VALUE]`: the workspaces the key reaches,
+/// those labelled so when labels are named.
+async fn list_workspaces(
+    client: &Client,
+    json: bool,
+    labels: &[(String, String)],
+) -> Result<ExitCode> {
+    let query: Vec<String> = labels
+        .iter()
+        .map(|(name, value)| {
+            let encode = |text: &str| {
+                percent_encoding::utf8_percent_encode(text, percent_encoding::NON_ALPHANUMERIC)
+                    .to_string()
+            };
+            format!("label%5B{}%5D={}", encode(name), encode(value))
+        })
+        .collect();
+    let path = if query.is_empty() {
+        "/v1/workspaces".to_owned()
+    } else {
+        format!("/v1/workspaces?{}", query.join("&"))
+    };
+    let listed = client.get(&path).await?;
+    let rows = listed
+        .get("workspaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(workspace_line)
+        .collect::<Vec<_>>();
+    let said = if rows.is_empty() {
+        "no workspaces".to_owned()
+    } else {
+        rows.join("\n")
+    };
+    Ok(show(json, &listed, &said))
 }
 
 /// `tilo workspace unattended <workspace> [--off]`: held while the

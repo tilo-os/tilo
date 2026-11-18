@@ -213,18 +213,6 @@ impl Direct {
     /// sandbox put in a namespace of its own is the same account and is
     /// refused all the same.
     pub async fn serve(self, listener: tokio::net::UnixListener) {
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                return;
-            };
-            self.serve_stream(stream);
-        }
-    }
-
-    /// Serve one connection a listener of this account's took, as
-    /// [`Self::serve`] serves each: refused unless its peer is a program of
-    /// this account in this login's own namespaces.
-    pub fn serve_stream(&self, stream: tokio::net::UnixStream) {
         use std::os::unix::fs::MetadataExt as _;
         let Ok(authorization) = hyper::header::HeaderValue::from_str(&self.authorization) else {
             return;
@@ -233,22 +221,27 @@ impl Direct {
         let owner = std::fs::metadata("/proc/self")
             .ok()
             .map(|metadata| metadata.uid());
-        let admitted = stream
-            .peer_cred()
-            .ok()
-            .filter(|credentials| Some(credentials.uid()) == owner)
-            .and_then(|credentials| credentials.pid())
-            .and_then(|pid| u32::try_from(pid).ok())
-            .is_some_and(shares_security_namespaces);
-        if !admitted {
-            tracing::warn!("API: a connection from another account or a sandbox is refused");
-            return;
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let admitted = stream
+                .peer_cred()
+                .ok()
+                .filter(|credentials| Some(credentials.uid()) == owner)
+                .and_then(|credentials| credentials.pid())
+                .and_then(|pid| u32::try_from(pid).ok())
+                .is_some_and(shares_security_namespaces);
+            if !admitted {
+                tracing::warn!("API: a connection from another account or a sandbox is refused");
+                continue;
+            }
+            tokio::spawn(crate::serve_connection(
+                Arc::clone(&self.server),
+                stream,
+                Some(authorization.clone()),
+            ));
         }
-        tokio::spawn(crate::serve_connection(
-            Arc::clone(&self.server),
-            stream,
-            Some(authorization),
-        ));
     }
 
     /// Answer one MCP request (a `tools/call`) as the API's MCP endpoint

@@ -227,8 +227,7 @@ enum Transport {
 impl Client {
     /// The client `reach` names: this desktop's own API at its socket when
     /// one serves it, else its key file, else `TILO_API_KEY` at an API
-    /// server, else this computer's device holder's API when it serves one,
-    /// else this computer's own key as `tilo login` kept it.
+    /// server, else this computer's own key as `tilo login` kept it.
     pub fn open(reach: Reach<'_>) -> Result<Self> {
         // A desktop of this login serves its person at its own socket, and a
         // program of this login answers as the person there with no key of its
@@ -254,14 +253,6 @@ impl Client {
                     http: tilo_net::Client::new(),
                 },
             });
-        }
-        // This computer's device holder (`tilo mcp --hold`) holds its one
-        // session, and serves the API over it: a session of this program's own
-        // under the same key would cut the holder's off.
-        if reach.api.is_none()
-            && let Some(socket) = device::held_api_socket()
-        {
-            return Ok(Self::session(&socket));
         }
         if let Some(file) = login_key(None)? {
             return Self::direct(&file);
