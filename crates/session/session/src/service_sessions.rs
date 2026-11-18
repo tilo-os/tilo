@@ -208,7 +208,9 @@ fn resolve(root: &Path, identity: [u8; 32], command: Command) -> Result<Reply, S
         // sessions.
         Command::Forget { .. }
         | Command::StoreAccountSecret { .. }
-        | Command::ReleaseAccountSecret { .. } => return Err(UNAVAILABLE.into()),
+        | Command::ReleaseAccountSecret { .. }
+        | Command::UseItem { .. }
+        | Command::LendsItems {} => return Err(UNAVAILABLE.into()),
     };
     if read_store(root).map_err(|_| UNAVAILABLE)? != store {
         return Err("Selected website sessions changed".into());
