@@ -112,8 +112,10 @@ class OfflineTargetTest(unittest.TestCase):
             prepare.prepare(args)
         self.assertFalse(any(argv[:2] == ["podman", "build"] for argv in calls))
 
-    def dev_transport(self, *, flavour="dev", revision="a" * 40):
-        config = {"architecture": "arm64", "os": "linux", "config": {"Labels": {
+    def dev_transport(self, *, flavour="dev", revision="a" * 40,
+                      repository="registry.tilo.so/tilo/tilo-vm",
+                      architecture="aarch64", oci_architecture="arm64"):
+        config = {"architecture": oci_architecture, "os": "linux", "config": {"Labels": {
             "org.opencontainers.image.revision": revision, "sh.tilo.image.flavour": flavour,
         }}}
         def blob(data):
@@ -133,13 +135,28 @@ class OfflineTargetTest(unittest.TestCase):
         (self.root / "oci/index.json").write_text(json.dumps({
             "schemaVersion": 2, "manifests": [manifest]}))
         metadata = {"schema": "tilo.installer-dev-target.v1",
-                    "repository": "registry.tilo.so/tilo/tilo-vm",
-                    "target_digest": manifest["digest"], "architecture": "aarch64",
-                    "hardware_profile": "lenovo-83ed",
-                    "update_origin": "registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci",
+                    "repository": repository,
+                    "target_digest": manifest["digest"], "architecture": architecture,
+                    "hardware_profile": "generic",
+                    "update_origin": repository + ":fixture-ci",
                     "source_revision": "a" * 40, "ci_run_id": "75340"}
         (self.root / "target.json").write_text(json.dumps(metadata))
         return metadata
+
+    def test_server_image_is_an_explicit_development_target(self):
+        # The medium stages the x86_64 server image without a named source: its
+        # digest binds the build.
+        metadata = self.dev_transport(flavour="server", revision="",
+                                      repository="registry.tilo.so/tilo/tilo-host",
+                                      architecture="x86_64", oci_architecture="amd64")
+        self.assertEqual(offline.verify(self.root, development=True), metadata)
+        # The declared architecture, not the live medium's, is what the image
+        # config must match.
+        self.dev_transport(flavour="server", revision="",
+                           repository="registry.tilo.so/tilo/tilo-host",
+                           architecture="x86_64", oci_architecture="arm64")
+        with self.assertRaisesRegex(ValueError, "declared Linux architecture"):
+            offline.verify(self.root, development=True)
 
     def test_explicit_development_transport(self):
         metadata = self.dev_transport()
