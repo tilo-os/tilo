@@ -735,3 +735,49 @@ async fn a_provider_on_the_hosts_own_network_is_never_dialled() {
     }
     responder.assert_untouched();
 }
+
+/// A provider that shows nothing is let go of after the first of the two
+/// times its model's calls are held to, and the model's next call waits the
+/// longer one: a provider that shows nothing while it works is let go of
+/// once, not every time.
+#[tokio::test]
+async fn a_silent_provider_is_let_go_of_and_the_next_call_waits_longer() {
+    let responder = Responder::serve(|peer| {
+        let _closed = peer.wait_for_close();
+    });
+    let (_dir, server) = linked(
+        ("A provider", OPENAI),
+        &format!("{}/v1", responder.url()),
+        "gpt-4o-mini",
+    )
+    .await;
+    let asked = server
+        .workspaces()
+        .person_model(ADA, Interaction::Task)
+        .letting_go(Quiet {
+            first: Duration::from_millis(300),
+            after_silence: Duration::from_millis(900),
+        });
+    let mut said = Vec::new();
+    for _ in 0..2 {
+        let due = tilo_clock::now()
+            .checked_add(Duration::from_secs(5))
+            .unwrap();
+        let refused = asked
+            .answer(&asking("When?", Vec::new()), due, &mut |_| {})
+            .await
+            .unwrap_err();
+        let ModelRefusal::Provider(error) = refused else {
+            panic!("the provider's own failure: {refused:?}");
+        };
+        assert_eq!(error.kind, ErrorKind::TimedOut);
+        said.push(error.message);
+    }
+    assert_eq!(
+        said,
+        [
+            "The model's provider sent nothing for 0.3 s",
+            "The model's provider sent nothing for 0.9 s"
+        ]
+    );
+}
