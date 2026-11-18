@@ -30,6 +30,8 @@ final class ShotsScene: UIResponder, UIWindowSceneDelegate {
                 await PhoneShots.tell(in: window)
             } else if asked.contains("--secret") {
                 await PhoneShots.secret(in: window)
+            } else if let way = asked.first(where: { $0 == "--keyboard" || $0 == "--keyboard-dark" }) {
+                await PhoneShots.keyboard(in: window, dark: way == "--keyboard-dark")
             } else if asked.contains("--typing") {
                 await PhoneShots.typing(in: window)
             } else if asked.contains("--said") {
@@ -60,6 +62,23 @@ final class Kept {
         print("\(word) \(line)")
         lines.append("\(word) \(line)")
         try? Data((lines.joined(separator: "\n") + "\n").utf8).write(to: file)
+    }
+}
+
+/// Where the keyboard's upper edge stands, as the system says it; nothing while it is away.
+@MainActor
+final class KeyboardWatch {
+    private(set) var top: CGFloat?
+
+    init() {
+        let center = NotificationCenter.default
+        _ = center.addObserver(forName: UIResponder.keyboardDidShowNotification, object: nil, queue: .main) { [weak self] note in
+            let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+            MainActor.assumeIsolated { self?.top = frame?.minY }
+        }
+        _ = center.addObserver(forName: UIResponder.keyboardDidHideNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.top = nil }
+        }
     }
 }
 
@@ -224,6 +243,88 @@ enum PhoneShots {
         // The field takes the keyboard with words begun in it, as when something is changed by telling the assistant.
         model.begin(Drawing.typed)
         print("TYPING ready")
+    }
+
+    /// The main chat with the keyboard up and words in the field, then with the keyboard put away,
+    /// then a message sent: whether a drag on the conversation takes the keyboard down with the
+    /// finger, and whether the words and the conversation's place are kept. Says each as a line
+    /// and a fault as `FAULT`, and stays with the keyboard up and with it down, so a picture of the
+    /// whole screen can be taken at both.
+    static func keyboard(in window: UIWindow, dark: Bool) async {
+        Typeface.registerBundled()
+        let kept = Kept("keyboard.txt", word: "KEYBOARD")
+        window.overrideUserInterfaceStyle = dark ? .dark : .light
+        let model = AssistantModel(source: MemorySource(Drawing.content(), now: { Drawing.now }))
+        await model.prime()
+        model.showsPanelInMain = false
+        window.rootViewController = UIHostingController(rootView: Screens.rooted(model, dark ? .dark : .light) { PhoneRoot() })
+        window.layoutIfNeeded()
+        try? await Task.sleep(for: .milliseconds(1200))
+        let watch = KeyboardWatch()
+        /// Waits until the keyboard stands, or is gone, and a moment more for the views to follow it.
+        func settled(up: Bool) async {
+            var waited = 0
+            while (watch.top != nil) != up, waited < 40 {
+                try? await Task.sleep(for: .milliseconds(150))
+                waited += 1
+            }
+            try? await Task.sleep(for: .milliseconds(900))
+        }
+        func views<Kind: UIView>(_ kind: Kind.Type, in view: UIView) -> [Kind] {
+            ((view as? Kind).map { [$0] } ?? []) + view.subviews.flatMap { views(kind, in: $0) }
+        }
+        model.begin(Drawing.typed)
+        await settled(up: true)
+        guard let field = views(UITextView.self, in: window).first, field.isFirstResponder, let top = watch.top,
+              let conversation = views(UIScrollView.self, in: window).filter({ !($0 is UITextView) })
+                  .max(by: { $0.bounds.height < $1.bounds.height })
+        else {
+            kept.say("FAULT: the field did not take the keyboard")
+            for line in ["ready up", "ready down", "done"] { kept.say(line) }
+            return
+        }
+        /// How far the conversation rests from its newest piece.
+        func fromEnd() -> Int {
+            Int((conversation.contentSize.height + conversation.adjustedContentInset.bottom
+                 - conversation.contentOffset.y - conversation.bounds.height).rounded())
+        }
+        func place(_ when: String) {
+            let away = fromEnd()
+            kept.say("\(away > 1 ? "FAULT: " : "")place: \(when) the conversation rests \(away) points from its newest piece")
+        }
+        kept.say("up: the keyboard's upper edge stands \(Int(top)) points down a window of \(Int(window.bounds.height))")
+        // The system's own way: a scroll view that takes the keyboard down with the finger that drags it.
+        switch conversation.keyboardDismissMode {
+        case .interactive, .interactiveWithAccessory:
+            kept.say("drag: a drag down the conversation takes the keyboard down with the finger")
+        case .onDrag, .onDragWithAccessory:
+            kept.say("FAULT: drag: a drag on the conversation puts the keyboard away at once, not with the finger")
+        default:
+            kept.say("FAULT: drag: a drag on the conversation leaves the keyboard up")
+        }
+        place("with the keyboard up")
+        let words = field.text ?? ""
+        kept.say("ready up")
+        try? await Task.sleep(for: .milliseconds(4000))
+        // Put away as a drag's end and a touch on the conversation put it away: whoever holds the keyboard lets it go.
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        await settled(up: false)
+        kept.say(watch.top == nil && !field.isFirstResponder ? "down: the keyboard is away" : "FAULT: down: the keyboard stayed")
+        let stayed = field.text == words && model.drafts[.main]?.text == words && !words.isEmpty
+        kept.say(stayed ? "words: all \(words.count) letters of the message stay in the field" : "FAULT: words: the message being written is not in the field as it was")
+        place("with the keyboard away")
+        kept.say("ready down")
+        try? await Task.sleep(for: .milliseconds(4000))
+        // A touch in the field brings it back, and sending leaves it up: the next message is written at once.
+        field.becomeFirstResponder()
+        await settled(up: true)
+        place("with the keyboard up again")
+        model.send(in: .main)
+        try? await Task.sleep(for: .milliseconds(1500))
+        let writes = field.isFirstResponder && watch.top != nil && (field.text ?? "").isEmpty
+        kept.say(writes ? "send: the message is sent, the field is empty and keeps the keyboard" : "FAULT: send: after a message is sent the field is not empty with the keyboard up")
+        place("after a message is sent")
+        kept.say("done")
     }
 
     /// What the system is handed outside the window, through the app's own code and with the

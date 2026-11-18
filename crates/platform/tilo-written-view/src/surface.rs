@@ -1,6 +1,7 @@
 //! The widget that draws one written view. See the crate's docs.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use serde_json::{Map, Value as Json, json};
@@ -64,6 +65,11 @@ pub(crate) struct Surface {
     workspace: Box<dyn Workspace>,
     /// The apps the view names.
     apps: Vec<Rc<App>>,
+    /// The documents of their own the view names (`@word_processor.Document:uuid:…`), by their
+    /// app's own id and their own, each with the type the view reads it as.
+    named: BTreeMap<(String, String), String>,
+    /// The resources the view met and held no reading of, as the runtime asked for them.
+    wanted: Rc<RefCell<Vec<ResourceRef>>>,
     /// Who wrote the view.
     author: Actor,
     asked: Rc<RefCell<Vec<Invocation>>>,
@@ -129,7 +135,19 @@ impl Surface {
             .set_reading(&target, &reading.to_string())
             .map_err(|error| error.to_string())?;
         let asked = Rc::new(RefCell::new(Vec::new()));
-        host.runtime().set_invoker(Asks(Rc::clone(&asked)));
+        let runtime = host.runtime();
+        runtime.set_invoker(Asks(Rc::clone(&asked)));
+        // A resource the view names and this holds no reading of is asked of the workspace on the
+        // surface's next turn, and reads as empty until its reading comes: as what an app keeps
+        // for the workspace does where the view opens.
+        let wanted = Rc::new(RefCell::new(Vec::new()));
+        runtime.set_readings_asked_for({
+            let wanted = Rc::clone(&wanted);
+            move |named: &ResourceRef| {
+                wanted.borrow_mut().push(named.clone());
+                Ok(Some(json!({})))
+            }
+        });
         // The view starts over an empty reading of every record it names, and each record is
         // asked for: it draws at once, shows nothing it has not read, and is drawn again when a
         // record comes. A record the person may not read stays as empty as it started.
@@ -145,7 +163,7 @@ impl Surface {
             host.runtime()
                 .set_reading(&record, "{}")
                 .map_err(|error| format!("{}: {error}", app.title))?;
-            workspace.read(&app.id, None);
+            workspace.read(&app.id, "", None);
         }
         instance.open_with(&resource(&target), &wrapper.view);
         if instance.detail_target().is_none() {
@@ -157,6 +175,8 @@ impl Surface {
             record,
             workspace,
             apps,
+            named: BTreeMap::new(),
+            wanted,
             author: view.author.clone(),
             asked,
             state,
@@ -190,6 +210,7 @@ impl Surface {
                 self.instance.sync(Some(&self.record));
             }
             let mut changed = read | self.instance.update();
+            changed |= self.ask_named();
             changed |= self.answer_commits();
             changed |= self.serve();
             changed |= self.view.receive();
@@ -208,15 +229,33 @@ impl Surface {
             return false;
         };
         let mut moved = false;
-        for (id, read) in self.workspace.take_read() {
+        for (id, document, read) in self.workspace.take_read() {
             let Some(app) = self.kept_by(&id) else {
                 continue;
             };
-            let Some(root) = &app.root else {
+            // What was read: what the app keeps for the workspace, or a document of its own that
+            // the view names, read as the type the view names it by.
+            let of = if document.is_empty() {
+                app.root
+                    .as_ref()
+                    .map(|root| (root.published.clone(), root.ty.clone()))
+            } else {
+                self.named
+                    .get(&(id.clone(), document.clone()))
+                    .map(|ty| (document.clone(), ty.clone()))
+            };
+            let Some((published, ty)) = of else {
                 continue;
             };
             let (reading, revision) = match read {
-                Read::Record { revision, value } => (app.reading(&value), revision),
+                Read::Record { revision, value } => {
+                    let reading = if document.is_empty() {
+                        app.reading(&value)
+                    } else {
+                        app.reading_as(&ty, &value)
+                    };
+                    (reading, revision)
+                }
                 // No record yet: the view reads it as it would start, and is told when one comes.
                 Read::Absent { revision } => (json!({}), revision),
                 Read::Refused => {
@@ -229,16 +268,53 @@ impl Surface {
                     continue;
                 }
             };
-            let target = ResourceRef::root(root.published.clone(), root.ty.clone());
+            let target = ResourceRef::root(published, ty);
             match host.runtime().set_reading(&target, &reading.to_string()) {
                 Ok(changed) => moved |= changed,
                 Err(error) => {
                     tracing::warn!(app = id, %error, "a view did not take an app's reading");
                 }
             }
-            self.workspace.read(&id, Some(revision));
+            self.workspace.read(&id, &document, Some(revision));
         }
         moved
+    }
+
+    /// Ask the workspace for every document of an app that the view names and holds no reading
+    /// of yet (`@word_processor.Document:uuid:…`), as the runtime asked for them. A document is
+    /// read as the person at the window, as what an app keeps for the workspace is, so the
+    /// workspace's grants decide it. Whether any was asked for.
+    fn ask_named(&mut self) -> bool {
+        let wanted: Vec<ResourceRef> = self.wanted.borrow_mut().drain(..).collect();
+        let mut asked = false;
+        for named in wanted {
+            // An item of a document comes within its document's reading.
+            if named.item.is_some() {
+                continue;
+            }
+            // Only a type one of the view's apps declares, and not what the app keeps for the
+            // workspace, which is asked for where the view opens.
+            let Some(app) = self.apps.iter().find(|app| {
+                app.meta
+                    .types
+                    .iter()
+                    .any(|declared| declared.id == named.ty)
+                    && app
+                        .root
+                        .as_ref()
+                        .is_none_or(|root| root.published != named.doc)
+            }) else {
+                continue;
+            };
+            let key = (app.id.clone(), named.doc.clone());
+            if self.named.contains_key(&key) {
+                continue;
+            }
+            self.workspace.read(&key.0, &key.1, None);
+            self.named.insert(key, named.ty.clone());
+            asked = true;
+        }
+        asked
     }
 
     /// The package keeps no record: a step it hands over is answered as refused.
