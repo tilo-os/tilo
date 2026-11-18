@@ -107,6 +107,11 @@ public final class AssistantModel {
     public var problem: String?
     /// The sentence a pairing ended with, while `problem` says it.
     @ObservationIgnored private var endedSaid: String?
+    /// The technical details Tilo's page offers under the sentence a pairing ended with.
+    private var endedDetails: String?
+    /// Those details while the way in says that sentence: what its "copy the technical details
+    /// below" points to. Nil: what is said is no pairing's end, or its page shows none.
+    public var problemDetails: String? { problem != nil && problem == endedSaid ? endedDetails : nil }
     /// Whether the window asks for a new sub-agent's job.
     public var asksForJob = false
     /// The piece whose words are laid out for the person to mark a part of them: Select text in
@@ -159,6 +164,7 @@ public final class AssistantModel {
         follow(source.setup()) { $0.setup = $1 }
         follow(source.reach()) { $0.take($1) }
         follow(source.pairingEnded()) { $0.take(ended: $1) }
+        follow(source.pairingEndedDetails()) { $0.endedDetails = $1 }
         follow(source.subAgents()) { model, agents in
             model.subAgents = agents
             for agent in agents { model.listen(.subAgent(agent.id)) }
@@ -182,6 +188,7 @@ public final class AssistantModel {
         setup = await first(source.setup()) ?? .unknown
         reach = await first(source.reach()) ?? .unknown
         if let ended = await first(source.pairingEnded()) { take(ended: ended) }
+        if let details = await first(source.pairingEndedDetails()) { endedDetails = details }
         subAgents = await first(source.subAgents()) ?? []
         tasks = await first(source.tasks()) ?? []
         automations = await first(source.automations()) ?? []

@@ -24,6 +24,8 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         public var pairingAsk: PairingAsk?
         /// Why the last pairing ended without letting this device in, where one did.
         public var pairingEnded: String?
+        /// The technical details Tilo's page offers under that sentence, where it shows them.
+        public var pairingEndedDetails: String?
         /// What stands between the person and a first answer.
         public var setup: Setup = .ready
         /// The models a provider offers once it is linked.
@@ -43,6 +45,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private let sessionNow: Broadcast<Session>
     private let reachNow = Broadcast<Reach>(.reachable)
     private let endedNow: Broadcast<String?>
+    private let endedDetailsNow: Broadcast<String?>
     private let agents: Broadcast<[SubAgent]>
     private let taskList: Broadcast<[AssistantTask]>
     private let automationList: Broadcast<[Automation]>
@@ -69,6 +72,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         self.now = now
         sessionNow = Broadcast(content.session)
         endedNow = Broadcast(content.pairingEnded)
+        endedDetailsNow = Broadcast(content.pairingEndedDetails)
         agents = Broadcast(content.subAgents)
         taskList = Broadcast(content.tasks)
         automationList = Broadcast(content.automations)
@@ -115,8 +119,10 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         sessionNow.set(session)
     }
 
-    /// As if a pairing had ended without letting this device in, with Tilo's sentence for why.
-    public func endPairing(saying why: String) {
+    /// As if a pairing had ended without letting this device in, with Tilo's sentence for why
+    /// and, where its page shows them, the technical details under it.
+    public func endPairing(saying why: String, details: String? = nil) {
+        endedDetailsNow.set(details)
         endedNow.set(why)
         sessionNow.set(.signedOut)
     }
@@ -156,11 +162,13 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     public func session() -> AsyncStream<Session> { sessionNow.stream() }
     public func reach() -> AsyncStream<Reach> { reachNow.stream() }
     public func pairingEnded() -> AsyncStream<String?> { endedNow.stream() }
+    public func pairingEndedDetails() -> AsyncStream<String?> { endedDetailsNow.stream() }
 
     public func pair(with link: PairingLink) async throws {
         await known()
         // Another link is taken: what the last pairing ended with is said no more.
         endedNow.set(nil)
+        endedDetailsNow.set(nil)
         guard pairsAs != nil, reachNow.current == .reachable else { throw SourceProblem.unreachable }
         // Where something is asked first, the pairing goes on once the person answered.
         if let pairingAsk {

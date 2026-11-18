@@ -30,6 +30,12 @@ public protocol AssistantSource: Sendable {
     /// another link is taken or the device is in. The way in says it.
     func pairingEnded() -> AsyncStream<String?>
 
+    /// The technical details Tilo's page offers under that sentence, to read or copy: what the
+    /// page makes of the stop, the server, the step, the error and its build, never a token, a
+    /// key or a certificate. Tilo's sentence may say "copy the technical details below": the
+    /// way in shows these below it. Nil where the page shows none, and while no end is said.
+    func pairingEndedDetails() -> AsyncStream<String?>
+
     /// Pair this device with a link that "Pair a new device" made on a device where the person is
     /// signed in: scanned as a code, or pasted. `session()` says how it goes on.
     func pair(with link: PairingLink) async throws
@@ -211,6 +217,7 @@ extension AssistantSource {
     public func answerPairing(goOn: Bool) async {}
     /// A source whose pairings end with no sentence of Tilo's has none to say.
     public func pairingEnded() -> AsyncStream<String?> { AsyncStream { $0.yield(nil) } }
+    public func pairingEndedDetails() -> AsyncStream<String?> { AsyncStream { $0.yield(nil) } }
     public func setup() -> AsyncStream<Setup> { AsyncStream { $0.yield(.ready) } }
     public func makeAssistant() async throws {}
     public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {

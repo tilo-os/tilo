@@ -24,6 +24,8 @@ final class PairingEndedTests: XCTestCase {
     private var sessions: [Session] = []
     /// Every word of why a pairing ended, as the source said them: nil where it says none.
     private var ended: [String?] = []
+    /// The technical details under that sentence, as the source said them: nil where it says none.
+    private var endedDetails: [String?] = []
     private var loaded: [URL] = []
     private var listening: [Task<Void, Never>] = []
 
@@ -46,6 +48,7 @@ final class PairingEndedTests: XCTestCase {
         listening = [
             Task { for await session in source.session() { self.sessions.append(session) } },
             Task { for await why in source.pairingEnded() { self.ended.append(why) } },
+            Task { for await details in source.pairingEndedDetails() { self.endedDetails.append(details) } },
         ]
         try await until("the source says where it stands") { !self.sessions.isEmpty && !self.ended.isEmpty }
     }
@@ -149,6 +152,47 @@ final class PairingEndedTests: XCTestCase {
         XCTAssertEqual(ended.last, said)
         XCTAssertEqual(sessions.last, .signedOut)
         XCTAssertNil(defaults.array(forKey: "TiloLivePerson"), "a device that never got in is kept as somebody's")
+    }
+
+    /// What Tilo's page says where its join stopped, and the details it shows folded under it.
+    private static let stopped = "Couldn’t open Tilo. It stopped while joining. Try again. If it stops again, copy the technical details below."
+    private static let details = ["Cause: loading", "Stopped at: join", "Error: DataCloneError: The object can not be cloned.", "Page build: test"]
+
+    /// Tilo's page where its join stopped: its failure screen's details under its sentence, the
+    /// sentence in its status line, and its case and that it stopped on its root.
+    private static func stops(_ words: String, details: [String]) -> String {
+        """
+        const folded = document.createElement('details'); folded.id = 'arrival-failure-details';
+        const text = document.createElement('pre'); text.id = 'arrival-failure-text';
+        text.textContent = [\(details.map { "'\($0)'" }.joined(separator: ", "))].join(String.fromCharCode(10));
+        folded.append(text); document.body.append(folded);
+        document.getElementById('status').textContent = '\(words)';
+        document.documentElement.dataset.failure = 'loading';
+        document.documentElement.dataset.arrival = 'stopped'; document.documentElement.dataset.entry = 'failed'
+        """
+    }
+
+    /// Tilo's page says "copy the technical details below" where its join stopped, and shows
+    /// them folded under its sentence. The way in said the sentence and was handed nothing to
+    /// show below it.
+    func testAPairingWhosePageStoppedHandsTheWayInThePagesTechnicalDetailsWithItsSentence() async throws {
+        try await start()
+        try await until("the source says that it has no details") { !self.endedDetails.isEmpty }
+        XCTAssertEqual(endedDetails, [nil], "a device nobody paired is handed details of a pairing that ended")
+        try await source.pair(with: link(into: "ws-2"))
+        try await showPage()
+        try await inPage(Self.stops(Self.stopped, details: Self.details))
+        // The first stop is not said: the page is asked for once more, and what stopped it is said then.
+        try await until("the page's sentence to be the engine's", within: .seconds(3)) { self.engine.state == .failed(Self.stopped) }
+        try await until("the way in to be told why the pairing ended", within: .seconds(3)) { self.ended.last == Self.stopped }
+        let said = Self.details.joined(separator: "\n")
+        try await until("the way in to be handed the page's technical details", within: .seconds(3)) { self.endedDetails.last == said }
+        XCTAssertEqual(engine.stopDetails, said)
+        XCTAssertEqual(sessions.last, .signedOut)
+        // Another link is taken: neither the sentence nor its details are said any more.
+        try await source.pair(with: link(into: "ws-3"))
+        try await until("the details to be said no more") { self.endedDetails.last.map { $0 == nil } == true }
+        XCTAssertEqual(ended.last.map { $0 == nil }, true, "the sentence of the pairing before is still said")
     }
 
     func testAnotherLinkTakenSaysTheLastPairingsEndNoMore() async throws {
