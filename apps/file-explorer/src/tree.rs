@@ -993,7 +993,9 @@ mod window_tests {
             .filter_map(|(_, node)| node.label().map(str::to_owned))
             .collect();
         assert!(
-            labels.iter().any(|label| label.ends_with(": terms.txt")),
+            labels
+                .iter()
+                .any(|label| label.ends_with("Edited terms.txt")),
             "History lists the file's change by its path: {labels:?}"
         );
         // Choosing the folder's change opens the folder in the window.

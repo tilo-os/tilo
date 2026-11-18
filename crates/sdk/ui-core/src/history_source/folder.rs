@@ -155,12 +155,45 @@ fn named_by_path(mut entry: HistoryEntry, tree: &fs_protocol::tree::Tree) -> His
     if tree.node(&item.id).is_none() {
         return entry;
     }
-    item.label = fs_protocol::tree::path_of(tree, &item.id);
-    if let Some(summary) = super::sentence::step_summary(context) {
+    let path = fs_protocol::tree::path_of(tree, &item.id);
+    item.label.clone_from(&path);
+    let summary = file_sentence(context, &path).or_else(|| super::sentence::step_summary(context));
+    if let Some(summary) = summary {
         entry.target = super::sentence::step_target(context, &summary);
         entry.summary = summary;
     }
     entry
+}
+
+/// What a change of one file did, as History says it ("Edited docs/plan.md"): the verb the
+/// change's file actions share, or the one that says the most of a file made, deleted or put
+/// back in the same change. `None` for a change that is not of the tree.
+fn file_sentence(context: &tilo_actions::ActionContext, path: &str) -> Option<String> {
+    let tree_verb = |did: &tilo_actions::Did| match did {
+        tilo_actions::Did::Verb(verb) if verb.action.kind == fs_protocol::tree::TREE_KIND => {
+            Some(verb.action.action.clone())
+        }
+        _ => None,
+    };
+    let verbs: Vec<String> = match context.what.as_ref()? {
+        tilo_actions::Did::Group(group) => group.distinct.iter().filter_map(tree_verb).collect(),
+        did => tree_verb(did).into_iter().collect(),
+    };
+    use fs_protocol::file_action::verbs;
+    let verb = [
+        verbs::NEW_FOLDER,
+        verbs::NEW_FILE,
+        verbs::TRASH,
+        verbs::RESTORE,
+        verbs::MOVE,
+        verbs::WRITE,
+    ]
+    .into_iter()
+    .find(|verb| verbs.iter().any(|did| did == verb))?;
+    Some(crate::i18n::widget_format(
+        &format!("history-folder-did-{verb}"),
+        &[("file", path.into())],
+    ))
 }
 
 /// Who last changed each node whose changes `doc` holds: the changing actor (hex) and the
@@ -377,6 +410,10 @@ mod tests {
             .collect();
         labels.sort();
         assert_eq!(labels, ["docs/plan.md", "notes.txt"], "{rows:#?}");
+        assert!(
+            rows.iter().any(|row| row.summary == "Edited docs/plan.md"),
+            "a change says what it did to the file: {rows:#?}"
+        );
         assert!(
             rows.iter().filter(|row| row.target.is_some()).all(|row| row
                 .context

@@ -706,7 +706,7 @@ mod folder_rows_tests {
             let rows = folder_rows(&doc, &[], &authors(), 100);
             let written: Vec<_> = rows
                 .iter()
-                .filter(|row| row.summary == "Write: terms.txt")
+                .filter(|row| row.summary == "Edited terms.txt")
                 .collect();
             assert!(!written.is_empty(), "{rows:#?}");
             for row in written {
@@ -744,14 +744,14 @@ mod folder_rows_tests {
             let rows = folder_rows(&doc, &[], &authors(), 100);
             let written: Vec<_> = rows
                 .iter()
-                .filter(|row| row.summary.starts_with("Write: "))
+                .filter(|row| row.summary.starts_with("Edited "))
                 .collect();
             assert!(
                 written.iter().all(|row| ui::author_line(&row.author) == "Ada"),
                 "{rows:#?}"
             );
-            assert!(written.iter().any(|row| row.summary == "Write: terms.txt"));
-            assert!(written.iter().any(|row| row.summary == "Write: logo.png"));
+            assert!(written.iter().any(|row| row.summary == "Edited terms.txt"));
+            assert!(written.iter().any(|row| row.summary == "Edited logo.png"));
         }
     }
 }
