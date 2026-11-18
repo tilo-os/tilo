@@ -1,27 +1,25 @@
 //! Where a profile's settings documents live, for `settings-store`, which keeps
 //! what they hold and compiles unchanged for every target.
 //!
-//! A profile keeps its documents in `<root>/records/`. One process holds them at
-//! a time ([`Records::try_hold`]); the others read the same files, notice the
-//! holder's saves ([`Records::revision`], [`Records::watch`]) and hand it their
-//! writes through its socket ([`Records::open_socket`], [`Records::send`]). A
-//! target without files, locks or local sockets (a browser page) reads nothing,
-//! holds what it opens and serves no socket.
+//! A profile keeps its documents in `<root>/records/`, one directory each, as the
+//! device's document store lays them out: the process holding the profile is
+//! their only writer there. The others read the same documents, notice the
+//! holder's saves ([`Records::watch`]) and hand it their writes through its socket
+//! ([`Records::open_socket`], [`Records::send`]). A target without files, locks or
+//! local sockets (a browser page) reads nothing, holds what it opens and serves
+//! no socket.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const RECORDS_DIR: &str = "records";
-/// The holder's lock in the documents directory. It stays behind when the
-/// holder exits.
+/// The document whose lock says which process holds the profile, relative to the
+/// documents directory: the person's, which the holder leases first. It stays
+/// behind when the holder exits.
 #[cfg(not(target_arch = "wasm32"))]
-pub const LOCK_FILE: &str = "settings.lock";
+pub const LOCK_FILE: &str = "person/canonical.lock";
 const SOCKET_FILE: &str = "settings.sock";
-/// The number of the save the documents stand at: written once both documents
-/// are written, so a follower looking while a save is under way reads the save
-/// before it, whole.
-pub const REVISION_FILE: &str = "documents.revision";
 
 #[must_use]
 pub fn profile_root() -> Option<PathBuf> {
@@ -33,23 +31,9 @@ pub struct Records {
     dir: PathBuf,
 }
 
-pub enum Hold {
-    Held(Holding),
-    Busy,
-    /// There is nothing to lock (no directory, or a target without locks):
-    /// nobody else can hold it, so this process does, in memory.
-    Unlockable,
-}
-
-/// The lock of the process holding a profile.
-pub struct Holding {
-    #[cfg(not(target_arch = "wasm32"))]
-    _lock: tilo_files::Lock,
-}
-
 pub struct Watch {
     #[cfg(feature = "watch")]
-    _watch: tilo_files::native::ChangeWatch,
+    _watches: Vec<tilo_files::native::ChangeWatch>,
 }
 
 pub struct Socket {
@@ -78,87 +62,35 @@ impl Records {
         [self.dir.join(LOCK_FILE), self.dir.join(SOCKET_FILE)]
     }
 
-    #[cfg(target_arch = "wasm32")]
-    #[must_use]
-    pub fn try_hold(&self) -> Hold {
-        Hold::Unlockable
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[must_use]
-    pub fn try_hold(&self) -> Hold {
-        let lock = self.dir.join(LOCK_FILE);
-        match tilo_files::native::lock::prepare_parent(&lock)
-            .ok()
-            .and_then(|()| tilo_files::file_at(&lock).ok())
-        {
-            Some((dir, name)) => {
-                match tilo_files::blocking::try_lock(&dir, &name, tilo_files::LockMode::Exclusive) {
-                    Ok(Some(lock)) => Hold::Held(Holding { _lock: lock }),
-                    Ok(None) => Hold::Busy,
-                    Err(_) => Hold::Unlockable,
-                }
-            }
-            None => Hold::Unlockable,
-        }
-    }
-
-    pub fn read(&self, name: &str) -> std::io::Result<Option<Vec<u8>>> {
-        match std::fs::read(self.dir.join(name)) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// The number of the save both documents stand at, or `0` when the holder
-    /// has saved none. Written after the documents of a save, so a follower
-    /// takes up a whole save and never one document of it.
-    #[must_use]
-    pub fn revision(&self) -> u64 {
-        std::fs::read_to_string(self.dir.join(REVISION_FILE))
-            .ok()
-            .and_then(|number| number.trim().parse().ok())
-            .unwrap_or(0)
-    }
-
-    /// Say that both documents now stand at save `revision`, written once they
-    /// are.
-    pub fn commit(&self, revision: u64) -> std::io::Result<()> {
-        tilo_files::native::atomic::write(
-            &self.dir.join(REVISION_FILE),
-            revision.to_string().as_bytes(),
-        )
-    }
-
-    pub fn write(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
-        tilo_files::native::atomic::write(&self.dir.join(name), bytes)
-    }
-
-    /// Call `on_change` when one of the documents `names` is saved: a follower's
-    /// watch on its holder. `None` where nothing can be watched; the follower
-    /// then looks before each read.
+    /// Call `on_change` when the holder saves one of the `documents` (each a
+    /// directory beneath [`Self::dir`] holding `file`): a follower's watch on its
+    /// holder. `None` where nothing can be watched, such as a document the holder
+    /// has not made yet; the follower then looks before each read.
     pub fn watch(
         &self,
-        names: &'static [&'static str],
-        on_change: impl Fn() + Send + 'static,
+        documents: &'static [&'static str],
+        file: &'static str,
+        on_change: impl Fn() + Send + Sync + 'static,
     ) -> Option<Watch> {
         #[cfg(feature = "watch")]
         {
-            tilo_files::native::watch_changes(
-                &self.dir,
-                move |path| {
-                    path.file_name()
-                        .is_some_and(|name| names.iter().any(|known| name == *known))
-                },
-                on_change,
-            )
-            .ok()
-            .map(|watch| Watch { _watch: watch })
+            let on_change = Arc::new(on_change);
+            let mut watches = Vec::new();
+            for document in documents {
+                let on_change = Arc::clone(&on_change);
+                let watch = tilo_files::native::watch_changes(
+                    &self.dir.join(document),
+                    move |path| path.file_name().is_some_and(|name| name == file),
+                    move || on_change(),
+                )
+                .ok()?;
+                watches.push(watch);
+            }
+            Some(Watch { _watches: watches })
         }
         #[cfg(not(feature = "watch"))]
         {
-            let _ = (names, on_change);
+            let _ = (documents, file, on_change);
             None
         }
     }
@@ -294,26 +226,6 @@ mod socket {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn one_process_holds_a_profile_and_reads_back_what_it_wrote() {
-        let root = tempfile::tempdir().unwrap();
-        let records = Records::of(root.path());
-        assert!(records.read("person.automerge").unwrap().is_none());
-        let held = records.try_hold();
-        assert!(
-            matches!(held, Hold::Held(_)),
-            "nobody else holds a fresh profile"
-        );
-        assert_eq!(records.revision(), 0, "nothing is saved yet");
-        records.write("person.automerge", b"bytes").unwrap();
-        records.commit(1).unwrap();
-        assert_eq!(records.revision(), 1, "the save both documents stand at");
-        assert_eq!(
-            records.read("person.automerge").unwrap().as_deref(),
-            Some(&b"bytes"[..])
-        );
-    }
 
     #[cfg(unix)]
     #[test]

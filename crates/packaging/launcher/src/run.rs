@@ -5064,7 +5064,7 @@ mod app_dir_tests {
             assert!(
                 !argv
                     .iter()
-                    .any(|arg| arg.ends_with("/records") || arg.ends_with("/records/person.automerge")),
+                    .any(|arg| arg.ends_with("/records") || arg.ends_with("/records/person/state.automerge")),
                 "Settings must not bind or name the session document: {argv:?}"
             );
             assert_eq!(argv.last().map(String::as_str), Some("/entry"));

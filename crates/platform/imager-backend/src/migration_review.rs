@@ -769,7 +769,7 @@ fn running_setup_files(home: &Path) -> Vec<PathBuf> {
         .iter()
         .filter_map(|file| {
             directory
-                .join(file.file_name()?)
+                .join(file.strip_prefix(records.dir()).ok()?)
                 .strip_prefix(&home)
                 .ok()
                 .map(Path::to_path_buf)
@@ -779,9 +779,9 @@ fn running_setup_files(home: &Path) -> Vec<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn setup_settings_lock(home: &Path) -> Option<PathBuf> {
-    running_setup_files(home).into_iter().find(|file| {
-        file.file_name() == Some(std::ffi::OsStr::new(tilo_settings_records::LOCK_FILE))
-    })
+    running_setup_files(home)
+        .into_iter()
+        .find(|file| file.ends_with(tilo_settings_records::LOCK_FILE))
 }
 
 /// A bounded path of plain names ending where the settings records keep it.

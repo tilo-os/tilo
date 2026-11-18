@@ -280,8 +280,8 @@ mod tests {
             // The setup holds its settings profile in this Home while it runs.
             let records =
                 tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
-            std::fs::create_dir_all(records.dir()).unwrap();
             let [lock, _] = records.runtime_files();
+            std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
             std::fs::write(&lock, b"").unwrap();
             std::fs::write(home.join("document"), b"real user document").unwrap();
             let token = CaptureOwnership::review(&home).unwrap().unwrap();

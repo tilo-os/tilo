@@ -248,6 +248,10 @@ impl Owner {
     }
 }
 
+/// One key's exclusive writer lease ([`FsStore::hold`]); dropping it lets
+/// the key go.
+pub struct Held(#[allow(dead_code, reason = "held for the lock it keeps")] FsLease);
+
 struct FsLease {
     _view_lock: Option<Arc<advisory_lock::FileLock>>,
     key: StorageKey,
@@ -475,6 +479,27 @@ impl FsStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Become `key`'s only writer, as [`DurableStore::lease`] does, with a
+    /// lease any thread may hold: a holder shared across threads (the
+    /// device's settings) keeps it beside the documents it writes.
+    ///
+    /// # Errors
+    /// [`DurableError::Busy`] when another owner, in this process or another,
+    /// holds the key; an invalid key or one that is not a document.
+    pub fn hold(&self, key: &StorageKey) -> Result<Held, DurableError> {
+        let Target::Document(directory) = self.target(key)? else {
+            return Err(DurableError::InvalidKey {
+                key: key.to_string(),
+                reason: "only a document has one holder".into(),
+            });
+        };
+        if lock(&self.shared.state).owners.contains_key(key) {
+            return Err(DurableError::Busy(key.to_string()));
+        }
+        let owner = Arc::new(open_owner(&directory)?);
+        Ok(Held(self.register(key, owner)?))
     }
 
     /// A app's directory.

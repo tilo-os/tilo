@@ -15491,15 +15491,16 @@ name = "settings-store"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "durable-store",
  "serde",
  "serde_json",
  "tempfile",
  "tilo-advisory-lock",
  "tilo-app-id",
+ "tilo-app-state",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
- "tilo-durable-writer",
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
