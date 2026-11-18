@@ -527,5 +527,14 @@ mod tests {
             let kept = not_answered(&ModelRefusal::Provider(ModelError::new(lasting)));
             assert!(matches!(kept, StepError::Refused(_)), "{kept:?}");
         }
+        // A key its provider turned away is kept as well, in words that name the provider.
+        let kept = not_answered(&ModelRefusal::KeyRefused {
+            provider: "Anthropic".into(),
+            error: ModelError::new(ErrorKind::Authentication),
+        });
+        assert!(
+            matches!(&kept, StepError::Refused(why) if why.contains("Anthropic")),
+            "{kept:?}"
+        );
     }
 }

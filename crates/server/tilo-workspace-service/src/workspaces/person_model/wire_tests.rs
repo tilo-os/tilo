@@ -501,7 +501,14 @@ async fn a_busy_provider_is_asked_again_and_a_refused_key_is_said() {
         .unwrap_err();
     assert_eq!(
         refused,
-        ModelRefusal::Provider(ModelError::new(ErrorKind::Authentication))
+        ModelRefusal::KeyRefused {
+            provider: "A provider".into(),
+            error: ModelError::new(ErrorKind::Authentication),
+        }
+    );
+    assert_eq!(
+        refused.words(None),
+        "A provider did not accept your API key. Check the key, or use another key for A provider."
     );
     assert!(!format!("{refused:?} {refused}").contains(KEY));
 }

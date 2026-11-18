@@ -105,6 +105,12 @@ pub fn refused(refusal: &ModelRefusal, language: Option<&str>) -> (u16, &'static
         }
         ModelRefusal::DayLimitReached { .. } => (402, "billing_error"),
         ModelRefusal::CannotTake { .. } => (400, "invalid_request_error"),
+        // A key its provider turned away: the status that failure's kind has below.
+        ModelRefusal::KeyRefused { error, .. } => match error.kind {
+            ErrorKind::PermissionDenied => (403, "permission_error"),
+            ErrorKind::CreditsExhausted => (402, "billing_error"),
+            _ => (401, "authentication_error"),
+        },
         ModelRefusal::Provider(error) => match error.kind {
             ErrorKind::Authentication => (401, "authentication_error"),
             ErrorKind::PermissionDenied | ErrorKind::Refused => (403, "permission_error"),
