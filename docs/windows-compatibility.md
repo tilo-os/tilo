@@ -154,6 +154,13 @@ environment, VM fallback intent and grants never come from the client.
 Blocking service I/O happens on the Windows Apps worker thread; the render thread
 paints a bounded cache and clears it after an invalid or disconnected response.
 
+A launch is answered once its program started, never held for its lifetime.
+The service watches each program it started: a list says which entries have
+a program open in the manager's workspace, and reports each program that ended
+since that connection last listed, with its exit status or why it never
+opened, so a manager opened later still hears it. **Quit app** ends a capsule
+program at once; the appliance's programs close inside Windows.
+
 A program is given its display when it starts, not when the service starts:
 the session answers with the Wayland socket its compositor bound and the
 render node it draws on, and refuses the launch while it has neither. The

@@ -128,6 +128,10 @@ impl WindowsApp {
     pub fn uses_override(&self) -> bool {
         self.route != self.recommended_route
     }
+    /// Its program is open in a private capsule, which the manager can end.
+    pub fn stop_available(&self) -> bool {
+        self.status == AppStatus::Running && self.route != Route::Vm
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

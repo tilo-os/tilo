@@ -22,6 +22,7 @@ mod dxvk;
 mod execute;
 mod installer;
 mod plan;
+mod programs;
 mod protocol;
 mod resources;
 mod service;
@@ -36,7 +37,8 @@ pub use catalogue::{
     CatalogueLoadError, CatalogueLoadReport, ShippedCataloguePaths, load_shipped_catalogue,
 };
 pub use execute::{
-    BwrapExecutor, ExecutionError, ExecutionOutcome, SECCOMP_CHILD_FD, SandboxExecutor,
+    BwrapExecutor, ChildProgram, ExecutionError, ExecutionOutcome, SECCOMP_CHILD_FD,
+    SandboxExecutor, StartedProgram,
 };
 pub use installer::{
     InstallerError, InstallerInspection, MAX_INSTALLER_BYTES, PeMachine, inspect_installer,
@@ -47,13 +49,13 @@ pub use plan::{
     RuntimeRegistry, SandboxPlanner, SystemRuntimeRegistry,
 };
 pub use protocol::{
-    ManagedApplication, ManagedInstallation, PROTOCOL_VERSION, ProtocolError, ProtocolRequest,
-    ProtocolResponse, ResolveRequest,
+    ManagedApplication, ManagedInstallation, PROTOCOL_VERSION, ProgramEnd, ProtocolError,
+    ProtocolRequest, ProtocolResponse, ResolveRequest,
 };
 pub use resources::SystemResourceBroker;
 pub use service::{
     AccessSummary, CompatibilityService, ExplainStatus, InstallOutcome, InstallReceipt,
-    LaunchInput, LaunchReceipt, MatchReason, RouteKind, ServiceError, VmAvailability,
+    LaunchInput, LaunchReceipt, Launched, MatchReason, RouteKind, ServiceError, VmAvailability,
     VmCandidatePublication, VmDelegate, VmInstallCandidate, VmInstallConfirmation, VmInstallation,
     VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory, VmPresentation,
     VmPublishedApplication, VmRouteRequest, VmSharedSessionContributor, VmSharedSessionGrantKind,

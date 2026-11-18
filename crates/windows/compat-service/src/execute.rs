@@ -23,16 +23,30 @@ pub struct ExecutionOutcome {
     pub exit_code: Option<i32>,
 }
 
+/// A program an executor started, which goes on after its launch request is answered: its end
+/// is waited for on a thread of the service's own, and it can be ended at any time.
+pub trait StartedProgram: Send + Sync {
+    /// Wait until the program ended, and say how.
+    fn wait(&self) -> Result<ExecutionOutcome, ExecutionError>;
+    /// End the program now.
+    fn stop(&self);
+}
+
 pub trait SandboxExecutor: Send + Sync {
-    /// Runs the already-validated Bubblewrap plan without a shell.
-    fn execute(&self, plan: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError>;
+    /// Starts the already-validated Bubblewrap plan without a shell.
+    fn start(&self, plan: &CapsuleCommandPlan) -> Result<Box<dyn StartedProgram>, ExecutionError>;
+
+    /// Waits for the plan to end: a setup or an uninstaller, whose end is the answer.
+    fn execute(&self, plan: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError> {
+        self.start(plan)?.wait()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BwrapExecutor;
 
 impl SandboxExecutor for BwrapExecutor {
-    fn execute(&self, plan: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError> {
+    fn start(&self, plan: &CapsuleCommandPlan) -> Result<Box<dyn StartedProgram>, ExecutionError> {
         let (uid, gid) = (
             rustix::process::geteuid().as_raw(),
             rustix::process::getegid().as_raw(),
@@ -107,14 +121,57 @@ impl SandboxExecutor for BwrapExecutor {
                 Ok(())
             });
         }
-        let mut child = command.spawn().map_err(ExecutionError::Spawn)?;
+        let child = command.spawn().map_err(ExecutionError::Spawn)?;
         drop(inherited);
         drop(filter_file.take());
-        let status = child.wait()?;
+        Ok(Box::new(ChildProgram::new(child)?))
+    }
+}
+
+/// A program this process started as its child: ended through its pidfd, so a stop never
+/// reaches another process that took its pid after it was reaped.
+pub struct ChildProgram {
+    child: std::sync::Mutex<std::process::Child>,
+    pidfd: std::os::fd::OwnedFd,
+}
+
+impl ChildProgram {
+    /// Wait for and end `child`.
+    ///
+    /// # Errors
+    /// Its pidfd could not be opened; the child is ended then.
+    pub fn new(mut child: std::process::Child) -> Result<Self, ExecutionError> {
+        let pid = rustix::process::Pid::from_child(&child);
+        match rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()) {
+            Ok(pidfd) => Ok(Self {
+                child: std::sync::Mutex::new(child),
+                pidfd,
+            }),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(ExecutionError::Io(error.into()))
+            }
+        }
+    }
+}
+
+impl StartedProgram for ChildProgram {
+    fn wait(&self) -> Result<ExecutionOutcome, ExecutionError> {
+        let status = self
+            .child
+            .lock()
+            .map_err(|_| ExecutionError::Io(std::io::Error::other("the program's state is lost")))?
+            .wait()?;
         Ok(ExecutionOutcome {
             success: status.success(),
             exit_code: status.code(),
         })
+    }
+
+    fn stop(&self) {
+        // Bubblewrap dies of it, and the sandbox's processes with it (`--die-with-parent`).
+        let _ = rustix::process::pidfd_send_signal(&self.pidfd, rustix::process::Signal::KILL);
     }
 }
 

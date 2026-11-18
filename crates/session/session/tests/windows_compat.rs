@@ -23,7 +23,7 @@ use compat_service::{
     Assembly, CapsuleCommandPlan, CapsuleProgram, CapsuleStore, ExecutionError, ExecutionOutcome,
     LaunchLease, LaunchResourceBroker, LazyVmDelegate, PROTOCOL_VERSION, ProgramKind,
     ProtocolRequest, ResourceError, ResourceRequest, SandboxExecutor, SessionClient,
-    SystemRuntimeRegistry,
+    StartedProgram, SystemRuntimeRegistry,
 };
 use serde_json::{Value, json};
 use tilo_session::apps::Apps;
@@ -67,7 +67,8 @@ fn connect(workspace: &str) -> SessionClient {
 }
 
 /// Not a test: a launcher of the Windows Apps manager, as `tilo-launcher` connects it. It lists,
-/// starts the entry it was given, and connects a second time, writing what it was answered.
+/// starts the entry it was given, lists while the program is open and until it ended, and connects a
+/// second time, writing what it was answered.
 #[test]
 fn manager_process() {
     let Ok(dir) = std::env::var(MANAGER_DIR) else {
@@ -83,17 +84,32 @@ fn manager_process() {
             version: PROTOCOL_VERSION,
         },
     );
-    let launched = if entry_id.is_empty() {
-        Value::Null
-    } else {
-        ask(
+    let list = ProtocolRequest::List {
+        version: PROTOCOL_VERSION,
+    };
+    let (mut launched, mut running, mut ended) = (Value::Null, Value::Null, Value::Null);
+    if !entry_id.is_empty() {
+        launched = ask(
             &mut client,
             &ProtocolRequest::Launch {
                 version: PROTOCOL_VERSION,
                 entry_id,
             },
-        )
-    };
+        );
+        running = ask(&mut client, &list);
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while std::time::Instant::now() < deadline {
+            let answer = ask(&mut client, &list);
+            if answer["ended"]
+                .as_array()
+                .is_none_or(|ended| !ended.is_empty())
+            {
+                ended = answer;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
     drop(client);
     let again = ask(
         &mut connect(&workspace),
@@ -103,7 +119,14 @@ fn manager_process() {
     );
     fs::write(
         dir.join("answers"),
-        json!({ "listed": listed, "launched": launched, "again": again }).to_string(),
+        json!({
+            "listed": listed,
+            "launched": launched,
+            "running": running,
+            "ended": ended,
+            "again": again
+        })
+        .to_string(),
     )
     .expect("the answers written");
 }
@@ -120,18 +143,20 @@ impl LaunchResourceBroker for NoResources {
 }
 
 /// Stands in for Bubblewrap and Wine: opens a window on the display the plan binds into the
-/// sandbox, and ends once the test saw it.
+/// sandbox, and ends with status 7 once the test saw it.
 struct WindowOnPlannedDisplay {
     planned: Arc<Mutex<Option<PathBuf>>>,
     seen: Arc<AtomicBool>,
 }
 
+/// The stand-in's program: it shows its window while the service waits for its end.
+struct ProbeWindow {
+    display: PathBuf,
+    seen: Arc<AtomicBool>,
+}
+
 impl SandboxExecutor for WindowOnPlannedDisplay {
-    #[allow(
-        clippy::panic_in_result_fn,
-        reason = "a stand-in that fails its step is the test's assertion"
-    )]
-    fn execute(&self, plan: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError> {
+    fn start(&self, plan: &CapsuleCommandPlan) -> Result<Box<dyn StartedProgram>, ExecutionError> {
         let display = plan
             .bwrap_argv
             .windows(3)
@@ -139,7 +164,20 @@ impl SandboxExecutor for WindowOnPlannedDisplay {
             .map(|bind| PathBuf::from(&bind[1]))
             .expect("the plan binds a display");
         *self.planned.lock().unwrap() = Some(display.clone());
-        let mut window = crate::common::window::Client::on(&display, PROGRAM_WINDOW, "Probe");
+        Ok(Box::new(ProbeWindow {
+            display,
+            seen: Arc::clone(&self.seen),
+        }))
+    }
+}
+
+impl StartedProgram for ProbeWindow {
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "a stand-in that fails its step is the test's assertion"
+    )]
+    fn wait(&self) -> Result<ExecutionOutcome, ExecutionError> {
+        let mut window = crate::common::window::Client::on(&self.display, PROGRAM_WINDOW, "Probe");
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while !self.seen.load(Ordering::Acquire) {
             assert!(
@@ -151,10 +189,12 @@ impl SandboxExecutor for WindowOnPlannedDisplay {
         }
         drop(window);
         Ok(ExecutionOutcome {
-            success: true,
-            exit_code: Some(0),
+            success: false,
+            exit_code: Some(7),
         })
     }
+
+    fn stop(&self) {}
 }
 
 /// The catalogue routing `probe.exe` to Wine, and a capsule holding it, set up under the login's
@@ -287,8 +327,19 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
         answers["listed"]["applications"][0]["id"], entry,
         "the manager lists the program: {answers}"
     );
+    // The launch is answered while the program is open, which the next list says; its end, with
+    // the program's own status, is reported once it came.
     assert_eq!(answers["launched"]["result"], "launched", "{answers}");
-    assert_eq!(answers["launched"]["receipt"]["success"], true, "{answers}");
+    assert_eq!(
+        answers["running"]["applications"][0]["running"], true,
+        "{answers}"
+    );
+    assert_eq!(answers["ended"]["ended"][0]["entry_id"], entry, "{answers}");
+    assert_eq!(answers["ended"]["ended"][0]["exit_code"], 7, "{answers}");
+    assert_eq!(
+        answers["ended"]["applications"][0]["running"], false,
+        "{answers}"
+    );
     assert!(
         seen.load(Ordering::Acquire),
         "the program's window was shown on the session's display"

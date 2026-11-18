@@ -17,7 +17,7 @@ use crate::{
     ExecutionOutcome, InstallationRecord, InstallationStatus, InstallerError, InstallerInspection,
     InstallerKind, LaunchDisplay, LaunchDisplays, LaunchResourceBroker, MAX_INSTALLER_BYTES,
     NetworkShape, PlanError, ProgramKind, ResourceError, ResourceRequest, RuntimeRegistry,
-    SandboxExecutor, SandboxPlanner, inspect_installer,
+    SandboxExecutor, SandboxPlanner, StartedProgram, inspect_installer,
 };
 
 /// One application published by the authenticated singleton Windows guest.
@@ -235,11 +235,31 @@ pub struct LaunchInput {
     pub now_unix: Option<u64>,
 }
 
+/// A program started: how it was started. Its end is reported apart, once it came
+/// ([`crate::ProgramEnd`]).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LaunchReceipt {
     pub explanation: ExplainStatus,
-    pub success: bool,
-    pub exit_code: Option<i32>,
+}
+
+/// A program [`CompatibilityService::launch`] started, which goes on after the call returns.
+pub struct Launched {
+    pub receipt: LaunchReceipt,
+    pub program: Box<dyn StartedProgram>,
+    /// Gives back what the launch was lent (its audio graph, its network proxy) once the program
+    /// ended.
+    pub release: Box<dyn FnOnce() + Send>,
+}
+
+/// A program that had ended by the time its launch returned.
+struct Ended(ExecutionOutcome);
+
+impl StartedProgram for Ended {
+    fn wait(&self) -> Result<ExecutionOutcome, ExecutionError> {
+        Ok(self.0.clone())
+    }
+
+    fn stop(&self) {}
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -513,7 +533,7 @@ pub struct CompatibilityService<R, B, E, V> {
     catalogue: Catalogue,
     store: CapsuleStore,
     runtimes: R,
-    resources: B,
+    resources: Arc<B>,
     executor: E,
     vm: V,
     /// Where each launch's program shows its windows, asked as it starts.
@@ -528,7 +548,7 @@ pub struct CompatibilityService<R, B, E, V> {
 impl<R, B, E, V> CompatibilityService<R, B, E, V>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
@@ -546,7 +566,7 @@ where
             catalogue,
             store,
             runtimes,
-            resources,
+            resources: Arc::new(resources),
             executor,
             vm,
             displays,
@@ -635,7 +655,9 @@ where
         Ok(())
     }
 
-    pub fn launch(&self, input: &LaunchInput) -> Result<LaunchReceipt, ServiceError> {
+    /// Start the program `input` names. The call returns once it started; the program goes on,
+    /// and [`Launched::program`] says when and how it ended.
+    pub fn launch(&self, input: &LaunchInput) -> Result<Launched, ServiceError> {
         validate_launch_id("app id", &input.app_id)?;
         validate_launch_id("workspace id", &input.workspace_id)?;
         validate_launch_id("program id", &input.program_id)?;
@@ -654,10 +676,15 @@ where
                 capabilities: &input.capabilities,
                 resolved_capabilities: &capabilities,
             })?;
-            return Ok(LaunchReceipt {
-                explanation: explanation(&route, input.vm_fallback, &capabilities, false),
-                success: running.process.exit_code == Some(0),
-                exit_code: running.process.exit_code,
+            return Ok(Launched {
+                receipt: LaunchReceipt {
+                    explanation: explanation(&route, input.vm_fallback, &capabilities, false),
+                },
+                program: Box::new(Ended(ExecutionOutcome {
+                    success: running.process.exit_code == Some(0),
+                    exit_code: running.process.exit_code,
+                })),
+                release: Box::new(|| {}),
             });
         }
 
@@ -680,7 +707,7 @@ where
             workspace_id: &input.workspace_id,
             capabilities: &capabilities,
         })?;
-        let result: Result<(CapsuleCommandPlan, ExecutionOutcome), ServiceError> = (|| {
+        let started: Result<(CapsuleCommandPlan, Box<dyn StartedProgram>), ServiceError> = (|| {
             let display = self.display_for(&input.workspace_id)?;
             let planner = SandboxPlanner::new(&self.store, &self.runtimes, &display)?;
             let plan = planner.plan(
@@ -691,20 +718,29 @@ where
                 &input.workspace_id,
                 &lease,
             )?;
-            let outcome = self.executor.execute(&plan)?;
-            Ok((plan, outcome))
-        })();
-        self.resources.revoke(&lease.id);
-        let (command, outcome): (CapsuleCommandPlan, ExecutionOutcome) = result?;
-        Ok(LaunchReceipt {
-            explanation: explanation(
-                &route,
-                input.vm_fallback,
-                &capabilities,
-                command.audio_output,
-            ),
-            success: outcome.success,
-            exit_code: outcome.exit_code,
+            let program = self.executor.start(&plan)?;
+            Ok((plan, program))
+        })(
+        );
+        let (command, program) = match started {
+            Ok(started) => started,
+            Err(error) => {
+                self.resources.revoke(&lease.id);
+                return Err(error);
+            }
+        };
+        let resources = Arc::clone(&self.resources);
+        Ok(Launched {
+            receipt: LaunchReceipt {
+                explanation: explanation(
+                    &route,
+                    input.vm_fallback,
+                    &capabilities,
+                    command.audio_output,
+                ),
+            },
+            program,
+            release: Box::new(move || resources.revoke(&lease.id)),
         })
     }
 
@@ -717,7 +753,7 @@ where
         workspace_id: &str,
         capabilities: &[CapOverride],
         now_unix: Option<u64>,
-    ) -> Result<LaunchReceipt, ServiceError> {
+    ) -> Result<ExecutionOutcome, ServiceError> {
         validate_launch_id("app id", &application.app_id)?;
         validate_launch_id("workspace id", workspace_id)?;
         validate_launch_id(
@@ -733,8 +769,7 @@ where
             capabilities,
             resolved_capabilities: &resolved,
         })?;
-        Ok(LaunchReceipt {
-            explanation: published_vm_explanation(application.presentation.label()),
+        Ok(ExecutionOutcome {
             success: running.process.exit_code == Some(0),
             exit_code: running.process.exit_code,
         })
@@ -748,7 +783,7 @@ where
         now_unix: Option<u64>,
         source: File,
         access: windows_vm::PortalDocumentAccess,
-    ) -> Result<LaunchReceipt, ServiceError> {
+    ) -> Result<ExecutionOutcome, ServiceError> {
         validate_launch_id("app id", &application.app_id)?;
         validate_launch_id("workspace id", workspace_id)?;
         validate_launch_id(
@@ -768,8 +803,7 @@ where
             source,
             access,
         )?;
-        Ok(LaunchReceipt {
-            explanation: published_vm_explanation(application.presentation.label()),
+        Ok(ExecutionOutcome {
             success: running.process.exit_code == Some(0),
             exit_code: running.process.exit_code,
         })
@@ -1586,11 +1620,11 @@ mod tests {
     struct Executor;
 
     impl SandboxExecutor for Executor {
-        fn execute(&self, _: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError> {
-            Ok(ExecutionOutcome {
+        fn start(&self, _: &CapsuleCommandPlan) -> Result<Box<dyn StartedProgram>, ExecutionError> {
+            Ok(Box::new(Ended(ExecutionOutcome {
                 success: true,
                 exit_code: Some(0),
-            })
+            })))
         }
     }
 
@@ -1866,15 +1900,15 @@ mod tests {
         struct Seen(Arc<Mutex<Vec<String>>>);
 
         impl SandboxExecutor for Seen {
-            fn execute(
+            fn start(
                 &self,
                 plan: &CapsuleCommandPlan,
-            ) -> Result<ExecutionOutcome, ExecutionError> {
+            ) -> Result<Box<dyn StartedProgram>, ExecutionError> {
                 plan.bwrap_argv.clone_into(&mut self.0.lock().unwrap());
-                Ok(ExecutionOutcome {
+                Ok(Box::new(Ended(ExecutionOutcome {
                     success: true,
                     exit_code: Some(0),
-                })
+                })))
             }
         }
 
@@ -1932,7 +1966,9 @@ mod tests {
             wayland_socket: PathBuf::from("/xdg/1000/wayland-3"),
             render_node: PathBuf::from("/dev/dri/renderD128"),
         });
-        assert!(service.launch(&input).unwrap().success);
+        let launched = service.launch(&input).unwrap();
+        assert!(launched.program.wait().unwrap().success);
+        (launched.release)();
         let argv = argv.lock().unwrap().clone();
         assert!(
             argv.windows(3).any(|bind| bind

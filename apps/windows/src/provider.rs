@@ -5,8 +5,8 @@ use ui::time::{Duration, Instant};
 
 use compat_service::{
     InstallationStatus, ManagedApplication, ManagedInstallation, MatchReason, PROTOCOL_VERSION,
-    ProtocolRequest, ProtocolResponse, RouteKind, SessionClient, SessionError, VmAvailability,
-    VmInstallation, VmUninstallation,
+    ProgramEnd, ProtocolRequest, ProtocolResponse, RouteKind, SessionClient, SessionError,
+    VmAvailability, VmInstallation, VmUninstallation,
 };
 
 use crate::model::{
@@ -58,6 +58,8 @@ pub trait CompatibilityProvider: Send {
     fn escalate_install_to_vm(&mut self, capsule_id: &str) -> Result<(), String>;
     /// Remove one launcher while retaining its installation.
     fn remove_launcher(&mut self, app_id: &str) -> Result<(), String>;
+    /// End the running program of a private capsule app.
+    fn stop(&mut self, app_id: &str) -> Result<(), String>;
     /// Run the discovered vendor uninstaller inside its capsule.
     fn vendor_uninstall(&mut self, capsule_id: &str) -> Result<(), String>;
     /// Delete a managed installation and its private capsule data.
@@ -147,6 +149,10 @@ impl CompatibilityProvider for EmptyProvider {
     }
 
     fn escalate_install_to_vm(&mut self, _capsule_id: &str) -> Result<(), String> {
+        Err(self.detail.clone())
+    }
+
+    fn stop(&mut self, _app_id: &str) -> Result<(), String> {
         Err(self.detail.clone())
     }
 
@@ -319,6 +325,14 @@ impl CompatibilityProvider for SampleProvider {
         app.can_escalate_install_to_vm = false;
         Ok(())
     }
+    fn stop(&mut self, app_id: &str) -> Result<(), String> {
+        let app = self
+            .catalogue
+            .app_mut(app_id)
+            .ok_or_else(|| "Unknown Windows app".to_string())?;
+        app.status = AppStatus::Ready;
+        Ok(())
+    }
     fn remove_launcher(&mut self, app_id: &str) -> Result<(), String> {
         self.catalogue.apps.retain(|app| app.id != app_id);
         Ok(())
@@ -367,6 +381,7 @@ enum WorkerCommand {
     Launch(String),
     LaunchVmFallback(String),
     LaunchVmWithFile { entry_id: String, source: File },
+    Stop(String),
     Install { source: File, source_name: String },
     InstallInCapsule { source: File, source_name: String },
     InstallInVm { source: File, source_name: String },
@@ -379,14 +394,18 @@ enum WorkerCommand {
     DeleteData(String),
 }
 
+/// A list the service answered.
+struct Listed {
+    applications: Vec<ManagedApplication>,
+    installations: Vec<ManagedInstallation>,
+    vm_availability: VmAvailability,
+    vm_installation: Option<VmInstallation>,
+    vm_uninstallation: Option<VmUninstallation>,
+    ended: Vec<ProgramEnd>,
+}
+
 enum WorkerEvent {
-    Listed {
-        applications: Vec<ManagedApplication>,
-        installations: Vec<ManagedInstallation>,
-        vm_availability: VmAvailability,
-        vm_installation: Option<VmInstallation>,
-        vm_uninstallation: Option<VmUninstallation>,
-    },
+    Listed(Box<Listed>),
     VmInstallConfirmation {
         source: File,
         source_name: String,
@@ -449,13 +468,18 @@ impl LiveProvider {
     fn drain(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
-                WorkerEvent::Listed {
-                    applications,
-                    installations,
-                    vm_availability,
-                    vm_installation,
-                    vm_uninstallation,
-                } => {
+                WorkerEvent::Listed(listed) => {
+                    let Listed {
+                        applications,
+                        installations,
+                        vm_availability,
+                        vm_installation,
+                        vm_uninstallation,
+                        ended,
+                    } = *listed;
+                    if let Some(end) = ended.last() {
+                        self.notice = Some(ended_notice(end));
+                    }
                     self.cached = catalogue_from_managed(
                         applications,
                         &installations,
@@ -665,6 +689,14 @@ impl CompatibilityProvider for LiveProvider {
         self.send(WorkerCommand::EscalateInstallToVm(capsule_id.to_string()))
     }
 
+    fn stop(&mut self, app_id: &str) -> Result<(), String> {
+        let application = self.managed_app(app_id)?;
+        if application.status != AppStatus::Running {
+            return Err("This application is not running.".to_string());
+        }
+        self.send(WorkerCommand::Stop(app_id.to_string()))
+    }
+
     fn remove_launcher(&mut self, app_id: &str) -> Result<(), String> {
         self.send(WorkerCommand::RemoveLauncher(app_id.to_string()))
     }
@@ -738,10 +770,9 @@ fn worker(
                         version: PROTOCOL_VERSION,
                         entry_id,
                     }),
-                    "The Windows application exited normally.",
-                    "The Windows application exited with status",
+                    "The Windows application started.",
                 ),
-                false,
+                true,
             ),
             WorkerCommand::LaunchVmFallback(entry_id) => (
                 launched(
@@ -749,10 +780,9 @@ fn worker(
                         version: PROTOCOL_VERSION,
                         entry_id,
                     }),
-                    "The application exited from the managed Windows fallback.",
-                    "The Windows fallback application exited with status",
+                    "Opening the application in the Windows appliance.",
                 ),
-                false,
+                true,
             ),
             WorkerCommand::LaunchVmWithFile { entry_id, source } => (
                 launched(
@@ -763,10 +793,16 @@ fn worker(
                         },
                         &source,
                     ),
-                    "Opened the portal-selected file in Windows.",
-                    "Windows closed with status",
+                    "Opening the portal-selected file in Windows.",
                 ),
-                false,
+                true,
+            ),
+            WorkerCommand::Stop(entry_id) => (
+                operation(client.request(&ProtocolRequest::Stop {
+                    version: PROTOCOL_VERSION,
+                    entry_id,
+                })),
+                true,
             ),
             WorkerCommand::Install {
                 source,
@@ -882,37 +918,37 @@ fn list(client: &mut SessionClient) -> WorkerEvent {
             vm_availability,
             vm_installation,
             vm_uninstallation,
-        }) => WorkerEvent::Listed {
+            ended,
+        }) => WorkerEvent::Listed(Box::new(Listed {
             applications,
             installations,
             vm_availability,
             vm_installation,
             vm_uninstallation,
-        },
+            ended,
+        })),
         Ok(ProtocolResponse::Error { error }) => WorkerEvent::Unavailable(error.message),
         Ok(_) => WorkerEvent::Unavailable(UNEXPECTED_RESPONSE.into()),
         Err(error) => WorkerEvent::Unavailable(error.to_string()),
     }
 }
 
-/// Reports a launch: `success` when the application exited cleanly, otherwise `failure`
-/// followed by its exit status.
-fn launched(
-    response: Result<ProtocolResponse, SessionError>,
-    success: &str,
-    failure: &str,
-) -> WorkerEvent {
+/// Reports a launch that started: its end comes later, with a list ([`ended_notice`]).
+fn launched(response: Result<ProtocolResponse, SessionError>, started: &str) -> WorkerEvent {
     match response {
-        Ok(ProtocolResponse::Launched { receipt }) if receipt.success => {
-            WorkerEvent::Operation(Ok(success.into()))
-        }
-        Ok(ProtocolResponse::Launched { receipt }) => WorkerEvent::Operation(Err(format!(
-            "{failure} {}.",
-            receipt
-                .exit_code
-                .map_or_else(|| "unknown".to_string(), |code| code.to_string())
-        ))),
+        Ok(ProtocolResponse::Launched { .. }) => WorkerEvent::Operation(Ok(started.into())),
         response => operation(response),
+    }
+}
+
+/// What the manager says of a program that ended.
+fn ended_notice(end: &ProgramEnd) -> String {
+    let name = &end.display_name;
+    match (&end.error, end.success, end.exit_code) {
+        (Some(error), _, _) => format!("{name} could not open: {error}"),
+        (None, true, _) => format!("{name} closed."),
+        (None, false, Some(code)) => format!("{name} closed with status {code}."),
+        (None, false, None) => format!("{name} was ended."),
     }
 }
 
@@ -931,6 +967,7 @@ fn operation(response: Result<ProtocolResponse, SessionError>) -> WorkerEvent {
         Ok(ProtocolResponse::VmVendorUninstallation { uninstallation }) => {
             Ok(uninstallation.detail)
         }
+        Ok(ProtocolResponse::Stopped { .. }) => Ok("The application was ended.".into()),
         Ok(ProtocolResponse::LauncherRemoved { .. }) => {
             Ok("Launcher removed; the installed application and its data were kept.".into())
         }
@@ -1163,9 +1200,13 @@ fn app_from_managed(
             || {
                 failed_vm_uninstall.map_or_else(
                     || {
-                        application
-                            .installation_status
-                            .map_or(AppStatus::Ready, app_status)
+                        if application.running {
+                            AppStatus::Running
+                        } else {
+                            application
+                                .installation_status
+                                .map_or(AppStatus::Ready, app_status)
+                        }
                     },
                     |_| AppStatus::Failed,
                 )
@@ -1462,6 +1503,7 @@ mod tests {
             installation_status: None,
             remove_launcher_available: false,
             vendor_uninstall_available: false,
+            running: false,
         }
     }
 
@@ -1597,43 +1639,93 @@ mod tests {
             assert!(catalogue.apps.is_empty());
             assert_eq!(catalogue.vm.detail, "invalid response");
         }
-        {
-            let (command_tx, _command_rx) = mpsc::channel();
-            let (event_tx, event_rx) = mpsc::channel();
-            let mut provider = LiveProvider {
-                cached: unavailable_catalogue("Connecting"),
-                commands: command_tx,
-                events: event_rx,
-                refresh_pending: true,
-                next_refresh: ui::time::now() + REFRESH_INTERVAL,
-                notice: None,
-                operation_result: None,
-                pending_vm_install: None,
-                pending_vm_install_confirmation: Some(VmInstallConfirmation {
-                    display_name: "Example setup".into(),
-                    detail: "Choose a destination.".into(),
-                    recommended_route: Route::Vm,
-                }),
-            };
-            event_tx
-                .send(WorkerEvent::Listed {
-                    applications: Vec::new(),
-                    installations: Vec::new(),
-                    vm_availability: VmAvailability::ready("Ready"),
-                    vm_installation: None,
-                    vm_uninstallation: None,
-                })
-                .unwrap();
+    }
 
-            let catalogue = provider.catalogue();
+    /// A pending installer choice survives a list; a launch is answered once the program
+    /// started, the list then shows it open and offers to end it, and once it ended the manager
+    /// says how.
+    #[test]
+    fn a_list_keeps_the_choice_and_tells_what_programs_did() {
+        let (command_tx, _command_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut provider = LiveProvider {
+            cached: unavailable_catalogue("Connecting"),
+            commands: command_tx,
+            events: event_rx,
+            refresh_pending: true,
+            next_refresh: ui::time::now() + REFRESH_INTERVAL,
+            notice: None,
+            operation_result: None,
+            pending_vm_install: None,
+            pending_vm_install_confirmation: Some(VmInstallConfirmation {
+                display_name: "Example setup".into(),
+                detail: "Choose a destination.".into(),
+                recommended_route: Route::Vm,
+            }),
+        };
+        event_tx
+            .send(WorkerEvent::Listed(Box::new(Listed {
+                applications: Vec::new(),
+                installations: Vec::new(),
+                vm_availability: VmAvailability::ready("Ready"),
+                vm_installation: None,
+                vm_uninstallation: None,
+                ended: Vec::new(),
+            })))
+            .unwrap();
 
-            assert_eq!(
-                catalogue
-                    .vm_install_confirmation
-                    .as_ref()
-                    .map(|confirmation| confirmation.display_name.as_str()),
-                Some("Example setup")
-            );
-        }
+        let catalogue = provider.catalogue();
+
+        assert_eq!(
+            catalogue
+                .vm_install_confirmation
+                .as_ref()
+                .map(|confirmation| confirmation.display_name.as_str()),
+            Some("Example setup")
+        );
+
+        // A launch is answered once the program started; the list then shows it going and
+        // offers to end it, and once it ended the manager says how.
+        provider.pending_vm_install_confirmation = None;
+        let listed = |going: bool, ended: Vec<ProgramEnd>| {
+            let mut application = managed_vm();
+            application.id = "probe".into();
+            application.capsule_id = Some("capsule".into());
+            application.presentation = None;
+            application.running = going;
+            WorkerEvent::Listed(Box::new(Listed {
+                applications: vec![application],
+                installations: Vec::new(),
+                vm_availability: VmAvailability::ready("Ready"),
+                vm_installation: None,
+                vm_uninstallation: None,
+                ended,
+            }))
+        };
+        event_tx.send(listed(true, Vec::new())).unwrap();
+        let app = provider.catalogue().app("probe").cloned().expect("listed");
+        assert_eq!(app.status, AppStatus::Running);
+        provider
+            .stop("probe")
+            .expect("a program that is open can be ended");
+        event_tx
+            .send(listed(
+                false,
+                vec![ProgramEnd {
+                    entry_id: "probe".into(),
+                    display_name: "Probe".into(),
+                    success: false,
+                    exit_code: Some(3),
+                    error: None,
+                }],
+            ))
+            .unwrap();
+        let app = provider.catalogue().app("probe").cloned().expect("listed");
+        assert_ne!(app.status, AppStatus::Running);
+        assert_eq!(
+            provider.take_notice().as_deref(),
+            Some("Probe closed with status 3.")
+        );
+        assert!(provider.stop("probe").is_err(), "nothing is open to end");
     }
 }

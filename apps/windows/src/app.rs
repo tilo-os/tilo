@@ -86,6 +86,7 @@ pub(crate) enum Intent {
     Route(Route),
     ResetRoute,
     Launch,
+    Stop,
     OpenFile,
     VmFallback,
     Install,
@@ -531,6 +532,7 @@ impl WindowsApp {
                 path: None,
             },
             Intent::Launch => E::Launch { app: id },
+            Intent::Stop => E::Stop { app: id },
             Intent::VmFallback => E::LaunchVmFallback { app: id },
             Intent::Publish => E::Publish { app: id },
             Intent::Retry => E::RetryInstall { capsule },
@@ -662,6 +664,12 @@ impl WindowsApp {
             E::InstallPrivateCapsule => self.provider.borrow_mut().confirm_capsule_install(),
             E::InstallWindowsAppliance => self.provider.borrow_mut().confirm_vm_install(),
             E::Launch { app } => self.launch_app(app),
+            E::Stop { app } => {
+                let app = self.offered_app(app, crate::model::WindowsApp::stop_available)?;
+                self.provider.borrow_mut().stop(&app.id)?;
+                self.requested();
+                Ok(())
+            }
             E::LaunchVmFallback { app } => self.launch_app_in_vm(app),
             E::OpenFile { app, path } => self.open_file_in_windows(app, path.as_deref()),
             E::Publish { app } => self.publish_launcher(app),
@@ -1205,6 +1213,10 @@ impl WindowsApp {
                 };
                 self.report(result, "windows-launch-queued");
             }
+            Intent::Stop if app.stop_available() => {
+                let result = self.provider.borrow_mut().stop(&app.id);
+                self.report(result, "windows-stopping");
+            }
             Intent::VmFallback if app.route != Route::Vm && app.vm_fallback_available => {
                 let result = self.provider.borrow_mut().launch_vm_fallback(&app.id);
                 self.report(result, "windows-vm-launch-queued");
@@ -1548,6 +1560,15 @@ impl WindowsApp {
                 )
                 .with_enabled(app.launch_available),
             )];
+            if app.stop_available() {
+                actions.push(Box::new(action_button(
+                    "windows-stop",
+                    "windows-stop",
+                    ButtonRole::Secondary,
+                    intents,
+                    Intent::Stop,
+                )));
+            }
             if vm {
                 let mut open_file = action_button(
                     "windows-open-file-in-vm",
@@ -2360,6 +2381,10 @@ mod tests {
 
         fn launch_vm_fallback(&mut self, app_id: &str) -> Result<(), String> {
             self.inner.launch_vm_fallback(app_id)
+        }
+
+        fn stop(&mut self, app_id: &str) -> Result<(), String> {
+            self.inner.stop(app_id)
         }
 
         fn launch_vm_with_file(&mut self, app_id: &str, mut source: File) -> Result<(), String> {

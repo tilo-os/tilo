@@ -24,6 +24,7 @@ use thiserror::Error;
 use tilo_clock::try_unix_now;
 use wire_frame::{FrameError, Framing};
 
+use crate::programs::{EndsRead, Programs};
 use crate::service::published_vm_explanation;
 use crate::{
     CapsuleStore, CompatibilityService, InstallOutcome, InstallationStatus, LaunchDisplays,
@@ -84,12 +85,14 @@ pub trait TrustedLauncherRegistry: Send + Sync + 'static {
 pub struct ManagedCompatibility<R, B, E, V> {
     service: CompatibilityService<R, B, E, V>,
     store: CapsuleStore,
+    /// The programs started through the service that are still open, and how the others ended.
+    programs: Arc<Programs>,
 }
 
 impl<R, B, E, V> ManagedCompatibility<R, B, E, V>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
@@ -111,7 +114,11 @@ where
             vm,
             displays,
         )?;
-        Ok(Self { service, store })
+        Ok(Self {
+            service,
+            store,
+            programs: Arc::default(),
+        })
     }
 
     /// The entries a manager connecting now may address: the programs set up
@@ -206,49 +213,28 @@ where
     ) -> Result<crate::LaunchReceipt, SessionError> {
         // Query, program, target app identity, and disabled VM fallback all
         // come from server state. The client contributes only `entry.id`.
-        self.service
-            .launch(&LaunchInput {
-                app_id: entry.app_id.clone(),
-                workspace_id: workspace_id.to_string(),
-                program_id: entry.program.id.clone(),
-                query: entry.query.clone(),
-                vm_fallback: VmFallback::Disabled,
-                capabilities,
-                now_unix: try_unix_now(),
-            })
-            .map_err(Into::into)
-    }
-
-    fn launch_published_vm(
-        &self,
-        application: &crate::VmPublishedApplication,
-        workspace_id: &str,
-        capabilities: &[CapOverride],
-    ) -> Result<crate::LaunchReceipt, SessionError> {
-        self.service
-            .launch_published_vm(application, workspace_id, capabilities, try_unix_now())
-            .map_err(Into::into)
-    }
-
-    fn launch_published_vm_with_portal_file(
-        &self,
-        application: &crate::VmPublishedApplication,
-        workspace_id: &str,
-        capabilities: &[CapOverride],
-        now_unix: Option<u64>,
-        source: File,
-        access: windows_vm::PortalDocumentAccess,
-    ) -> Result<crate::LaunchReceipt, SessionError> {
-        self.service
-            .launch_published_vm_with_portal_file(
-                application,
-                workspace_id,
-                capabilities,
-                now_unix,
-                source,
-                access,
-            )
-            .map_err(Into::into)
+        let crate::Launched {
+            receipt,
+            program,
+            release,
+        } = self.service.launch(&LaunchInput {
+            app_id: entry.app_id.clone(),
+            workspace_id: workspace_id.to_string(),
+            program_id: entry.program.id.clone(),
+            query: entry.query.clone(),
+            vm_fallback: VmFallback::Disabled,
+            capabilities,
+            now_unix: try_unix_now(),
+        })?;
+        crate::programs::watch(
+            &self.programs,
+            &entry.entry_id,
+            workspace_id,
+            &entry.program.display_name,
+            program,
+            release,
+        )?;
+        Ok(receipt)
     }
 
     fn install(
@@ -367,6 +353,68 @@ where
 
     fn delete_data(&self, capsule_id: &str) -> Result<(), SessionError> {
         self.service.delete_capsule(capsule_id).map_err(Into::into)
+    }
+}
+
+impl<R, B, E, V> ManagedCompatibility<R, B, E, V>
+where
+    R: RuntimeRegistry + 'static,
+    B: LaunchResourceBroker + 'static,
+    E: SandboxExecutor + 'static,
+    V: VmDelegate + 'static,
+{
+    /// Show `application` from the Windows appliance, with the portal-chosen `file` when one is
+    /// given. Answered at once: the appliance starting and its window showing happen on a
+    /// thread of their own, and how it went is reported as the program's end.
+    fn launch_published_vm(
+        self: &Arc<Self>,
+        application: crate::VmPublishedApplication,
+        workspace_id: &str,
+        capabilities: Vec<CapOverride>,
+        file: Option<File>,
+    ) -> Result<crate::LaunchReceipt, SessionError> {
+        let receipt = crate::LaunchReceipt {
+            explanation: published_vm_explanation(application.presentation.label()),
+        };
+        let name = application.display_name.clone();
+        let id = self
+            .programs
+            .started(&application.entry_id, workspace_id, None);
+        let (managed, workspace_id) = (Arc::clone(self), workspace_id.to_owned());
+        let ended_name = name.clone();
+        let spawned = std::thread::Builder::new()
+            .name("tilo-windows-appliance-program".to_owned())
+            .spawn(move || {
+                let now_unix = try_unix_now();
+                let service = &managed.service;
+                let outcome = match file {
+                    Some(file) => service.launch_published_vm_with_portal_file(
+                        &application,
+                        &workspace_id,
+                        &capabilities,
+                        now_unix,
+                        file,
+                        // This protocol action is intentionally read-only. A
+                        // future write-back action must have a distinct portal
+                        // decision rather than trusting a client-supplied bit.
+                        windows_vm::PortalDocumentAccess::ReadOnly,
+                    ),
+                    None => service.launch_published_vm(
+                        &application,
+                        &workspace_id,
+                        &capabilities,
+                        now_unix,
+                    ),
+                };
+                managed
+                    .programs
+                    .ended(id, &ended_name, outcome.map_err(|error| error.to_string()));
+            });
+        if let Err(error) = spawned {
+            self.programs.ended(id, &name, Err(error.to_string()));
+            return Err(error.into());
+        }
+        Ok(receipt)
     }
 }
 
@@ -673,15 +721,15 @@ fn join_workers(workers: &Mutex<Vec<JoinHandle<()>>>) {
 
 fn serve_client<R, B, E, V>(
     mut stream: UnixStream,
-    managed: &ManagedCompatibility<R, B, E, V>,
+    managed: &Arc<ManagedCompatibility<R, B, E, V>>,
     authority: &dyn CapabilityAuthority,
     authenticator: &LauncherAuthenticator,
 ) -> Result<(), SessionError>
 where
-    R: RuntimeRegistry,
-    B: LaunchResourceBroker,
-    E: SandboxExecutor,
-    V: VmDelegate,
+    R: RuntimeRegistry + 'static,
+    B: LaunchResourceBroker + 'static,
+    E: SandboxExecutor + 'static,
+    V: VmDelegate + 'static,
 {
     let handoff: SessionHandoff =
         read_frame(&mut stream, launcher::services::COMPAT_HANDOFF_FRAMING)?;
@@ -689,6 +737,7 @@ where
     authenticator.consume_handoff(&stream, &handoff)?;
     let mut allowed_entry_ids = managed.allowed_entries()?;
     let mut pending_vm_install = None;
+    let mut ends_read = EndsRead::default();
     loop {
         let (request, descriptor) = match read_request_frame(&mut stream, FRAMING) {
             Ok(request) => request,
@@ -703,6 +752,7 @@ where
             &handoff,
             &mut allowed_entry_ids,
             &mut pending_vm_install,
+            &mut ends_read,
             request,
             descriptor,
         );
@@ -725,24 +775,26 @@ fn validate_handoff(handoff: &SessionHandoff) -> Result<(), SessionError> {
     reason = "the exhaustive protocol dispatch keeps descriptor and authority checks in one boundary"
 )]
 fn handle_request<R, B, E, V>(
-    managed: &ManagedCompatibility<R, B, E, V>,
+    managed: &Arc<ManagedCompatibility<R, B, E, V>>,
     authority: &dyn CapabilityAuthority,
     handoff: &SessionHandoff,
     allowed_entry_ids: &mut BTreeSet<String>,
     pending_vm_install: &mut Option<PendingVmInstall>,
+    ends_read: &mut EndsRead,
     request: ProtocolRequest,
     descriptor: Option<OwnedFd>,
 ) -> ProtocolResponse
 where
-    R: RuntimeRegistry,
-    B: LaunchResourceBroker,
-    E: SandboxExecutor,
-    V: VmDelegate,
+    R: RuntimeRegistry + 'static,
+    B: LaunchResourceBroker + 'static,
+    E: SandboxExecutor + 'static,
+    V: VmDelegate + 'static,
 {
     let version = match &request {
         ProtocolRequest::List { version }
         | ProtocolRequest::Launch { version, .. }
         | ProtocolRequest::LaunchVmFallback { version, .. }
+        | ProtocolRequest::Stop { version, .. }
         | ProtocolRequest::LaunchVmWithPortalFile { version, .. }
         | ProtocolRequest::Install { version, .. }
         | ProtocolRequest::InstallInVm { version, .. }
@@ -781,7 +833,17 @@ where
     }
     let result: Result<ProtocolResponse, SessionError> = (|| match request {
         ProtocolRequest::List { .. } => {
-            list_applications(managed, authority, handoff, allowed_entry_ids)
+            list_applications(managed, authority, handoff, allowed_entry_ids, ends_read)
+        }
+        ProtocolRequest::Stop { entry_id, .. } => {
+            if valid_id(&entry_id)
+                && allowed_entry_ids.contains(&entry_id)
+                && managed.programs.stop(&handoff.workspace_id, &entry_id)
+            {
+                Ok(ProtocolResponse::Stopped { entry_id })
+            } else {
+                Err(SessionError::NotRunning)
+            }
         }
         ProtocolRequest::Resolve(request) => {
             managed
@@ -822,7 +884,7 @@ where
                         .capabilities_for(&handoff.workspace_id, &application.app_id)
                         .map_err(SessionError::Authority)?;
                     managed
-                        .launch_published_vm(&application, &handoff.workspace_id, &capabilities)
+                        .launch_published_vm(application, &handoff.workspace_id, capabilities, None)
                         .map(|receipt| ProtocolResponse::Launched { receipt })
                 } else {
                     // Private capsule entries cannot be mapped to an
@@ -850,16 +912,11 @@ where
                 .map_err(SessionError::Authority)?;
             let source = File::from(descriptor.ok_or(SessionError::DescriptorMissing)?);
             managed
-                .launch_published_vm_with_portal_file(
-                    &application,
+                .launch_published_vm(
+                    application,
                     &handoff.workspace_id,
-                    &capabilities,
-                    try_unix_now(),
-                    source,
-                    // This protocol action is intentionally read-only. A
-                    // future write-back action must have a distinct portal
-                    // decision rather than trusting a client-supplied bit.
-                    windows_vm::PortalDocumentAccess::ReadOnly,
+                    capabilities,
+                    Some(source),
                 )
                 .map(|receipt| ProtocolResponse::Launched { receipt })
         }
@@ -1043,14 +1100,19 @@ fn list_applications<R, B, E, V>(
     authority: &dyn CapabilityAuthority,
     handoff: &SessionHandoff,
     allowed_entry_ids: &mut BTreeSet<String>,
+    ends_read: &mut EndsRead,
 ) -> Result<ProtocolResponse, SessionError>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
     let mut applications = Vec::new();
+    // Read before the ends, so a program that ends in between is reported
+    // ended rather than both running and ended.
+    let running = managed.programs.running_in(&handoff.workspace_id);
+    let ended = managed.programs.ends_for(&handoff.workspace_id, ends_read);
     // A list refresh reports real delegate readiness, but never wakes the
     // fallback appliance merely to draw a manager badge.
     let vm_inventory = managed.vm_inventory();
@@ -1073,6 +1135,7 @@ where
             .into_iter()
             .find(|state| state.id == entry.capsule_id)
             .and_then(|state| state.installation.map(|installation| installation.status));
+        let is_running = running.contains(&entry.entry_id);
         applications.push(ManagedApplication {
             id: entry.entry_id,
             app_id: entry.app_id,
@@ -1107,6 +1170,7 @@ where
             installation_status,
             remove_launcher_available: true,
             vendor_uninstall_available: false,
+            running: is_running,
         });
     }
     for application in vm_inventory
@@ -1114,6 +1178,7 @@ where
         .into_iter()
         .filter(|application| allowed_entry_ids.contains(&application.entry_id))
     {
+        let is_running = running.contains(&application.entry_id);
         applications.push(ManagedApplication {
             id: application.entry_id,
             app_id: application.app_id,
@@ -1139,6 +1204,7 @@ where
             installation_status: None,
             remove_launcher_available: true,
             vendor_uninstall_available: application.uninstall_available,
+            running: is_running,
         });
     }
     let authorized_capsules = authorized_capsules(managed, allowed_entry_ids)?;
@@ -1208,6 +1274,7 @@ where
         vm_availability,
         vm_installation,
         vm_uninstallation,
+        ended,
     })
 }
 
@@ -1217,7 +1284,7 @@ fn authorized_capsules<R, B, E, V>(
 ) -> Result<BTreeSet<String>, SessionError>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
@@ -1236,7 +1303,7 @@ fn require_authorized_capsule<R, B, E, V>(
 ) -> Result<(), SessionError>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
@@ -1255,7 +1322,7 @@ fn authorize_capsule_entries<R, B, E, V>(
 ) -> Result<(), SessionError>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
@@ -1299,7 +1366,7 @@ fn retain_capsule_control_entry<R, B, E, V>(
 ) -> Result<(), SessionError>
 where
     R: RuntimeRegistry,
-    B: LaunchResourceBroker,
+    B: LaunchResourceBroker + 'static,
     E: SandboxExecutor,
     V: VmDelegate,
 {
@@ -1503,6 +1570,8 @@ pub enum SessionError {
     AlreadyRunning,
     #[error("managed Windows application is not registered")]
     UnknownEntry,
+    #[error("no program of this application is open that can be ended here")]
+    NotRunning,
     #[error("the Windows installer confirmation expired; inspect the portal file again")]
     VmInstallConfirmationExpired,
     #[error("the request did not carry one portal file descriptor")]
@@ -1534,6 +1603,7 @@ impl SessionError {
             Self::AlreadyRunning => "already_running",
             Self::VmInstallConfirmationExpired => "confirmation_expired",
             Self::UnknownEntry => "unknown_entry",
+            Self::NotRunning => "not_running",
             Self::Authority(_) => "authority_unavailable",
             Self::Io(_) | Self::Capsule(_) | Self::Service(_) => "service_error",
         }
@@ -1803,10 +1873,10 @@ mod tests {
     struct IdleExecutor;
 
     impl crate::SandboxExecutor for IdleExecutor {
-        fn execute(
+        fn start(
             &self,
             _: &crate::plan::CapsuleCommandPlan,
-        ) -> Result<crate::execute::ExecutionOutcome, crate::execute::ExecutionError> {
+        ) -> Result<Box<dyn crate::StartedProgram>, crate::execute::ExecutionError> {
             Err(crate::execute::ExecutionError::Seccomp(
                 "idle accept test".into(),
             ))
