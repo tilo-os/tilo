@@ -58,6 +58,8 @@
 "replying-to" = "Replying to";
 "drop-reply" = "Do not reply to this message";
 "earlier-message" = "An earlier message";
+"quote" = "Quote";
+"select-to-quote" = "Select the words to quote";
 "view-not-offered" = "This Tilo cannot show views in messages yet";
 "live-not-shown" = "Tilo could not show this";
 "stop-sharing" = "Stop sharing";

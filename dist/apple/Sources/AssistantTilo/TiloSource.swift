@@ -1493,10 +1493,19 @@ public final class TiloSource: AssistantSource {
     static func answered(by message: ChatMessage, among held: [String: ChatMessage]) -> Answered? {
         guard let name = message.fields["answers"]?.string, !name.isEmpty else { return nil }
         let piece = held[name]?.id ?? (message.id.split(separator: "/").dropLast().map(String.init) + [name]).joined(separator: "/")
-        if let part = message.fields["quoted"]?["text"]?.string, !part.isEmpty {
-            return Answered(Item.ID(piece), words: part, isPart: true)
+        if let quoted = message.fields["quoted"], let part = quoted["text"]?.string, !part.isEmpty {
+            let span = quoted["start"]?.number.flatMap { start in quoted["end"]?.number.map { Int(start)..<max(Int(start), Int($0)) } }
+            return Answered(Item.ID(piece), words: part, isPart: true, span: span)
         }
         return Answered(Item.ID(piece), words: held[name]?.text ?? "")
+    }
+
+    /// A marked part as Chat keeps a quote: its words, and where they stand in the answered
+    /// message's text. Nil for a message answered whole.
+    static func quote(of answered: Answered) -> JSON? {
+        guard answered.isPart, let span = answered.span, span.lowerBound < span.upperBound else { return nil }
+        return ["text": .string(Markdown.copied(answered.words)), "start": .number(Double(span.lowerBound)),
+                "end": .number(Double(span.upperBound))]
     }
 
     /// The name Chat's actions take for a piece's message: the last part of its item.
@@ -1583,7 +1592,8 @@ public final class TiloSource: AssistantSource {
             // does not yet is sent the answered line as a quote above the person's words: their
             // assistant is told what is answered either way, and nothing is kept in the app.
             if try await self.engine.chatKeepsAnswers() {
-                try await self.engine.chatPost(draft.text, in: conversation, answering: TiloSource.name(of: answered.piece), carrying: carried)
+                try await self.engine.chatPost(draft.text, in: conversation, answering: TiloSource.name(of: answered.piece),
+                                               quoted: TiloSource.quote(of: answered), carrying: carried)
             } else {
                 _ = try await self.engine.chatSend(TiloSource.quoting(answered, above: draft.text), to: to, carrying: carried)
             }

@@ -54,6 +54,9 @@ final class ReplyTests: XCTestCase {
         let drive = started.drive, model = started.model
         let (answered, _) = try piece(saying: said, in: model)
         XCTAssertFalse(drive.has(AssistantWords.dropReply.said, role: "AXButton"), "nothing is answered before the person says so")
+        await drawn(started)
+        let tall = try conversationScroll(started.window).documentVisibleRect.height
+        XCTAssertEqual(below(try conversationScroll(started.window)), 0, accuracy: 1, "the conversation opened away from its end")
         XCTAssertEqual(read(line, in: drive).count, 0)
 
         model.take(.reply, of: PieceWords(of: answered.id, said))
@@ -63,6 +66,11 @@ final class ReplyTests: XCTestCase {
         XCTAssertEqual(model.drafts[.main]?.answers, Answered(answered.id, words: said))
         // Answering alone sends nothing: there are no words yet.
         XCTAssertEqual(started.source.calls("send"), [])
+        // The field is taller by the answered line: the conversation gives way and its end comes back above the field.
+        await drawn(started)
+        let short = try conversationScroll(started.window)
+        XCTAssertLessThan(short.documentVisibleRect.height, tall - 10, "the field did not grow by the answered line: this shows nothing")
+        XCTAssertEqual(below(short), 0, accuracy: 1, "after Reply the conversation's end lies under the grown field")
         drive.picture("mac-reply-field-light")
 
         // The person's words go with which piece they answer.
@@ -163,6 +171,109 @@ final class ReplyTests: XCTestCase {
         window.appearance = NSAppearance(named: .darkAqua)
         await drive.settle(300)
         drive.picture("phone-width-reply-field-dark")
+    }
+
+    private func textView(in view: NSView?) -> NSTextView? {
+        guard let view else { return nil }
+        if let found = view as? NSTextView { return found }
+        for sub in view.subviews { if let found = textView(in: sub) { return found } }
+        return nil
+    }
+
+    func testQuoteAnswersTheMarkedPartOfAPieceAndTheSentMessageSaysWhichWords() async throws {
+        let started = try await Started.app()
+        defer { started.end() }
+        let drive = started.drive, model = started.model
+        let (answered, _) = try piece(saying: said, in: model)
+        // Quote in the piece's menu lays its words out and says what to do with them.
+        model.take(.quote, of: PieceWords(of: answered.id, said))
+        await drive.until("the words laid out") { started.window.heldSheets.count == 1 }
+        await drive.settle(300)
+        let sheet = try XCTUnwrap(started.window.heldSheets.first)
+        XCTAssertTrue(drive.has(AssistantWords.selectToQuote.said, role: "AXHeading", in: sheet.contentView), drive.said(of: sheet.contentView))
+        // With nothing marked there is nothing to quote.
+        let quote = try XCTUnwrap(drive.node(AssistantWords.quote.said, role: "AXButton", in: sheet.contentView), drive.said(of: sheet.contentView))
+        XCTAssertFalse(quote.isEnabled, "Quote is on with nothing marked")
+        let text = try XCTUnwrap(textView(in: sheet.contentView), "the sheet has no text view")
+        let part = "sorted since seven"
+        let marked = (text.string as NSString).range(of: part)
+        sheet.makeFirstResponder(text)
+        text.setSelectedRange(marked)
+        await drive.settle(200)
+        // Over the marked words the text's own menu offers Quote first: asked for as AppKit asks, never opened.
+        let place = sheet.convertPoint(fromScreen: CGPoint(x: text.firstRect(forCharacterRange: marked, actualRange: nil).midX,
+                                                           y: text.firstRect(forCharacterRange: marked, actualRange: nil).midY))
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .rightMouseDown, location: place, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                     windowNumber: sheet.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        XCTAssertEqual(text.menu(for: event)?.items.first?.title, AssistantWords.quote.said)
+        XCTAssertEqual((text.string as NSString).substring(with: text.selectedRange()), part, "asking for the menu left the marked words marked")
+        drive.picture("mac-quote-sheet-light", of: sheet.contentView)
+        // Quote: the marked words stand above the field, the sheet is put away, nothing is sent.
+        drive.press(AssistantWords.quote.said, role: "AXButton", in: sheet.contentView)
+        await drive.until("the sheet to be put away") { started.window.heldSheets.isEmpty }
+        let quoted = Answered(answered.id, words: part, isPart: true, span: 11..<29)
+        XCTAssertEqual(model.drafts[.main]?.answers, quoted)
+        await drive.until("the marked words above the field") { !self.read("\(AssistantWords.replyingTo.said): \(part)", in: drive).isEmpty }
+        XCTAssertEqual(started.source.calls("send"), [])
+        await drawn(started)
+        drive.picture("mac-quote-field-light")
+        model.drafts[.main]?.text = "Since when exactly?"
+        model.send(in: .main)
+        await drive.until("the reply in the conversation") { self.says("Since when exactly?", in: model) }
+        let (_, reply) = try piece(saying: "Since when exactly?", in: model)
+        XCTAssertEqual(reply.answers, quoted)
+        await drive.settle(300)
+        XCTAssertEqual(drive.nodes("\(AssistantWords.replyingTo.said): \(part)", role: "AXButton").count, 1, drive.said())
+        drive.picture("mac-quote-sent-light")
+
+        // The same in the dark look: the sent reply, the words laid out with a part marked, that part above the field.
+        let dark = NSAppearance(named: .darkAqua)
+        started.window.appearance = dark
+        await drive.settle(300)
+        drive.picture("mac-quote-sent-dark")
+        model.take(.quote, of: PieceWords(of: answered.id, said))
+        await drive.until("the words laid out again") { started.window.heldSheets.count == 1 }
+        let again = try XCTUnwrap(started.window.heldSheets.first)
+        again.appearance = dark
+        await drive.settle(300)
+        let laid = try XCTUnwrap(textView(in: again.contentView), "the sheet has no text view")
+        again.makeFirstResponder(laid)
+        laid.setSelectedRange((laid.string as NSString).range(of: part))
+        await drive.settle(200)
+        drive.picture("mac-quote-sheet-dark", of: again.contentView)
+        drive.press(AssistantWords.quote.said, role: "AXButton", in: again.contentView)
+        await drive.until("the sheet to be put away") { started.window.heldSheets.isEmpty }
+        await drive.until("the marked words above the field") { model.drafts[.main]?.answers == quoted && drive.has(AssistantWords.dropReply.said, role: "AXButton") }
+        await drawn(started)
+        drive.picture("mac-quote-field-dark")
+    }
+
+    /// The conversation's own scroll view: the one with the tallest content that holds no text field.
+    private func conversationScroll(_ window: NSWindow) throws -> NSScrollView {
+        var found: [NSScrollView] = []
+        func walk(_ view: NSView) {
+            if let scroll = view as? NSScrollView { found.append(scroll) }
+            for sub in view.subviews { walk(sub) }
+        }
+        func holdsField(_ view: NSView) -> Bool { view is NSTextView || view.subviews.contains(where: holdsField) }
+        if let root = window.contentView { walk(root) }
+        return try XCTUnwrap(found.filter { !holdsField($0) }.max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) })
+    }
+
+    /// How much of the conversation lies under what shows of it.
+    private func below(_ scroll: NSScrollView) -> CGFloat {
+        guard let document = scroll.documentView else { return -1 }
+        let visible = scroll.documentVisibleRect
+        return document.isFlipped ? document.bounds.height - visible.maxY : visible.minY
+    }
+
+    /// Let the window lay out and draw once, as a window on a screen is drawn again and again.
+    private func drawn(_ app: Started) async {
+        await app.drive.settle(150)
+        if let view = app.window.contentView, let picture = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: picture)
+        }
+        await app.drive.settle(60)
     }
 }
 #endif

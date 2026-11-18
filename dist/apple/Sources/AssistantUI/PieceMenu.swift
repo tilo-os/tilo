@@ -14,6 +14,8 @@ public struct PieceWords: Identifiable, Equatable, Sendable {
     public var id: Item.ID
     /// Markdown, as the piece holds it.
     public var text: String
+    /// Whether the words are laid out to quote a part of them: Quote in the piece's menu.
+    public var quotes = false
 
     public init(of piece: Item.ID, _ text: String) {
         self.id = piece
@@ -26,11 +28,12 @@ public struct PieceWords: Identifiable, Equatable, Sendable {
 
 /// What a person can do with a piece's words, in the order the piece's menu offers it.
 public enum PieceAction: CaseIterable, Sendable {
-    case reply, copy, selectText
+    case reply, quote, copy, selectText
 
     var words: AssistantWords {
         switch self {
         case .reply: .reply
+        case .quote: .quote
         case .copy: .copy
         case .selectText: .selectText
         }
@@ -43,6 +46,11 @@ extension AssistantModel {
         switch action {
         case .reply:
             reply(to: words.id, saying: words.text)
+        case .quote:
+            // A quote is a part of the words: they are laid out, and the person selects it there.
+            var laid = words
+            laid.quotes = true
+            selecting = laid
         case .copy:
             #if os(macOS)
             pasteboard.clearContents()
@@ -94,12 +102,22 @@ struct PieceMenu: ViewModifier {
 struct SelectTextSheet: View {
     let words: PieceWords
     @Environment(\.dismiss) private var dismiss
+    @Environment(AssistantModel.self) private var model
+    /// The part of the words that is marked now. Empty: none is.
+    @State private var marked = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(AssistantWords.selectText.said).font(.title15).foregroundStyle(Token.ink).accessibilityAddTraits(.isHeader)
+                Text((words.quotes ? AssistantWords.selectToQuote : AssistantWords.selectText).said).font(.title15).foregroundStyle(Token.ink).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 0)
+                // With words marked, they can be answered: Quote puts them above the field.
+                Button(AssistantWords.quote.said) { quote() }
+                    .buttonStyle(.plain)
+                    .font(.small12)
+                    .foregroundStyle(marked.isEmpty ? Token.ink3 : Token.ink)
+                    .disabled(marked.isEmpty)
+                    .padding(.trailing, 10)
                 Button {
                     dismiss()
                 } label: {
@@ -110,7 +128,7 @@ struct SelectTextSheet: View {
                 .keyboardShortcut(.cancelAction)
                 .accessibilityLabel(AssistantWords.close.said)
             }
-            SelectableWords(words: words.plain)
+            SelectableWords(words: words.plain, marked: $marked, quote: quote)
         }
         .padding(16)
         #if os(macOS)
@@ -121,6 +139,14 @@ struct SelectTextSheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         #endif
         .background(Token.content)
+    }
+
+    /// Answer the marked part of the piece: it stands above the field, and the words are put away.
+    private func quote() {
+        let part = marked.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !part.isEmpty else { return }
+        model.reply(to: words.id, saying: words.text, part: part)
+        dismiss()
     }
 }
 
@@ -195,7 +221,15 @@ final class SecondButtonView: NSView {
 /// Words in the system's text view: they can be marked and copied, and not changed.
 struct SelectableWords: NSViewRepresentable {
     let words: String
+    /// The part that is marked now, told as it changes.
+    @Binding var marked: String
+    /// Quote the marked part: what the row in the text's own menu does.
+    let quote: () -> Void
     @Environment(\.colorScheme) private var scheme
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
@@ -217,22 +251,60 @@ struct SelectableWords: NSViewRepresentable {
         view.autoresizingMask = [.width]
         view.minSize = .zero
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        view.delegate = context.coordinator
         scroll.documentView = view
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.parent = self
         guard let view = scroll.documentView as? NSTextView else { return }
         if view.string != words { view.string = words }
         view.font = PlatformFont.tilo(14)
         view.textColor = Token.ink.platform(scheme)
+    }
+
+    /// Hears what is marked, and puts Quote first in the menu the text opens over marked words.
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: SelectableWords
+
+        init(_ parent: SelectableWords) {
+            self.parent = parent
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let view = notification.object as? NSTextView else { return }
+            let part = (view.string as NSString).substring(with: view.selectedRange())
+            if parent.marked != part { parent.marked = part }
+        }
+
+        func textView(_ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
+            guard view.selectedRange().length > 0 else { return menu }
+            let item = NSMenuItem(title: AssistantWords.quote.said, action: #selector(quoted), keyEquivalent: "")
+            item.target = self
+            menu.insertItem(item, at: 0)
+            return menu
+        }
+
+        @objc private func quoted() {
+            parent.quote()
+        }
     }
 }
 #else
 /// Words in the system's text view: they can be marked and copied, and not changed.
 struct SelectableWords: UIViewRepresentable {
     let words: String
+    /// The part that is marked now, told as it changes.
+    @Binding var marked: String
+    /// Quote the marked part: what the row in the text's own menu does.
+    let quote: () -> Void
     @Environment(\.colorScheme) private var scheme
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
 
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView()
@@ -242,13 +314,37 @@ struct SelectableWords: UIViewRepresentable {
         view.textContainerInset = .zero
         view.textContainer.lineFragmentPadding = 0
         view.alwaysBounceVertical = true
+        view.delegate = context.coordinator
         return view
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.parent = self
         if view.text != words { view.text = words }
         view.font = PlatformFont.tilo(14)
         view.textColor = Token.ink.platform(scheme)
+    }
+
+    /// Hears what is marked, and puts Quote first in the menu the system opens over marked words.
+    @MainActor
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: SelectableWords
+
+        init(_ parent: SelectableWords) {
+            self.parent = parent
+        }
+
+        func textViewDidChangeSelection(_ view: UITextView) {
+            let range = view.selectedRange
+            let part = range.length > 0 ? ((view.text ?? "") as NSString).substring(with: range) : ""
+            if parent.marked != part { parent.marked = part }
+        }
+
+        func textView(_ view: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+            guard range.length > 0 else { return nil }
+            let quote = UIAction(title: AssistantWords.quote.said) { [weak self] _ in self?.parent.quote() }
+            return UIMenu(children: [quote] + suggestedActions)
+        }
     }
 }
 #endif

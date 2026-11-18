@@ -25,7 +25,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case showSteps = "show-steps", hideSteps = "hide-steps"
     case nothingYet = "nothing-yet", nothingYetBody = "nothing-yet-body"
     case liveThing = "live-thing", attachment, selectText = "select-text"
-    case reply, replyingTo = "replying-to", dropReply = "drop-reply", earlierMessage = "earlier-message"
+    case reply, replyingTo = "replying-to", dropReply = "drop-reply", earlierMessage = "earlier-message", quote, selectToQuote = "select-to-quote"
     case viewNotOffered = "view-not-offered", liveNotShown = "live-not-shown", stopSharing = "stop-sharing"
     // The first run, in the main chat.
     case makingAssistant = "making-assistant", makingWorkspace = "making-workspace"
@@ -163,6 +163,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .replyingTo: "Replying to"
         case .dropReply: "Do not reply to this message"
         case .earlierMessage: "An earlier message"
+        case .quote: "Quote"
+        case .selectToQuote: "Select the words to quote"
         case .viewNotOffered: "This Tilo cannot show views in messages yet"
         case .liveNotShown: "Tilo could not show this"
         case .stopSharing: "Stop sharing"

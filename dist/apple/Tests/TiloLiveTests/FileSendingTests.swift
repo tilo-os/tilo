@@ -400,5 +400,20 @@ extension FileSendingTests {
         let all = try await asked("send")
         XCTAssertEqual(all?.array?.last, ["chat.workspace", "", "Thank you", ""])
     }
+
+    func testAQuoteIsPostedWithItsWordsAndWhereTheyStandInTheAnsweredMessage() async throws {
+        try await start()
+        try await enter("window.keepsAnswers = true; window.post('m1', {person: 'b0'.repeat(32)}, 'Nine mails sorted since seven.')")
+        try await until("the answered message is held") { self.message(saying: "Nine mails sorted since seven.") != nil }
+        let quoted = Answered(Item.ID("chat.messages/messages/m1"), words: "sorted since seven", isPart: true, span: 11..<29)
+        try await source.send(Draft(text: "Since when exactly?", answers: quoted), to: .main)
+        let posted = try await asked("post")
+        XCTAssertEqual(posted, [["chain:messages", "c_chat", "Since when exactly?", "m1"]])
+        let spans = JSON(text: try await page("return JSON.stringify(window.heard.filter(call => call.action === 'post').map(call => call.args.quoted ?? {}))"))
+        XCTAssertEqual(spans, [["text": "sorted since seven", "start": 11, "end": 29]])
+        // Chat's quote comes back as the marked words and where they stand.
+        try await until("the reply is told") { self.message(saying: "Since when exactly?") != nil }
+        XCTAssertEqual(message(saying: "Since when exactly?")?.answers, quoted)
+    }
 }
 #endif
