@@ -183,7 +183,7 @@ public struct ConversationView: View {
         guard chat == .main else { return false }
         switch model.setup {
         case .unknown, .ready: return false
-        case .findingAssistant, .makingWorkspace, .noAssistant, .needsProvider, .needsModel: return true
+        case .findingAssistant, .makingWorkspace, .makingAssistant, .noAssistant, .needsProvider, .needsModel: return true
         }
     }
 

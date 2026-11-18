@@ -79,11 +79,16 @@ public struct PairingAsk: Equatable, Sendable {
 public enum Setup: Equatable, Sendable {
     /// Not known yet, or nothing to say of it: the main chat shows nothing.
     case unknown
-    /// The person's assistant is being found, or made where they keep none.
+    /// The person's assistant is being looked for, as at every start, and what answers for it
+    /// is being read. Nothing is said of it but that the app waits for Tilo: the window's one
+    /// sentence from its opening until the main chat stands.
     case findingAssistant
     /// As `findingAssistant`, where their server has been making their own workspace for a
     /// while: the first time it is asked for, that can take minutes, and the main chat says so.
     case makingWorkspace
+    /// The person keeps no assistant, and one is being made for them: the first time. Only
+    /// then does the main chat say that their assistant is being set up.
+    case makingAssistant
     /// It could not be found or made. The sentence says why, in Tilo's own words where it has any.
     case noAssistant(String)
     /// No provider is linked. These can be, each with a key of the person's own.

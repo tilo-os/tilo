@@ -27,7 +27,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case liveThing = "live-thing", attachment, selectText = "select-text"
     case viewNotOffered = "view-not-offered", liveNotShown = "live-not-shown", stopSharing = "stop-sharing"
     // The first run, in the main chat.
-    case findingAssistant = "finding-assistant", makingWorkspace = "making-workspace"
+    case makingAssistant = "making-assistant", makingWorkspace = "making-workspace"
     case needsProvider = "needs-provider", providerKey = "provider-key"
     case linkProvider = "link-provider", needsModel = "needs-model", chooseModel = "choose-model", answersOn = "answers-on"
     // The way back to the provider step, from the assistant view's Model line.
@@ -161,7 +161,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .viewNotOffered: "This Tilo cannot show views in messages yet"
         case .liveNotShown: "Tilo could not show this"
         case .stopSharing: "Stop sharing"
-        case .findingAssistant: "Setting up your assistant"
+        case .makingAssistant: "Setting up your assistant"
         case .makingWorkspace: "Tilo is making your workspace. The first time, this can take a few minutes."
         case .needsProvider: "No model provider is linked yet, so your assistant cannot answer. Choose a provider and type your own key for it below."
         case .providerKey: "Your key for {name}"

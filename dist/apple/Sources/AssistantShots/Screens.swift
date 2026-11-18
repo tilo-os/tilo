@@ -92,6 +92,10 @@ enum Screens {
         reset.session = .reset
         await add("phone-way-in-reset", reset)
         await add("phone-empty", empty)
+        // The start, from the app's opening until the main chat stands: one sentence over the field.
+        var starting = empty
+        starting.setup = .findingAssistant
+        await add("phone-start", starting)
         let live = await model(empty)
         screens.append(Screen(name: "phone-live-activities", size: .zero, view: rooted(live, scheme) { LiveBoard() }))
         return screens
@@ -171,6 +175,24 @@ enum Screens {
             .background(Token.content)
         }))
         screens.append(Screen(name: "empty", size: window, view: rooted(await model(empty), scheme) { MacWindow() }))
+        // The start, from the app's opening until the main chat stands: one sentence over the
+        // message field through every step behind it. And the first time, while an assistant is
+        // made for a person who keeps none. Each at the Mac's size and at an iPhone's width.
+        var starting = empty
+        starting.setup = .findingAssistant
+        var making = empty
+        making.setup = .makingAssistant
+        for (name, content) in [("start", starting), ("first-time-making", making)] {
+            screens.append(Screen(name: name, size: window, view: rooted(await model(content), scheme) { MacWindow() }))
+            screens.append(Screen(name: "\(name)-phone", size: phone, view: rooted(await model(content), scheme) {
+                VStack(spacing: 0) {
+                    ConversationView(chat: .main, picturedSecret: "")
+                    ReachLine()
+                    Composer(chat: .main)
+                }
+                .background(Token.content)
+            }))
+        }
         screens.append(Screen(name: "lock-screen", size: CGSize(width: 300, height: 470), view: rooted(await model(empty), scheme) { LockScreenBoard() }))
         screens.append(Screen(name: "live-activities", size: CGSize(width: 393, height: 560), view: rooted(await model(empty), scheme) { LiveBoard() }))
         // What the person's Tilo told them, as the app says it. What came while they were away
