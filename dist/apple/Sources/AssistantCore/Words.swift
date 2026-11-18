@@ -81,7 +81,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case wayInTitle = "way-in-title", wayInLead = "way-in-lead", wayInReset = "way-in-reset", scanCode = "scan-code", pasteLink = "paste-link"
     case wayInHelp = "way-in-help", wayInHelpOne = "way-in-help-one", pairing, noLink = "no-link", codeNoLink = "code-no-link"
     case codeFromElsewhere = "code-from-elsewhere", pairsNothing = "pairs-nothing"
-    case compareCode = "compare-code"
+    case compareCode = "compare-code", pairingSite = "pairing-site"
     case unreachable, cameraNotAllowed = "camera-not-allowed", tryAgain = "try-again", notReachable = "not-reachable"
     // The menu bar and the menus.
     case openApp = "open-app", waitsOne = "waits-one", waitsMany = "waits-many", waitsNone = "waits-none"
@@ -302,6 +302,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .wayInHelpOne: "It comes from “Pair a new device” on a device where you are signed in."
         case .pairing: "Waiting for Tilo"
         case .compareCode: "A device where you are signed in shows a code and asks about it. Approve there only if it shows this one."
+        case .pairingSite: "This app is set up for {site}."
         case .noLink: "The clipboard holds no link."
         case .codeNoLink: "This code holds no link."
         case .codeFromElsewhere: "This code is from another Tilo site, {from}. This app is set up for {site}. Open “Pair a new device” there."

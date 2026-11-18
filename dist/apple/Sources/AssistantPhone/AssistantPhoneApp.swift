@@ -45,7 +45,7 @@ struct AssistantPhoneApp: App {
                 .onChange(of: model.automations) { activities.bring() }
                 .onChange(of: model.conversation(.main).items.count) { activities.bring() }
                 .onChange(of: phase) { if phase == .active { activities.bring() } }
-                .onOpenURL { LiveLink.open($0, in: model) }
+                .onOpenURL { AppAddress.open($0, in: model) }
         }
     }
 }

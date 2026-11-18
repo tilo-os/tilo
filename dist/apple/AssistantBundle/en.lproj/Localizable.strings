@@ -204,6 +204,7 @@
 "code-from-elsewhere" = "This code is from another Tilo site, {from}. This app is set up for {site}. Open “Pair a new device” there.";
 "pairs-nothing" = "This link pairs no device. This app is set up for {site}. Open “Pair a new device” there.";
 "compare-code" = "A device where you are signed in shows a code and asks about it. Approve there only if it shows this one.";
+"pairing-site" = "This app is set up for {site}.";
 "unreachable" = "Tilo cannot be reached. Check the connection, then try again.";
 "camera-not-allowed" = "Allow the camera for {app} in the system's settings to scan a code.";
 "try-again" = "Try again";

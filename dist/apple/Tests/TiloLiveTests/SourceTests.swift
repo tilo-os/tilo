@@ -1302,7 +1302,7 @@ final class TiloSourceTests: XCTestCase {
         let whose = "You are adding this device to Ada Lovelace’s devices. If that is not you, stop."
         let server = "The server that adds it is this site’s own, tilo.test."
         _ = try await page("askWhose(whose, server); return ''", ["whose": whose, "server": server])
-        let ask = PairingAsk(heading: "Add this device?", said: [whose, server], go: "Add this device", stop: "Stop")
+        let ask = PairingAsk(heading: "Add this device?", said: [whose, server], go: "Add this device", stop: "Stop", site: Self.site)
         try await until("the app stands at the question") { self.sessions.last == .asked(ask) }
         // Nothing answers for the person.
         try await Task.sleep(for: .milliseconds(300))

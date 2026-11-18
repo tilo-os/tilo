@@ -497,6 +497,18 @@ that names no such case (a person taken out of a workspace, a device removed fro
 person's) changes nothing: the app stands as it did. `WorkspaceGoneTests` checks this against a
 page that speaks as Tilo's does, `WayInAfterResetTests` in the window.
 
+**A link handed over.** The app answers to one more address of its own,
+`tilo-assistant://pair?link=<a pairing link>` (`HandedLink`). Tilo's page can offer it beside the
+link and the code of "Pair a new device", so that on the computer the app is on nobody
+copies and pastes. The app takes it only while it stands at its way in, and then it is a pasted
+link and nothing more: a link that leads to another site than the app's own is refused in words
+and shows no card; Tilo's question stands with the app's own site named in full under it
+(`PairingAsk.site`); and nothing goes on before the person's press there and their approval, with
+the code both show, on the device that made the link. An app that is in, or in the middle of a
+pairing, takes no link from outside and says nothing of it. An app that was started by the
+address keeps the link until it knows where it stands (`AssistantModel.takeHanded`).
+`HandedLinkTests` checks this in the window.
+
 **Read out.** The Mac's window is read in three named parts in the order a person reads it:
 the sidebar, the conversation with its field, the Tasks panel. Every control is named by
 what it does, the drawing's dots between facts are pauses and not words, the person's own

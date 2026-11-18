@@ -200,7 +200,7 @@ final class AssistantDrive {
         case .reset: once("session", ["is": "reset"])
         case .asked(let ask):
             once("session", ["is": "asked", "heading": .string(ask.heading), "said": .array(ask.said.map(JSON.string)),
-                             "go": .string(ask.go), "stop": .string(ask.stop)])
+                             "go": .string(ask.go), "stop": .string(ask.stop), "site": .string(ask.site)])
         case .pairing: once("session", ["is": "pairing"])
         // The code itself goes into --code-file and is never printed.
         case .confirming: once("session", ["is": "confirming"])
@@ -369,6 +369,14 @@ final class AssistantDrive {
             guard let link = words("file") else { AssistantDrive.say(["error": "pair takes a file that holds a link"]); return }
             model.pair(with: link)
             AssistantDrive.say(["asked": "pair"])
+        case "open-address":
+            // As the system hands the app an address of its own. The file holds one, which is never printed.
+            guard let address = words("file").flatMap({ URL(string: $0) }) else {
+                AssistantDrive.say(["error": "open-address takes a file that holds an address"])
+                return
+            }
+            AppAddress.open(address, in: model)
+            AssistantDrive.say(["asked": "open-address"])
         case "send":
             guard let typed = step["text"]?.string else { AssistantDrive.say(["error": "send takes text"]); return }
             // As the message field does: the words stand in the draft with the files picked

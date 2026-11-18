@@ -258,6 +258,32 @@ public struct PairingLink: Equatable, Sendable {
     }
 }
 
+/// A pairing link handed to the app from outside, in an address of the app's own:
+/// `tilo-assistant://pair?link=<the pairing link>`. Tilo's page can offer one beside the link
+/// and the code of "Pair a new device", so that on the computer the app is on nobody
+/// copies and pastes. What it carries is a link as any other: the app takes it only at its
+/// way in, and treats it as a pasted one.
+public enum HandedLink {
+    public static let scheme = "tilo-assistant"
+
+    /// What an address hands over: the words its `link` holds. Nil for any other address.
+    public static func words(in address: URL) -> String? {
+        // The address is exactly the app's name for it, then what it carries: nothing before the question mark is read as more.
+        let written = address.absoluteString
+        guard written.lowercased().hasPrefix("\(scheme)://pair?"), let parts = URLComponents(string: written),
+              let link = parts.queryItems?.first(where: { $0.name == "link" })?.value, !link.isEmpty
+        else { return nil }
+        return link
+    }
+
+    /// The address that hands `link` over.
+    public static func address(for link: URL) -> URL? {
+        // Every letter of the link that could end the address, or a part of it, is written out.
+        guard let written = link.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else { return nil }
+        return URL(string: "\(scheme)://pair?link=\(written)")
+    }
+}
+
 /// Something the person typed into the protected field. It says nothing of itself: printing it,
 /// describing it or looking into it shows no letter of what is inside.
 public struct Secret: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {

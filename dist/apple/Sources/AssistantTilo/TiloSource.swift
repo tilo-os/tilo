@@ -364,7 +364,7 @@ public final class TiloSource: AssistantSource {
         case .open: person.map(Session.signedIn) ?? .pairing
         // The page shows a code at its join step: the window shows it too, to compare.
         // The page asks before it pairs: the window shows its sentences and its two ways on.
-        case .asking(let ask): .asked(PairingAsk(heading: ask.heading, said: ask.said, go: ask.go, stop: ask.stop))
+        case .asking(let ask): .asked(PairingAsk(heading: ask.heading, said: ask.said, go: ask.go, stop: ask.stop, site: engine.settings.origin))
         case .pairing(let code): code.isEmpty ? .pairing : .confirming(code: code)
         case .arriving: person.map(Session.signedIn) ?? .pairing
         case .away, .refused, .failed, .gone: person.map(Session.signedIn) ?? (wasReset ? .reset : .signedOut)
