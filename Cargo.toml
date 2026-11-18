@@ -127,6 +127,7 @@ members = [
     "apps/chip-design",
     "apps/contacts",
     "apps/containers",
+    "apps/containers-model",
     "apps/db-client",
     "apps/db-client-model",
     "apps/diffmerge",

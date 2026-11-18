@@ -1,45 +1,18 @@
-//! Containers as a resource: the new-container draft is the resource, and the engine's
-//! containers, images, volumes and distroboxes are live rows. Where the window is
-//! belongs to the window, offered to every caller as effects.
+//! Containers' window: the screens, the form, the captures and the effects that move around
+//! the app. The resource and its verb are the model crate's.
 
 use ui::framework::{Fixture, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_resource::{self, Effect, Invoke, Model, resource};
+use ui::tilo_resource::{self, Effect, Invoke};
 use ui::widget::Element;
 
 use crate::app::{Confirm, ConfirmTarget, ContainersApp, ContainersState, Prompt, PromptKind};
-use crate::draft::{CreateDraft, CreateField};
+use crate::draft::CreateField;
 use crate::model::{DetailTab, Engine, Section};
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
-#[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
-pub struct Containers {
-    /// New container
-    pub draft: CreateDraft,
-}
-
-impl Containers {
-    /// What the resource holds: the new-container draft.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "containers.engine",
-    read_content = Containers::read_document
-)]
-impl Containers {
-    /// Clear new container
-    #[action]
-    pub fn clear_create(&mut self) {
-        self.draft = CreateDraft::default();
-    }
-}
+pub use containers_model::Containers;
 
 /// Moving around the app, for every caller: none of it changes the document.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]

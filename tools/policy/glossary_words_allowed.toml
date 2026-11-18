@@ -1055,3 +1055,14 @@ paths = [
     "apps/camera-model/locales/en-US.ftl",
     "apps/camera-model/locales/de-DE.ftl",
 ]
+
+[[allow]]
+reason = "A published container port's mapping names the machine's port as Docker does (host port); the record's field and its catalogue key keep that name."
+words = ["host"]
+identifiers = ["host", "host_port", "containers-host-port"]
+paths = [
+    "apps/containers-model/src/model.rs",
+    "apps/containers-model/src/draft.rs",
+    "apps/containers-model/locales/en-US.ftl",
+    "apps/containers-model/locales/de-DE.ftl",
+]
