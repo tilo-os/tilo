@@ -10,6 +10,35 @@ use super::{
 /// The close matches an action no resource offers is told with.
 pub(super) const CLOSE_MATCHES: usize = 5;
 
+/// `arguments` with each parameter's value written as the label a person reads
+/// replaced by the value the app takes, whatever its case or spacing
+/// (`In review` for `in-review`, a status or a choice of a kind of thing alike).
+fn bind_choices(descriptor: &ActionDescriptor, arguments: &mut serde_json::Map<String, Value>) {
+    for param in &descriptor.params {
+        let Some(given) = arguments
+            .get(param.name.as_ref())
+            .and_then(Value::as_str)
+            .map(plain)
+        else {
+            continue;
+        };
+        let choice = param
+            .choices
+            .iter()
+            .find(|choice| plain(choice) == given)
+            .map(|choice| Value::String(choice.to_string()))
+            .or_else(|| {
+                forms(param.schema.as_deref()?)
+                    .into_iter()
+                    .find(|(name, _)| plain(name) == given)
+                    .map(|(_, value)| value)
+            });
+        if let Some(choice) = choice {
+            arguments.insert(param.name.to_string(), choice);
+        }
+    }
+}
+
 /// The action ids closest to `name`, best first, at most `limit`: those it is
 /// part of, one of whose words it is, or whose start it shares.
 pub(super) fn close_matches(name: &str, ids: &[String], limit: usize) -> Vec<String> {
@@ -170,32 +199,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
             arguments.insert(param.name.to_string(), Value::Object(reference));
         }
-        // A value written as the label a person reads is the value the app
-        // takes, whatever its case or spacing (`In review` for `in-review`,
-        // a status or a choice of a kind of thing alike).
-        for param in &descriptor.params {
-            let Some(given) = arguments
-                .get(param.name.as_ref())
-                .and_then(Value::as_str)
-                .map(plain)
-            else {
-                continue;
-            };
-            let choice = param
-                .choices
-                .iter()
-                .find(|choice| plain(choice) == given)
-                .map(|choice| Value::String(choice.to_string()))
-                .or_else(|| {
-                    forms(param.schema.as_deref()?)
-                        .into_iter()
-                        .find(|(name, _)| plain(name) == given)
-                        .map(|(_, value)| value)
-                });
-            if let Some(choice) = choice {
-                arguments.insert(param.name.to_string(), choice);
-            }
-        }
+        bind_choices(descriptor, &mut arguments);
         Ok(arguments)
     }
 
