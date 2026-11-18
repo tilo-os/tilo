@@ -153,8 +153,8 @@ impl PageDialogs {
         use ui::tilo_resource::Effect as _;
         let open = self.open.as_ref()?;
         let dialog = &open.dialog;
-        let mut row =
-            LiveRow::new(ROW, ROW, open.title.clone()).presentation(ResourcePresentation {
+        let mut row = LiveRow::typed::<crate::row_types::PageDialog>(ROW, open.title.clone())
+            .presentation(ResourcePresentation {
                 detail: None,
                 badge: None,
                 preview: Some(preview(&open.body())),

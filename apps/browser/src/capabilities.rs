@@ -503,8 +503,7 @@ impl Capabilities {
     pub fn resource(&self) -> Option<ui::framework::LiveRow> {
         use ui::tilo_resource::Effect as _;
         let (request, origin, rights) = self.pending()?;
-        let mut row = ui::framework::LiveRow::new(
-            RESOURCE,
+        let mut row = ui::framework::LiveRow::typed::<crate::row_types::PagePermission>(
             RESOURCE,
             crate::CATALOG.t_args(
                 "browser-permission-request",

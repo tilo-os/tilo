@@ -230,8 +230,8 @@ impl PageSignIn {
         use ui::tilo_resource::Effect as _;
         let open = self.open.as_ref()?;
         let sign_in = open.challenge.id;
-        let mut row =
-            LiveRow::new(ROW, ROW, open.title.clone()).presentation(ResourcePresentation {
+        let mut row = LiveRow::typed::<crate::row_types::PageSignIn>(ROW, open.title.clone())
+            .presentation(ResourcePresentation {
                 detail: None,
                 badge: None,
                 preview: Some(crate::page_dialogs::preview(&open.detail)),

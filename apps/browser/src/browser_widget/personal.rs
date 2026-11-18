@@ -1,5 +1,5 @@
 //! Current-person bookmark operations and projection; never shared document mutations.
-use super::*;
+use super::{ActionBinding, BrowserOperation, BrowserWidget, LibrarySection, Theme};
 use crate::personal_bookmark_view::{self as view, ViewRequest};
 use crate::personal_bookmarks::{PersonalBookmarkState, PersonalBookmarks};
 use std::rc::Rc;
@@ -171,9 +171,8 @@ impl BrowserWidget {
         personal
     }
     pub(super) fn personal_bookmark_resources(&self) -> LiveRow {
-        let mut root = LiveRow::new(
+        let mut root = LiveRow::typed::<crate::personal_bookmarks::PersonalBookmarks>(
             crate::personal_bookmarks::SCOPE,
-            "browser.personal-bookmarks",
             crate::CATALOG.t("browser-resource-personal-bookmarks"),
         )
         .operation(
@@ -233,7 +232,7 @@ fn named_row<'a>(
     id: &str,
 ) -> Option<(crate::personal_bookmarks::Named<'a>, LiveRow)> {
     let named = crate::personal_bookmarks::named(state, id)?;
-    let row = LiveRow::new(id, named.kind(), named.label());
+    let row = named.row(id);
     Some((named, row))
 }
 pub(crate) fn request_resource(
@@ -327,9 +326,8 @@ fn navigation_row(effect: &crate::effects::BrowserEffect) -> Option<LiveRow> {
         blake3::hash(&serde_json::to_vec(&effect.arguments()).ok()?).to_hex()
     );
     Some(
-        LiveRow::new(
+        LiveRow::typed::<crate::row_types::PersonalBookmarkNavigation>(
             id,
-            "browser.personal-bookmark-navigation",
             crate::CATALOG.t("browser-resource-bookmark-navigation"),
         )
         .effect(effect),

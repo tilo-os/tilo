@@ -47,9 +47,8 @@ impl Selection {
             "browser-service-open",
             &[("name", ui::i18n::ArgValue::Text(self.label().to_owned()))],
         );
-        ui::framework::LiveRow::new(
+        ui::framework::LiveRow::typed::<crate::row_types::Service>(
             format!("browser.service.{}", self.id),
-            "browser.service",
             self.label(),
         )
         .operation(open)

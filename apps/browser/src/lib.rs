@@ -73,6 +73,7 @@ mod personal_bookmark_view;
 pub mod personal_bookmarks;
 pub mod private_window;
 pub mod resource;
+pub(crate) mod row_types;
 pub mod rows;
 pub mod search_provider;
 pub mod service_destinations;
