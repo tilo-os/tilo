@@ -41,8 +41,39 @@ pub fn client_config() -> Result<ClientConfig, rustls::Error> {
     use rustls_platform_verifier::BuilderVerifierExt as _;
     Ok(ClientConfig::builder_with_provider(crypto_provider())
         .with_safe_default_protocol_versions()?
-        .with_platform_verifier()?
+        .with_platform_verifier()
+        .map_err(naming_the_file)?
         .with_no_client_auth())
+}
+
+/// Why this program can check no server's identity, where the system's trust
+/// bundle gives it no certificate authority: which file that is and what is
+/// wrong with it. `None` where it has some, and on a system whose own store
+/// is asked instead of a file.
+#[must_use]
+pub fn lacks_authorities() -> Option<String> {
+    #[cfg(all(unix, not(target_os = "android"), not(target_vendor = "apple")))]
+    {
+        rustls_native_certs::lacks()
+    }
+    #[cfg(not(all(unix, not(target_os = "android"), not(target_vendor = "apple"))))]
+    {
+        None
+    }
+}
+
+/// A verifier's refusal to be built, said as the file this program lacks
+/// where that is why: the verifier's own words for it name no file, and read
+/// as a fault of the server that was asked for.
+#[cfg(not(target_os = "android"))]
+fn naming_the_file(refusal: rustls::Error) -> rustls::Error {
+    said_as(lacks_authorities(), refusal)
+}
+
+/// `refusal`, or what this program `lacks` where it lacks its authorities.
+#[cfg(not(target_os = "android"))]
+fn said_as(lacks: Option<String>, refusal: rustls::Error) -> rustls::Error {
+    lacks.map_or(refusal, rustls::Error::General)
 }
 
 /// The platform verifier aborts without the app's JVM context and its own
@@ -270,6 +301,24 @@ mod tests {
         }
         {
             assert!(client_config().is_ok());
+        }
+    }
+
+    /// A client that cannot be built for want of authorities says which file
+    /// its program lacks; any other refusal keeps its own words, and a
+    /// program that builds one lacks nothing.
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn a_refusal_for_want_of_authorities_names_the_file() {
+        let verifier = || rustls::Error::General("No CA certificates were loaded".to_owned());
+        let lacks = "this program has no certificate authorities: /a/bundle.pem is missing";
+        assert_eq!(
+            said_as(Some(lacks.to_owned()), verifier()),
+            rustls::Error::General(lacks.to_owned())
+        );
+        assert_eq!(said_as(None, verifier()), verifier());
+        if client_config().is_ok() {
+            assert_eq!(lacks_authorities(), None);
         }
     }
 }
