@@ -529,6 +529,69 @@ fn a_window_the_app_closed_while_no_desktop_was_there_closes_its_tab() {
     second.end(Teardown::Logout);
 }
 
+/// The kept app ends (a signal, so it stopped rather than closed) after the desktop went away
+/// for an in-place restart, and its keeper notes how: the app's one tab, by id.
+fn ended_while_away(rig: &Rig) -> TabId {
+    let mut first = rig.desktop(false);
+    rig.launch(&first);
+    let placed = shown_and_told(rig, &mut first, &["Only"]);
+    let (dir, pid, _) = rig.kept();
+    first.end(Teardown::InPlaceRestart);
+    signal(pid, libc::SIGTERM);
+    tilo_test_env::exited("the app, while no desktop is there", pid);
+    tilo_test_env::wait_until("its keeper notes the end", || dir.join("ended").exists());
+    placed[0].1
+}
+
+#[test]
+fn an_app_that_ended_while_no_desktop_was_there_closes_its_tab_and_says_it_stopped() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let tab = ended_while_away(&rig);
+    let [pid] = rig.starts()[..] else {
+        panic!("one start: {:?}", rig.starts());
+    };
+
+    let mut second = rig.desktop(true);
+    // Its end is told in a tab of its own, and the tab it stood in closes, as one the app closed
+    // itself would.
+    until(&mut second.session, "the stop is told", |session| {
+        tabs(session).iter().any(|(other, _)| *other != tab)
+    });
+    until(&mut second.session, "its tab closes", |session| {
+        !tabs(session).iter().any(|(other, _)| *other == tab)
+    });
+    for _ in 0..100 {
+        second.session.step(Duration::from_millis(1)).expect("step");
+    }
+    let shown: Vec<Option<TileContent>> = tabs(&second.session)
+        .into_iter()
+        .map(|(other, _)| tile_of(&second.session, other))
+        .collect();
+    assert!(
+        matches!(&shown[..], [Some(TileContent::AppPlaceholder { label, .. })] if label == APP),
+        "only the notice that it stopped: {shown:?}"
+    );
+    assert_eq!(rig.starts(), [pid], "and the app is not started again");
+    second.end(Teardown::Logout);
+}
+
+#[test]
+fn a_start_after_a_reboot_opens_the_tab_of_an_app_that_ended_again() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let tab = ended_while_away(&rig);
+
+    // A start that follows no in-place restart has nothing running to keep: the saved tab opens
+    // its app again, in that tab.
+    let mut second = rig.desktop(false);
+    crate::common::wait_for(&mut second.session, "the app opens in its tab", |session| {
+        (tab_showing(session, "Only") == Some(tab)).then_some(())
+    });
+    assert_eq!(rig.starts().len(), 2, "the app started once more");
+    second.end(Teardown::Logout);
+}
+
 /// A restart keeps an app whose keeper is merely slow to run: the update it applies is itself
 /// load, and a delay in scheduling a healthy keeper must not cost the person what the app holds.
 #[test]

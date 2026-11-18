@@ -773,6 +773,13 @@ impl Spawner {
         self.away.remove(&id)
     }
 
+    /// The launches of the kept apps that ended while no desktop was there and whose ends are
+    /// not taken yet: their saved tabs are windows those apps closed, not ones to open again.
+    #[must_use]
+    pub fn away(&self) -> Vec<tilo_app_keeper::registry::KeptLaunch> {
+        self.away.values().cloned().collect()
+    }
+
     /// The app `pid` runs, behind `kept` when it is kept: shown on the desktop once its keeper
     /// answers.
     fn app_of(&self, pid: u32, name: &str, kept: Option<&Arc<crate::kept::Kept>>) -> App {

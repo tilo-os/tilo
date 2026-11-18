@@ -1241,10 +1241,12 @@ fn a_windows_program_stays_open_through_an_in_place_restart() {
         (!alive(pid)).then_some(())
     });
 
-    // A program that ends while no desktop is there is reported to the next desktop with its code.
+    // A program that ends while no desktop is there is reported to the next desktop with its code,
+    // and the tab it left closes rather than starting it again.
     let answers = second.manage(&rig, "third", &["launch"]);
     assert_eq!(answers[0]["result"], "launched", "{answers:?}");
     second.shown();
+    let tab = saved_window_tab(&rig, &mut second);
     second.end(tilo_app_launch::Teardown::InPlaceRestart);
     rig.exit(5);
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -1274,6 +1276,7 @@ fn a_windows_program_stays_open_through_an_in_place_restart() {
     let answers = third.manage(&rig, "fourth", &["ended"]);
     assert_eq!(answers[0]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
     assert_eq!(answers[0]["ended"][0]["exit_code"], 5, "{answers:?}");
+    closed_and_not_started(&rig, &mut third, tab, 2);
 
     // A logout ends a program and its keeper.
     let answers = third.manage(&rig, "fifth", &["launch"]);
@@ -1639,6 +1642,45 @@ fn a_proton_program_shows_through_its_keepers_x11_display_and_stays_open() {
 }
 
 /// The tab a Windows program's window took, and the class it showed under, once it mapped.
+/// The tab of the program's window, once the session kept the window's class for the next start
+/// and wrote the tab into the workspace's layout.
+fn saved_window_tab(rig: &KeptRig, desktop: &mut KeptDesktop) -> u64 {
+    let (tab, _) = window_tab(&mut desktop.session);
+    let workspace = desktop.workspace.clone();
+    crate::common::wait_for(&mut desktop.session, "the window's class kept", |_| {
+        kept_entry(rig, &workspace)
+    });
+    crate::layout::until(&mut desktop.session, "the tab is written", |session| {
+        session.layout().borrow_mut().last_step().is_some()
+    });
+    tab
+}
+
+/// The tab `tab` of a program that ended while no desktop was there closes, and the program is
+/// not started again: `starts` stays the number of its starts.
+fn closed_and_not_started(rig: &KeptRig, desktop: &mut KeptDesktop, tab: u64, starts: usize) {
+    crate::layout::until(
+        &mut desktop.session,
+        "the ended program's tab closes",
+        |session| {
+            !crate::layout::tabs(session)
+                .iter()
+                .any(|(other, _)| *other == tab)
+        },
+    );
+    for _ in 0..200 {
+        desktop
+            .session
+            .step(Duration::from_millis(1))
+            .expect("step");
+    }
+    assert_eq!(
+        rig.starts().len(),
+        starts,
+        "the ended program is not started again"
+    );
+}
+
 fn window_tab(session: &mut tilo_session::Session) -> (u64, String) {
     crate::common::wait_for(session, "the program's tab", |session| {
         crate::layout::tabs(session)
@@ -1999,6 +2041,7 @@ fn a_remote_app_window_stays_open_through_an_in_place_restart() {
         "the presentation asks its keeper for an X11 display: {launched:?}"
     );
     first.shown();
+    let tab = saved_window_tab(&rig, &mut first);
     let [pid] = rig.starts()[..] else {
         panic!("one start: {:?}", rig.starts());
     };
@@ -2058,7 +2101,7 @@ fn a_remote_app_window_stays_open_through_an_in_place_restart() {
     assert!(daemons.iter().all(|daemon| alive(*daemon)));
 
     // It ends while no desktop is there (the program closed inside Windows): the next desktop
-    // reports it.
+    // reports it, and the tab it left closes rather than opening the program again.
     second.end(tilo_app_launch::Teardown::InPlaceRestart);
     rig.exit(4);
     KeptRig::gone(daemons);
@@ -2066,12 +2109,11 @@ fn a_remote_app_window_stays_open_through_an_in_place_restart() {
     let answers = third.manage(&rig, "third", &["ended"]);
     assert_eq!(answers[0]["ended"][0]["entry_id"], rig.entry, "{answers:?}");
     assert_eq!(answers[0]["ended"][0]["exit_code"], 4, "{answers:?}");
+    closed_and_not_started(&rig, &mut third, tab, 1);
 
-    // The tab it left reopens it, as any saved tab of a Windows program; a logout ends that
-    // presentation, its keeper and its sound.
-    crate::common::wait_for(&mut third.session, "the tab's program again", |_| {
-        (rig.starts().len() == 2).then_some(())
-    });
+    // A logout ends a presentation, its keeper and its sound.
+    let answers = third.manage(&rig, "fourth", &["launch-vm"]);
+    assert_eq!(answers[0]["result"], "launched", "{answers:?}");
     third.shown();
     let pid = *rig.starts().last().unwrap();
     let daemons = rig.appliance_daemons(&mut third);
