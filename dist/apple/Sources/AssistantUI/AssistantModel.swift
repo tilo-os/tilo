@@ -595,10 +595,7 @@ public final class AssistantModel {
     /// Choose the model of the main chat: the one that answers there and the one that works there.
     public func choose(_ model: ModelChoice.ID) {
         Task {
-            await self.call {
-                try await self.source.choose(model, for: .request)
-                try await self.source.choose(model, for: .task)
-            }
+            await self.call { try await self.source.choose(model, for: [.request, .task]) }
         }
     }
 

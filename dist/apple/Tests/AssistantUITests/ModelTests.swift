@@ -16,6 +16,20 @@ private func until(_ holds: () -> Bool, file: StaticString = #filePath, line: UI
 
 @MainActor
 final class ModelTests: XCTestCase {
+    /// Choosing the main chat's model is one ask of the person's server, for the answering and
+    /// the working together: with two, the app said ready after the first.
+    func testChoosingTheMainChatsModelIsOneAsk() async throws {
+        var content = MemorySource.Content()
+        content.session = .signedIn(Drawing.person)
+        content.models = Drawing.models
+        let started = try await Started.app(content)
+        defer { started.end() }
+        started.model.choose(Drawing.models[1].id)
+        await started.drive.until("the choice to reach the source") { !started.source.calls("choose").isEmpty }
+        await started.drive.settle(300)
+        XCTAssertEqual(started.source.calls("choose").count, 1, "\(started.source.calls("choose"))")
+    }
+
     func testTheAppStartsEmptyAtTheWayIn() async {
         let model = AssistantModel(source: MemorySource())
         XCTAssertNil(model.session, "until the source has spoken, the window shows nothing")
