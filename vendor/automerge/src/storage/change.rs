@@ -215,6 +215,14 @@ impl<'a> Change<'a, Verified> {
         // using either `verify_ops` or `Builder::build`, so we know the ops columns are valid.
         self.ops_meta.iter(self.ops_data()).map(|o| o.unwrap())
     }
+
+    /// TILO(touches): see [`ChangeOpsColumns::iter_touches`].
+    pub(crate) fn iter_touches(
+        &'a self,
+    ) -> impl Iterator<Item = Option<(crate::types::ObjId, crate::columnar::column_range::Key, u64)>> + 'a
+    {
+        self.ops_meta.iter_touches(self.ops_data())
+    }
 }
 
 impl<O: OpReadState> Change<'_, O> {

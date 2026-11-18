@@ -168,6 +168,8 @@ impl TransactionInner {
         }
         doc.update_history(&change);
         doc.remove_unused_actors(true);
+        // TILO(local-change): what reads it back next takes it as built.
+        doc.keep_local(change);
         hash
     }
 

@@ -15,6 +15,8 @@ mod upstream;
 mod authorship;
 #[path = "change_hashes.rs"]
 mod change_hashes;
+#[path = "change_touches.rs"]
+mod change_touches;
 #[path = "committed_readers.rs"]
 mod committed_readers;
 #[path = "crafted_changes.rs"]

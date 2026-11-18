@@ -265,6 +265,18 @@ impl std::default::Default for LoadOptions<'static> {
 /// Prior to the introduction of author IDs, actor IDs were often used in applications to determine
 /// authorship. New code should migrate to using author IDs. If you do need to map from an actor ID
 /// to an author ID you can use [`Automerge::get_author_for_actor`].
+/// TILO(touches): where one change writes in a document that holds it
+/// ([`Automerge::change_touches`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChangeTouches {
+    /// Each object an operation is on, with the map key it writes there (`None` for a position
+    /// in a list or a text), once each, in the order first written.
+    pub writes: Vec<(ExId, Option<String>)>,
+    /// Each object an operation makes: the object, the object it is made in, and the map key it
+    /// is made at there (`None` in a list).
+    pub made: Vec<(ExId, ExId, Option<String>)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Automerge {
     /// The list of unapplied changes that are not causally ready.
@@ -280,6 +292,9 @@ pub struct Automerge {
     actor: Actor,
     /// The current author.
     author: Option<Author<'static>>,
+    /// TILO(local-change): the change this document last committed locally, as the commit built
+    /// it, so reading it back does not build it again from the op set.
+    local: Option<Change>,
 }
 
 impl Automerge {
@@ -293,6 +308,7 @@ impl Automerge {
             deps: Default::default(),
             actor: Actor::Unused(ActorId::random()),
             author: None,
+            local: None,
         }
     }
 
@@ -333,6 +349,7 @@ impl Automerge {
             deps: Default::default(),
             actor: Actor::Unused(ActorId::random()),
             author: None,
+            local: None,
         }
     }
 
@@ -348,6 +365,7 @@ impl Automerge {
             deps,
             actor: Actor::Unused(ActorId::random()),
             author: None,
+            local: None,
         };
         doc.remove_unused_actors(false);
         doc
@@ -1508,6 +1526,88 @@ impl Automerge {
         self.change_graph.get_hash_for_actor_seq(actor, seq)
     }
 
+    /// TILO(local-change): keep `change`, just committed here, as [`Self::local`] holds it.
+    pub(crate) fn keep_local(&mut self, change: Change) {
+        self.local = Some(change);
+    }
+
+    /// TILO(local-change): the change last committed here, when it is `hash` and this document
+    /// holds it.
+    fn local_change(&self, hash: &ChangeHash) -> Option<&Change> {
+        self.local
+            .as_ref()
+            .filter(|local| local.hash() == *hash && self.change_graph.has_change(hash))
+    }
+
+    /// TILO(touches): where `change`, a change this document holds, writes: each object one of
+    /// its operations is on with the map key it writes there, and each object it makes with
+    /// where it makes it. Read from the operations' objects, keys and actions alone, without
+    /// decoding a value, so it costs the change, not the document. `None` when the change names
+    /// an actor this document does not know.
+    pub fn change_touches(&self, change: &Change) -> Option<ChangeTouches> {
+        let actors: Vec<usize> = change
+            .actors()
+            .map(|actor| self.ops.actors.binary_search(actor).ok())
+            .collect::<Option<_>>()?;
+        let own = *actors.first()?;
+        let start = change.start_op().get();
+        let local = |id: OpId| -> Option<OpId> {
+            Some(OpId::new(id.counter(), *actors.get(id.actor())?))
+        };
+        let mut seen: HashSet<(ObjId, Option<smol_str::SmolStr>)> = HashSet::new();
+        let mut objects: HashMap<ObjId, ExId> = HashMap::new();
+        let mut touches = ChangeTouches::default();
+        // The operation before, whose object and key the next one most often
+        // shares (a text's characters, one after another).
+        let mut last: Option<(ObjId, Option<smol_str::SmolStr>, ExId)> = None;
+        for (offset, touched) in change.iter_touches().enumerate() {
+            let (obj, key, action) = touched?;
+            let key = match key {
+                crate::columnar::column_range::Key::Prop(key) => Some(key),
+                crate::columnar::column_range::Key::Elem(_) => None,
+            };
+            let made = matches!(action, 0 | 2 | 4 | 6);
+            if !made
+                && last
+                    .as_ref()
+                    .is_some_and(|(was, was_key, _)| *was == obj && *was_key == key)
+            {
+                continue;
+            }
+            let at = match last.as_ref().filter(|(was, _, _)| *was == obj) {
+                Some((_, _, at)) => at.clone(),
+                None => match objects.get(&obj) {
+                    Some(at) => at.clone(),
+                    None => {
+                        let at = if obj.is_root() {
+                            ExId::Root
+                        } else {
+                            self.ops.id_to_exid(local(obj.0)?)
+                        };
+                        objects.insert(obj, at.clone());
+                        at
+                    }
+                },
+            };
+            // Making a map (0), a list (2), a text (4) or a table (6).
+            if made {
+                let made = OpId::new(start + offset as u64, own);
+                touches.made.push((
+                    self.ops.id_to_exid(made),
+                    at.clone(),
+                    key.as_ref().map(ToString::to_string),
+                ));
+            }
+            if seen.insert((obj, key.clone())) {
+                touches
+                    .writes
+                    .push((at.clone(), key.as_ref().map(ToString::to_string)));
+            }
+            last = Some((obj, key, at));
+        }
+        Some(touches)
+    }
+
     pub(crate) fn update_history(&mut self, change: &Change) {
         self.update_deps(change);
 
@@ -1742,6 +1842,19 @@ impl Automerge {
     }
 
     pub fn get_changes(&self, have_deps: &[ChangeHash]) -> Vec<Change> {
+        // TILO(local-change): the changes since the version the last local change was made on
+        // are that change alone while it is the only head.
+        if let Some(local) = &self.local {
+            let hash = local.hash();
+            if self.deps.len() == 1
+                && self.deps.contains(&hash)
+                && local.deps().len() == have_deps.len()
+                && local.deps().iter().all(|dep| have_deps.contains(dep))
+                && self.change_graph.has_change(&hash)
+            {
+                return vec![local.clone()];
+            }
+        }
         ChangeCollector::exclude_hashes(&self.ops, &self.change_graph, have_deps)
     }
 
@@ -2495,6 +2608,9 @@ impl ReadDoc for Automerge {
     }
 
     fn get_change_by_hash(&self, hash: &ChangeHash) -> Option<Change> {
+        if let Some(local) = self.local_change(hash) {
+            return Some(local.clone());
+        }
         ChangeCollector::for_hashes(&self.ops, &self.change_graph, [*hash])
             .ok()?
             .pop()

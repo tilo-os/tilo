@@ -590,3 +590,24 @@ marked spots are `TILO(batched-marks)` in `transaction/inner.rs` and
 marks of every expand kind save byte for byte as the same text marked
 after; edits and marks made alongside merge alike; a rolled back batch
 leaves the document as it was. Upstreamable.
+
+# Tilo patch: read back the change just made, and where a change writes
+
+Everything that follows a local write reads the change it just made: the
+view of the record refreshes from what it touched, the write answers the
+items it made, a worker hands the change on. `get_change_by_hash` and
+`get_changes` built that change again from the op set each time, and each
+reader decoded every operation into a legacy op (an actor id cloned per
+object, key and predecessor, a string per inserted character) only to learn
+which objects and keys it touched. The document now keeps the change it last
+made locally as the transaction built it (`Automerge::local`), and hands it
+back for its hash, or as the changes since the version it was made on while
+it is the only head. `Automerge::change_touches(change)` names where a change
+the document holds writes, read from the operations' object, key and action
+columns alone (`iter_touches`): each object once per map key it writes there
+(`None` for a position in a list or text), and each object it makes with
+where it makes it, as ids of this document. The marked spots are
+`TILO(local-change)` and `TILO(touches)` in `automerge.rs`,
+`transaction/inner.rs`, `change.rs`, `storage/change.rs` and
+`storage/change/change_op_columns.rs`. Pinned by
+`crates/doc/tilo-automerge/tests/change_touches.rs`.

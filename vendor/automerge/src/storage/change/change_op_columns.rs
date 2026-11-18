@@ -180,6 +180,33 @@ impl ChangeOpsColumns {
         }
     }
 
+    /// TILO(touches): each op's object, key and action, without decoding its value,
+    /// predecessors or mark: what a reader asking only where a change wrote needs. `None` once a
+    /// column ends early, which a verified change never does.
+    pub(crate) fn iter_touches<'a>(
+        &self,
+        data: &'a [u8],
+    ) -> impl Iterator<Item = Option<(ObjId, Key, u64)>> + 'a {
+        let mut obj = self.obj.as_ref().map(|o| o.iter(data));
+        let mut key = self.key.iter(data);
+        let mut action = self.action.decoder(data);
+        std::iter::from_fn(move || {
+            if action.done() {
+                return None;
+            }
+            let touched = (|| {
+                let obj = match obj.as_mut() {
+                    Some(objs) => objs.next_in_col("obj").ok()?,
+                    None => ObjId::root(),
+                };
+                let key = key.next_in_col("key").ok()?;
+                let action = action.next_in_col("action").ok()?;
+                Some((obj, key, action))
+            })();
+            Some(touched)
+        })
+    }
+
     #[tracing::instrument(skip(ops, out))]
     pub(crate) fn encode<'a, 'b, 'c, I, C, Op>(ops: I, out: &'b mut Vec<u8>) -> ChangeOpsColumns
     where

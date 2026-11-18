@@ -123,6 +123,19 @@ impl Change {
         self.stored.iter_ops()
     }
 
+    /// TILO(touches): each operation's object, key and action, without its value.
+    pub(crate) fn iter_touches(
+        &self,
+    ) -> impl Iterator<
+        Item = Option<(
+            crate::types::ObjId,
+            crate::columnar::column_range::Key,
+            u64,
+        )>,
+    > + '_ {
+        self.stored.iter_touches()
+    }
+
     pub fn extra_bytes(&self) -> &[u8] {
         self.stored.extra_bytes()
     }
