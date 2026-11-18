@@ -35,7 +35,9 @@ use super::asks::{Answered, Carried, Carries, ServerAsk};
 use super::turn_provider::{Ending, Rows};
 use super::{CHAT, HostAgents as Agents, Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{AskedSend, HostedTurn, SEND_CARRIER, TurnMail as Taken};
+use crate::workspaces::hosted_use::{
+    AskedSend, HostedTurn, MAIL_CONNECT, SEND_CARRIER, TurnMail as Taken,
+};
 use crate::workspaces::person_asking::kept_asks::KeptAsk;
 
 /// What an agent is told when its person is asked before a message leaves: nothing was sent,
@@ -194,10 +196,12 @@ impl TurnProvider for TurnMail {
 
     /// Whatever is asked of a person's mail accounts is the server's entry's to answer, also
     /// where it refuses it. A use of their vault by reference is another provider's, asked
-    /// before this one.
+    /// before this one, and signing an account in from its address alone is another's too
+    /// ([`super::mail_connect`]).
     fn takes(&self, target: &RemoteActionTarget) -> bool {
         target.provider == person_accounts::PROVIDER
             && target.address.resource == person_accounts::RESOURCE
+            && target.address.action != MAIL_CONNECT
     }
 
     /// What a message holds was written by whoever sent it: its words, what it is about, the

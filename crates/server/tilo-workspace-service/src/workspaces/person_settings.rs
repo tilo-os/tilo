@@ -58,6 +58,10 @@ use super::{Workspaces, system_time};
 #[cfg(feature = "agents")]
 pub(in crate::workspaces) mod calendars;
 
+/// A mail account signed in by a turn's telling: asked for, and carried out.
+#[cfg(feature = "agents")]
+pub(in crate::workspaces) mod mail_connect;
+
 impl Workspaces {
     /// Where this host keeps `person`'s own accounts and model providers,
     /// with the vault their sign-ins and keys are sealed in: theirs alone,
@@ -206,6 +210,56 @@ impl Workspaces {
             .prover
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(Proving(prove));
+    }
+
+    /// Work out where an address's mail lives through `find` from now on, which is told the
+    /// address and may ask whether a server of a name may be asked anything. Sign-ins are
+    /// proved by whatever proved them before: a test stands in for the network.
+    #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
+    pub fn find_mail_servers_through(
+        &self,
+        find: impl Fn(
+            &str,
+            &dyn Fn(&str) -> bool,
+        ) -> Result<tilo_account_probe::mail_servers::MailServers, String>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        struct Finding<F>(Arc<dyn AccountTester>, F);
+        impl<F> AccountTester for Finding<F>
+        where
+            F: Fn(
+                    &str,
+                    &dyn Fn(&str) -> bool,
+                ) -> Result<tilo_account_probe::mail_servers::MailServers, String>
+                + Send
+                + Sync,
+        {
+            fn find_mail_servers(
+                &self,
+                address: &str,
+                allowed: &dyn Fn(&str) -> bool,
+            ) -> Result<tilo_account_probe::mail_servers::MailServers, String> {
+                (self.1)(address, allowed)
+            }
+
+            fn test(
+                &self,
+                account: &accounts::Account,
+                secret: &accounts::Secret,
+            ) -> Result<String, String> {
+                self.0.test(account, secret)
+            }
+        }
+        let mut prover = self
+            .inner
+            .vault_uses
+            .prover
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let proving = Arc::clone(&prover);
+        *prover = Arc::new(Finding(proving, find));
     }
 
     /// The person `caller` asks for, on the device `certificate` certifies,
