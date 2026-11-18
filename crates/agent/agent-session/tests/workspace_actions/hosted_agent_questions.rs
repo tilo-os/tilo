@@ -137,12 +137,13 @@ impl Hosted {
     }
 
     /// The person writes `words` to their assistant, and the server answers the one turn that
-    /// makes with the model's next `steps`: each tool call, then its closing words.
+    /// makes with the model's next `steps`: each tool call, then its closing words. That turn
+    /// has ended when this returns, whoever began it.
     async fn turn(&self, words: &str, steps: Vec<Reply>) {
         for step in steps {
             self.model.then(step);
         }
-        write_to_agent(
+        let message = write_to_agent(
             &self.actions,
             &self.workspaces,
             &self.workspace,
@@ -159,6 +160,15 @@ impl Hosted {
         .await
         .expect("the turn ends")
         .unwrap();
+        // The server leaves a turn to the one that goes in its place, and says so at once. The
+        // turn before this one, whose reply has ended, may hold the place an instant longer:
+        // then this one is begun by a look, as that turn makes one itself once it gave the
+        // place back. Either way it has ended once its reply has.
+        let reply = chat::chat::reply_id(&message, &MemberId::agent(SCOUT));
+        let part = conversation_part(&self.workspaces, &self.workspace).await;
+        if chat::summons::unanswered(part.messages.get(&reply)) {
+            self.replied(&message).await;
+        }
     }
 
     /// The assistant shelves the book `book` and asks to take it off the shelf again.
