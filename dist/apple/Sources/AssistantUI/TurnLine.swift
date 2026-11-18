@@ -5,18 +5,22 @@ import SwiftUI
 /// how long the turn has gone on, and how many steps it has taken. Each step takes the place
 /// of the one before; the line never grows into a list. A press opens the steps so far over
 /// it, each one line, the newest next to it, and a press closes them: the line keeps its place
-/// at the foot, under the hand that pressed it. While the reply's own words come the line says nothing:
-/// the reply says it. Where nothing says what the turn does, the line says that an answer is
-/// being written, as it always did.
+/// at the foot, under the hand that pressed it. Opened, the steps stand no taller than `tallest`:
+/// past it they scroll in a part of their own, so what stood above the line stays in sight.
+/// While the reply's own words come the line says nothing: the reply says it. Where nothing
+/// says what the turn does, the line says that an answer is being written, as it always did.
 struct TurnLine: View {
     let turn: Message.Turn?
     @Binding var open: Bool
+    /// How tall the opened steps may stand before they scroll in a part of their own: no bound
+    /// where what shows of the conversation is not known yet.
+    let tallest: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduced
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let turn, !turn.steps.isEmpty {
-                if open { TurnStepList(steps: turn.steps) }
+                if open { TurnSteps(steps: turn.steps, tallest: tallest) }
                 Button {
                     withAnimation(reduced ? nil : .easeOut(duration: Motion.base)) { open.toggle() }
                 } label: {
@@ -30,6 +34,9 @@ struct TurnLine: View {
                 line
             }
         }
+        // The steps' part and the line are each told as their own: the line keeps its own place
+        // for whoever reads the window without seeing it, also while its steps stand open over it.
+        .accessibilityElement(children: .contain)
         .font(.small12)
         .foregroundStyle(Token.ink3)
     }
@@ -79,6 +86,23 @@ struct TurnLine: View {
         case .thinking(let words)?: words.isEmpty ? AssistantWords.thinking.said : words
         case .step(let words)?: words ?? AssistantWords.atWork.said
         }
+    }
+}
+
+/// The opened steps in a part of their own. A few steps take only the height of their lines; past
+/// `tallest` the part scrolls and rests on its newest step, next to the line. No step is left out.
+struct TurnSteps: View {
+    let steps: [Message.Turn.Step]
+    let tallest: CGFloat
+
+    var body: some View {
+        ScrollView {
+            TurnStepList(steps: steps).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .defaultScrollAnchor(.bottom)
+        // As tall as its steps and no taller than `tallest`: by itself a scroll view takes all it is offered.
+        .frame(maxHeight: tallest)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

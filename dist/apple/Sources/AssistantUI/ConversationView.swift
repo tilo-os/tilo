@@ -22,6 +22,9 @@ public struct ConversationView: View {
     @State private var keepsFoot = false
     /// Whether the steps of the turn at work are shown under its line. A person opens them.
     @State private var stepsOpen = false
+    /// How tall what shows of the conversation is, once its scroll view has said so: a turn's
+    /// opened steps take a share of it. Nothing until then.
+    @State private var shownTall: CGFloat = 0
 
     public init(chat: Chat, picturedSecret: String = "", head: String? = nil) {
         self.chat = chat
@@ -68,7 +71,8 @@ public struct ConversationView: View {
                         if chat == .main { SetupStep() }
                         if conversation.isAnswering || keepsFoot {
                             // One line says what the turn does now; a press opens its steps so far.
-                            TurnLine(turn: conversation.isAnswering ? turn(of: conversation) : nil, open: $stepsOpen)
+                            TurnLine(turn: conversation.isAnswering ? turn(of: conversation) : nil, open: $stepsOpen,
+                                     tallest: shownTall > 0 ? (shownTall * Measure.stepsShare).rounded(.down) : .infinity)
                                 .padding(.leading, 14)
                                 .opacity(conversation.isAnswering ? 1 : 0)
                                 .accessibilityHidden(!conversation.isAnswering)
@@ -100,6 +104,7 @@ public struct ConversationView: View {
                     Resting(tall: place.contentSize.height, shown: place.containerSize.height,
                             below: place.contentSize.height - place.visibleRect.maxY)
                 } action: { was, now in
+                    if shownTall != now.shown { shownTall = now.shown }
                     if was.tall != now.tall || was.shown != now.shown {
                         if atEnd {
                             reader.scrollTo("end", anchor: .bottom)

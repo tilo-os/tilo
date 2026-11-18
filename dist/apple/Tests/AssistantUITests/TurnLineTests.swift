@@ -45,8 +45,8 @@ final class TurnLineTests: XCTestCase {
         await app.drive.settle(60)
     }
 
-    /// The conversation's own scroll view: the one with the tallest content that holds no text field.
-    private func conversationScroll(_ window: NSWindow) throws -> NSScrollView {
+    /// Every scroll view of the window that holds no text field.
+    private func scrolls(_ window: NSWindow) -> [NSScrollView] {
         var found: [NSScrollView] = []
         func walk(_ view: NSView) {
             if let scroll = view as? NSScrollView { found.append(scroll) }
@@ -54,7 +54,31 @@ final class TurnLineTests: XCTestCase {
         }
         func holdsField(_ view: NSView) -> Bool { view is NSTextView || view.subviews.contains(where: holdsField) }
         if let root = window.contentView { walk(root) }
-        return try XCTUnwrap(found.filter { !holdsField($0) }.max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) })
+        return found.filter { !holdsField($0) }
+    }
+
+    /// The conversation's own scroll view: the one with the tallest content that holds no text
+    /// field and stands in no other scroll view.
+    private func conversationScroll(_ window: NSWindow) throws -> NSScrollView {
+        try XCTUnwrap(scrolls(window).filter { $0.enclosingScrollView == nil }
+            .max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) })
+    }
+
+    /// The part the opened steps scroll in: a scroll view that stands in the conversation's.
+    private func stepsScroll(in conversation: NSScrollView, _ window: NSWindow) -> NSScrollView? {
+        scrolls(window).first { $0 !== conversation && $0.isDescendant(of: conversation) }
+    }
+
+    /// What shows of a scroll view, in the screen's measure.
+    private func shown(_ scroll: NSScrollView) -> CGRect {
+        scroll.window?.convertToScreen(scroll.convert(scroll.bounds, to: nil)) ?? .zero
+    }
+
+    /// The middle of what says `words` in the conversation's column, in the screen's measure.
+    private func middle(saying words: String, under sight: CGRect, _ drive: Drive) -> CGPoint? {
+        drive.tree().first {
+            ($0.label.contains(words) || $0.value.contains(words)) && $0.frame.midX > sight.minX && $0.frame.midX < sight.maxX
+        }.map { CGPoint(x: $0.frame.midX, y: $0.frame.midY) }
     }
 
     /// How tall the conversation is, and how much of it lies under what shows.
@@ -120,10 +144,13 @@ final class TurnLineTests: XCTestCase {
                       "a step does not say how long it took:\n\(drive.said())")
         XCTAssertFalse(said.contains { $0.contains(words(3)) && $0.contains(AssistantWords.stepFailed.said) },
                        "a step that went through says it failed")
-        // The steps stand over the line, and the line keeps its place at the conversation's end,
-        // under the hand that pressed it.
+        // The steps stand over the line, in a part that takes no more than a third of what shows of
+        // the conversation, and the line keeps its place at the conversation's end, under the hand
+        // that pressed it.
         let opened = place(scroll)
-        XCTAssertGreaterThan(opened.tall - closed.tall, 300, "thirty steps made the conversation no taller")
+        XCTAssertGreaterThan(opened.tall - closed.tall, 100, "thirty steps over the line made the conversation no taller")
+        XCTAssertLessThanOrEqual(opened.tall - closed.tall, shown(scroll).height / 3 + 8,
+                                 "thirty opened steps take more than a third of what shows of the conversation")
         XCTAssertEqual(opened.below, 0, accuracy: 1, "the line left the foot, where it was pressed")
         await pictures("turn-line-steps-open", app)
         drive.press(drive.tree().first { $0.label.contains(count) })
@@ -162,6 +189,78 @@ final class TurnLineTests: XCTestCase {
         source.change(reply(Message.Turn(now: .step("Add an account: Mail"), began: began, steps: steps(4)), saying: "Your mail account is set up."))
         await drive.until("the line speaks again at the next step") { drive.shows("Add an account: Mail…") }
         XCTAssertTrue(drive.shows(counted(4)), drive.said())
+    }
+
+    func testOpenedStepsScrollInAPartOfTheirOwnAndWhatStoodAboveTheLineStaysInSight() async throws {
+        let app = try await Started.app()
+        defer { app.end() }
+        let drive = app.drive, source = app.source.inner
+        let asked = "Sort my mail into folders by who wrote it"
+        source.post(Item(id: "asked", at: Drawing.now, .message(Message(.person, asked))))
+        source.setAnswering(true)
+        // As many steps as the owner's own turn had taken when they asked what it was doing.
+        source.post(reply(turn(at: 58)))
+        let count = counted(58)
+        await drive.until("the line stands") { drive.shows(count) }
+        await drawn(app)
+        let scroll = try conversationScroll(app.window)
+        let closed = place(scroll)
+        let sight = shown(scroll)
+        let before = try XCTUnwrap(middle(saying: asked, under: sight, drive), "the person's message is not said:\n\(drive.said())")
+        XCTAssertTrue(sight.contains(before), "the person's message is out of sight before anything is opened")
+        drive.press(drive.tree().first { $0.label.contains(count) })
+        await drive.until("the steps so far stand over the line") { drive.shows(self.words(7)) }
+        await drive.settle(500)
+        await drawn(app)
+        await drawn(app)
+        // No step is left out.
+        let said = drive.tree().map { "\($0.label) \($0.value)" }
+        for step in 1...57 {
+            XCTAssertEqual(said.filter { $0.contains(words(step)) }.count, 1, "step \(step) is not one line")
+        }
+        // What stood above the line stays where a person reads it, and the line stays under the hand.
+        let opened = place(scroll)
+        let after = try XCTUnwrap(middle(saying: asked, under: sight, drive), "the person's message is not said any more")
+        XCTAssertTrue(sight.contains(after), "the opened steps pushed the person's message out of sight: it stands at \(after), what shows is \(sight)")
+        XCTAssertLessThanOrEqual(opened.tall - closed.tall, sight.height / 3 + 8,
+                                 "the opened steps take more than a third of what shows of the conversation")
+        XCTAssertEqual(opened.below, 0, accuracy: 1, "the line left the foot, where it was pressed")
+        // The steps stand in a part of their own, which scrolls and rests on its newest step.
+        let part = try XCTUnwrap(stepsScroll(in: scroll, app.window), "the opened steps stand in no part of their own that scrolls")
+        let rest = place(part)
+        XCTAssertGreaterThan(rest.tall, part.frame.height + 300, "the part holds less than its fifty-eight steps")
+        XCTAssertEqual(rest.below, 0, accuracy: 1, "the part does not rest on its newest step")
+        let newest = try XCTUnwrap(middle(saying: words(57), under: sight, drive))
+        let first = try XCTUnwrap(middle(saying: words(1), under: sight, drive))
+        XCTAssertTrue(shown(part).contains(newest), "the newest steps are not in sight: \(newest) in \(shown(part))")
+        XCTAssertFalse(shown(part).contains(first), "the first step shows though the part rests on its newest")
+        await pictures("turn-line-steps-open-58", app)
+        // The line is still what stands at its own centre: a press on it closes the steps.
+        drive.press(drive.tree().first { $0.label.contains(count) })
+        await drive.until("the steps are closed again") { !drive.shows(self.words(7)) }
+    }
+
+    func testAFewOpenedStepsTakeOnlyTheHeightOfTheirLinesAndNothingScrolls() async throws {
+        let app = try await Started.app()
+        defer { app.end() }
+        let drive = app.drive, source = app.source.inner
+        source.setAnswering(true)
+        source.post(reply(turn(at: 3)))
+        let count = counted(3)
+        await drive.until("the line stands") { drive.shows(count) }
+        await drawn(app)
+        let scroll = try conversationScroll(app.window)
+        let closed = place(scroll)
+        drive.press(drive.tree().first { $0.label.contains(count) })
+        await drive.until("the steps so far stand over the line") { drive.shows(self.words(2)) }
+        await drive.settle(500)
+        await drawn(app)
+        await drawn(app)
+        let opened = place(scroll)
+        XCTAssertGreaterThan(opened.tall - closed.tall, 30, "three steps over the line made the conversation no taller")
+        XCTAssertLessThan(opened.tall - closed.tall, 90, "three steps stand taller than their three lines")
+        let part = try XCTUnwrap(stepsScroll(in: scroll, app.window), "the opened steps stand in no part of their own that scrolls")
+        XCTAssertEqual(place(part).tall, part.frame.height, accuracy: 1, "three steps scroll though they need no more than their own height")
     }
 }
 #endif
