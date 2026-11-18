@@ -186,10 +186,6 @@ if [ "$ENCRYPT" = 1 ]; then
   # root, and a store when the disk is large enough for one) made by tilo-disk-encrypt, and
   # bootc installing into the opened mapping. Options of the plain layout that
   # disagree with it are refused rather than silently dropped.
-  [ "$HAS_UKI" = no ] \
-    || die "--encrypt needs an image that boots split kernel/initrd entries. This
-  image carries a sealed UKI, whose signed command line cannot carry the
-  install-time rd.luks.uuid; the desktop installer builds that layout instead."
   [ -z "$SEED_RAW" ] || die "--encrypt cannot reuse a seed disk"
   [ -z "$BOOT_GAP$ROCKCHIP_LOADER" ] || die "--encrypt does not lay out a board disk with a loader gap"
   [ -z "$ROOT_MAX" ] || die "--encrypt sizes the root from the disk, not --root-max"
@@ -394,6 +390,12 @@ if [ ${#KARGS[@]} -gt 0 ] && [ "$HAS_UKI" = yes ]; then
   here would be silently absent at boot. Put it in the image's
   /usr/lib/bootc/kargs.d/ — \`bootc container ukify\` reads that directory — or
   ship it as a separately signed UKI addon."
+fi
+
+if [ "$ENCRYPT" = 1 ] && [ "$HAS_UKI" = yes ]; then
+  die "--encrypt needs an image that boots split kernel/initrd entries. This
+  image carries a sealed UKI, whose signed command line cannot carry the
+  install-time rd.luks.uuid; the desktop installer builds that layout instead."
 fi
 
 # Where the ESP goes, which is not the same on both layouts:
@@ -698,6 +700,8 @@ encrypted_layout() {
   ENC_STORE_VOLUME="$SCRIPT_DIR/../usr/libexec/tilo-store-volume"
   [ -x "$ENC_DISK_ENCRYPT" ] && [ -x "$ENC_STORE_VOLUME" ] \
     || die "the encrypted layout needs $ENC_DISK_ENCRYPT and $ENC_STORE_VOLUME"
+  [ "$SIZE_MIB" -ge 40960 ] \
+    || die "an encrypted install needs a disk of at least 40 GiB (a LUKS root and its store); got $SIZE"
   truncate -s "$SIZE" "$RAW"
   disk_bytes="$(stat -c %s "$RAW")"
   # The plan is needed before the disk exists, only to know how many partitions
