@@ -725,13 +725,14 @@ fn plan_dispatch_unreadable_response_is_unknown() {
 }
 
 /// Every status that leaves open whether the provider did the work. A rate
-/// limit (429) or overload (529) says it did not; see
+/// limit (429), an overload (529) or a provider unavailable for now (503)
+/// says it did not; see
 /// `plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it`.
 #[test]
-fn plan_dispatch_never_replays_provider_status() {
-    for status in [503, 408, 500, 502, 504, 401] {
+fn plan_dispatch_never_replays_a_status_that_leaves_the_work_unknown() {
+    for status in [408, 500, 502, 504, 401] {
         let Some(observed) = run_case(
-            "plan_dispatch_never_replays_provider_status",
+            "plan_dispatch_never_replays_a_status_that_leaves_the_work_unknown",
             &status.to_string(),
         ) else {
             return;
@@ -743,9 +744,9 @@ fn plan_dispatch_never_replays_provider_status() {
 #[test]
 fn plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it() {
     let name = "plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it";
-    // Phase: refused as rate-limited or overloaded, then answered: one
-    // success, from the very same request sent again.
-    for case in ["429-once", "529-once"] {
+    // Phase: refused as rate-limited, overloaded or unavailable for now, then
+    // answered: one success, from the very same request sent again.
+    for case in ["429-once", "529-once", "503-once"] {
         let Some(observed) = run_case(name, case) else {
             return;
         };
@@ -760,7 +761,7 @@ fn plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it() {
     }
 
     // Phase: refused every time: bounded, and the error says how often.
-    for case in ["429", "529"] {
+    for case in ["429", "529", "503"] {
         let Some(observed) = run_case(name, case) else {
             return;
         };
@@ -960,7 +961,14 @@ tilo_test_env::scenario! {
             br#"{"error":{"type":"overloaded_error"}}"#
         ));
         assert!(!refused_unprocessed(429, QUOTA_BODY.as_bytes()));
-        for status in [400, 401, 402, 408, 409, 500, 502, 503, 504] {
+        // Unavailable for now is a request not handled; switched off is not
+        // something asking again cures.
+        assert!(refused_unprocessed(503, b""));
+        assert!(!refused_unprocessed(
+            503,
+            br#"{"error":{"code":"service_disabled"}}"#
+        ));
+        for status in [400, 401, 402, 408, 409, 500, 502, 504] {
             assert!(!refused_unprocessed(status, b""), "HTTP {status}");
         }
     }
